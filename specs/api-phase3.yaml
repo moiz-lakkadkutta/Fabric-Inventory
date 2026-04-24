@@ -1,0 +1,4323 @@
+openapi: 3.1.0
+info:
+  title: "Fabric ERP API — Phase 3 (Manufacturing)"
+  version: "0.1.0-phase3"
+  description: |
+    Manufacturing pipeline, job work, QC, design library, labour, and overhead management
+    for multi-tenant ladies-suit / fabric trade ERP.
+    Supports state machines for MOs, operations, and stock stages; event sourcing; Kanban views.
+  contact:
+    name: Fabric ERP Team
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.fabric-erp.com/v1
+    description: Production API
+  - url: http://localhost:8000/v1
+    description: Local development
+
+tags:
+  - name: manufacturing
+    description: Manufacturing orders, state machines, routing, cost rollup
+  - name: operations
+    description: Operation dispatch, progress, receive, QC, rework, reassignment
+  - name: kanban
+    description: Kanban views, WIP by stage/karigar, bottlenecks, dispatch queue
+  - name: jobwork
+    description: Job work orders, outward/inward challans, e-way, bills
+  - name: qc
+    description: QC plans, plans, sampling, result recording
+  - name: design
+    description: Design library, BOM versions, routings
+  - name: labour
+    description: Labour slips, overhead rates, cost accounting
+  - name: events
+    description: Production event timeline, audit trail
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from /auth/login
+
+  parameters:
+    OrgId:
+      name: X-Org-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Organization UUID (tenant ID)
+
+    FirmId:
+      name: X-Firm-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Firm UUID within the organization
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Client-supplied key (UUID or opaque up to 100 chars) to make mutating requests
+        idempotent. If the same key is retried within 14 days, the server returns the
+        original response instead of creating a duplicate. Critical for offline Android
+        sync and flaky-network retries.
+      schema:
+        type: string
+        maxLength: 100
+        pattern: "^[A-Za-z0-9_-]{8,100}$"
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 200
+      description: Number of items per page
+
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        nullable: true
+      description: Cursor token for pagination
+
+    Filter:
+      name: filter
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Filter query (e.g., status=IN_PROGRESS, design_id=...)
+
+    Sort:
+      name: sort
+      in: query
+      required: false
+      schema:
+        type: string
+        default: created_at:desc
+      description: Sort field and direction (field:asc|desc)
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    Conflict:
+      description: Conflict (e.g., invalid state transition)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    UnprocessableEntity:
+      description: Unprocessable entity
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    TooManyRequests:
+      description: Rate limit exceeded
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+  schemas:
+    ProblemDetails:
+      type: object
+      required:
+        - type
+        - status
+        - title
+      properties:
+        type:
+          type: string
+          format: uri
+          description: Problem type URI per RFC 9457
+        status:
+          type: integer
+          description: HTTP status code
+        title:
+          type: string
+          description: Short human-readable title
+        detail:
+          type: string
+          description: Detailed explanation
+        instance:
+          type: string
+          format: uri
+          description: URI of the specific problem instance
+        errors:
+          type: object
+          additionalProperties: true
+          description: Field-level error details
+
+    PaginatedResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+      required:
+        - items
+        - has_more
+
+    MOStatus:
+      type: string
+      enum:
+        - DRAFT
+        - RELEASED
+        - IN_PROGRESS
+        - PARTIALLY_COMPLETED
+        - COMPLETED
+        - CLOSED
+        - CANCELLED
+        - ABANDONED
+
+    OperationStatus:
+      type: string
+      enum:
+        - PENDING
+        - READY
+        - DISPATCHED
+        - ACKNOWLEDGED
+        - IN_PROGRESS
+        - RECEIVED_PARTIAL
+        - RECEIVED_FULL
+        - QC_PENDING
+        - REWORK
+        - CLOSED
+        - SKIPPED
+        - CANCELLED
+
+    StockStage:
+      type: string
+      enum:
+        - RAW
+        - CUT
+        - AT_DYEING
+        - AT_EMBROIDERY
+        - AT_HANDWORK
+        - AT_STITCHING
+        - AT_WASHING
+        - EMBROIDERED
+        - HANDWORKED
+        - STITCHED
+        - WASHED
+        - QC_PENDING
+        - REWORK_QUEUE
+        - FINISHED
+        - SECONDS
+        - SCRAP
+        - PACKED
+        - DISPATCHED
+
+    RoutingEdgeType:
+      type: string
+      enum:
+        - FINISH_TO_START
+        - START_TO_START
+        - PARTIAL_FINISH_TO_START
+
+    DispositionType:
+      type: string
+      enum:
+        - ACCEPT
+        - REWORK
+        - SCRAP
+        - DOWNGRADE
+        - HOLD
+
+    ChallanStatus:
+      type: string
+      enum:
+        - DRAFT
+        - ISSUED
+        - ACKNOWLEDGED
+        - IN_PROCESS
+        - RETURNED
+        - CLOSED
+
+    JobWorkStatus:
+      type: string
+      enum:
+        - DRAFT
+        - ISSUED
+        - ACKNOWLEDGED
+        - RETURNED
+        - INVOICED
+        - CLOSED
+
+    QCStatus:
+      type: string
+      enum:
+        - PENDING
+        - PASSED
+        - FAILED
+        - PARTIAL
+
+    QCSampling:
+      type: string
+      enum:
+        - ONE_HUNDRED_PCT
+        - AQL
+
+    EWayStatus:
+      type: string
+      enum:
+        - DRAFT
+        - GENERATED
+        - CANCELLED
+        - EXPIRED
+
+    ReservationStrategy:
+      type: string
+      enum:
+        - FIFO
+        - FEFO
+
+    ResidualAction:
+      type: string
+      enum:
+        - KEEP
+        - RELEASE
+
+    ReworkOpType:
+      type: string
+      enum:
+        - INLINE
+        - NEW_JW
+
+    AckMethod:
+      type: string
+      enum:
+        - SIGNATURE
+        - WHATSAPP
+        - AUTO
+
+    ManufacturingOrder:
+      type: object
+      properties:
+        mo_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        mo_number:
+          type: string
+          description: Unique MO reference (e.g., MO-00042)
+        design_id:
+          type: string
+          format: uuid
+        qty_total:
+          type: integer
+          minimum: 1
+        qty_split:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Size/variant split (e.g., {M: 40, L: 40, XL: 20})
+        status:
+          $ref: '#/components/schemas/MOStatus'
+        routing_id:
+          type: string
+          format: uuid
+          nullable: true
+        target_date:
+          type: string
+          format: date
+        cost_centre_id:
+          type: string
+          format: uuid
+          nullable: true
+        material_cost:
+          type: number
+          format: double
+        labour_cost:
+          type: number
+          format: double
+        overhead_cost:
+          type: number
+          format: double
+        total_cost:
+          type: number
+          format: double
+        units_produced:
+          type: integer
+          nullable: true
+        units_scrap:
+          type: integer
+          nullable: true
+        units_downgrade:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - mo_id
+        - org_id
+        - firm_id
+        - mo_number
+        - design_id
+        - qty_total
+        - status
+        - created_at
+
+    MOOperation:
+      type: object
+      properties:
+        mo_op_id:
+          type: string
+          format: uuid
+        mo_id:
+          type: string
+          format: uuid
+        operation_master_id:
+          type: string
+          format: uuid
+        operation_name:
+          type: string
+        sequence:
+          type: integer
+        status:
+          $ref: '#/components/schemas/OperationStatus'
+        executor_type:
+          type: string
+          enum:
+            - IN_HOUSE
+            - JOB_WORK
+        executor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Location ID for in-house, party ID for JW
+        input_stage:
+          $ref: '#/components/schemas/StockStage'
+        output_stage:
+          $ref: '#/components/schemas/StockStage'
+        issued_qty:
+          type: integer
+          nullable: true
+        received_qty:
+          type: integer
+          nullable: true
+        rejected_qty:
+          type: integer
+          nullable: true
+        wastage_qty:
+          type: integer
+          nullable: true
+        byproduct_qty:
+          type: integer
+          nullable: true
+        standard_hours:
+          type: number
+          format: double
+          nullable: true
+        expected_return_date:
+          type: string
+          format: date
+          nullable: true
+        qc_required:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - mo_op_id
+        - mo_id
+        - operation_name
+        - sequence
+        - status
+
+    MOMaterialLine:
+      type: object
+      properties:
+        mo_material_line_id:
+          type: string
+          format: uuid
+        mo_id:
+          type: string
+          format: uuid
+        item_id:
+          type: string
+          format: uuid
+        item_code:
+          type: string
+        item_name:
+          type: string
+        uom:
+          type: string
+        qty_required:
+          type: number
+          format: double
+        qty_issued:
+          type: number
+          format: double
+          nullable: true
+        qty_received:
+          type: number
+          format: double
+          nullable: true
+        lot_id:
+          type: string
+          format: uuid
+          nullable: true
+        unit_cost:
+          type: number
+          format: double
+        total_cost:
+          type: number
+          format: double
+      required:
+        - mo_material_line_id
+        - mo_id
+        - item_id
+        - qty_required
+
+    Routing:
+      type: object
+      properties:
+        routing_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        design_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        operations:
+          type: array
+          items:
+            type: object
+            properties:
+              operation_master_id:
+                type: string
+                format: uuid
+              sequence:
+                type: integer
+              operation_name:
+                type: string
+              executor_type:
+                type: string
+                enum:
+                  - IN_HOUSE
+                  - JOB_WORK
+              default_executor_id:
+                type: string
+                format: uuid
+              input_stage:
+                $ref: '#/components/schemas/StockStage'
+              output_stage:
+                $ref: '#/components/schemas/StockStage'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingEdge'
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - routing_id
+        - org_id
+        - firm_id
+        - design_id
+        - operations
+
+    RoutingEdge:
+      type: object
+      properties:
+        routing_edge_id:
+          type: string
+          format: uuid
+        from_operation_sequence:
+          type: integer
+        to_operation_sequence:
+          type: integer
+        edge_type:
+          $ref: '#/components/schemas/RoutingEdgeType'
+        threshold_pct:
+          type: integer
+          nullable: true
+          description: For PARTIAL_FINISH_TO_START
+
+    OutwardChallan:
+      type: object
+      properties:
+        outward_challan_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        challan_number:
+          type: string
+        mo_op_id:
+          type: string
+          format: uuid
+        party_id:
+          type: string
+          format: uuid
+        dispatch_date:
+          type: string
+          format: date
+        expected_return_date:
+          type: string
+          format: date
+          nullable: true
+        status:
+          $ref: '#/components/schemas/ChallanStatus'
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              item_id:
+                type: string
+                format: uuid
+              item_code:
+                type: string
+              lot_id:
+                type: string
+                format: uuid
+              qty:
+                type: number
+                format: double
+              uom:
+                type: string
+        eway_number:
+          type: string
+          nullable: true
+        eway_status:
+          $ref: '#/components/schemas/EWayStatus'
+          nullable: true
+        vehicle_number:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - outward_challan_id
+        - challan_number
+        - mo_op_id
+        - party_id
+        - status
+
+    InwardChallan:
+      type: object
+      properties:
+        inward_challan_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        challan_number:
+          type: string
+        outward_challan_id:
+          type: string
+          format: uuid
+        mo_op_id:
+          type: string
+          format: uuid
+        party_id:
+          type: string
+          format: uuid
+        receive_date:
+          type: string
+          format: date
+        status:
+          $ref: '#/components/schemas/ChallanStatus'
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              item_id:
+                type: string
+                format: uuid
+              item_code:
+                type: string
+              lot_id:
+                type: string
+                format: uuid
+              qty_received:
+                type: number
+                format: double
+              qty_rejected:
+                type: number
+                format: double
+              rejection_reason:
+                type: string
+                nullable: true
+              uom:
+                type: string
+        total_qty_received:
+          type: number
+          format: double
+        total_qty_rejected:
+          type: number
+          format: double
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - inward_challan_id
+        - challan_number
+        - outward_challan_id
+        - mo_op_id
+        - party_id
+        - status
+
+    QCPlan:
+      type: object
+      properties:
+        qc_plan_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        operation_master_id:
+          type: string
+          format: uuid
+        operation_name:
+          type: string
+        sampling_type:
+          $ref: '#/components/schemas/QCSampling'
+        aql_level:
+          type: number
+          format: double
+          nullable: true
+        sample_size:
+          type: integer
+          nullable: true
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              check_code:
+                type: string
+              check_name:
+                type: string
+              check_type:
+                type: string
+                enum:
+                  - DIMENSION
+                  - VISUAL
+                  - FUNCTIONAL
+              tolerance:
+                type: string
+              is_critical:
+                type: boolean
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - qc_plan_id
+        - org_id
+        - firm_id
+        - operation_master_id
+        - sampling_type
+
+    QCResult:
+      type: object
+      properties:
+        qc_result_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        mo_op_id:
+          type: string
+          format: uuid
+        qc_inspector_id:
+          type: string
+          format: uuid
+        inspection_date:
+          type: string
+          format: date
+        sample_size:
+          type: integer
+        unit_results:
+          type: array
+          items:
+            type: object
+            properties:
+              unit_ref:
+                type: string
+              check_code:
+                type: string
+              pass:
+                type: boolean
+              defect_code:
+                type: string
+                nullable: true
+              disposition:
+                $ref: '#/components/schemas/DispositionType'
+        total_passed:
+          type: integer
+        total_failed:
+          type: integer
+        lot_accepted:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - qc_result_id
+        - org_id
+        - firm_id
+        - mo_op_id
+        - lot_accepted
+
+    LabourSlip:
+      type: object
+      properties:
+        labour_slip_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        mo_op_id:
+          type: string
+          format: uuid
+        karigar_id:
+          type: string
+          format: uuid
+        slip_date:
+          type: string
+          format: date
+        qty_produced:
+          type: integer
+        rate_per_unit:
+          type: number
+          format: double
+        total_amount:
+          type: number
+          format: double
+        is_approved:
+          type: boolean
+        approved_by:
+          type: string
+          format: uuid
+          nullable: true
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - labour_slip_id
+        - org_id
+        - firm_id
+        - mo_op_id
+        - qty_produced
+        - total_amount
+
+    ProductionEvent:
+      type: object
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        mo_id:
+          type: string
+          format: uuid
+          nullable: true
+        mo_op_id:
+          type: string
+          format: uuid
+          nullable: true
+        event_type:
+          type: string
+          description: e.g., mo.created, operation.dispatched, operation.received, etc.
+        payload:
+          type: object
+          additionalProperties: true
+        actor_user_id:
+          type: string
+          format: uuid
+          nullable: true
+        actor_party_id:
+          type: string
+          format: uuid
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - event_id
+        - org_id
+        - firm_id
+        - event_type
+        - created_at
+
+    CostRollup:
+      type: object
+      properties:
+        cost_rollup_id:
+          type: string
+          format: uuid
+        mo_id:
+          type: string
+          format: uuid
+        material_cost:
+          type: number
+          format: double
+        labour_cost:
+          type: number
+          format: double
+        overhead_cost:
+          type: number
+          format: double
+        total_cost:
+          type: number
+          format: double
+        units_produced:
+          type: integer
+        units_scrap:
+          type: integer
+        per_unit_cost:
+          type: number
+          format: double
+        variance_amount:
+          type: number
+          format: double
+          nullable: true
+        variance_reason:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - cost_rollup_id
+        - mo_id
+        - total_cost
+        - units_produced
+
+    KanbanCard:
+      type: object
+      properties:
+        mo_id:
+          type: string
+          format: uuid
+        mo_number:
+          type: string
+        stage:
+          $ref: '#/components/schemas/StockStage'
+        qty:
+          type: number
+          format: double
+        uom:
+          type: string
+        value:
+          type: number
+          format: double
+        karigar_id:
+          type: string
+          format: uuid
+          nullable: true
+        karigar_name:
+          type: string
+          nullable: true
+        days_in_stage:
+          type: integer
+        is_overdue:
+          type: boolean
+        operation_name:
+          type: string
+          nullable: true
+
+    KanbanColumn:
+      type: object
+      properties:
+        stage:
+          $ref: '#/components/schemas/StockStage'
+        cards:
+          type: array
+          items:
+            $ref: '#/components/schemas/KanbanCard'
+        total_qty:
+          type: number
+          format: double
+        total_value:
+          type: number
+          format: double
+
+    Design:
+      type: object
+      properties:
+        design_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        design_code:
+          type: string
+        design_name:
+          type: string
+        category:
+          type: string
+          nullable: true
+        season:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        standard_lead_days:
+          type: integer
+          nullable: true
+        default_routing_id:
+          type: string
+          format: uuid
+          nullable: true
+        is_archived:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - design_id
+        - org_id
+        - firm_id
+        - design_code
+        - design_name
+
+    BOM:
+      type: object
+      properties:
+        bom_id:
+          type: string
+          format: uuid
+        design_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              bom_line_id:
+                type: string
+                format: uuid
+              item_id:
+                type: string
+                format: uuid
+              item_code:
+                type: string
+              qty_per_unit:
+                type: number
+                format: double
+              uom:
+                type: string
+              waste_factor:
+                type: number
+                format: double
+              unit_cost:
+                type: number
+                format: double
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - bom_id
+        - design_id
+        - version
+
+    JobWorkOrder:
+      type: object
+      properties:
+        job_work_order_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        job_work_number:
+          type: string
+        mo_op_id:
+          type: string
+          format: uuid
+          nullable: true
+        party_id:
+          type: string
+          format: uuid
+        order_date:
+          type: string
+          format: date
+        status:
+          $ref: '#/components/schemas/JobWorkStatus'
+        material_issued_date:
+          type: string
+          format: date
+          nullable: true
+        material_received_date:
+          type: string
+          format: date
+          nullable: true
+        charges:
+          type: number
+          format: double
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - job_work_order_id
+        - job_work_number
+        - party_id
+        - status
+
+    JobWorkBill:
+      type: object
+      properties:
+        job_work_bill_id:
+          type: string
+          format: uuid
+        job_work_order_id:
+          type: string
+          format: uuid
+        bill_number:
+          type: string
+        bill_date:
+          type: string
+          format: date
+        bill_amount:
+          type: number
+          format: double
+        is_approved:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - job_work_bill_id
+        - job_work_order_id
+        - bill_number
+        - bill_amount
+
+    OverheadRate:
+      type: object
+      properties:
+        overhead_rate_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        cost_centre_id:
+          type: string
+          format: uuid
+        rate_type:
+          type: string
+          enum:
+            - PERCENTAGE_OF_LABOUR
+            - PERCENTAGE_OF_MATERIAL
+            - FIXED_PER_MO
+        rate_value:
+          type: number
+          format: double
+        effective_from:
+          type: string
+          format: date
+        effective_to:
+          type: string
+          format: date
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - overhead_rate_id
+        - org_id
+        - firm_id
+        - rate_type
+        - rate_value
+
+security:
+  - bearerAuth: []
+
+paths:
+  /manufacturing/mos:
+    post:
+      operationId: createManufacturingOrder
+      tags:
+        - manufacturing
+      summary: Create a new manufacturing order (DRAFT)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                design_id:
+                  type: string
+                  format: uuid
+                qty_total:
+                  type: integer
+                  minimum: 1
+                qty_split:
+                  type: object
+                  additionalProperties:
+                    type: integer
+                  description: Size/variant split
+                target_date:
+                  type: string
+                  format: date
+                cost_centre_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+              required:
+                - design_id
+                - qty_total
+                - target_date
+      responses:
+        '201':
+          description: Manufacturing order created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mo:
+                    $ref: '#/components/schemas/ManufacturingOrder'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.create
+
+    get:
+      operationId: listManufacturingOrders
+      tags:
+        - manufacturing
+      summary: List manufacturing orders with filters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/MOStatus'
+        - name: design_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of manufacturing orders
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ManufacturingOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.view
+
+  /manufacturing/mos/{mo_id}:
+    get:
+      operationId: getManufacturingOrder
+      tags:
+        - manufacturing
+      summary: Get manufacturing order detail with operations, materials, costs, events
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Manufacturing order detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mo:
+                    $ref: '#/components/schemas/ManufacturingOrder'
+                  operations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MOOperation'
+                  materials:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MOMaterialLine'
+                  costs:
+                    $ref: '#/components/schemas/CostRollup'
+                    nullable: true
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProductionEvent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.view
+
+    patch:
+      operationId: updateManufacturingOrder
+      tags:
+        - manufacturing
+      summary: Update DRAFT MO (design, qty, target_date)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                qty_total:
+                  type: integer
+                  nullable: true
+                qty_split:
+                  type: object
+                  additionalProperties:
+                    type: integer
+                  nullable: true
+                target_date:
+                  type: string
+                  format: date
+                  nullable: true
+      responses:
+        '200':
+          description: Manufacturing order updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mo:
+                    $ref: '#/components/schemas/ManufacturingOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.edit
+
+    delete:
+      operationId: deleteManufacturingOrder
+      tags:
+        - manufacturing
+      summary: Delete DRAFT MO only
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Manufacturing order deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.delete
+
+  /manufacturing/mos/{mo_id}/release:
+    post:
+      operationId: releaseManufacturingOrder
+      tags:
+        - manufacturing
+      summary: Release MO (DRAFT → RELEASED); reserves material
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reservation_strategy:
+                  $ref: '#/components/schemas/ReservationStrategy'
+                force:
+                  type: boolean
+                  default: false
+              required:
+                - reservation_strategy
+      responses:
+        '200':
+          description: MO released
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mo:
+                    $ref: '#/components/schemas/ManufacturingOrder'
+                  reservations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        lot_id:
+                          type: string
+                          format: uuid
+                        item_id:
+                          type: string
+                          format: uuid
+                        qty_reserved:
+                          type: number
+                          format: double
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.release
+
+  /manufacturing/mos/{mo_id}/unrelease:
+    post:
+      operationId: unreleaseManufacturingOrder
+      tags:
+        - manufacturing
+      summary: Unrelease MO (RELEASED → DRAFT); before any operations start
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: MO unreleased
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mo:
+                    $ref: '#/components/schemas/ManufacturingOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.release
+
+  /manufacturing/mos/{mo_id}/start:
+    post:
+      operationId: startManufacturingOrder
+      tags:
+        - manufacturing
+      summary: Start MO (RELEASED → IN_PROGRESS)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: MO started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mo:
+                    $ref: '#/components/schemas/ManufacturingOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.start
+
+  /manufacturing/mos/{mo_id}/partial-close:
+    post:
+      operationId: partialCloseManufacturingOrder
+      tags:
+        - manufacturing
+      summary: Partial close (IN_PROGRESS → PARTIALLY_COMPLETED)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                units_produced:
+                  type: integer
+                  minimum: 0
+                residual_action:
+                  $ref: '#/components/schemas/ResidualAction'
+              required:
+                - units_produced
+                - residual_action
+      responses:
+        '200':
+          description: MO partially closed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mo:
+                    $ref: '#/components/schemas/ManufacturingOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.partial_close
+
+  /manufacturing/mos/{mo_id}/close:
+    post:
+      operationId: closeManufacturingOrder
+      tags:
+        - manufacturing
+      summary: Close MO (COMPLETED → CLOSED); finalize costs
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                variance_approved_by:
+                  type: string
+                  format: uuid
+                  nullable: true
+      responses:
+        '200':
+          description: MO closed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mo:
+                    $ref: '#/components/schemas/ManufacturingOrder'
+                  cost_rollup:
+                    $ref: '#/components/schemas/CostRollup'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.close
+
+  /manufacturing/mos/{mo_id}/cancel:
+    post:
+      operationId: cancelManufacturingOrder
+      tags:
+        - manufacturing
+      summary: Cancel MO; releases reservations and escalates pending returns
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                reason_detail:
+                  type: string
+                  nullable: true
+              required:
+                - reason
+      responses:
+        '200':
+          description: MO cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mo:
+                    $ref: '#/components/schemas/ManufacturingOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.cancel
+
+  /manufacturing/mos/{mo_id}/routing-override:
+    post:
+      operationId: applyRoutingOverride
+      tags:
+        - manufacturing
+      summary: Override routing on RELEASED MO (add/skip/reorder ops)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ops_to_add:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      operation_master_id:
+                        type: string
+                        format: uuid
+                      sequence:
+                        type: integer
+                      executor_id:
+                        type: string
+                        format: uuid
+                        nullable: true
+                  nullable: true
+                ops_to_skip:
+                  type: array
+                  items:
+                    type: integer
+                  nullable: true
+                reorder:
+                  type: object
+                  additionalProperties:
+                    type: integer
+                  nullable: true
+      responses:
+        '200':
+          description: Routing overridden
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mo:
+                    $ref: '#/components/schemas/ManufacturingOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.routing_override
+
+  /manufacturing/mos/{mo_id}/routing:
+    get:
+      operationId: getManufacturingOrderRouting
+      tags:
+        - manufacturing
+      summary: Get current routing (possibly overridden) for MO
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Routing detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routing:
+                    $ref: '#/components/schemas/Routing'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.view
+
+  /manufacturing/mos/{mo_id}/cost-rollup:
+    get:
+      operationId: getManufacturingOrderCostRollup
+      tags:
+        - manufacturing
+      summary: Get cost rollup (material, labour, overhead, total per unit)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Cost rollup
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cost_rollup:
+                    $ref: '#/components/schemas/CostRollup'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.view
+
+  /manufacturing/mos/{mo_id}/events:
+    get:
+      operationId: getManufacturingOrderEvents
+      tags:
+        - manufacturing
+      summary: Get event timeline for MO
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Event timeline
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ProductionEvent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.view
+
+  /manufacturing/mos/{mo_id}/materials:
+    get:
+      operationId: getManufacturingOrderMaterials
+      tags:
+        - manufacturing
+      summary: Get material lines for MO
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Material lines
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  materials:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MOMaterialLine'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.view
+
+  /manufacturing/mos/{mo_id}/operations:
+    get:
+      operationId: getManufacturingOrderOperations
+      tags:
+        - manufacturing
+      summary: Get all operations for MO
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Operations list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MOOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.view
+
+  /manufacturing/mos/{mo_id}/kanban-view:
+    get:
+      operationId: getManufacturingOrderKanbanView
+      tags:
+        - manufacturing
+      summary: Get mini Kanban for single MO (by stage)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Mini Kanban view
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  columns:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/KanbanColumn'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.mo.view
+
+  /manufacturing/operations/{mo_op_id}:
+    get:
+      operationId: getOperation
+      tags:
+        - operations
+      summary: Get operation detail
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Operation detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.view
+
+  /manufacturing/operations:
+    get:
+      operationId: listOperations
+      tags:
+        - operations
+      summary: List operations with filters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/OperationStatus'
+        - name: mo_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of operations
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/MOOperation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.view
+
+  /manufacturing/operations/{mo_op_id}/dispatch:
+    post:
+      operationId: dispatchOperation
+      tags:
+        - operations
+      summary: Dispatch operation (READY → DISPATCHED); create outward challan
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                outward_lines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                        format: uuid
+                      lot_id:
+                        type: string
+                        format: uuid
+                      qty:
+                        type: number
+                        format: double
+                karigar_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+                expected_return_date:
+                  type: string
+                  format: date
+                  nullable: true
+              required:
+                - outward_lines
+      responses:
+        '200':
+          description: Operation dispatched
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+                  outward_challan:
+                    $ref: '#/components/schemas/OutwardChallan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.dispatch
+
+  /manufacturing/operations/{mo_op_id}/ack:
+    post:
+      operationId: acknowledgeOperation
+      tags:
+        - operations
+      summary: Acknowledge receipt (DISPATCHED → ACKNOWLEDGED)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ack_method:
+                  $ref: '#/components/schemas/AckMethod'
+                signature_url:
+                  type: string
+                  format: uri
+                  nullable: true
+              required:
+                - ack_method
+      responses:
+        '200':
+          description: Operation acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.ack
+
+  /manufacturing/operations/{mo_op_id}/start:
+    post:
+      operationId: startOperation
+      tags:
+        - operations
+      summary: Start operation (ACK/DISPATCHED → IN_PROGRESS)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Operation started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.start
+
+  /manufacturing/operations/{mo_op_id}/progress:
+    post:
+      operationId: recordOperationProgress
+      tags:
+        - operations
+      summary: Record interim progress (qty_done_so_far, notes, photos)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                qty_done_so_far:
+                  type: number
+                  format: double
+                notes:
+                  type: string
+                  nullable: true
+                photo_urls:
+                  type: array
+                  items:
+                    type: string
+                    format: uri
+                  nullable: true
+              required:
+                - qty_done_so_far
+      responses:
+        '200':
+          description: Progress recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.progress
+
+  /manufacturing/operations/{mo_op_id}/receive:
+    post:
+      operationId: receiveOperation
+      tags:
+        - operations
+      summary: Receive from karigar (IN_PROGRESS → RECEIVED_PARTIAL/FULL); create inward challan
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                inward_lines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                        format: uuid
+                      qty_received:
+                        type: number
+                        format: double
+                      qty_rejected:
+                        type: number
+                        format: double
+                      rejection_reason:
+                        type: string
+                        nullable: true
+                wastage_qty:
+                  type: number
+                  format: double
+                  nullable: true
+                byproduct_qty:
+                  type: number
+                  format: double
+                  nullable: true
+              required:
+                - inward_lines
+      responses:
+        '200':
+          description: Receipt recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+                  inward_challan:
+                    $ref: '#/components/schemas/InwardChallan'
+                  stock_moves:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.receive
+
+  /manufacturing/operations/{mo_op_id}/qc:
+    post:
+      operationId: recordQCResult
+      tags:
+        - operations
+      summary: Record QC results (RECEIVED_FULL → CLOSED or REWORK)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                results:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      unit_ref:
+                        type: string
+                      pass:
+                        type: boolean
+                      defect_code:
+                        type: string
+                        nullable: true
+                      disposition:
+                        $ref: '#/components/schemas/DispositionType'
+                        nullable: true
+              required:
+                - results
+      responses:
+        '200':
+          description: QC recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+                  qc_summary:
+                    type: object
+                    properties:
+                      total_passed:
+                        type: integer
+                      total_failed:
+                        type: integer
+                      lot_accepted:
+                        type: boolean
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.qc.record
+
+  /manufacturing/operations/{mo_op_id}/close:
+    post:
+      operationId: closeOperation
+      tags:
+        - operations
+      summary: Close operation; finalize wastage, labour, costs
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                final_wastage_qty:
+                  type: number
+                  format: double
+                  nullable: true
+                byproduct_lines:
+                  type: array
+                  items:
+                    type: object
+                  nullable: true
+                labour_slips:
+                  type: array
+                  items:
+                    type: object
+                  nullable: true
+      responses:
+        '200':
+          description: Operation closed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+                  cost_accrued:
+                    type: number
+                    format: double
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.close
+
+  /manufacturing/operations/{mo_op_id}/rework:
+    post:
+      operationId: createReworkOperation
+      tags:
+        - operations
+      summary: Create rework operation (inline or new JW)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                units_ref:
+                  type: array
+                  items:
+                    type: string
+                rework_op_type:
+                  $ref: '#/components/schemas/ReworkOpType'
+                paid:
+                  type: boolean
+                  default: false
+              required:
+                - units_ref
+                - rework_op_type
+      responses:
+        '201':
+          description: Rework operation created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  new_operation:
+                    $ref: '#/components/schemas/MOOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.rework
+
+  /manufacturing/operations/{mo_op_id}/skip:
+    post:
+      operationId: skipOperation
+      tags:
+        - operations
+      summary: Skip operation (PENDING → SKIPPED)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Operation skipped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.skip
+
+  /manufacturing/operations/{mo_op_id}/cancel:
+    post:
+      operationId: cancelOperation
+      tags:
+        - operations
+      summary: Force cancel operation
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: Operation cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.cancel
+
+  /manufacturing/operations/{mo_op_id}/reassign:
+    post:
+      operationId: reassignOperation
+      tags:
+        - operations
+      summary: Reassign operation to different karigar (before ACK)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_op_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                new_executor_id:
+                  type: string
+                  format: uuid
+              required:
+                - new_executor_id
+      responses:
+        '200':
+          description: Operation reassigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  operation:
+                    $ref: '#/components/schemas/MOOperation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.operation.reassign
+
+  /manufacturing/kanban:
+    get:
+      operationId: getFullKanban
+      tags:
+        - kanban
+      summary: Get full firm Kanban board (all MOs by stage)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: design_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: date_range
+          in: query
+          schema:
+            type: string
+            description: ISO date range (YYYY-MM-DD:YYYY-MM-DD)
+      responses:
+        '200':
+          description: Full Kanban view
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  columns:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/KanbanColumn'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.kanban.view
+
+  /manufacturing/wip/by-karigar:
+    get:
+      operationId: getWIPByKarigar
+      tags:
+        - kanban
+      summary: Get WIP summary by karigar (pieces, value, age)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+      responses:
+        '200':
+          description: WIP by karigar
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  karigar_wip:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        karigar_id:
+                          type: string
+                          format: uuid
+                        karigar_name:
+                          type: string
+                        pieces:
+                          type: integer
+                        value:
+                          type: number
+                          format: double
+                        oldest_days:
+                          type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.kanban.view
+
+  /manufacturing/wip/by-stage:
+    get:
+      operationId: getWIPByStage
+      tags:
+        - kanban
+      summary: Get WIP summary by stage
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+      responses:
+        '200':
+          description: WIP by stage
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stage_wip:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        stage:
+                          $ref: '#/components/schemas/StockStage'
+                        qty:
+                          type: number
+                          format: double
+                        value:
+                          type: number
+                          format: double
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.kanban.view
+
+  /manufacturing/bottlenecks:
+    get:
+      operationId: getBottlenecks
+      tags:
+        - kanban
+      summary: Get operations with excessive time-in-stage (bottlenecks)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+      responses:
+        '200':
+          description: Bottleneck analysis
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bottlenecks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        operation_name:
+                          type: string
+                        avg_time_days:
+                          type: number
+                          format: double
+                        current_count:
+                          type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.kanban.view
+
+  /manufacturing/dispatch-queue:
+    get:
+      operationId: getDispatchQueue
+      tags:
+        - kanban
+      summary: Get all READY operations waiting for dispatch
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Dispatch queue
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/MOOperation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.kanban.view
+
+  /manufacturing/job-work-orders:
+    get:
+      operationId: listJobWorkOrders
+      tags:
+        - jobwork
+      summary: List job work orders with filters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/JobWorkStatus'
+      responses:
+        '200':
+          description: List of job work orders
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/JobWorkOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.jobwork.view
+
+    post:
+      operationId: createJobWorkOrder
+      tags:
+        - jobwork
+      summary: Create standalone job work order (not via MO)
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                party_id:
+                  type: string
+                  format: uuid
+                order_date:
+                  type: string
+                  format: date
+                charges:
+                  type: number
+                  format: double
+              required:
+                - party_id
+                - order_date
+      responses:
+        '201':
+          description: Job work order created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_work_order:
+                    $ref: '#/components/schemas/JobWorkOrder'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.jobwork.create
+
+  /manufacturing/job-work-orders/{jwo_id}:
+    get:
+      operationId: getJobWorkOrder
+      tags:
+        - jobwork
+      summary: Get job work order detail
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: jwo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job work order detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_work_order:
+                    $ref: '#/components/schemas/JobWorkOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.jobwork.view
+
+  /manufacturing/outward-challans:
+    post:
+      operationId: createOutwardChallan
+      tags:
+        - jobwork
+      summary: Create outward challan for job work dispatch
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mo_op_id:
+                  type: string
+                  format: uuid
+                party_id:
+                  type: string
+                  format: uuid
+                dispatch_date:
+                  type: string
+                  format: date
+                expected_return_date:
+                  type: string
+                  format: date
+                  nullable: true
+                lines:
+                  type: array
+                  items:
+                    type: object
+              required:
+                - mo_op_id
+                - party_id
+                - dispatch_date
+                - lines
+      responses:
+        '201':
+          description: Outward challan created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outward_challan:
+                    $ref: '#/components/schemas/OutwardChallan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.outward_challan.create
+
+  /manufacturing/outward-challans/{oc_id}:
+    get:
+      operationId: getOutwardChallan
+      tags:
+        - jobwork
+      summary: Get outward challan detail
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: oc_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Outward challan detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outward_challan:
+                    $ref: '#/components/schemas/OutwardChallan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.outward_challan.view
+
+  /manufacturing/outward-challans/{oc_id}/eway:
+    post:
+      operationId: generateEWay
+      tags:
+        - jobwork
+      summary: Generate e-way bill for outward challan
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: oc_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vehicle_number:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: E-way generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outward_challan:
+                    $ref: '#/components/schemas/OutwardChallan'
+                  eway_number:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.eway.generate
+
+  /manufacturing/inward-challans:
+    post:
+      operationId: createInwardChallan
+      tags:
+        - jobwork
+      summary: Create inward challan for job work receipt
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                outward_challan_id:
+                  type: string
+                  format: uuid
+                mo_op_id:
+                  type: string
+                  format: uuid
+                party_id:
+                  type: string
+                  format: uuid
+                receive_date:
+                  type: string
+                  format: date
+                lines:
+                  type: array
+                  items:
+                    type: object
+              required:
+                - outward_challan_id
+                - mo_op_id
+                - party_id
+                - receive_date
+                - lines
+      responses:
+        '201':
+          description: Inward challan created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inward_challan:
+                    $ref: '#/components/schemas/InwardChallan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.inward_challan.create
+
+  /manufacturing/inward-challans/{ic_id}:
+    get:
+      operationId: getInwardChallan
+      tags:
+        - jobwork
+      summary: Get inward challan detail
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: ic_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Inward challan detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inward_challan:
+                    $ref: '#/components/schemas/InwardChallan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.inward_challan.view
+
+  /manufacturing/job-work-bills:
+    post:
+      operationId: createJobWorkBill
+      tags:
+        - jobwork
+      summary: Create bill for job work order
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                job_work_order_id:
+                  type: string
+                  format: uuid
+                bill_date:
+                  type: string
+                  format: date
+                bill_amount:
+                  type: number
+                  format: double
+              required:
+                - job_work_order_id
+                - bill_date
+                - bill_amount
+      responses:
+        '201':
+          description: Bill created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_work_bill:
+                    $ref: '#/components/schemas/JobWorkBill'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.jobwork_bill.create
+
+  /manufacturing/job-work-bills/{jwb_id}/approve:
+    post:
+      operationId: approveJobWorkBill
+      tags:
+        - jobwork
+      summary: Approve job work bill
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: jwb_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Bill approved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_work_bill:
+                    $ref: '#/components/schemas/JobWorkBill'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.jobwork_bill.approve
+
+  /manufacturing/qc-plans:
+    get:
+      operationId: listQCPlans
+      tags:
+        - qc
+      summary: List QC plans
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: List of QC plans
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/QCPlan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.qc.view
+
+    post:
+      operationId: createQCPlan
+      tags:
+        - qc
+      summary: Create QC plan for operation
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                operation_master_id:
+                  type: string
+                  format: uuid
+                sampling_type:
+                  $ref: '#/components/schemas/QCSampling'
+                aql_level:
+                  type: number
+                  format: double
+                  nullable: true
+                sample_size:
+                  type: integer
+                  nullable: true
+                checks:
+                  type: array
+                  items:
+                    type: object
+              required:
+                - operation_master_id
+                - sampling_type
+      responses:
+        '201':
+          description: QC plan created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  qc_plan:
+                    $ref: '#/components/schemas/QCPlan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.qc.create
+
+  /manufacturing/qc-plans/{qcp_id}:
+    get:
+      operationId: getQCPlan
+      tags:
+        - qc
+      summary: Get QC plan detail
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: qcp_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: QC plan detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  qc_plan:
+                    $ref: '#/components/schemas/QCPlan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.qc.view
+
+    patch:
+      operationId: updateQCPlan
+      tags:
+        - qc
+      summary: Update QC plan
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: qcp_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sampling_type:
+                  $ref: '#/components/schemas/QCSampling'
+                  nullable: true
+                checks:
+                  type: array
+                  items:
+                    type: object
+                  nullable: true
+      responses:
+        '200':
+          description: QC plan updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  qc_plan:
+                    $ref: '#/components/schemas/QCPlan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.qc.edit
+
+  /manufacturing/qc-results/bulk:
+    post:
+      operationId: recordQCResultsBulk
+      tags:
+        - qc
+      summary: Bulk record QC results for multiple operations
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                results:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      mo_op_id:
+                        type: string
+                        format: uuid
+                      unit_results:
+                        type: array
+                        items:
+                          type: object
+              required:
+                - results
+      responses:
+        '200':
+          description: QC results recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recorded_count:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.qc.record
+
+  /manufacturing/designs:
+    get:
+      operationId: listDesigns
+      tags:
+        - design
+      summary: List design library with filters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: category
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of designs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Design'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.view
+
+    post:
+      operationId: createDesign
+      tags:
+        - design
+      summary: Create new design
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                design_code:
+                  type: string
+                design_name:
+                  type: string
+                category:
+                  type: string
+                  nullable: true
+                season:
+                  type: string
+                  nullable: true
+                description:
+                  type: string
+                  nullable: true
+                standard_lead_days:
+                  type: integer
+                  nullable: true
+              required:
+                - design_code
+                - design_name
+      responses:
+        '201':
+          description: Design created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  design:
+                    $ref: '#/components/schemas/Design'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.create
+
+  /manufacturing/designs/{design_id}:
+    get:
+      operationId: getDesign
+      tags:
+        - design
+      summary: Get design detail
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: design_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Design detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  design:
+                    $ref: '#/components/schemas/Design'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.view
+
+    patch:
+      operationId: updateDesign
+      tags:
+        - design
+      summary: Update design
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: design_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                design_name:
+                  type: string
+                  nullable: true
+                category:
+                  type: string
+                  nullable: true
+                season:
+                  type: string
+                  nullable: true
+                description:
+                  type: string
+                  nullable: true
+                standard_lead_days:
+                  type: integer
+                  nullable: true
+      responses:
+        '200':
+          description: Design updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  design:
+                    $ref: '#/components/schemas/Design'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.edit
+
+  /manufacturing/designs/{design_id}/archive:
+    post:
+      operationId: archiveDesign
+      tags:
+        - design
+      summary: Archive design
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: design_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Design archived
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  design:
+                    $ref: '#/components/schemas/Design'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.archive
+
+  /manufacturing/designs/{design_id}/boms:
+    get:
+      operationId: listBOMsForDesign
+      tags:
+        - design
+      summary: List BOM versions for design
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: design_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: BOM list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  boms:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BOM'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.view
+
+    post:
+      operationId: createBOM
+      tags:
+        - design
+      summary: Create new BOM version for design
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: design_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                        format: uuid
+                      qty_per_unit:
+                        type: number
+                        format: double
+                      uom:
+                        type: string
+                      waste_factor:
+                        type: number
+                        format: double
+                        nullable: true
+              required:
+                - lines
+      responses:
+        '201':
+          description: BOM created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bom:
+                    $ref: '#/components/schemas/BOM'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.edit
+
+  /manufacturing/boms/{bom_id}:
+    get:
+      operationId: getBOM
+      tags:
+        - design
+      summary: Get BOM detail
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: bom_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: BOM detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bom:
+                    $ref: '#/components/schemas/BOM'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.view
+
+    patch:
+      operationId: updateBOM
+      tags:
+        - design
+      summary: Update BOM
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: bom_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lines:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        '200':
+          description: BOM updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bom:
+                    $ref: '#/components/schemas/BOM'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.edit
+
+  /manufacturing/designs/{design_id}/routings:
+    get:
+      operationId: listRoutingsForDesign
+      tags:
+        - design
+      summary: List routings for design
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: design_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Routing list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Routing'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.view
+
+    post:
+      operationId: createRouting
+      tags:
+        - design
+      summary: Create new routing for design
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: design_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                operations:
+                  type: array
+                  items:
+                    type: object
+                edges:
+                  type: array
+                  items:
+                    type: object
+              required:
+                - operations
+      responses:
+        '201':
+          description: Routing created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routing:
+                    $ref: '#/components/schemas/Routing'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.edit
+
+  /manufacturing/routings/{routing_id}:
+    get:
+      operationId: getRouting
+      tags:
+        - design
+      summary: Get routing detail
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: routing_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Routing detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routing:
+                    $ref: '#/components/schemas/Routing'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.view
+
+    patch:
+      operationId: updateRouting
+      tags:
+        - design
+      summary: Update routing
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: routing_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                operations:
+                  type: array
+                  items:
+                    type: object
+                  nullable: true
+                edges:
+                  type: array
+                  items:
+                    type: object
+                  nullable: true
+      responses:
+        '200':
+          description: Routing updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routing:
+                    $ref: '#/components/schemas/Routing'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.design.edit
+
+  /manufacturing/labour-slips:
+    get:
+      operationId: listLabourSlips
+      tags:
+        - labour
+      summary: List labour slips with filters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: mo_op_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of labour slips
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/LabourSlip'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.labour.view
+
+    post:
+      operationId: createLabourSlip
+      tags:
+        - labour
+      summary: Create labour slip
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mo_op_id:
+                  type: string
+                  format: uuid
+                karigar_id:
+                  type: string
+                  format: uuid
+                slip_date:
+                  type: string
+                  format: date
+                qty_produced:
+                  type: integer
+                  minimum: 1
+                rate_per_unit:
+                  type: number
+                  format: double
+              required:
+                - mo_op_id
+                - karigar_id
+                - slip_date
+                - qty_produced
+                - rate_per_unit
+      responses:
+        '201':
+          description: Labour slip created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  labour_slip:
+                    $ref: '#/components/schemas/LabourSlip'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.labour.create
+
+  /manufacturing/labour-slips/{ls_id}/approve:
+    post:
+      operationId: approveLabourSlip
+      tags:
+        - labour
+      summary: Approve labour slip
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: ls_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Labour slip approved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  labour_slip:
+                    $ref: '#/components/schemas/LabourSlip'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.labour.approve
+
+  /manufacturing/overhead-rates:
+    get:
+      operationId: listOverheadRates
+      tags:
+        - labour
+      summary: List overhead rates
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: List of overhead rates
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OverheadRate'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.overhead.view
+
+    post:
+      operationId: createOverheadRate
+      tags:
+        - labour
+      summary: Create overhead rate
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cost_centre_id:
+                  type: string
+                  format: uuid
+                rate_type:
+                  type: string
+                  enum:
+                    - PERCENTAGE_OF_LABOUR
+                    - PERCENTAGE_OF_MATERIAL
+                    - FIXED_PER_MO
+                rate_value:
+                  type: number
+                  format: double
+                effective_from:
+                  type: string
+                  format: date
+              required:
+                - cost_centre_id
+                - rate_type
+                - rate_value
+                - effective_from
+      responses:
+        '201':
+          description: Overhead rate created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overhead_rate:
+                    $ref: '#/components/schemas/OverheadRate'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.overhead.create
+
+  /manufacturing/overhead-rates/{or_id}:
+    patch:
+      operationId: updateOverheadRate
+      tags:
+        - labour
+      summary: Update overhead rate
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: or_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rate_value:
+                  type: number
+                  format: double
+                  nullable: true
+                effective_to:
+                  type: string
+                  format: date
+                  nullable: true
+      responses:
+        '200':
+          description: Overhead rate updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overhead_rate:
+                    $ref: '#/components/schemas/OverheadRate'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.overhead.edit
+
+  /manufacturing/production-events:
+    get:
+      operationId: listProductionEvents
+      tags:
+        - events
+      summary: Get production event timeline with filters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: mo_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: mo_op_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: event_type
+          in: query
+          schema:
+            type: string
+        - name: actor
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: from_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Event timeline
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ProductionEvent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+      x-permission: mfg.events.view

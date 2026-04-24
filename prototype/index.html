@@ -1,0 +1,1648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fabric & Ladies-Suit ERP — Interactive Prototype</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .sidebar-nav { transition: all 300ms ease; }
+    .sidebar-nav.collapsed { transform: translateX(-100%); }
+    .currency { font-variant-numeric: tabular-nums; }
+    .fade-in { animation: fadeIn 200ms ease-in; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .sparkline { display: inline-block; height: 24px; }
+    table { border-collapse: collapse; }
+    input[type="number"] { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body class="bg-slate-50" x-cloak x-data="appState()">
+  <!-- Top Navigation Bar -->
+  <nav class="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm">
+    <div class="flex items-center justify-between px-4 py-3">
+      <div class="flex items-center gap-3">
+        <button @click="sidebarOpen = !sidebarOpen" class="p-2 hover:bg-slate-100 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+        <h1 class="text-lg font-semibold text-slate-900">Fabric & Ladies-Suit ERP</h1>
+      </div>
+      <div class="flex items-center gap-4">
+        <!-- Firm Switcher -->
+        <div class="relative" x-data="{ open: false }">
+          <button @click="open = !open" class="flex items-center gap-2 px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+            <i data-lucide="building-2" class="w-4 h-4"></i>
+            <span x-text="currentFirm.name"></span>
+            <i data-lucide="chevron-down" class="w-4 h-4"></i>
+          </button>
+          <div x-show="open" @click.outside="open = false" class="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-slate-200 py-1 z-50">
+            <template x-for="firm in firms" :key="firm.id">
+              <button @click="currentFirm = firm; open = false" class="w-full text-left px-4 py-2 hover:bg-slate-100 text-sm" :class="{ 'bg-blue-50 text-blue-700': currentFirm.id === firm.id }">
+                <span x-text="firm.name"></span>
+                <span x-show="firm.gstin" class="text-xs text-slate-500" x-text="' (' + firm.gstin + ')'"></span>
+              </button>
+            </template>
+          </div>
+        </div>
+        <!-- Quick Add Menu -->
+        <div class="relative" x-data="{ open: false }">
+          <button @click="open = !open" class="flex items-center gap-2 px-2 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2">
+            <i data-lucide="plus" class="w-5 h-5"></i>
+          </button>
+          <div x-show="open" @click.outside="open = false" class="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-slate-200 py-1 z-50">
+            <button @click="openNewPartyModal('both'); open = false" class="w-full text-left px-4 py-2 hover:bg-slate-100 text-sm flex items-center gap-2">
+              <i data-lucide="plus" class="w-4 h-4"></i> Add Party
+            </button>
+            <button @click="openNewItemModal(); open = false" class="w-full text-left px-4 py-2 hover:bg-slate-100 text-sm flex items-center gap-2">
+              <i data-lucide="plus" class="w-4 h-4"></i> Add Item
+            </button>
+            <hr class="my-1">
+            <button @click="currentScreen = 'sales'; open = false" class="w-full text-left px-4 py-2 hover:bg-slate-100 text-sm flex items-center gap-2">
+              <i data-lucide="plus" class="w-4 h-4"></i> New Invoice
+            </button>
+            <button @click="currentScreen = 'purchases'; open = false" class="w-full text-left px-4 py-2 hover:bg-slate-100 text-sm flex items-center gap-2">
+              <i data-lucide="plus" class="w-4 h-4"></i> New PO
+            </button>
+          </div>
+        </div>
+        <!-- Notifications -->
+        <button class="relative p-2 hover:bg-slate-100 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+          <i data-lucide="bell" class="w-5 h-5"></i>
+          <span class="absolute top-1 right-1 w-2 h-2 bg-red-600 rounded-full"></span>
+        </button>
+        <!-- User Menu -->
+        <div class="relative" x-data="{ open: false }">
+          <button @click="open = !open" class="flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-100 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+            <i data-lucide="user" class="w-4 h-4"></i>
+            <span>Raj K.</span>
+          </button>
+          <div x-show="open" @click.outside="open = false" class="absolute right-0 mt-2 w-40 bg-white rounded-lg shadow-lg border border-slate-200 py-1 z-50">
+            <a href="#" class="block px-4 py-2 text-sm hover:bg-slate-100">Profile</a>
+            <a href="#" class="block px-4 py-2 text-sm hover:bg-slate-100">Settings</a>
+            <hr class="my-1">
+            <a href="#" class="block px-4 py-2 text-sm hover:bg-slate-100 text-red-600">Logout</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <div class="flex h-screen overflow-hidden bg-slate-50">
+    <!-- Sidebar Navigation -->
+    <aside class="fixed md:relative sidebar-nav" :class="{ 'collapsed': !sidebarOpen }" style="width: 220px; left: 0; top: 60px; height: calc(100vh - 60px); z-index: 30; background: white; border-right: 1px solid #e2e8f0; overflow-y: auto;">
+      <nav class="p-4 space-y-2">
+        <template x-for="item in navItems" :key="item.id">
+          <button @click="currentScreen = item.id; sidebarOpen = false" class="w-full flex items-center gap-3 px-3 py-2.5 text-sm rounded-lg transition-colors" :class="{ 'bg-blue-600 text-white': currentScreen === item.id, 'text-slate-700 hover:bg-slate-100': currentScreen !== item.id }">
+            <i class="w-5 h-5" :data-lucide="item.icon"></i>
+            <span x-text="item.label"></span>
+          </button>
+        </template>
+      </nav>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 overflow-auto">
+      <div class="transition-all fade-in">
+        <!-- DASHBOARD SCREEN -->
+        <template x-if="currentScreen === 'dashboard'">
+          <div class="p-6 space-y-6">
+            <div class="flex items-center justify-between">
+              <h2 class="text-2xl font-semibold text-slate-900">Dashboard</h2>
+              <button @click="refreshDashboard()" class="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                <i data-lucide="refresh-cw" class="w-4 h-4"></i> Refresh
+              </button>
+            </div>
+
+            <!-- KPI Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <!-- Today's Sales -->
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm hover:shadow-md transition">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-sm text-slate-600">Today's Sales</span>
+                  <i data-lucide="trending-up" class="w-5 h-5 text-emerald-600"></i>
+                </div>
+                <div class="text-2xl font-semibold text-slate-900 currency">₹5,42,300</div>
+                <div class="text-xs text-slate-500 mt-1">+12% vs yesterday</div>
+                <svg class="sparkline mt-3 w-full" viewBox="0 0 100 24" xmlns="http://www.w3.org/2000/svg">
+                  <polyline points="0,18 12,14 24,16 36,8 48,12 60,6 72,10 84,4 96,8" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </div>
+
+              <!-- Collections -->
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm hover:shadow-md transition">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-sm text-slate-600">Collections Today</span>
+                  <i data-lucide="credit-card" class="w-5 h-5 text-blue-600"></i>
+                </div>
+                <div class="text-2xl font-semibold text-slate-900 currency">₹2,18,500</div>
+                <div class="text-xs text-slate-500 mt-1">3 receipts</div>
+              </div>
+
+              <!-- Cash Position -->
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm hover:shadow-md transition">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-sm text-slate-600">Cash Balance</span>
+                  <i data-lucide="wallet" class="w-5 h-5 text-amber-600"></i>
+                </div>
+                <div class="text-2xl font-semibold text-slate-900 currency">₹8,76,200</div>
+                <div class="text-xs text-emerald-600 mt-1">+5.2% this week</div>
+              </div>
+
+              <!-- WIP Value -->
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm hover:shadow-md transition">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-sm text-slate-600">WIP Value</span>
+                  <i data-lucide="package" class="w-5 h-5 text-purple-600"></i>
+                </div>
+                <div class="text-2xl font-semibold text-slate-900 currency">₹32,14,600</div>
+                <div class="text-xs text-slate-500 mt-1">128 active jobs</div>
+              </div>
+
+              <!-- Production Status -->
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm hover:shadow-md transition cursor-pointer" @click="currentScreen = 'production'">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-sm text-slate-600">Production</span>
+                  <i data-lucide="factory" class="w-5 h-5 text-blue-600"></i>
+                </div>
+                <div class="text-sm font-semibold text-slate-900">3 MOs in progress</div>
+                <div class="text-xs text-slate-500 mt-1 currency">₹<span x-text="formatNumber(getTotalKanbanValue())"></span> at job-workers · 2 overdue</div>
+              </div>
+
+              <!-- Overdue Receivables -->
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm hover:shadow-md transition">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-sm text-slate-600">Overdue > 60 days</span>
+                  <i data-lucide="alert-circle" class="w-5 h-5 text-red-600"></i>
+                </div>
+                <div class="text-2xl font-semibold text-slate-900 currency">₹4,23,000</div>
+                <div class="text-xs text-red-600 mt-1">8 customers</div>
+              </div>
+
+              <!-- GSTR Due -->
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm hover:shadow-md transition">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-sm text-slate-600">Next GSTR Due</span>
+                  <i data-lucide="calendar" class="w-5 h-5 text-slate-600"></i>
+                </div>
+                <div class="text-2xl font-semibold text-slate-900">May 11</div>
+                <div class="text-xs text-amber-600 mt-1">GSTR-1 (B2B)</div>
+              </div>
+            </div>
+
+            <!-- Bottom Row: Tables -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <!-- Top Customers -->
+              <div class="bg-white rounded-lg border border-slate-200 shadow-sm">
+                <div class="border-b border-slate-200 px-4 py-3">
+                  <h3 class="font-semibold text-slate-900 text-sm">Top Customers (This Month)</h3>
+                </div>
+                <table class="w-full text-sm">
+                  <thead class="bg-slate-50 border-b border-slate-200">
+                    <tr><th class="px-4 py-2 text-left font-medium text-slate-600">Name</th><th class="px-4 py-2 text-right font-medium text-slate-600">Amount</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr class="border-b border-slate-100 hover:bg-slate-50"><td class="px-4 py-2">Surat Silk Mills</td><td class="px-4 py-2 text-right currency">₹2,34,500</td></tr>
+                    <tr class="border-b border-slate-100 hover:bg-slate-50"><td class="px-4 py-2">Rajesh Textiles</td><td class="px-4 py-2 text-right currency">₹1,89,200</td></tr>
+                    <tr class="border-b border-slate-100 hover:bg-slate-50"><td class="px-4 py-2">Krishna Fabrics</td><td class="px-4 py-2 text-right currency">₹1,56,800</td></tr>
+                    <tr class="hover:bg-slate-50"><td class="px-4 py-2">Sharma Exports</td><td class="px-4 py-2 text-right currency">₹98,400</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Recent Invoices -->
+              <div class="bg-white rounded-lg border border-slate-200 shadow-sm">
+                <div class="border-b border-slate-200 px-4 py-3">
+                  <h3 class="font-semibold text-slate-900 text-sm">Recent Invoices</h3>
+                </div>
+                <table class="w-full text-sm">
+                  <thead class="bg-slate-50 border-b border-slate-200">
+                    <tr><th class="px-4 py-2 text-left font-medium text-slate-600">Invoice</th><th class="px-4 py-2 text-left font-medium text-slate-600">Date</th><th class="px-4 py-2 text-right font-medium text-slate-600">Amount</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr class="border-b border-slate-100 hover:bg-slate-50"><td class="px-4 py-2">INV-2404-0032</td><td class="px-4 py-2 text-slate-600">23-Apr</td><td class="px-4 py-2 text-right currency">₹85,400</td></tr>
+                    <tr class="border-b border-slate-100 hover:bg-slate-50"><td class="px-4 py-2">INV-2404-0031</td><td class="px-4 py-2 text-slate-600">23-Apr</td><td class="px-4 py-2 text-right currency">₹1,23,600</td></tr>
+                    <tr class="border-b border-slate-100 hover:bg-slate-50"><td class="px-4 py-2">INV-2404-0030</td><td class="px-4 py-2 text-slate-600">22-Apr</td><td class="px-4 py-2 text-right currency">₹54,200</td></tr>
+                    <tr class="hover:bg-slate-50"><td class="px-4 py-2">INV-2404-0029</td><td class="px-4 py-2 text-slate-600">22-Apr</td><td class="px-4 py-2 text-right currency">₹76,800</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- SALES INVOICE QUICK ENTRY SCREEN -->
+        <template x-if="currentScreen === 'sales'">
+          <div class="p-6 space-y-6">
+            <div class="flex items-center justify-between">
+              <h2 class="text-2xl font-semibold text-slate-900">Sales Invoice — Quick Entry</h2>
+              <div class="flex gap-2">
+                <button @click="resetInvoiceForm()" class="flex items-center gap-2 px-3 py-2 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                  <i data-lucide="plus" class="w-4 h-4"></i> New
+                </button>
+              </div>
+            </div>
+
+            <!-- Credit Limit Meter -->
+            <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm" x-show="invoiceForm.customerId">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm font-medium text-slate-900" x-text="'Credit Limit: ' + (invoiceForm.customerId ? customers.find(c => c.id === invoiceForm.customerId).creditLimit : '—')"></span>
+                <span class="text-sm text-slate-600" x-text="'Outstanding: ' + (invoiceForm.customerId ? '₹' + formatNumber(customers.find(c => c.id === invoiceForm.customerId).outstanding) : '—')"></span>
+              </div>
+              <div class="w-full bg-slate-200 rounded-full h-2">
+                <div class="bg-emerald-600 h-2 rounded-full" style="width: 65%"></div>
+              </div>
+              <div class="text-xs text-slate-500 mt-1">65% utilised</div>
+            </div>
+
+            <!-- Invoice Entry Form -->
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Customer</label>
+                <div class="relative" x-data="{ pickerOpen: false }">
+                  <button @click="pickerOpen = !pickerOpen" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm text-left bg-white hover:bg-slate-50 flex items-center justify-between">
+                    <span x-text="invoiceForm.customerId ? customers.find(c => c.id === invoiceForm.customerId)?.name : 'Select Customer...'"></span>
+                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500"></i>
+                  </button>
+                  <div x-show="pickerOpen" @click.outside="pickerOpen = false" class="absolute top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-slate-200 z-40 max-h-64 overflow-y-auto">
+                    <template x-for="cust in customers" :key="cust.id">
+                      <button @click="invoiceForm.customerId = cust.id; pickerOpen = false" class="w-full text-left px-4 py-2 hover:bg-slate-100 text-sm border-b border-slate-100 last:border-b-0">
+                        <div x-text="cust.name" class="font-medium"></div>
+                        <div x-text="cust.city" class="text-xs text-slate-500"></div>
+                      </button>
+                    </template>
+                    <button @click="openNewPartyModal('customer'); pickerOpen = false" class="w-full text-left px-4 py-2 text-emerald-600 hover:bg-emerald-50 text-sm border-t border-slate-200 flex items-center gap-2 font-medium">
+                      <i data-lucide="plus" class="w-4 h-4"></i> Add new party
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Date</label>
+                <input type="date" x-model="invoiceForm.date" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Invoice #</label>
+                <input type="text" x-model="invoiceForm.invoiceNumber" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" placeholder="Auto">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Payment Mode</label>
+                <select x-model="invoiceForm.paymentMode" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                  <option value="cash">Cash</option>
+                  <option value="upi">UPI</option>
+                  <option value="bank">Bank Transfer</option>
+                  <option value="cheque">Cheque</option>
+                  <option value="credit">Credit (Terms)</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Line Items Table -->
+            <div class="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+              <div class="border-b border-slate-200 px-4 py-3 bg-slate-50 flex items-center justify-between">
+                <h3 class="font-semibold text-slate-900 text-sm">Line Items</h3>
+                <div class="flex gap-2">
+                  <button @click="openNewItemModal()" class="flex items-center gap-1 px-2 py-1 text-xs border border-slate-300 text-slate-700 rounded hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                    <i data-lucide="plus" class="w-3 h-3"></i> Add Item
+                  </button>
+                  <button @click="addInvoiceLine()" class="flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                    <i data-lucide="plus" class="w-3 h-3"></i> Add Line
+                  </button>
+                </div>
+              </div>
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th class="px-4 py-2 text-left font-medium text-slate-600">Item</th>
+                    <th class="px-4 py-2 text-right font-medium text-slate-600 w-20">Qty</th>
+                    <th class="px-4 py-2 text-right font-medium text-slate-600 w-24">Rate (₹)</th>
+                    <th class="px-4 py-2 text-right font-medium text-slate-600 w-20">Disc %</th>
+                    <th class="px-4 py-2 text-right font-medium text-slate-600 w-20">GST %</th>
+                    <th class="px-4 py-2 text-right font-medium text-slate-600 w-28">Amount (₹)</th>
+                    <th class="px-4 py-2 text-center font-medium text-slate-600 w-8"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="(line, idx) in invoiceForm.lines" :key="idx">
+                    <tr class="border-b border-slate-100 hover:bg-slate-50">
+                      <td class="px-4 py-2">
+                        <select x-model="line.itemId" @change="updateLineAmount(idx)" class="w-full px-2 py-1 border border-slate-300 rounded text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                          <option value="">Select...</option>
+                          <template x-for="item in items" :key="item.id">
+                            <option :value="item.id" x-text="item.name"></option>
+                          </template>
+                        </select>
+                      </td>
+                      <td class="px-4 py-2"><input type="number" x-model.number="line.qty" @change="updateLineAmount(idx)" class="w-full px-2 py-1 border border-slate-300 rounded text-right text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2" min="0" step="0.01"></td>
+                      <td class="px-4 py-2"><input type="number" x-model.number="line.rate" @change="updateLineAmount(idx)" class="w-full px-2 py-1 border border-slate-300 rounded text-right text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2" min="0" step="0.01"></td>
+                      <td class="px-4 py-2"><input type="number" x-model.number="line.discPercent" @change="updateLineAmount(idx)" class="w-full px-2 py-1 border border-slate-300 rounded text-right text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2" min="0" max="100" step="0.1"></td>
+                      <td class="px-4 py-2"><input type="number" x-model.number="line.gstPercent" class="w-full px-2 py-1 border border-slate-300 rounded text-right text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2" min="0" step="0.1"></td>
+                      <td class="px-4 py-2 text-right text-xs font-medium currency" x-text="formatNumber(line.amount || 0)"></td>
+                      <td class="px-4 py-2 text-center"><button @click="removeInvoiceLine(idx)" class="text-red-600 hover:text-red-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2"><i data-lucide="trash-2" class="w-4 h-4"></i></button></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Summary Panel -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+                <div class="text-xs text-slate-600">Subtotal</div>
+                <div class="text-2xl font-semibold text-slate-900 currency" x-text="'₹' + formatNumber(invoiceForm.subtotal)"></div>
+              </div>
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+                <div class="text-xs text-slate-600">Discount</div>
+                <div class="text-2xl font-semibold text-slate-900 currency" x-text="'₹' + formatNumber(invoiceForm.discount)"></div>
+              </div>
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+                <div class="text-xs text-slate-600">Tax</div>
+                <div class="text-2xl font-semibold text-slate-900 currency" x-text="'₹' + formatNumber(invoiceForm.tax)"></div>
+              </div>
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm border-blue-300">
+                <div class="text-xs text-slate-600">Total</div>
+                <div class="text-2xl font-semibold text-blue-600 currency" x-text="'₹' + formatNumber(invoiceForm.total)"></div>
+              </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex gap-3">
+              <button @click="saveInvoice()" class="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 font-medium text-sm">
+                <i data-lucide="check" class="w-4 h-4"></i> Save & Finalize
+              </button>
+              <button @click="printInvoice()" class="flex items-center gap-2 px-4 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 font-medium text-sm">
+                <i data-lucide="printer" class="w-4 h-4"></i> Save & Print
+              </button>
+              <button @click="resetInvoiceForm()" class="flex items-center gap-2 px-4 py-2 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 font-medium text-sm">
+                <i data-lucide="x" class="w-4 h-4"></i> Clear
+              </button>
+            </div>
+            <div class="text-xs text-slate-500 space-y-1">
+              <div>Keyboard shortcuts: <kbd class="px-1.5 py-0.5 bg-slate-100 rounded text-xs">N</kbd> = New | <kbd class="px-1.5 py-0.5 bg-slate-100 rounded text-xs">Ctrl+S</kbd> = Save</div>
+            </div>
+          </div>
+        </template>
+
+        <!-- STOCK EXPLORER SCREEN -->
+        <template x-if="currentScreen === 'inventory'">
+          <div class="p-6 space-y-6">
+            <div class="flex items-center justify-between">
+              <h2 class="text-2xl font-semibold text-slate-900">Stock Explorer</h2>
+              <button @click="refreshStock()" class="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                <i data-lucide="refresh-cw" class="w-4 h-4"></i> Refresh
+              </button>
+            </div>
+
+            <!-- Filter Sidebar -->
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-2">Item</label>
+                <input type="text" x-model="stockFilters.itemSearch" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" placeholder="Search...">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-2">Location</label>
+                <select x-model="stockFilters.location" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                  <option value="">All Locations</option>
+                  <option value="godown-1">Godown 1</option>
+                  <option value="godown-2">Godown 2</option>
+                  <option value="at-stitching">At Stitching</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-2">Status</label>
+                <select x-model="stockFilters.status" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                  <option value="">All Statuses</option>
+                  <option value="RAW">RAW</option>
+                  <option value="CUT">CUT</option>
+                  <option value="AT_EMBROIDERY">At Embroidery</option>
+                  <option value="AT_STITCHING">At Stitching</option>
+                  <option value="FINISHED">Finished</option>
+                </select>
+              </div>
+              <div class="flex items-end">
+                <button @click="stockFilters = { itemSearch: '', location: '', status: '' }" class="w-full px-3 py-2 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                  Clear Filters
+                </button>
+              </div>
+            </div>
+
+            <!-- Stock Table -->
+            <div class="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead class="bg-slate-50 border-b border-slate-200">
+                    <tr>
+                      <th class="px-4 py-3 text-left font-medium text-slate-600">Item</th>
+                      <th class="px-4 py-3 text-left font-medium text-slate-600">Lot #</th>
+                      <th class="px-4 py-3 text-left font-medium text-slate-600">Location</th>
+                      <th class="px-4 py-3 text-left font-medium text-slate-600">Status</th>
+                      <th class="px-4 py-3 text-right font-medium text-slate-600">Qty</th>
+                      <th class="px-4 py-3 text-right font-medium text-slate-600">Cost Value</th>
+                      <th class="px-4 py-3 text-left font-medium text-slate-600">Last Move</th>
+                      <th class="px-4 py-3 text-center font-medium text-slate-600">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="stock in filteredStocks" :key="stock.id">
+                      <tr class="border-b border-slate-100 hover:bg-slate-50 cursor-pointer" @click="selectedStock = stock">
+                        <td class="px-4 py-3 font-medium text-slate-900" x-text="stock.itemName"></td>
+                        <td class="px-4 py-3 text-slate-700" x-text="stock.lotNumber"></td>
+                        <td class="px-4 py-3 text-slate-600" x-text="stock.location"></td>
+                        <td class="px-4 py-3">
+                          <span class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full" :class="statusColor(stock.status)" x-text="stock.status"></span>
+                        </td>
+                        <td class="px-4 py-3 text-right font-medium text-slate-900 currency" x-text="formatNumber(stock.qty) + ' ' + stock.uom"></td>
+                        <td class="px-4 py-3 text-right text-slate-600 currency" x-text="'₹' + formatNumber(stock.costValue)"></td>
+                        <td class="px-4 py-3 text-xs text-slate-500" x-text="stock.lastMove"></td>
+                        <td class="px-4 py-3 text-center">
+                          <button class="text-blue-600 hover:text-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2"><i data-lucide="chevron-right" class="w-4 h-4"></i></button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Selected Lot Detail Panel -->
+            <template x-if="selectedStock">
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+                <div class="flex items-center justify-between mb-4">
+                  <h3 class="font-semibold text-slate-900" x-text="'Lot Detail: ' + selectedStock.lotNumber"></h3>
+                  <button @click="selectedStock = null" class="text-slate-500 hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2"><i data-lucide="x" class="w-5 h-5"></i></button>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                  <div>
+                    <div class="text-xs text-slate-600">Item</div>
+                    <div class="font-medium text-slate-900" x-text="selectedStock.itemName"></div>
+                  </div>
+                  <div>
+                    <div class="text-xs text-slate-600">Current Qty</div>
+                    <div class="font-medium text-slate-900 currency" x-text="formatNumber(selectedStock.qty) + ' ' + selectedStock.uom"></div>
+                  </div>
+                  <div>
+                    <div class="text-xs text-slate-600">Age (days)</div>
+                    <div class="font-medium text-slate-900" x-text="selectedStock.ageDays"></div>
+                  </div>
+                  <div>
+                    <div class="text-xs text-slate-600">Cost / Unit</div>
+                    <div class="font-medium text-slate-900 currency" x-text="'₹' + formatNumber(selectedStock.costPerUnit)"></div>
+                  </div>
+                </div>
+                <div>
+                  <h4 class="text-xs font-semibold text-slate-600 mb-2">Attributes</h4>
+                  <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                    <div><span class="text-slate-600">Color:</span> <span class="font-medium" x-text="selectedStock.attributes.color"></span></div>
+                    <div><span class="text-slate-600">Width:</span> <span class="font-medium" x-text="selectedStock.attributes.width"></span></div>
+                    <div><span class="text-slate-600">GSM:</span> <span class="font-medium" x-text="selectedStock.attributes.gsm"></span></div>
+                    <div><span class="text-slate-600">Shade:</span> <span class="font-medium" x-text="selectedStock.attributes.shade"></span></div>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- PURCHASE ORDER ENTRY SCREEN -->
+        <template x-if="currentScreen === 'purchases'">
+          <div class="p-6 space-y-6">
+            <div class="flex items-center justify-between">
+              <h2 class="text-2xl font-semibold text-slate-900">Purchase Order Entry</h2>
+              <div class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
+                <i data-lucide="circle" class="w-3 h-3"></i> <span x-text="poForm.status"></span>
+              </div>
+            </div>
+
+            <!-- Supplier & Header -->
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+              <div class="lg:col-span-2">
+                <label class="block text-sm font-medium text-slate-700 mb-1">Supplier</label>
+                <div class="relative" x-data="{ pickerOpen: false }">
+                  <button @click="pickerOpen = !pickerOpen" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm text-left bg-white hover:bg-slate-50 flex items-center justify-between">
+                    <span x-text="poForm.supplierId ? suppliers.find(s => s.id === poForm.supplierId)?.name : 'Select Supplier...'"></span>
+                    <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500"></i>
+                  </button>
+                  <div x-show="pickerOpen" @click.outside="pickerOpen = false" class="absolute top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-slate-200 z-40 max-h-48 overflow-y-auto">
+                    <template x-for="supp in suppliers" :key="supp.id">
+                      <button @click="poForm.supplierId = supp.id; pickerOpen = false" class="w-full text-left px-4 py-2 hover:bg-slate-100 text-sm border-b border-slate-100 last:border-b-0">
+                        <div x-text="supp.name" class="font-medium"></div>
+                      </button>
+                    </template>
+                    <button @click="openNewPartyModal('supplier'); pickerOpen = false" class="w-full text-left px-4 py-2 text-emerald-600 hover:bg-emerald-50 text-sm border-t border-slate-200 flex items-center gap-2 font-medium">
+                      <i data-lucide="plus" class="w-4 h-4"></i> Add new party
+                    </button>
+                  </div>
+                </div>
+                <div x-show="poForm.supplierId" class="mt-1 text-xs text-slate-600">
+                  <span>KYC Status: </span><span class="font-medium text-emerald-600">Verified</span>
+                  <span class="mx-2">|</span>
+                  <span>Last Rate: </span><span class="font-medium text-slate-900">₹180-200/m</span>
+                </div>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">PO Date</label>
+                <input type="date" x-model="poForm.poDate" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-1">Delivery Date</label>
+                <input type="date" x-model="poForm.deliveryDate" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+              </div>
+            </div>
+
+            <!-- PO Lines -->
+            <div class="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+              <div class="border-b border-slate-200 px-4 py-3 bg-slate-50 flex items-center justify-between">
+                <h3 class="font-semibold text-slate-900 text-sm">Line Items</h3>
+                <div class="flex gap-2">
+                  <button @click="openNewItemModal()" class="flex items-center gap-1 px-2 py-1 text-xs border border-slate-300 text-slate-700 rounded hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                    <i data-lucide="plus" class="w-3 h-3"></i> Add Item
+                  </button>
+                  <button @click="addPOLine()" class="flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                    <i data-lucide="plus" class="w-3 h-3"></i> Add
+                  </button>
+                </div>
+              </div>
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th class="px-4 py-2 text-left font-medium text-slate-600">Item</th>
+                    <th class="px-4 py-2 text-right font-medium text-slate-600 w-20">Qty</th>
+                    <th class="px-4 py-2 text-right font-medium text-slate-600 w-24">Rate (₹)</th>
+                    <th class="px-4 py-2 text-right font-medium text-slate-600 w-16">GST %</th>
+                    <th class="px-4 py-2 text-left font-medium text-slate-600 w-20">HSN</th>
+                    <th class="px-4 py-2 text-right font-medium text-slate-600 w-28">Amount (₹)</th>
+                    <th class="px-4 py-2 text-center font-medium text-slate-600 w-8"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="(line, idx) in poForm.lines" :key="idx">
+                    <tr class="border-b border-slate-100 hover:bg-slate-50">
+                      <td class="px-4 py-2">
+                        <select x-model="line.itemId" @change="updatePOLineAmount(idx)" class="w-full px-2 py-1 border border-slate-300 rounded text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                          <option value="">Select...</option>
+                          <template x-for="item in items" :key="item.id">
+                            <option :value="item.id" x-text="item.name"></option>
+                          </template>
+                        </select>
+                      </td>
+                      <td class="px-4 py-2"><input type="number" x-model.number="line.qty" @change="updatePOLineAmount(idx)" class="w-full px-2 py-1 border border-slate-300 rounded text-right text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2" min="0" step="1"></td>
+                      <td class="px-4 py-2"><input type="number" x-model.number="line.rate" @change="updatePOLineAmount(idx)" class="w-full px-2 py-1 border border-slate-300 rounded text-right text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2" min="0" step="0.01"></td>
+                      <td class="px-4 py-2"><input type="number" x-model.number="line.gstPercent" @change="updatePOLineAmount(idx)" class="w-full px-2 py-1 border border-slate-300 rounded text-right text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2" min="0" step="0.1"></td>
+                      <td class="px-4 py-2 text-xs text-slate-600" x-text="line.hsn || '—'"></td>
+                      <td class="px-4 py-2 text-right text-xs font-medium currency" x-text="formatNumber(line.amount || 0)"></td>
+                      <td class="px-4 py-2 text-center"><button @click="removePOLine(idx)" class="text-red-600 hover:text-red-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2"><i data-lucide="trash-2" class="w-4 h-4"></i></button></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- GST Breakdown & Summary -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+                <div class="text-xs text-slate-600">Subtotal</div>
+                <div class="text-2xl font-semibold text-slate-900 currency" x-text="'₹' + formatNumber(poForm.subtotal)"></div>
+              </div>
+              <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+                <div class="space-y-1">
+                  <div class="flex justify-between text-xs">
+                    <span class="text-slate-600">CGST (9%)</span>
+                    <span class="font-medium text-slate-900 currency">₹<span x-text="formatNumber(poForm.cgst)"></span></span>
+                  </div>
+                  <div class="flex justify-between text-xs">
+                    <span class="text-slate-600">SGST (9%)</span>
+                    <span class="font-medium text-slate-900 currency">₹<span x-text="formatNumber(poForm.sgst)"></span></span>
+                  </div>
+                  <div class="border-t border-slate-200 pt-1 mt-1 flex justify-between text-xs">
+                    <span class="font-medium text-slate-600">Total Tax</span>
+                    <span class="font-semibold text-slate-900 currency">₹<span x-text="formatNumber(poForm.tax)"></span></span>
+                  </div>
+                </div>
+              </div>
+              <div class="bg-white rounded-lg border border-blue-300 p-4 shadow-sm">
+                <div class="text-xs text-slate-600">Total Amount</div>
+                <div class="text-2xl font-semibold text-blue-600 currency" x-text="'₹' + formatNumber(poForm.total)"></div>
+              </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex gap-3">
+              <button @click="savePO()" class="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 font-medium text-sm">
+                <i data-lucide="save" class="w-4 h-4"></i> Save
+              </button>
+              <button class="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 font-medium text-sm">
+                <i data-lucide="send" class="w-4 h-4"></i> Send to Supplier
+              </button>
+              <button @click="resetPOForm()" class="flex items-center gap-2 px-4 py-2 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 font-medium text-sm">
+                <i data-lucide="x" class="w-4 h-4"></i> Reset
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <!-- PARTY DETAIL SCREEN -->
+        <template x-if="currentScreen === 'parties'">
+          <div class="p-6 space-y-6">
+            <div class="flex items-center justify-between mb-4">
+              <div>
+                <h2 class="text-2xl font-semibold text-slate-900">Party Management</h2>
+                <p class="text-sm text-slate-600 mt-1">Select a customer to view details</p>
+              </div>
+              <button class="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                <i data-lucide="plus" class="w-4 h-4"></i> New Customer
+              </button>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+              <!-- Customer List -->
+              <div class="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+                <div class="px-4 py-3 border-b border-slate-200 bg-slate-50">
+                  <input type="text" class="w-full px-2 py-1 border border-slate-300 rounded text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2" placeholder="Search...">
+                </div>
+                <div class="divide-y divide-slate-200 max-h-96 overflow-y-auto">
+                  <template x-for="cust in customers" :key="cust.id">
+                    <button @click="selectedCustomer = cust" class="w-full text-left px-4 py-3 hover:bg-slate-50 transition focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2" :class="{ 'bg-blue-50 border-l-4 border-blue-600': selectedCustomer && selectedCustomer.id === cust.id }">
+                      <div class="font-medium text-sm text-slate-900" x-text="cust.name"></div>
+                      <div class="text-xs text-slate-600 mt-1" x-text="cust.city"></div>
+                    </button>
+                  </template>
+                </div>
+              </div>
+
+              <!-- Customer Detail -->
+              <template x-if="selectedCustomer">
+                <div class="lg:col-span-3 space-y-4">
+                  <!-- Header Card -->
+                  <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+                    <div class="flex items-start justify-between mb-4">
+                      <div>
+                        <h3 class="text-xl font-semibold text-slate-900" x-text="selectedCustomer.name"></h3>
+                        <p class="text-sm text-slate-600 mt-1" x-text="selectedCustomer.address"></p>
+                      </div>
+                      <span class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full bg-emerald-100 text-emerald-700">Active</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 text-sm">
+                      <div><span class="text-slate-600">GSTIN:</span> <span class="font-medium" x-text="selectedCustomer.gstin || '—'"></span></div>
+                      <div><span class="text-slate-600">State:</span> <span class="font-medium" x-text="selectedCustomer.state"></span></div>
+                      <div><span class="text-slate-600">Phone:</span> <span class="font-medium" x-text="selectedCustomer.phone"></span></div>
+                      <div><span class="text-slate-600">Email:</span> <span class="font-medium text-blue-600" x-text="selectedCustomer.email"></span></div>
+                    </div>
+                  </div>
+
+                  <!-- Credit & Outstanding -->
+                  <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+                      <div class="text-xs text-slate-600">Credit Limit</div>
+                      <div class="text-2xl font-semibold text-slate-900 currency" x-text="'₹' + formatNumber(selectedCustomer.creditLimit)"></div>
+                      <div class="text-xs text-slate-500 mt-1">30-day terms</div>
+                    </div>
+                    <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm border-red-300">
+                      <div class="text-xs text-slate-600">Outstanding</div>
+                      <div class="text-2xl font-semibold text-red-600 currency" x-text="'₹' + formatNumber(selectedCustomer.outstanding)"></div>
+                      <div class="text-xs text-slate-500 mt-1" x-text="formatNumber(Math.round(selectedCustomer.outstanding / selectedCustomer.creditLimit * 100)) + '% utilised'"></div>
+                    </div>
+                  </div>
+
+                  <!-- Recent Transactions -->
+                  <div class="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+                    <div class="px-4 py-3 border-b border-slate-200 bg-slate-50">
+                      <h4 class="font-semibold text-slate-900 text-sm">Recent Invoices</h4>
+                    </div>
+                    <table class="w-full text-xs">
+                      <thead class="bg-slate-50 border-b border-slate-200">
+                        <tr><th class="px-4 py-2 text-left text-slate-600">Invoice</th><th class="px-4 py-2 text-left text-slate-600">Date</th><th class="px-4 py-2 text-right text-slate-600">Amount</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr class="border-b border-slate-100 hover:bg-slate-50"><td class="px-4 py-2">INV-2404-0028</td><td class="px-4 py-2">20-Apr</td><td class="px-4 py-2 text-right currency">₹85,400</td></tr>
+                        <tr class="border-b border-slate-100 hover:bg-slate-50"><td class="px-4 py-2">INV-2404-0015</td><td class="px-4 py-2">18-Apr</td><td class="px-4 py-2 text-right currency">₹56,200</td></tr>
+                        <tr class="hover:bg-slate-50"><td class="px-4 py-2">INV-2404-0005</td><td class="px-4 py-2">10-Apr</td><td class="px-4 py-2 text-right currency">₹1,23,600</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <!-- Action Buttons -->
+                  <div class="flex gap-2">
+                    <button class="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                      <i data-lucide="plus" class="w-4 h-4"></i> New Invoice
+                    </button>
+                    <button class="flex items-center gap-2 px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                      <i data-lucide="check-circle" class="w-4 h-4"></i> New Receipt
+                    </button>
+                    <button class="flex items-center gap-2 px-3 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                      <i data-lucide="file-text" class="w-4 h-4"></i> Statement
+                    </button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <!-- PRODUCTION PIPELINE KANBAN SCREEN -->
+        <template x-if="currentScreen === 'production'">
+          <div class="p-6 space-y-4 h-full flex flex-col">
+            <div class="flex items-center justify-between">
+              <h2 class="text-2xl font-semibold text-slate-900">Production Pipeline</h2>
+              <div class="flex items-center gap-2">
+                <button @click="kanbanFilters.bottleneckMode = !kanbanFilters.bottleneckMode" class="flex items-center gap-2 px-3 py-2 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm transition-colors" :class="{ 'bg-red-100 text-red-700': kanbanFilters.bottleneckMode, 'bg-slate-100 text-slate-700 hover:bg-slate-200': !kanbanFilters.bottleneckMode }">
+                  <i data-lucide="alert-triangle" class="w-4 h-4"></i> Bottleneck Mode
+                </button>
+                <button class="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                  <i data-lucide="download" class="w-4 h-4"></i> Export PNG
+                </button>
+                <button @click="refreshKanban()" class="flex items-center gap-2 px-3 py-2 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                  <i data-lucide="refresh-cw" class="w-4 h-4"></i> Refresh
+                </button>
+              </div>
+            </div>
+
+            <!-- Filters Row -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 bg-white rounded-lg border border-slate-200 p-4">
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">MO</label>
+                <select x-model="kanbanFilters.moId" class="w-full px-3 py-2 border border-slate-300 rounded text-sm focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                  <option value="">All MOs</option>
+                  <option value="MO-37">MO-37</option>
+                  <option value="MO-38">MO-38</option>
+                  <option value="MO-39">MO-39</option>
+                  <option value="MO-40">MO-40</option>
+                  <option value="MO-41">MO-41</option>
+                  <option value="MO-42">MO-42</option>
+                  <option value="MO-43">MO-43</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">Karigar</label>
+                <select x-model="kanbanFilters.karigerId" class="w-full px-3 py-2 border border-slate-300 rounded text-sm focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                  <option value="">All Karigars</option>
+                  <option value="K1">Ramesh (K1) - Embroidery</option>
+                  <option value="K2">Suresh (K2) - Handwork</option>
+                  <option value="K3">Mahesh (K3) - Stitching</option>
+                  <option value="K4">Prakash (K4) - Dyeing</option>
+                  <option value="K5">Rajesh (K5) - Embroidery</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">Design</label>
+                <select x-model="kanbanFilters.designId" class="w-full px-3 py-2 border border-slate-300 rounded text-sm focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                  <option value="">All Designs</option>
+                  <option value="A-402">A-402 Banarasi</option>
+                  <option value="B-105">B-105 Chikankari</option>
+                  <option value="C-220">C-220 Jaipuri</option>
+                </select>
+              </div>
+              <div class="flex items-end">
+                <button @click="kanbanFilters = { moId: '', karigerId: '', designId: '', bottleneckMode: false }" class="w-full px-3 py-2 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <!-- Kanban Board -->
+            <div class="flex-1 overflow-x-auto bg-white rounded-lg border border-slate-200" style="display: flex;">
+              <template x-for="stage in ['RAW', 'CUT', 'AT_DYEING', 'AT_EMBROIDERY', 'AT_HANDWORK', 'AT_STITCHING', 'AT_WASHING', 'QC_PENDING', 'FINISHED', 'PACKED']" :key="stage">
+                <div class="flex-shrink-0 w-80 flex flex-col border-r border-slate-200 last:border-r-0">
+                  <!-- Column Header (Sticky) -->
+                  <div class="sticky top-0 z-10 bg-gradient-to-b from-slate-50 to-white border-b border-slate-200 px-4 py-3">
+                    <div class="flex items-center justify-between mb-2">
+                      <h3 class="font-semibold text-slate-900 text-sm" x-text="stage.replace(/_/g, ' ')"></h3>
+                      <span class="bg-slate-200 text-slate-700 text-xs font-medium px-2 py-1 rounded" x-text="filteredKanbanCards.filter(c => c.stage === stage).length"></span>
+                    </div>
+                    <div class="text-xs text-slate-600" x-text="'₹' + formatNumber(filteredKanbanCards.filter(c => c.stage === stage).reduce((s, c) => s + c.value, 0))"></div>
+                  </div>
+
+                  <!-- Cards Container -->
+                  <div class="flex-1 overflow-y-auto px-3 py-3 space-y-2" style="min-height: 600px;">
+                    <template x-for="card in filteredKanbanCards.filter(c => c.stage === stage)" :key="card.id">
+                      <div @click="selectedKanbanCard = card; openKanbanDetail(card)" class="p-3 rounded-lg border border-slate-300 cursor-pointer hover:shadow-md transition-shadow focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2" :class="kanbanCardColor(card)" :title="'Age: ' + card.ageDays + 'd, Expected: ' + card.expectedDays + 'd'">
+                        <div class="flex items-start justify-between mb-2">
+                          <div class="font-semibold text-sm text-slate-900" x-text="card.mo"></div>
+                          <template x-if="card.ageDays > card.expectedDays * 1.5">
+                            <i data-lucide="alert-circle" class="w-4 h-4 text-red-600"></i>
+                          </template>
+                        </div>
+                        <div class="text-xs text-slate-600 mb-2" x-text="card.design"></div>
+                        <template x-if="card.karigar">
+                          <div class="text-xs font-medium text-slate-700 mb-2" x-text="card.karigar"></div>
+                        </template>
+                        <div class="flex items-center justify-between">
+                          <span class="text-xs font-medium text-slate-900" x-text="card.qty + ' ' + card.uom"></span>
+                          <span class="text-xs px-2 py-1 rounded-full font-medium" :class="ageBadgeColor(card.ageDays, card.expectedDays)" x-text="card.ageDays + 'd'"></span>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="filteredKanbanCards.filter(c => c.stage === stage).length === 0">
+                      <div class="flex items-center justify-center h-32 text-slate-400 text-xs">No WIP here</div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Kanban Card Detail Slide-Over -->
+          <template x-if="selectedKanbanCard && kanbanCardDetails">
+            <div @click.self="selectedKanbanCard = null; kanbanCardDetails = null" class="fixed inset-0 z-50 bg-black bg-opacity-50 overflow-y-auto" @keydown.escape="selectedKanbanCard = null; kanbanCardDetails = null">
+              <div class="float-right w-full md:w-96 h-screen bg-white shadow-lg overflow-y-auto">
+                <div class="sticky top-0 z-10 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
+                  <h3 class="font-semibold text-slate-900" x-text="'MO ' + selectedKanbanCard.mo"></h3>
+                  <button @click="selectedKanbanCard = null; kanbanCardDetails = null" class="text-slate-500 hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2"><i data-lucide="x" class="w-5 h-5"></i></button>
+                </div>
+
+                <div class="p-6 space-y-6">
+                  <!-- Card Info -->
+                  <div class="space-y-3">
+                    <div class="flex justify-between">
+                      <span class="text-sm text-slate-600">Design</span>
+                      <span class="text-sm font-medium text-slate-900" x-text="selectedKanbanCard.design"></span>
+                    </div>
+                    <div class="flex justify-between">
+                      <span class="text-sm text-slate-600">Quantity</span>
+                      <span class="text-sm font-medium text-slate-900" x-text="selectedKanbanCard.qty + ' ' + selectedKanbanCard.uom"></span>
+                    </div>
+                    <div class="flex justify-between">
+                      <span class="text-sm text-slate-600">Current Stage</span>
+                      <span class="text-sm font-medium text-slate-900" x-text="selectedKanbanCard.stage.replace(/_/g, ' ')"></span>
+                    </div>
+                    <div class="flex justify-between">
+                      <span class="text-sm text-slate-600">Age</span>
+                      <span class="text-sm font-medium" :class="ageBadgeColor(selectedKanbanCard.ageDays, selectedKanbanCard.expectedDays)" x-text="selectedKanbanCard.ageDays + ' days (Expected: ' + selectedKanbanCard.expectedDays + 'd)'"></span>
+                    </div>
+                    <div class="flex justify-between">
+                      <span class="text-sm text-slate-600">Value</span>
+                      <span class="text-sm font-medium text-slate-900 currency" x-text="'₹' + formatNumber(selectedKanbanCard.value)"></span>
+                    </div>
+                  </div>
+
+                  <hr class="border-slate-200">
+
+                  <!-- Karigar Info -->
+                  <div>
+                    <h4 class="text-xs font-semibold text-slate-600 mb-3">Karigar</h4>
+                    <div class="bg-slate-50 rounded-lg p-3">
+                      <template x-if="selectedKanbanCard.karigar">
+                        <div class="text-sm font-medium text-slate-900" x-text="selectedKanbanCard.karigar"></div>
+                      </template>
+                      <template x-if="!selectedKanbanCard.karigar">
+                        <div class="text-xs text-slate-500">Not assigned</div>
+                      </template>
+                    </div>
+                  </div>
+
+                  <hr class="border-slate-200">
+
+                  <!-- Recent Transitions -->
+                  <div>
+                    <h4 class="text-xs font-semibold text-slate-600 mb-3">Timeline</h4>
+                    <div class="space-y-2 text-xs">
+                      <div class="flex items-start gap-2">
+                        <div class="w-2 h-2 rounded-full bg-emerald-600 mt-1.5"></div>
+                        <div>
+                          <div class="font-medium text-slate-900" x-text="selectedKanbanCard.stage.replace(/_/g, ' ')"></div>
+                          <div class="text-slate-500">Now</div>
+                        </div>
+                      </div>
+                      <div class="flex items-start gap-2">
+                        <div class="w-2 h-2 rounded-full bg-slate-400 mt-1.5"></div>
+                        <div>
+                          <div class="font-medium text-slate-900">Previous Stage</div>
+                          <div class="text-slate-500" x-text="'Moved in on ' + selectedKanbanCard.created"></div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <hr class="border-slate-200">
+
+                  <!-- Quick Actions -->
+                  <div class="space-y-2">
+                    <button class="w-full flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                      <i data-lucide="check-circle" class="w-4 h-4"></i> Receive
+                    </button>
+                    <button class="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                      <i data-lucide="message-square" class="w-4 h-4"></i> Remind via WhatsApp
+                    </button>
+                    <template x-if="selectedKanbanCard.karigar">
+                      <button class="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+                        <i data-lucide="shuffle" class="w-4 h-4"></i> Reassign Karigar
+                      </button>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </template>
+
+        <!-- STOCK TAKE COUNT SCREEN -->
+        <template x-if="currentScreen === 'stock-take'">
+          <div class="p-6 space-y-6 mx-auto" style="max-width: 600px;">
+            <div class="bg-white rounded-lg border border-slate-200 p-4 shadow-sm">
+              <div class="flex items-center justify-between mb-4">
+                <h2 class="text-2xl font-semibold text-slate-900">Stock Count</h2>
+                <button @click="finishStockTake()" class="text-slate-500 hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2"><i data-lucide="x" class="w-5 h-5"></i></button>
+              </div>
+
+              <!-- Progress Header -->
+              <div class="mb-4">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-sm font-medium text-slate-900">
+                    <span x-text="stockTake.countedItems"></span> of <span x-text="stockTake.totalItems"></span> items counted
+                  </span>
+                  <span class="text-sm font-medium text-emerald-600" x-text="Math.round(stockTake.countedItems / stockTake.totalItems * 100) + '%'"></span>
+                </div>
+                <div class="w-full bg-slate-200 rounded-full h-3">
+                  <div class="bg-emerald-600 h-3 rounded-full transition-all" :style="{ width: Math.round(stockTake.countedItems / stockTake.totalItems * 100) + '%' }"></div>
+                </div>
+              </div>
+
+              <!-- Item Entry -->
+              <div class="space-y-4 mb-6">
+                <template x-for="(item, idx) in stockTake.items" :key="item.id">
+                  <div class="border border-slate-200 rounded-lg p-3" :class="{ 'bg-emerald-50': item.counted, 'bg-slate-50': !item.counted }">
+                    <div class="flex items-center justify-between mb-2">
+                      <div>
+                        <h4 class="font-medium text-slate-900 text-sm" x-text="item.itemName"></h4>
+                        <p class="text-xs text-slate-600">System: <span class="font-medium" x-text="item.systemQty + ' ' + item.uom"></span></p>
+                      </div>
+                      <template x-if="item.variance !== 0">
+                        <span class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full" :class="item.variance > 0 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'" x-text="(item.variance > 0 ? '+' : '') + formatNumber(item.variance)"></span>
+                      </template>
+                    </div>
+                    <div class="flex gap-2 items-center">
+                      <input type="number" x-model.number="item.countedQty" @change="updateVariance(idx)" class="flex-1 px-3 py-2 border border-slate-300 rounded text-sm focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 font-medium text-center" :placeholder="item.systemQty">
+                      <span class="text-sm font-medium text-slate-600" x-text="item.uom"></span>
+                    </div>
+                    <template x-if="item.variance !== 0">
+                      <div class="mt-2">
+                        <select x-model="item.reasonCode" class="w-full px-2 py-1 border border-slate-300 rounded text-xs focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+                          <option value="">Select reason...</option>
+                          <option value="damage">Damaged</option>
+                          <option value="shrinkage">Shrinkage</option>
+                          <option value="theft">Theft/Loss</option>
+                          <option value="found">Found Stock</option>
+                          <option value="data-error">Data Error</option>
+                        </select>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+
+              <!-- Action Buttons -->
+              <div class="flex gap-3">
+                <button @click="saveStockTakeDraft()" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 font-medium text-sm">
+                  <i data-lucide="save" class="w-4 h-4"></i> Save Progress
+                </button>
+                <button @click="finishStockTake()" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 font-medium text-sm">
+                  <i data-lucide="check" class="w-4 h-4"></i> Finish Count
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </main>
+  </div>
+
+  <!-- SCR-MASTERS-NEW-PARTY Modal -->
+  <div x-show="showNewPartyModal" class="fixed inset-0 bg-black bg-opacity-30 z-50 flex items-end md:items-center justify-end" @click.self="closeNewPartyModal()">
+    <div class="bg-white w-full md:w-96 h-screen md:h-auto md:rounded-lg shadow-xl overflow-y-auto" style="max-height: 90vh;">
+      <div class="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
+        <h2 class="font-semibold text-slate-900">Add Party</h2>
+        <button @click="closeNewPartyModal()" class="text-slate-500 hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <div class="p-6 space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">Party Name *</label>
+          <input type="text" x-model="newPartyForm.name" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" placeholder="e.g., Surat Silk Mills">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">Phone</label>
+          <input type="tel" x-model="newPartyForm.phone" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" placeholder="+91-98765-43210">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">Email</label>
+          <input type="email" x-model="newPartyForm.email" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" placeholder="info@party.com">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-2">Tax Status</label>
+          <div class="flex gap-2">
+            <template x-for="status in ['REGULAR', 'COMPOSITION', 'UNREGISTERED', 'CONSUMER']" :key="status">
+              <button @click="newPartyForm.taxStatus = status" class="flex-1 px-3 py-2 text-xs font-medium rounded-lg border transition" :class="newPartyForm.taxStatus === status ? 'bg-blue-600 text-white border-blue-600' : 'border-slate-300 text-slate-700 hover:bg-slate-50'">
+                <span x-text="status"></span>
+              </button>
+            </template>
+          </div>
+        </div>
+        <template x-if="['REGULAR', 'COMPOSITION'].includes(newPartyForm.taxStatus)">
+          <div>
+            <label class="block text-sm font-medium text-slate-900 mb-1">GSTIN (15 chars)</label>
+            <input type="text" x-model="newPartyForm.gstin" @change="validateGSTIN(newPartyForm.gstin) ? null : alert('Invalid GSTIN format')" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm font-mono" placeholder="27AAAPL1234C1Z5">
+            <template x-if="newPartyForm.gstin && validateGSTIN(newPartyForm.gstin)">
+              <p class="text-xs text-slate-600 mt-1">State: <span x-text="getStateFromGSTIN(newPartyForm.gstin)"></span></p>
+            </template>
+          </div>
+        </template>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">PAN</label>
+          <input type="text" x-model="newPartyForm.pan" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm font-mono" placeholder="AAAPL1234C">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">State</label>
+          <select x-model="newPartyForm.state" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+            <option value="GJ">Gujarat</option>
+            <option value="RJ">Rajasthan</option>
+            <option value="MH">Maharashtra</option>
+            <option value="UP">Uttar Pradesh</option>
+            <option value="KA">Karnataka</option>
+            <option value="TN">Tamil Nadu</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">Billing Address</label>
+          <textarea x-model="newPartyForm.address" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" rows="2" placeholder="Enter address"></textarea>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-2">Roles</label>
+          <div class="space-y-2">
+            <label class="flex items-center gap-2">
+              <input type="checkbox" x-model="newPartyForm.roles.supplier" class="w-4 h-4"> <span class="text-sm text-slate-700">Supplier</span>
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" x-model="newPartyForm.roles.customer" class="w-4 h-4"> <span class="text-sm text-slate-700">Customer</span>
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" x-model="newPartyForm.roles.karigar" class="w-4 h-4"> <span class="text-sm text-slate-700">Karigar (Job Worker)</span>
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" x-model="newPartyForm.roles.transporter" class="w-4 h-4"> <span class="text-sm text-slate-700">Transporter</span>
+            </label>
+          </div>
+        </div>
+        <template x-if="newPartyForm.roles.customer">
+          <div class="space-y-3 pt-2 border-t border-slate-200">
+            <div>
+              <label class="block text-sm font-medium text-slate-900 mb-1">Credit Limit (₹)</label>
+              <input type="number" x-model.number="newPartyForm.creditLimit" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" min="0" placeholder="500000">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-900 mb-1">Credit Days</label>
+              <input type="number" x-model.number="newPartyForm.creditDays" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" min="0" max="120" placeholder="30">
+            </div>
+          </div>
+        </template>
+        <div class="flex gap-3 pt-4 border-t border-slate-200">
+          <button @click="closeNewPartyModal()" class="flex-1 px-4 py-2 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 font-medium text-sm">Cancel</button>
+          <button @click="saveNewParty()" class="flex-1 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium text-sm flex items-center justify-center gap-2">
+            <i data-lucide="save" class="w-4 h-4"></i> Save
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCR-MASTERS-NEW-ITEM Modal -->
+  <div x-show="showNewItemModal" class="fixed inset-0 bg-black bg-opacity-30 z-50 flex items-end md:items-center justify-end" @click.self="closeNewItemModal()">
+    <div class="bg-white w-full md:w-96 h-screen md:h-auto md:rounded-lg shadow-xl overflow-y-auto" style="max-height: 90vh;">
+      <div class="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
+        <h2 class="font-semibold text-slate-900">Add Item</h2>
+        <button @click="closeNewItemModal()" class="text-slate-500 hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <div class="p-6 space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">Item Code</label>
+          <input type="text" x-model="newItemForm.code" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" placeholder="SKU-001">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">Item Name *</label>
+          <input type="text" x-model="newItemForm.name" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" placeholder="Banarasi Silk">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-2">Type</label>
+          <div class="flex gap-2">
+            <template x-for="type in ['RAW', 'FINISHED', 'SERVICE', 'CONSUMABLE']" :key="type">
+              <button @click="newItemForm.type = type" class="flex-1 px-3 py-2 text-xs font-medium rounded-lg border transition" :class="newItemForm.type === type ? 'bg-blue-600 text-white border-blue-600' : 'border-slate-300 text-slate-700 hover:bg-slate-50'">
+                <span x-text="type"></span>
+              </button>
+            </template>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">Category</label>
+          <input type="text" x-model="newItemForm.category" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm" placeholder="fabric, lace, button, etc.">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">Primary UOM</label>
+          <select x-model="newItemForm.primaryUom" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+            <option value="meter">Meter</option>
+            <option value="piece">Piece</option>
+            <option value="kg">Kilogram</option>
+            <option value="set">Set</option>
+            <option value="box">Box</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">HSN Code</label>
+          <input type="text" x-model="newItemForm.hsn" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm font-mono" placeholder="5007">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">GST Rate (%)</label>
+          <select x-model.number="newItemForm.gstRate" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+            <option value="0">0%</option>
+            <option value="0.25">0.25%</option>
+            <option value="3">3%</option>
+            <option value="5">5%</option>
+            <option value="12">12%</option>
+            <option value="18">18%</option>
+            <option value="28">28%</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-900 mb-1">Tracking</label>
+          <select x-model="newItemForm.tracking" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 text-sm">
+            <option value="NONE">None</option>
+            <option value="BATCH">Batch</option>
+            <option value="LOT">Lot</option>
+            <option value="SERIAL">Serial</option>
+          </select>
+        </div>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" x-model="newItemForm.hasVariants" class="w-4 h-4"> <span class="text-sm font-medium text-slate-900">Has Variants</span>
+        </label>
+        <template x-if="newItemForm.hasVariants">
+          <div class="p-3 bg-slate-50 rounded-lg text-sm text-slate-600">
+            Variants (Size/Color) can be added after creation.
+          </div>
+        </template>
+        <div class="flex gap-3 pt-4 border-t border-slate-200">
+          <button @click="closeNewItemModal()" class="flex-1 px-4 py-2 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 font-medium text-sm">Cancel</button>
+          <button @click="saveNewItem()" class="flex-1 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium text-sm flex items-center justify-center gap-2">
+            <i data-lucide="save" class="w-4 h-4"></i> Save
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function appState() {
+      return {
+        currentScreen: 'dashboard',
+        sidebarOpen: true,
+        currentFirm: { id: 'firm1', name: 'Sharma Textiles', gstin: '27AAAPL1234C1Z5' },
+
+        firms: [
+          { id: 'firm1', name: 'Sharma Textiles', gstin: '27AAAPL1234C1Z5' },
+          { id: 'firm2', name: 'Krishna Mills', gstin: '29BBBCD5678E2Z6' },
+          { id: 'firm3', name: 'Rajesh Enterprises (Non-GST)', gstin: null }
+        ],
+
+        navItems: [
+          { id: 'dashboard', label: 'Dashboard', icon: 'home' },
+          { id: 'sales', label: 'Sales Invoice', icon: 'shopping-cart' },
+          { id: 'inventory', label: 'Stock Explorer', icon: 'package' },
+          { id: 'purchases', label: 'Purchase Order', icon: 'inbox' },
+          { id: 'parties', label: 'Customers', icon: 'users' },
+          { id: 'stock-take', label: 'Stock Count', icon: 'checkmark-circle' },
+          { id: 'production', label: 'Production', icon: 'factory' }
+        ],
+
+        customers: [
+          { id: 'c1', name: 'Surat Silk Mills', city: 'Surat', state: 'GJ', address: 'Textile Park, Adajan', phone: '+91-9876543210', email: 'info@suratsilk.com', gstin: '24ABCDE1234F1Z5', creditLimit: 500000, outstanding: 325000 },
+          { id: 'c2', name: 'Rajesh Textiles', city: 'Jaipur', state: 'RJ', address: 'Amer Road', phone: '+91-9765432109', email: 'rajesh@textiles.com', gstin: '08XYZAB9876C1Z5', creditLimit: 300000, outstanding: 125000 },
+          { id: 'c3', name: 'Krishna Fabrics', city: 'Kota', state: 'RJ', address: 'Mill Town', phone: '+91-9654321098', email: 'sales@krishna.com', gstin: '08PQRST5432D2Z5', creditLimit: 400000, outstanding: 240000 },
+          { id: 'c4', name: 'Sharma Exports', city: 'Mumbai', state: 'MH', address: 'Fort Business District', phone: '+91-9543210987', email: 'export@sharma.com', gstin: '27UVWXY6789E3Z5', creditLimit: 600000, outstanding: 450000 }
+        ],
+
+        suppliers: [
+          { id: 's1', name: 'Gujarat Fiber Mills' },
+          { id: 's2', name: 'Rajasthan Yarn Co' },
+          { id: 's3', name: 'Premium Dyes & Chemicals' }
+        ],
+
+        items: [
+          { id: 'i1', name: 'Banarasi Silk', category: 'Fabric', hsn: '5007', gst: 12 },
+          { id: 'i2', name: 'Chikankari Kurta', category: 'Garment', hsn: '6204', gst: 5 },
+          { id: 'i3', name: 'Cotton Saree', category: 'Fabric', hsn: '5208', gst: 5 },
+          { id: 'i4', name: 'Embroidered Dupatta', category: 'Accessory', hsn: '5810', gst: 12 }
+        ],
+
+        stocks: [
+          { id: 'st1', itemName: 'Banarasi Silk', lotNumber: 'LOT-2024-001', location: 'Godown 1', status: 'FINISHED', qty: 150, uom: 'm', costValue: 225000, costPerUnit: 1500, lastMove: '22-Apr', ageDays: 8, attributes: { color: 'Red', width: '45\"', gsm: 'N/A', shade: 'Deep Red' } },
+          { id: 'st2', itemName: 'Chikankari Kurta', lotNumber: 'LOT-2024-002', location: 'At Stitching', status: 'AT_STITCHING', qty: 45, uom: 'pcs', costValue: 67500, costPerUnit: 1500, lastMove: '20-Apr', ageDays: 10, attributes: { color: 'Cream', width: 'S/M/L', gsm: 'N/A', shade: 'Ivory' } },
+          { id: 'st3', itemName: 'Cotton Saree', lotNumber: 'LOT-2024-003', location: 'Godown 2', status: 'RAW', qty: 200, uom: 'm', costValue: 120000, costPerUnit: 600, lastMove: '18-Apr', ageDays: 22, attributes: { color: 'White', width: '47\"', gsm: '140', shade: 'Pure White' } },
+          { id: 'st4', itemName: 'Banarasi Silk', lotNumber: 'LOT-2024-004', location: 'At Embroidery', status: 'AT_EMBROIDERY', qty: 80, uom: 'm', costValue: 120000, costPerUnit: 1500, lastMove: '19-Apr', ageDays: 15, attributes: { color: 'Gold', width: '45\"', gsm: 'N/A', shade: 'Light Gold' } }
+        ],
+
+        selectedStock: null,
+        stockFilters: { itemSearch: '', location: '', status: '' },
+
+        invoiceForm: {
+          customerId: '',
+          date: new Date().toISOString().split('T')[0],
+          invoiceNumber: '',
+          paymentMode: 'cash',
+          lines: [{ itemId: '', qty: 0, rate: 0, discPercent: 0, gstPercent: 12, amount: 0 }],
+          subtotal: 0,
+          discount: 0,
+          tax: 0,
+          total: 0
+        },
+
+        poForm: {
+          supplierId: '',
+          poDate: new Date().toISOString().split('T')[0],
+          deliveryDate: '',
+          status: 'DRAFT',
+          lines: [{ itemId: '', qty: 0, rate: 0, gstPercent: 18, hsn: '', amount: 0 }],
+          subtotal: 0,
+          cgst: 0,
+          sgst: 0,
+          tax: 0,
+          total: 0
+        },
+
+        selectedCustomer: null,
+
+        stockTake: {
+          totalItems: 12,
+          countedItems: 7,
+          items: [
+            { id: 'st1', itemName: 'Banarasi Silk (Red) - Lot 001', systemQty: 150, countedQty: 148, variance: -2, uom: 'm', reasonCode: '', counted: true },
+            { id: 'st2', itemName: 'Chikankari Kurta - Lot 002', systemQty: 45, countedQty: 45, variance: 0, uom: 'pcs', reasonCode: '', counted: true },
+            { id: 'st3', itemName: 'Cotton Saree (White) - Lot 003', systemQty: 200, countedQty: 195, variance: -5, uom: 'm', reasonCode: 'damage', counted: true },
+            { id: 'st4', itemName: 'Embroidered Dupatta - Lot 004', systemQty: 80, countedQty: 82, variance: 2, uom: 'm', reasonCode: 'found', counted: true },
+            { id: 'st5', itemName: 'Silk Thread (Gold) - Lot 005', systemQty: 50, countedQty: 50, variance: 0, uom: 'boxes', reasonCode: '', counted: true },
+            { id: 'st6', itemName: 'Buttons (Pearl) - Lot 006', systemQty: 1000, countedQty: 0, variance: 0, uom: 'pcs', reasonCode: '', counted: false },
+            { id: 'st7', itemName: 'Zip (Metal) - Lot 007', systemQty: 500, countedQty: 0, variance: 0, uom: 'pcs', reasonCode: '', counted: false }
+          ]
+        },
+
+        // Production Kanban Data
+        kanbanCards: [
+          { id: 'k1', mo: 'MO-39', design: 'A-402 Banarasi', karigar: 'Ramesh (K1)', qty: 150, uom: 'm', stage: 'RAW', ageDays: 2, expectedDays: 5, value: 225000, created: '2026-04-21' },
+          { id: 'k2', mo: 'MO-39', design: 'A-402 Banarasi', karigar: null, qty: 150, uom: 'm', stage: 'CUT', ageDays: 1, expectedDays: 2, value: 225000, created: '2026-04-22' },
+          { id: 'k3', mo: 'MO-37', design: 'B-105 Chikankari', karigar: 'Prakash (K4)', qty: 100, uom: 'pcs', stage: 'AT_DYEING', ageDays: 6, expectedDays: 4, value: 150000, created: '2026-04-17' },
+          { id: 'k4', mo: 'MO-40', design: 'C-220 Jaipuri', karigar: 'Ramesh (K1)', qty: 200, uom: 'm', stage: 'AT_EMBROIDERY', ageDays: 8, expectedDays: 6, value: 300000, created: '2026-04-15' },
+          { id: 'k5', mo: 'MO-38', design: 'A-402 Banarasi', karigar: 'Suresh (K2)', qty: 75, uom: 'pcs', stage: 'AT_HANDWORK', ageDays: 10, expectedDays: 8, value: 112500, created: '2026-04-13' },
+          { id: 'k6', mo: 'MO-41', design: 'B-105 Chikankari', karigar: 'Mahesh (K3)', qty: 120, uom: 'pcs', stage: 'AT_STITCHING', ageDays: 5, expectedDays: 5, value: 180000, created: '2026-04-18' },
+          { id: 'k7', mo: 'MO-42', design: 'A-402 Banarasi', karigar: null, qty: 100, uom: 'pcs', stage: 'AT_WASHING', ageDays: 3, expectedDays: 2, value: 150000, created: '2026-04-20' },
+          { id: 'k8', mo: 'MO-37', design: 'B-105 Chikankari', karigar: null, qty: 85, uom: 'pcs', stage: 'QC_PENDING', ageDays: 2, expectedDays: 1, value: 127500, created: '2026-04-21' },
+          { id: 'k9', mo: 'MO-43', design: 'C-220 Jaipuri', karigar: null, qty: 150, uom: 'm', stage: 'FINISHED', ageDays: 1, expectedDays: 1, value: 225000, created: '2026-04-22' },
+          { id: 'k10', mo: 'MO-39', design: 'A-402 Banarasi', karigar: null, qty: 140, uom: 'pcs', stage: 'PACKED', ageDays: 0, expectedDays: 0, value: 210000, created: '2026-04-23' },
+          { id: 'k11', mo: 'MO-40', design: 'C-220 Jaipuri', karigar: 'Rajesh (K5)', qty: 90, uom: 'pcs', stage: 'AT_EMBROIDERY', ageDays: 5, expectedDays: 6, value: 135000, created: '2026-04-18' },
+          { id: 'k12', mo: 'MO-38', design: 'A-402 Banarasi', karigar: null, qty: 110, uom: 'pcs', stage: 'AT_STITCHING', ageDays: 7, expectedDays: 5, value: 165000, created: '2026-04-16' },
+          { id: 'k13', mo: 'MO-41', design: 'B-105 Chikankari', karigar: null, qty: 95, uom: 'pcs', stage: 'AT_WASHING', ageDays: 4, expectedDays: 2, value: 142500, created: '2026-04-19' },
+          { id: 'k14', mo: 'MO-42', design: 'A-402 Banarasi', karigar: 'Suresh (K2)', qty: 80, uom: 'pcs', stage: 'AT_HANDWORK', ageDays: 9, expectedDays: 8, value: 120000, created: '2026-04-14' },
+          { id: 'k15', mo: 'MO-37', design: 'B-105 Chikankari', karigar: null, qty: 70, uom: 'pcs', stage: 'FINISHED', ageDays: 2, expectedDays: 1, value: 105000, created: '2026-04-21' },
+          { id: 'k16', mo: 'MO-43', design: 'C-220 Jaipuri', karigar: null, qty: 160, uom: 'm', stage: 'RAW', ageDays: 1, expectedDays: 5, value: 240000, created: '2026-04-22' },
+          { id: 'k17', mo: 'MO-40', design: 'C-220 Jaipuri', karigar: null, qty: 130, uom: 'pcs', stage: 'QC_PENDING', ageDays: 3, expectedDays: 1, value: 195000, created: '2026-04-20' },
+          { id: 'k18', mo: 'MO-38', design: 'A-402 Banarasi', karigar: 'Mahesh (K3)', qty: 60, uom: 'pcs', stage: 'CUT', ageDays: 2, expectedDays: 2, value: 90000, created: '2026-04-21' }
+        ],
+
+        // Modal states for new screens
+        showNewPartyModal: false,
+        newPartyForm: {
+          name: '',
+          phone: '',
+          email: '',
+          taxStatus: 'REGULAR',
+          gstin: '',
+          pan: '',
+          state: 'GJ',
+          address: '',
+          roles: { supplier: false, customer: false, karigar: false, transporter: false },
+          creditLimit: 0,
+          creditDays: 30,
+          isCustomer: false,
+          isSupplier: false
+        },
+
+        showNewItemModal: false,
+        newItemForm: {
+          code: '',
+          name: '',
+          type: 'RAW',
+          category: '',
+          primaryUom: 'meter',
+          hsn: '',
+          gstRate: 12,
+          tracking: 'NONE',
+          hasVariants: false,
+          variants: { axes: [] }
+        },
+
+        kanbanFilters: {
+          moId: '',
+          karigerId: '',
+          designId: '',
+          bottleneckMode: false
+        },
+
+        selectedKanbanCard: null,
+        kanbanCardDetails: null,
+
+        get filteredStocks() {
+          return this.stocks.filter(s => {
+            const matchItem = !this.stockFilters.itemSearch || s.itemName.toLowerCase().includes(this.stockFilters.itemSearch.toLowerCase());
+            const matchLocation = !this.stockFilters.location || s.location === this.stockFilters.location;
+            const matchStatus = !this.stockFilters.status || s.status === this.stockFilters.status;
+            return matchItem && matchLocation && matchStatus;
+          });
+        },
+
+        formatNumber(num) {
+          return new Intl.NumberFormat('en-IN').format(Math.round(num * 100) / 100);
+        },
+
+        statusColor(status) {
+          const colors = {
+            'RAW': 'bg-slate-100 text-slate-700',
+            'CUT': 'bg-blue-100 text-blue-700',
+            'AT_EMBROIDERY': 'bg-purple-100 text-purple-700',
+            'AT_STITCHING': 'bg-amber-100 text-amber-700',
+            'FINISHED': 'bg-emerald-100 text-emerald-700'
+          };
+          return colors[status] || 'bg-slate-100 text-slate-700';
+        },
+
+        updateLineAmount(idx) {
+          const line = this.invoiceForm.lines[idx];
+          const discounted = line.qty * line.rate * (1 - line.discPercent / 100);
+          const tax = discounted * (line.gstPercent / 100);
+          line.amount = discounted + tax;
+          this.calculateInvoiceTotal();
+        },
+
+        calculateInvoiceTotal() {
+          this.invoiceForm.subtotal = this.invoiceForm.lines.reduce((s, l) => s + (l.qty * l.rate * (1 - l.discPercent / 100)), 0);
+          this.invoiceForm.discount = this.invoiceForm.lines.reduce((s, l) => s + (l.qty * l.rate * l.discPercent / 100), 0);
+          this.invoiceForm.tax = this.invoiceForm.lines.reduce((s, l) => s + (l.qty * l.rate * (1 - l.discPercent / 100) * l.gstPercent / 100), 0);
+          this.invoiceForm.total = this.invoiceForm.subtotal + this.invoiceForm.tax;
+        },
+
+        addInvoiceLine() {
+          this.invoiceForm.lines.push({ itemId: '', qty: 0, rate: 0, discPercent: 0, gstPercent: 12, amount: 0 });
+        },
+
+        removeInvoiceLine(idx) {
+          this.invoiceForm.lines.splice(idx, 1);
+          this.calculateInvoiceTotal();
+        },
+
+        resetInvoiceForm() {
+          this.invoiceForm = {
+            customerId: '',
+            date: new Date().toISOString().split('T')[0],
+            invoiceNumber: '',
+            paymentMode: 'cash',
+            lines: [{ itemId: '', qty: 0, rate: 0, discPercent: 0, gstPercent: 12, amount: 0 }],
+            subtotal: 0,
+            discount: 0,
+            tax: 0,
+            total: 0
+          };
+        },
+
+        saveInvoice() {
+          alert('Invoice saved & finalized: INV-' + Math.floor(Math.random() * 10000));
+          this.resetInvoiceForm();
+        },
+
+        printInvoice() {
+          alert('Invoice sent to printer...');
+        },
+
+        updatePOLineAmount(idx) {
+          const line = this.poForm.lines[idx];
+          line.amount = line.qty * line.rate * (1 + line.gstPercent / 100);
+          this.calculatePOTotal();
+        },
+
+        calculatePOTotal() {
+          this.poForm.subtotal = this.poForm.lines.reduce((s, l) => s + (l.qty * l.rate), 0);
+          this.poForm.cgst = this.poForm.subtotal * 0.09;
+          this.poForm.sgst = this.poForm.subtotal * 0.09;
+          this.poForm.tax = this.poForm.cgst + this.poForm.sgst;
+          this.poForm.total = this.poForm.subtotal + this.poForm.tax;
+        },
+
+        addPOLine() {
+          this.poForm.lines.push({ itemId: '', qty: 0, rate: 0, gstPercent: 18, hsn: '', amount: 0 });
+        },
+
+        removePOLine(idx) {
+          this.poForm.lines.splice(idx, 1);
+          this.calculatePOTotal();
+        },
+
+        resetPOForm() {
+          this.poForm = {
+            supplierId: '',
+            poDate: new Date().toISOString().split('T')[0],
+            deliveryDate: '',
+            status: 'DRAFT',
+            lines: [{ itemId: '', qty: 0, rate: 0, gstPercent: 18, hsn: '', amount: 0 }],
+            subtotal: 0,
+            cgst: 0,
+            sgst: 0,
+            tax: 0,
+            total: 0
+          };
+        },
+
+        savePO() {
+          alert('PO saved: PO-' + Math.floor(Math.random() * 10000));
+          this.resetPOForm();
+        },
+
+        updateVariance(idx) {
+          const item = this.stockTake.items[idx];
+          item.variance = item.countedQty - item.systemQty;
+          if (item.countedQty > 0) item.counted = true;
+          this.stockTake.countedItems = this.stockTake.items.filter(i => i.counted).length;
+        },
+
+        saveStockTakeDraft() {
+          alert('Stock count draft saved!');
+        },
+
+        finishStockTake() {
+          alert('Stock count completed! ' + this.stockTake.countedItems + ' items counted.');
+        },
+
+        refreshDashboard() {
+          alert('Dashboard refreshed!');
+        },
+
+        refreshStock() {
+          alert('Stock data refreshed!');
+        },
+
+        get filteredKanbanCards() {
+          return this.kanbanCards.filter(c => {
+            const matchMO = !this.kanbanFilters.moId || c.mo === this.kanbanFilters.moId;
+            const matchKarigar = !this.kanbanFilters.karigerId || (c.karigar && c.karigar.includes(this.kanbanFilters.karigerId));
+            const matchDesign = !this.kanbanFilters.designId || c.design.includes(this.kanbanFilters.designId);
+            return matchMO && matchKarigar && matchDesign;
+          });
+        },
+
+        kanbanCardColor(card) {
+          if (this.kanbanFilters.bottleneckMode) {
+            const ratio = card.ageDays / Math.max(card.expectedDays, 1);
+            if (ratio <= 1) return 'bg-emerald-50 border-emerald-300';
+            if (ratio <= 1.5) return 'bg-amber-50 border-amber-300';
+            return 'bg-red-50 border-red-300';
+          }
+          return 'bg-white';
+        },
+
+        ageBadgeColor(ageDays, expectedDays) {
+          const ratio = ageDays / Math.max(expectedDays, 1);
+          if (ratio <= 1) return 'bg-emerald-100 text-emerald-700';
+          if (ratio <= 1.5) return 'bg-amber-100 text-amber-700';
+          return 'bg-red-100 text-red-700';
+        },
+
+        openKanbanDetail(card) {
+          this.kanbanCardDetails = {
+            ...card,
+            transitions: [
+              { stage: card.stage, date: new Date().toISOString().split('T')[0], status: 'current' }
+            ]
+          };
+        },
+
+        refreshKanban() {
+          alert('Production pipeline refreshed!');
+        },
+
+        getTotalKanbanValue() {
+          return this.kanbanCards.reduce((sum, card) => sum + card.value, 0);
+        },
+
+        openNewPartyModal(role) {
+          this.newPartyForm = {
+            name: '',
+            phone: '',
+            email: '',
+            taxStatus: 'REGULAR',
+            gstin: '',
+            pan: '',
+            state: 'GJ',
+            address: '',
+            roles: { supplier: role === 'supplier', customer: role === 'customer', karigar: false, transporter: false },
+            creditLimit: 0,
+            creditDays: 30,
+            isCustomer: role === 'customer',
+            isSupplier: role === 'supplier'
+          };
+          this.showNewPartyModal = true;
+        },
+
+        saveNewParty() {
+          if (!this.newPartyForm.name.trim()) {
+            alert('Party name required');
+            return;
+          }
+          const newParty = {
+            id: 'p' + Math.random().toString(36).substr(2, 9),
+            name: this.newPartyForm.name,
+            phone: this.newPartyForm.phone,
+            email: this.newPartyForm.email,
+            taxStatus: this.newPartyForm.taxStatus,
+            gstin: this.newPartyForm.gstin,
+            pan: this.newPartyForm.pan,
+            state: this.newPartyForm.state,
+            address: this.newPartyForm.address,
+            creditLimit: this.newPartyForm.creditLimit,
+            creditDays: this.newPartyForm.creditDays
+          };
+          if (this.newPartyForm.isCustomer) {
+            this.customers.push(newParty);
+          }
+          if (this.newPartyForm.isSupplier) {
+            this.suppliers.push(newParty);
+          }
+          alert(this.newPartyForm.name + ' added successfully!');
+          this.showNewPartyModal = false;
+        },
+
+        closeNewPartyModal() {
+          this.showNewPartyModal = false;
+        },
+
+        openNewItemModal() {
+          this.newItemForm = {
+            code: '',
+            name: '',
+            type: 'RAW',
+            category: '',
+            primaryUom: 'meter',
+            hsn: '',
+            gstRate: 12,
+            tracking: 'NONE',
+            hasVariants: false,
+            variants: { axes: [] }
+          };
+          this.showNewItemModal = true;
+        },
+
+        saveNewItem() {
+          if (!this.newItemForm.name.trim()) {
+            alert('Item name required');
+            return;
+          }
+          const newItem = {
+            id: 'i' + Math.random().toString(36).substr(2, 9),
+            code: this.newItemForm.code,
+            name: this.newItemForm.name,
+            type: this.newItemForm.type,
+            category: this.newItemForm.category,
+            primaryUom: this.newItemForm.primaryUom,
+            hsn: this.newItemForm.hsn,
+            gst: this.newItemForm.gstRate,
+            tracking: this.newItemForm.tracking
+          };
+          this.items.push(newItem);
+          alert(this.newItemForm.name + ' added successfully!');
+          this.showNewItemModal = false;
+        },
+
+        closeNewItemModal() {
+          this.showNewItemModal = false;
+        },
+
+        validateGSTIN(gstin) {
+          return /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9]{1}$/.test(gstin);
+        },
+
+        getStateFromGSTIN(gstin) {
+          const stateCodes = {
+            '01': 'AN', '02': 'AP', '03': 'AR', '04': 'AS', '05': 'BR', '06': 'CG', '07': 'CH', '08': 'CT',
+            '09': 'DL', '10': 'DN', '11': 'GA', '12': 'GJ', '13': 'HR', '14': 'HP', '15': 'JK', '16': 'JH',
+            '17': 'KA', '18': 'KL', '19': 'LA', '20': 'LD', '21': 'MP', '22': 'MH', '23': 'MN', '24': 'ML',
+            '25': 'MZ', '26': 'OD', '27': 'PY', '28': 'PB', '29': 'RJ', '30': 'SK', '31': 'TN', '32': 'TG',
+            '33': 'TR', '34': 'UP', '35': 'UT', '36': 'WB'
+          };
+          return stateCodes[gstin.substring(0, 2)] || 'Unknown';
+        }
+      };
+    }
+
+    document.addEventListener('alpine:init', () => {
+      lucide.createIcons();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,4665 @@
+openapi: 3.1.0
+info:
+  title: Fabric ERP API
+  version: 0.1.0-phase1
+  description: Multi-tenant SaaS ERP for ladies-suit / fabric trade (Phase 1 scope)
+  contact:
+    name: Fabric ERP Team
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.fabric-erp.com/v1
+    description: Production API
+  - url: http://localhost:8000/v1
+    description: Local development
+
+tags:
+  - name: identity
+    description: Authentication, users, roles, firms
+  - name: masters
+    description: Party, Item, SKU, ledgers, price lists, COA
+  - name: procurement
+    description: Purchase orders, GRN, invoices, returns, landed costs
+  - name: inventory
+    description: Stock positions, ATP, lots, adjustments, stock-takes, transfers, consignment
+  - name: sales
+    description: Quotations, sales orders, delivery challans, invoices, returns
+  - name: accounting
+    description: Vouchers, bank accounts, cheques, expenses, fixed assets, periods
+  - name: reports
+    description: Day-book, trial balance, P&L, balance sheet, ledger, ageing, stock summary
+  - name: platform
+    description: Audit log, feature flags, notifications, exports
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from /auth/login
+
+  parameters:
+    OrgId:
+      name: X-Org-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Organization UUID (tenant ID)
+
+    FirmId:
+      name: X-Firm-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Firm UUID within the organization
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 200
+      description: Number of items per page
+
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        nullable: true
+      description: Cursor token for pagination
+
+    Filter:
+      name: filter
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Filter query (e.g., status=DRAFT, name~Jane)
+
+    Sort:
+      name: sort
+      in: query
+      required: false
+      schema:
+        type: string
+        default: created_at:desc
+      description: Sort field and direction (field:asc|desc)
+
+    Include:
+      name: include
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Comma-separated related resources (e.g., lines, addresses)
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Client-supplied key (UUID or opaque up to 100 chars) to make mutating requests
+        idempotent. If the same key is retried within 14 days, the server returns the
+        original response instead of creating a duplicate. Critical for offline Android
+        sync and flaky-network retries.
+      schema:
+        type: string
+        maxLength: 100
+        pattern: "^[A-Za-z0-9_-]{8,100}$"
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    Conflict:
+      description: Conflict (e.g., duplicate, invalid state)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+  schemas:
+    ProblemDetails:
+      type: object
+      required:
+        - type
+        - status
+        - title
+      properties:
+        type:
+          type: string
+          format: uri
+          description: Problem type URI per RFC 9457
+        status:
+          type: integer
+          description: HTTP status code
+        title:
+          type: string
+          description: Short human-readable title
+        detail:
+          type: string
+          description: Detailed explanation
+        instance:
+          type: string
+          format: uri
+          description: URI of the specific problem instance
+        errors:
+          type: object
+          additionalProperties: true
+          description: Field-level error details
+
+    PaginatedResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+      required:
+        - items
+        - has_more
+
+    TaxStatus:
+      type: string
+      enum:
+        - REGULAR
+        - COMPOSITION
+        - UNREGISTERED
+        - CONSUMER
+        - OVERSEAS
+
+    VoucherStatus:
+      type: string
+      enum:
+        - DRAFT
+        - POSTED
+        - RECONCILED
+        - VOIDED
+
+    MOStatus:
+      type: string
+      enum:
+        - DRAFT
+        - RELEASED
+        - IN_PROGRESS
+        - COMPLETED
+        - CLOSED
+
+    PurchaseOrderStatus:
+      type: string
+      enum:
+        - DRAFT
+        - APPROVED
+        - CONFIRMED
+        - PARTIAL_GRN
+        - FULLY_RECEIVED
+        - CANCELLED
+
+    SalesOrderStatus:
+      type: string
+      enum:
+        - DRAFT
+        - CONFIRMED
+        - PARTIAL_DC
+        - FULLY_DISPATCHED
+        - INVOICED
+        - CANCELLED
+
+    QuoteStatus:
+      type: string
+      enum:
+        - DRAFT
+        - SENT
+        - NEGOTIATING
+        - WON
+        - LOST
+        - EXPIRED
+        - CONVERTED
+
+    ChallanStatus:
+      type: string
+      enum:
+        - DRAFT
+        - ISSUED
+        - ACKNOWLEDGED
+        - IN_PROCESS
+        - RETURNED
+        - CLOSED
+
+    ItemType:
+      type: string
+      enum:
+        - RAW
+        - SEMI_FINISHED
+        - FINISHED
+        - SERVICE
+        - CONSUMABLE
+        - BY_PRODUCT
+        - SCRAP
+
+    TrackingType:
+      type: string
+      enum:
+        - NONE
+        - BATCH
+        - LOT
+        - SERIAL
+
+    PartyType:
+      type: string
+      enum:
+        - SUPPLIER
+        - CUSTOMER
+        - KARIGAR
+        - TRANSPORTER
+        - OTHER
+
+    UOMType:
+      type: string
+      enum:
+        - METER
+        - PIECE
+        - KG
+        - LITER
+        - SET
+        - GROSS
+        - DOZEN
+        - ROLL
+        - BUNDLE
+        - OTHER
+
+    VoucherType:
+      type: string
+      enum:
+        - SALES_INVOICE
+        - PURCHASE_INVOICE
+        - PAYMENT
+        - RECEIPT
+        - JOURNAL
+        - CONTRA
+        - DEBIT_NOTE
+        - CREDIT_NOTE
+        - OPENING_BAL
+
+    PaymentMode:
+      type: string
+      enum:
+        - CASH
+        - BANK_TRANSFER
+        - CHEQUE
+        - UPI
+        - CREDIT
+        - NEFT
+        - RTGS
+        - DD
+        - CARD
+
+    JournalLineType:
+      type: string
+      enum:
+        - DR
+        - CR
+
+    ChequeStatus:
+      type: string
+      enum:
+        - ISSUED
+        - CLEARED
+        - BOUNCED
+        - POST_DATED
+        - STOPPED
+        - CANCELLED
+
+    Party:
+      type: object
+      required:
+        - name
+        - tax_status
+      properties:
+        party_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 255
+        legal_name:
+          type: string
+          maxLength: 255
+          nullable: true
+        tax_status:
+          $ref: '#/components/schemas/TaxStatus'
+        gstin:
+          type: string
+          maxLength: 15
+          nullable: true
+          description: Encrypted in DB; decrypted on retrieval if user has view permission
+        pan:
+          type: string
+          maxLength: 10
+          nullable: true
+        state_code:
+          type: string
+          maxLength: 2
+        is_supplier:
+          type: boolean
+          default: false
+        is_customer:
+          type: boolean
+          default: false
+        is_karigar:
+          type: boolean
+          default: false
+        is_transporter:
+          type: boolean
+          default: false
+        credit_limit:
+          type: number
+          format: double
+          nullable: true
+        credit_days:
+          type: integer
+          nullable: true
+        default_price_list_id:
+          type: string
+          format: uuid
+          nullable: true
+        addresses:
+          type: array
+          items:
+            type: object
+            description: See party_address table in DDL
+        bank_accounts:
+          type: array
+          items:
+            type: object
+            description: See party_bank_account table in DDL
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Item:
+      type: object
+      required:
+        - code
+        - name
+        - item_type
+        - primary_uom
+      properties:
+        item_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          maxLength: 50
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          nullable: true
+        item_type:
+          $ref: '#/components/schemas/ItemType'
+        category:
+          type: string
+          maxLength: 100
+          nullable: true
+        primary_uom:
+          $ref: '#/components/schemas/UOMType'
+        tracking:
+          $ref: '#/components/schemas/TrackingType'
+          default: NONE
+        hsn_code:
+          type: string
+          maxLength: 8
+          nullable: true
+        gst_rate:
+          type: number
+          format: double
+          nullable: true
+        skus:
+          type: array
+          items:
+            $ref: '#/components/schemas/SKU'
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SKU:
+      type: object
+      required:
+        - item_id
+        - code
+      properties:
+        sku_id:
+          type: string
+          format: uuid
+        item_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          maxLength: 100
+        variant_map:
+          type: object
+          additionalProperties: true
+          description: JSON map of variant axes (e.g., {size: M, color: RED})
+        barcode:
+          type: string
+          nullable: true
+        warehouse_code:
+          type: string
+          nullable: true
+        standard_cost:
+          type: number
+          format: double
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Voucher:
+      type: object
+      required:
+        - voucher_type
+        - voucher_date
+      properties:
+        voucher_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        voucher_type:
+          $ref: '#/components/schemas/VoucherType'
+        voucher_number:
+          type: string
+          maxLength: 50
+          nullable: true
+          description: Null until posted
+        voucher_date:
+          type: string
+          format: date
+        reference_number:
+          type: string
+          maxLength: 100
+          nullable: true
+        reference_date:
+          type: string
+          format: date
+          nullable: true
+        party_id:
+          type: string
+          format: uuid
+          nullable: true
+        ledger_id:
+          type: string
+          format: uuid
+          nullable: true
+        amount:
+          type: number
+          format: double
+        status:
+          $ref: '#/components/schemas/VoucherStatus'
+          default: DRAFT
+        notes:
+          type: string
+          nullable: true
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/VoucherLine'
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    VoucherLine:
+      type: object
+      required:
+        - ledger_id
+        - amount
+        - line_type
+      properties:
+        voucher_line_id:
+          type: string
+          format: uuid
+        voucher_id:
+          type: string
+          format: uuid
+        ledger_id:
+          type: string
+          format: uuid
+        line_type:
+          $ref: '#/components/schemas/JournalLineType'
+        amount:
+          type: number
+          format: double
+        description:
+          type: string
+          nullable: true
+        reference_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Ref to PO, GRN, Invoice, etc.
+        cost_centre_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    Invoice:
+      type: object
+      required:
+        - party_id
+        - invoice_date
+      properties:
+        invoice_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        invoice_number:
+          type: string
+          maxLength: 50
+          nullable: true
+        invoice_date:
+          type: string
+          format: date
+        party_id:
+          type: string
+          format: uuid
+        sales_order_id:
+          type: string
+          format: uuid
+          nullable: true
+        delivery_challan_id:
+          type: string
+          format: uuid
+          nullable: true
+        tax_regime:
+          type: string
+          enum:
+            - GST
+            - NON_GST
+        total_amount:
+          type: number
+          format: double
+        tax_amount:
+          type: number
+          format: double
+          nullable: true
+        net_amount:
+          type: number
+          format: double
+        status:
+          type: string
+          enum:
+            - DRAFT
+            - FINALIZED
+            - SENT
+          default: DRAFT
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/InvoiceLine'
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    InvoiceLine:
+      type: object
+      required:
+        - sku_id
+        - quantity
+        - unit_rate
+      properties:
+        invoice_line_id:
+          type: string
+          format: uuid
+        invoice_id:
+          type: string
+          format: uuid
+        sku_id:
+          type: string
+          format: uuid
+        quantity:
+          type: number
+          format: double
+        unit_rate:
+          type: number
+          format: double
+        line_amount:
+          type: number
+          format: double
+        tax_rate:
+          type: number
+          format: double
+          nullable: true
+        tax_amount:
+          type: number
+          format: double
+          nullable: true
+        description:
+          type: string
+          nullable: true
+
+    PurchaseInvoice:
+      type: object
+      required:
+        - party_id
+        - invoice_date
+      properties:
+        purchase_invoice_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        invoice_number:
+          type: string
+          maxLength: 50
+        invoice_date:
+          type: string
+          format: date
+        party_id:
+          type: string
+          format: uuid
+        purchase_order_id:
+          type: string
+          format: uuid
+          nullable: true
+        grn_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        total_amount:
+          type: number
+          format: double
+        tax_amount:
+          type: number
+          format: double
+          nullable: true
+        net_amount:
+          type: number
+          format: double
+        status:
+          type: string
+          enum:
+            - DRAFT
+            - MATCHED
+            - INVOICED
+            - PAID
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseInvoiceLine'
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PurchaseInvoiceLine:
+      type: object
+      required:
+        - item_id
+        - quantity
+        - unit_rate
+      properties:
+        purchase_invoice_line_id:
+          type: string
+          format: uuid
+        purchase_invoice_id:
+          type: string
+          format: uuid
+        item_id:
+          type: string
+          format: uuid
+        quantity:
+          type: number
+          format: double
+        unit_rate:
+          type: number
+          format: double
+        line_amount:
+          type: number
+          format: double
+        tax_rate:
+          type: number
+          format: double
+          nullable: true
+        tax_amount:
+          type: number
+          format: double
+          nullable: true
+
+    StockPosition:
+      type: object
+      properties:
+        stock_position_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        sku_id:
+          type: string
+          format: uuid
+        location_id:
+          type: string
+          format: uuid
+        available_qty:
+          type: number
+          format: double
+        reserved_qty:
+          type: number
+          format: double
+        in_transit_qty:
+          type: number
+          format: double
+        cost_value:
+          type: number
+          format: double
+        valuation_method:
+          type: string
+          enum:
+            - FIFO
+            - MOVING_AVERAGE
+        updated_at:
+          type: string
+          format: date-time
+
+    Lot:
+      type: object
+      required:
+        - sku_id
+        - lot_number
+      properties:
+        lot_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        firm_id:
+          type: string
+          format: uuid
+        sku_id:
+          type: string
+          format: uuid
+        lot_number:
+          type: string
+          maxLength: 100
+        received_date:
+          type: string
+          format: date
+        supplier_batch:
+          type: string
+          maxLength: 100
+          nullable: true
+        attributes:
+          type: object
+          additionalProperties: true
+          description: JSON object for lot-specific data (GSM, width, shade, etc.)
+        total_qty:
+          type: number
+          format: double
+        available_qty:
+          type: number
+          format: double
+        standard_cost:
+          type: number
+          format: double
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      summary: Login and obtain JWT
+      operationId: loginUser
+      tags:
+        - identity
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  refresh_token:
+                    type: string
+                  expires_in:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: public
+
+  /auth/refresh:
+    post:
+      summary: Refresh JWT token
+      operationId: refreshToken
+      tags:
+        - identity
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refresh_token
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  expires_in:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: auth.refresh
+
+  /auth/logout:
+    post:
+      summary: Logout and revoke token
+      operationId: logoutUser
+      tags:
+        - identity
+      responses:
+        '204':
+          description: Logged out successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: auth.logout
+
+  /auth/mfa/enroll:
+    post:
+      summary: Enroll in MFA
+      operationId: enrollMFA
+      tags:
+        - identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                method:
+                  type: string
+                  enum:
+                    - TOTP
+                    - SMS
+      responses:
+        '200':
+          description: MFA enrollment initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret:
+                    type: string
+                    description: For TOTP, the secret to scan into authenticator app
+                  challenge_id:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+      x-permission: user.mfa.enroll
+
+  /auth/mfa/verify:
+    post:
+      summary: Verify MFA code
+      operationId: verifyMFA
+      tags:
+        - identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - challenge_id
+                - code
+              properties:
+                challenge_id:
+                  type: string
+                code:
+                  type: string
+      responses:
+        '200':
+          description: MFA verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  confirmed:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: user.mfa.verify
+
+  /me:
+    get:
+      summary: Get current user profile
+      operationId: getCurrentUser
+      tags:
+        - identity
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                description: User profile with org and firms
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: user.read_self
+
+  /users:
+    get:
+      summary: List users in organization
+      operationId: listUsers
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: Paginated user list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See app_user table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      x-permission: user.list
+
+    post:
+      summary: Create user
+      operationId: createUser
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - legal_name
+              properties:
+                email:
+                  type: string
+                  format: email
+                legal_name:
+                  type: string
+                phone:
+                  type: string
+                  nullable: true
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      x-permission: user.create
+
+  /users/{user_id}:
+    get:
+      summary: Get user by ID
+      operationId: getUser
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: User details
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: user.read
+
+    patch:
+      summary: Update user
+      operationId: updateUser
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                legal_name:
+                  type: string
+                phone:
+                  type: string
+                  nullable: true
+                is_active:
+                  type: boolean
+      responses:
+        '200':
+          description: User updated
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: user.update
+
+    delete:
+      summary: Soft-delete user
+      operationId: deleteUser
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: User deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: user.delete
+
+  /users/{user_id}/roles:
+    post:
+      summary: Assign role to user
+      operationId: assignUserRole
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - role_id
+              properties:
+                role_id:
+                  type: string
+                  format: uuid
+                firm_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+      responses:
+        '201':
+          description: Role assigned
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: user.assign_role
+
+  /roles:
+    get:
+      summary: List roles
+      operationId: listRoles
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated role list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See role table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: role.list
+
+    post:
+      summary: Create role
+      operationId: createRole
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+                - name
+              properties:
+                code:
+                  type: string
+                name:
+                  type: string
+                description:
+                  type: string
+                  nullable: true
+      responses:
+        '201':
+          description: Role created
+          content:
+            application/json:
+              schema:
+                type: object
+        '409':
+          $ref: '#/components/responses/Conflict'
+      x-permission: role.create
+
+  /roles/{role_id}:
+    get:
+      summary: Get role by ID
+      operationId: getRole
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Role details
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: role.read
+
+    patch:
+      summary: Update role
+      operationId: updateRole
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+      responses:
+        '200':
+          description: Role updated
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: role.update
+
+  /roles/{role_id}/permissions:
+    post:
+      summary: Assign permission to role
+      operationId: assignRolePermission
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - permission_code
+              properties:
+                permission_code:
+                  type: string
+      responses:
+        '201':
+          description: Permission assigned
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: role.assign_permission
+
+  /devices:
+    get:
+      summary: List user's login devices
+      operationId: listDevices
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+      responses:
+        '200':
+          description: Device list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      description: See login_session table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: device.list
+
+  /devices/{device_id}/revoke:
+    post:
+      summary: Revoke device session
+      operationId: revokeDevice
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Device revoked
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: device.revoke
+
+  /firms:
+    get:
+      summary: List firms in organization
+      operationId: listFirms
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated firm list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See firm table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: firm.list
+
+    post:
+      summary: Create firm
+      operationId: createFirm
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+                - name
+              properties:
+                code:
+                  type: string
+                  maxLength: 10
+                name:
+                  type: string
+                  maxLength: 255
+                legal_name:
+                  type: string
+                  nullable: true
+                gst_registration_type:
+                  type: string
+                  nullable: true
+                gstin:
+                  type: string
+                  nullable: true
+                state_code:
+                  type: string
+                  nullable: true
+                has_gst:
+                  type: boolean
+                  default: true
+      responses:
+        '201':
+          description: Firm created
+          content:
+            application/json:
+              schema:
+                type: object
+        '409':
+          $ref: '#/components/responses/Conflict'
+      x-permission: firm.create
+
+  /firms/{firm_id}:
+    get:
+      summary: Get firm by ID
+      operationId: getFirm
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - name: firm_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Firm details
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: firm.read
+
+    patch:
+      summary: Update firm
+      operationId: updateFirm
+      tags:
+        - identity
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: firm_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                legal_name:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: Firm updated
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: firm.update
+
+  /parties:
+    get:
+      summary: List parties
+      operationId: listParties
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Paginated party list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Party'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: master.party.list
+
+    post:
+      summary: Create party
+      operationId: createParty
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Party'
+      responses:
+        '201':
+          description: Party created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Party'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: master.party.create
+
+  /parties/{party_id}:
+    get:
+      summary: Get party by ID
+      operationId: getParty
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: party_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Party details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Party'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: master.party.read
+
+    patch:
+      summary: Update party
+      operationId: updateParty
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: party_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Party'
+      responses:
+        '200':
+          description: Party updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Party'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: master.party.update
+
+  /items:
+    get:
+      summary: List items
+      operationId: listItems
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Paginated item list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Item'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: master.item.list
+
+    post:
+      summary: Create item
+      operationId: createItem
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Item'
+      responses:
+        '201':
+          description: Item created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: master.item.create
+
+  /items/{item_id}:
+    get:
+      summary: Get item by ID
+      operationId: getItem
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Item details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: master.item.read
+
+    patch:
+      summary: Update item
+      operationId: updateItem
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Item'
+      responses:
+        '200':
+          description: Item updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: master.item.update
+
+  /skus:
+    get:
+      summary: List SKUs
+      operationId: listSKUs
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+      responses:
+        '200':
+          description: Paginated SKU list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SKU'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: master.sku.list
+
+    post:
+      summary: Create SKU
+      operationId: createSKU
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SKU'
+      responses:
+        '201':
+          description: SKU created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SKU'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: master.sku.create
+
+  /skus/{sku_id}:
+    get:
+      summary: Get SKU by ID
+      operationId: getSKU
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: sku_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: SKU details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SKU'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: master.sku.read
+
+    patch:
+      summary: Update SKU
+      operationId: updateSKU
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: sku_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SKU'
+      responses:
+        '200':
+          description: SKU updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SKU'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: master.sku.update
+
+  /uoms:
+    get:
+      summary: List units of measure
+      operationId: listUOMs
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated UOM list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See uom table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: master.uom.list
+
+  /hsn-codes:
+    get:
+      summary: List HSN codes
+      operationId: listHSNCodes
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+      responses:
+        '200':
+          description: Paginated HSN list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See hsn_master table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: public
+
+  /ledgers:
+    get:
+      summary: List ledgers
+      operationId: listLedgers
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+      responses:
+        '200':
+          description: Paginated ledger list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See ledger table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: master.ledger.list
+
+    post:
+      summary: Create ledger
+      operationId: createLedger
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+                - name
+              properties:
+                code:
+                  type: string
+                name:
+                  type: string
+                coa_group_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Ledger created
+          content:
+            application/json:
+              schema:
+                type: object
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: master.ledger.create
+
+  /price-lists:
+    get:
+      summary: List price lists
+      operationId: listPriceLists
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated price list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See price_list table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: master.price_list.list
+
+    post:
+      summary: Create price list
+      operationId: createPriceList
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+                - name
+              properties:
+                code:
+                  type: string
+                name:
+                  type: string
+                currency:
+                  type: string
+                  default: INR
+      responses:
+        '201':
+          description: Price list created
+          content:
+            application/json:
+              schema:
+                type: object
+        '409':
+          description: Idempotency key conflict — same key used with a different request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: master.price_list.create
+
+  /cost-centres:
+    get:
+      summary: List cost centres
+      operationId: listCostCentres
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated cost centre list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See cost_centre table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: master.cost_centre.list
+
+    post:
+      summary: Create cost centre
+      operationId: createCostCentre
+      tags:
+        - masters
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+                - name
+              properties:
+                code:
+                  type: string
+                name:
+                  type: string
+                type:
+                  type: string
+      responses:
+        '201':
+          description: Cost centre created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: master.cost_centre.create
+
+  /purchase-orders:
+    get:
+      summary: List purchase orders
+      operationId: listPurchaseOrders
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Paginated PO list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See purchase_order table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: procurement.po.list
+
+    post:
+      summary: Create purchase order
+      operationId: createPurchaseOrder
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - party_id
+                - po_date
+              properties:
+                party_id:
+                  type: string
+                  format: uuid
+                po_date:
+                  type: string
+                  format: date
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                        format: uuid
+                      quantity:
+                        type: number
+                        format: double
+                      unit_rate:
+                        type: number
+                        format: double
+      responses:
+        '201':
+          description: PO created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: procurement.po.create
+
+  /purchase-orders/{po_id}:
+    get:
+      summary: Get purchase order
+      operationId: getPurchaseOrder
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: po_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: PO details
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: procurement.po.read
+
+    patch:
+      summary: Update purchase order
+      operationId: updatePurchaseOrder
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: po_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: PO updated
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: procurement.po.update
+
+  /purchase-orders/{po_id}/approve:
+    post:
+      summary: Approve purchase order
+      operationId: approvePurchaseOrder
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: po_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: PO approved
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      x-permission: procurement.po.approve
+
+  /grns:
+    get:
+      summary: List goods receipt notes
+      operationId: listGRNs
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Paginated GRN list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See goods_receipt_note table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: procurement.grn.list
+
+    post:
+      summary: Create goods receipt note
+      operationId: createGRN
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - grn_date
+              properties:
+                grn_date:
+                  type: string
+                  format: date
+                po_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+                party_id:
+                  type: string
+                  format: uuid
+                location_id:
+                  type: string
+                  format: uuid
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                        format: uuid
+                      quantity:
+                        type: number
+                        format: double
+                      unit_rate:
+                        type: number
+                        format: double
+      responses:
+        '201':
+          description: GRN created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: procurement.grn.create
+
+  /grns/{grn_id}:
+    get:
+      summary: Get goods receipt note
+      operationId: getGRN
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: grn_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: GRN details
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: procurement.grn.read
+
+  /purchase-invoices:
+    get:
+      summary: List purchase invoices
+      operationId: listPurchaseInvoices
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Paginated purchase invoice list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PurchaseInvoice'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: procurement.purchase_invoice.list
+
+    post:
+      summary: Create purchase invoice
+      operationId: createPurchaseInvoice
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseInvoice'
+      responses:
+        '201':
+          description: Purchase invoice created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseInvoice'
+      x-permission: procurement.purchase_invoice.create
+
+  /purchase-invoices/{purchase_invoice_id}:
+    get:
+      summary: Get purchase invoice
+      operationId: getPurchaseInvoice
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: purchase_invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Purchase invoice details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseInvoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: procurement.purchase_invoice.read
+
+    patch:
+      summary: Update purchase invoice
+      operationId: updatePurchaseInvoice
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: purchase_invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseInvoice'
+      responses:
+        '200':
+          description: Purchase invoice updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseInvoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: procurement.purchase_invoice.update
+
+  /landed-costs:
+    get:
+      summary: List landed costs
+      operationId: listLandedCosts
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated landed cost list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See landed_cost table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: procurement.landed_cost.list
+
+    post:
+      summary: Create landed cost
+      operationId: createLandedCost
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - cost_type
+                - amount
+              properties:
+                grn_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+                cost_type:
+                  type: string
+                supplier:
+                  type: string
+                amount:
+                  type: number
+                  format: double
+                tax:
+                  type: number
+                  format: double
+                  nullable: true
+                allocation_rule:
+                  type: string
+                  enum:
+                    - BY_VALUE
+                    - BY_QTY
+                    - BY_WEIGHT
+                    - FLAT
+      responses:
+        '201':
+          description: Landed cost created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: procurement.landed_cost.create
+
+  /purchase-returns:
+    get:
+      summary: List purchase returns
+      operationId: listPurchaseReturns
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated purchase return list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See purchase_return table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: procurement.purchase_return.list
+
+    post:
+      summary: Create purchase return
+      operationId: createPurchaseReturn
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - purchase_invoice_id
+              properties:
+                purchase_invoice_id:
+                  type: string
+                  format: uuid
+                return_date:
+                  type: string
+                  format: date
+                reason:
+                  type: string
+                lines:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        '201':
+          description: Purchase return created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: procurement.purchase_return.create
+
+  /stock/positions:
+    get:
+      summary: Get stock positions
+      operationId: listStockPositions
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+      responses:
+        '200':
+          description: Paginated stock position list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/StockPosition'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: inventory.stock.list
+
+  /stock/atp:
+    get:
+      summary: Get available-to-promise (ATP) stock
+      operationId: getATP
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: sku_ids
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+              format: uuid
+      responses:
+        '200':
+          description: ATP stock
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: inventory.atp.read
+
+  /stock/lots:
+    get:
+      summary: List stock lots
+      operationId: listLots
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+      responses:
+        '200':
+          description: Paginated lot list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Lot'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: inventory.lot.list
+
+  /stock/adjustments:
+    get:
+      summary: List stock adjustments
+      operationId: listStockAdjustments
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated adjustment list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See stock_adjustment table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: inventory.adjustment.list
+
+    post:
+      summary: Create stock adjustment
+      operationId: createStockAdjustment
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sku_id
+                - adjustment_qty
+              properties:
+                sku_id:
+                  type: string
+                  format: uuid
+                adjustment_qty:
+                  type: number
+                  format: double
+                reason:
+                  type: string
+      responses:
+        '201':
+          description: Adjustment created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: inventory.adjustment.create
+
+  /stock-takes:
+    get:
+      summary: List stock takes
+      operationId: listStockTakes
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Paginated stock take list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See stock_take table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: inventory.stock_take.list
+
+    post:
+      summary: Create stock take
+      operationId: createStockTake
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - location_id
+              properties:
+                location_id:
+                  type: string
+                  format: uuid
+                scope:
+                  type: string
+                  enum:
+                    - FULL
+                    - CATEGORY
+                    - LOT
+                    - ABC_A_ONLY
+      responses:
+        '201':
+          description: Stock take created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: inventory.stock_take.create
+
+  /stock-takes/{stock_take_id}:
+    get:
+      summary: Get stock take
+      operationId: getStockTake
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: stock_take_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Stock take details
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: inventory.stock_take.read
+
+  /stock-takes/{stock_take_id}/approve:
+    post:
+      summary: Approve stock take
+      operationId: approveStockTake
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: stock_take_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Stock take approved
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: inventory.stock_take.approve
+
+  /stock-transfers:
+    get:
+      summary: List stock transfers
+      operationId: listStockTransfers
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated transfer list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See stock_transfer table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: inventory.transfer.list
+
+    post:
+      summary: Create stock transfer
+      operationId: createStockTransfer
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - from_location_id
+                - to_location_id
+              properties:
+                from_location_id:
+                  type: string
+                  format: uuid
+                to_location_id:
+                  type: string
+                  format: uuid
+                lines:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        '201':
+          description: Transfer created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: inventory.transfer.create
+
+  /consignment-shipments:
+    get:
+      summary: List consignment shipments
+      operationId: listConsignmentShipments
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated consignment list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See consignment_shipment table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: inventory.consignment.list
+
+    post:
+      summary: Create consignment shipment
+      operationId: createConsignmentShipment
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - consignee_id
+              properties:
+                consignee_id:
+                  type: string
+                  format: uuid
+                shipment_date:
+                  type: string
+                  format: date
+                lines:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        '201':
+          description: Consignment created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: inventory.consignment.create
+
+  /consignment-shipments/{shipment_id}/settle:
+    post:
+      summary: Settle consignment
+      operationId: settleConsignment
+      tags:
+        - inventory
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: shipment_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - settled_qty
+              properties:
+                settled_qty:
+                  type: number
+                  format: double
+                settlement_date:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: Consignment settled
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: inventory.consignment.settle
+
+  /quotations:
+    get:
+      summary: List quotations
+      operationId: listQuotations
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Paginated quotation list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See quotation table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: sales.quotation.list
+
+    post:
+      summary: Create quotation
+      operationId: createQuotation
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - party_id
+              properties:
+                party_id:
+                  type: string
+                  format: uuid
+                quote_date:
+                  type: string
+                  format: date
+                lines:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        '201':
+          description: Quotation created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: sales.quotation.create
+
+  /quotations/{quotation_id}:
+    get:
+      summary: Get quotation
+      operationId: getQuotation
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: quotation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Quotation details
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: sales.quotation.read
+
+    patch:
+      summary: Update quotation
+      operationId: updateQuotation
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: quotation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Quotation updated
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: sales.quotation.update
+
+  /quotations/{quotation_id}/convert:
+    post:
+      summary: Convert quotation to sales order
+      operationId: convertQuotation
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: quotation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Sales order created
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: sales.quotation.convert
+
+  /sales-orders:
+    get:
+      summary: List sales orders
+      operationId: listSalesOrders
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Paginated sales order list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See sales_order table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: sales.order.list
+
+    post:
+      summary: Create sales order
+      operationId: createSalesOrder
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - party_id
+              properties:
+                party_id:
+                  type: string
+                  format: uuid
+                so_date:
+                  type: string
+                  format: date
+                lines:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        '201':
+          description: Sales order created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: sales.order.create
+
+  /delivery-challans:
+    get:
+      summary: List delivery challans
+      operationId: listDeliveryChallans
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+      responses:
+        '200':
+          description: Paginated delivery challan list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See delivery_challan table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: sales.challan.list
+
+    post:
+      summary: Create delivery challan
+      operationId: createDeliveryChallan
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sales_order_id
+              properties:
+                sales_order_id:
+                  type: string
+                  format: uuid
+                challan_date:
+                  type: string
+                  format: date
+                lines:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        '201':
+          description: Delivery challan created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: sales.challan.create
+
+  /invoices:
+    get:
+      summary: List invoices
+      operationId: listInvoices
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Paginated invoice list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Invoice'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: sales.invoice.list
+
+    post:
+      summary: Create invoice
+      operationId: createInvoice
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Invoice'
+      responses:
+        '201':
+          description: Invoice created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+      x-permission: sales.invoice.create
+
+  /invoices/{invoice_id}:
+    get:
+      summary: Get invoice
+      operationId: getInvoice
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Invoice details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: sales.invoice.read
+
+    patch:
+      summary: Update invoice
+      operationId: updateInvoice
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Invoice'
+      responses:
+        '200':
+          description: Invoice updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: sales.invoice.update
+
+  /invoices/{invoice_id}/finalize:
+    post:
+      summary: Finalize invoice
+      operationId: finalizeInvoice
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Invoice finalized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: sales.invoice.finalize
+
+  /invoices/{invoice_id}/send-whatsapp:
+    post:
+      summary: Send invoice via WhatsApp
+      operationId: sendInvoiceWhatsApp
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - phone_number
+              properties:
+                phone_number:
+                  type: string
+      responses:
+        '200':
+          description: Message queued
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: sales.invoice.send
+
+  /sales-returns:
+    get:
+      summary: List sales returns
+      operationId: listSalesReturns
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated sales return list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See sales_return table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: sales.return.list
+
+    post:
+      summary: Create sales return
+      operationId: createSalesReturn
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - invoice_id
+              properties:
+                invoice_id:
+                  type: string
+                  format: uuid
+                return_date:
+                  type: string
+                  format: date
+                lines:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        '201':
+          description: Sales return created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: sales.return.create
+
+  /vouchers:
+    get:
+      summary: List vouchers
+      operationId: listVouchers
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Paginated voucher list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Voucher'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: accounting.voucher.list
+
+    post:
+      summary: Create voucher
+      operationId: createVoucher
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Voucher'
+      responses:
+        '201':
+          description: Voucher created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Voucher'
+      x-permission: accounting.voucher.create
+
+  /vouchers/{voucher_id}:
+    get:
+      summary: Get voucher
+      operationId: getVoucher
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: voucher_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200':
+          description: Voucher details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Voucher'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: accounting.voucher.read
+
+    patch:
+      summary: Update voucher
+      operationId: updateVoucher
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: voucher_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Voucher'
+      responses:
+        '200':
+          description: Voucher updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Voucher'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: accounting.voucher.update
+
+  /vouchers/{voucher_id}/post:
+    post:
+      summary: Post voucher
+      operationId: postVoucher
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: voucher_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Voucher posted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Voucher'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: accounting.voucher.post
+
+  /bank-accounts:
+    get:
+      summary: List bank accounts
+      operationId: listBankAccounts
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated bank account list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See bank_account table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: accounting.bank.list
+
+    post:
+      summary: Create bank account
+      operationId: createBankAccount
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - account_number
+                - ifsc_code
+              properties:
+                account_number:
+                  type: string
+                ifsc_code:
+                  type: string
+                bank_name:
+                  type: string
+                account_holder:
+                  type: string
+                ledger_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Bank account created
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: accounting.bank.create
+
+  /bank-accounts/{bank_account_id}/reconcile:
+    post:
+      summary: Reconcile bank account
+      operationId: reconcileBankAccount
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: bank_account_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - statement_date
+                - statement_balance
+              properties:
+                statement_date:
+                  type: string
+                  format: date
+                statement_balance:
+                  type: number
+                  format: double
+      responses:
+        '200':
+          description: Reconciliation started
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: accounting.bank.reconcile
+
+  /cheques:
+    get:
+      summary: List cheques
+      operationId: listCheques
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+      responses:
+        '200':
+          description: Paginated cheque list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See cheque table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: accounting.cheque.list
+
+  /cheques/{cheque_id}/status:
+    patch:
+      summary: Update cheque status
+      operationId: updateChequeStatus
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: cheque_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  $ref: '#/components/schemas/ChequeStatus'
+      responses:
+        '200':
+          description: Cheque status updated
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: accounting.cheque.update
+
+  /accounting/periods:
+    get:
+      summary: List accounting periods
+      operationId: listAccountingPeriods
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+      responses:
+        '200':
+          description: Accounting periods
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      description: See accounting_period table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: accounting.period.list
+
+  /accounting/periods/{period_id}/close:
+    post:
+      summary: Close accounting period
+      operationId: closeAccountingPeriod
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: period_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Period closed
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: accounting.period.close
+
+  /accounting/periods/{period_id}/reopen:
+    post:
+      summary: Reopen accounting period
+      operationId: reopenAccountingPeriod
+      tags:
+        - accounting
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: period_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Period reopened
+          content:
+            application/json:
+              schema:
+                type: object
+      x-permission: accounting.period.reopen
+
+  /reports/day-book:
+    get:
+      summary: Get day-book report
+      operationId: getDayBook
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Day-book report
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: reports.day_book.read
+
+  /reports/trial-balance:
+    get:
+      summary: Get trial balance report
+      operationId: getTrialBalance
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: as_on_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Trial balance report
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: reports.trial_balance.read
+
+  /reports/profit-loss:
+    get:
+      summary: Get profit & loss report
+      operationId: getProfitLoss
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: from_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: P&L report
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: reports.profit_loss.read
+
+  /reports/balance-sheet:
+    get:
+      summary: Get balance sheet report
+      operationId: getBalanceSheet
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: as_on_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Balance sheet report
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: reports.balance_sheet.read
+
+  /reports/ledger/{ledger_id}:
+    get:
+      summary: Get ledger statement
+      operationId: getLedgerStatement
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: ledger_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: from_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Ledger statement
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: reports.ledger.read
+
+  /reports/party-statement/{party_id}:
+    get:
+      summary: Get party statement
+      operationId: getPartyStatement
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: party_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: from_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Party statement
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: reports.party_statement.read
+
+  /reports/stock-summary:
+    get:
+      summary: Get stock summary report
+      operationId: getStockSummary
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: as_on_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Stock summary report
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: reports.stock_summary.read
+
+  /reports/ageing:
+    get:
+      summary: Get receivables ageing report
+      operationId: getAgeing
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: as_on_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Ageing report
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: reports.ageing.read
+
+  /reports/item-profit:
+    get:
+      summary: Get item-wise profit report
+      operationId: getItemProfit
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: from_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Item profit report
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: reports.item_profit.read
+
+  /reports/cost-centre-pnl:
+    get:
+      summary: Get cost centre P&L report
+      operationId: getCostCentrePNL
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: from_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Cost centre P&L report
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: reports.cost_centre_pnl.read
+
+  /audit-log:
+    get:
+      summary: List audit log entries
+      operationId: listAuditLog
+      tags:
+        - platform
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Filter'
+      responses:
+        '200':
+          description: Paginated audit log
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See audit_log table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: platform.audit_log.read
+
+  /feature-flags:
+    get:
+      summary: List feature flags
+      operationId: listFeatureFlags
+      tags:
+        - platform
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+      responses:
+        '200':
+          description: Feature flags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      description: See feature_flag table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: platform.feature_flag.read
+
+  /notifications:
+    get:
+      summary: List user notifications
+      operationId: listNotifications
+      tags:
+        - platform
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated notification list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          description: See notification table in DDL
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: platform.notification.read
+
+  /export/data:
+    post:
+      summary: Export data
+      operationId: exportData
+      tags:
+        - platform
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - entity_type
+              properties:
+                entity_type:
+                  type: string
+                  enum:
+                    - parties
+                    - items
+                    - vouchers
+                    - invoices
+                    - stock_positions
+                format:
+                  type: string
+                  enum:
+                    - CSV
+                    - XLSX
+                  default: CSV
+      responses:
+        '202':
+          description: Export job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                    format: uuid
+        '400':
+          $ref: '#/components/responses/BadRequest'
+      x-permission: platform.export.create
