@@ -84,7 +84,14 @@ fabric-erp/
 ├── docs/
 │   ├── architecture.md                # System design & principles
 │   ├── implementation-plan.md         # 12-week MVP plan
-│   └── review.md                      # Known issues & fixes
+│   ├── review.md                      # Known issues & fixes
+│   └── retros/                        # One retro per completed task
+│       ├── TEMPLATE.md                # Structure for every retro
+│       └── task-NNN.md                # e.g. task-001.md
+│
+├── .claude/
+│   └── commands/
+│       └── retro.md                   # /retro TASK-NNN — scaffolds a retro
 │
 ├── backend/
 │   ├── pyproject.toml                 # Python deps + tool config (ruff, pytest)
@@ -459,15 +466,17 @@ These Makefile targets don't exist yet but should be the first artifacts:
 
 ---
 
-## How to Start a New Feature (5-Step Loop)
+## How to Start a New Feature (7-Step Loop)
 
 Every feature from now on follows this pattern:
 
-1. **Check the docs.** Read `docs/architecture.md` § relevant to feature, then `specs/`.
-2. **Write the failing test first.** Integration test covering happy path + one error case.
-3. **Create a migration.** `make migrate-create`, then write `ALTER TABLE` or `CREATE TABLE`.
-4. **Implement service + router + React component.** Start with service (no HTTP). Then router (thin). Then React (optimistic UI).
-5. **Run `make test && make lint` before commit.** All tests pass, no linting violations.
+1. **Branch.** `git checkout -b task/NNN-short-slug` off `main`. No work lands on `main` until merge.
+2. **Check the docs.** Read `docs/architecture.md` § relevant to feature, then `specs/`. Skim the prior task's retro at `docs/retros/task-(NNN-1).md` — it lists pre-task gotchas and open flags.
+3. **Write the failing test first.** Integration test covering happy path + one error case.
+4. **Create a migration.** `make migrate-create`, then write `ALTER TABLE` or `CREATE TABLE`.
+5. **Implement service + router + React component.** Start with service (no HTTP). Then router (thin). Then React (optimistic UI).
+6. **Run `make test && make lint`.** All tests pass, no linting violations.
+7. **Write the retro.** `/retro TASK-NNN` (or hand-write `docs/retros/task-NNN.md` using `docs/retros/TEMPLATE.md`). Capture deviations from plan + pre-next-task checklist. Commit retro alongside the task work. **A task is not Done until its retro exists.**
 
 **Example (Add PAN field to Party):**
 
@@ -529,6 +538,7 @@ These will blow up the project if broken:
 - [ ] New endpoint is in OpenAPI spec with correct `x-permission`.
 - [ ] Error messages are actionable (e.g., "Cannot finalize: stock qty < ordered qty" not "Validation failed").
 - [ ] Migrations are backward-compatible (if they aren't, flag it as a breaking change in PR description).
+- [ ] Retro written at `docs/retros/task-NNN.md`, covers deviations + pre-next checklist.
 
 ---
 

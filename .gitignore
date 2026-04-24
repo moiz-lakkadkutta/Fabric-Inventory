@@ -27,5 +27,8 @@ test-results/
 .idea/
 .vscode/
 
+# Claude Code — user-local settings only; project commands in .claude/commands/ are shared
+.claude/settings.local.json
+
 # Build artifacts
 *.log
