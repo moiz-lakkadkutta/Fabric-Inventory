@@ -80,9 +80,11 @@ fabric-erp/
 ├── README.md                          # This file
 ├── CLAUDE.md                          # (This file)
 ├── TASKS.md                           # Task backlog for Claude Code
-├── implementation-plan.md             # 12-week MVP plan
-├── architecture.md                    # System design & principles
-├── review.md                          # Known issues & fixes
+│
+├── docs/
+│   ├── architecture.md                # System design & principles
+│   ├── implementation-plan.md         # 12-week MVP plan
+│   └── review.md                      # Known issues & fixes
 │
 ├── backend/
 │   ├── pyproject.toml                 # Python deps + tool config (ruff, pytest)
@@ -407,7 +409,7 @@ These Makefile targets don't exist yet but should be the first artifacts:
 
 | Command | Purpose |
 |---------|---------|
-| `make setup` | `poetry install` (Python) + `pnpm install` (Node) + create `.env` from `.env.example` + initialize test DB |
+| `make setup` | `uv sync` (Python) + `pnpm install` (Node) + create `.env` from `.env.example`. Test DB init deferred to TASK-004. |
 | `make dev` | Start docker-compose stack: Postgres + FastAPI (uvicorn) + React (Vite) + Redis. Watch all files, hot-reload. |
 | `make test` | Run pytest (backend) + vitest (frontend) + Playwright E2E. Stop on first failure. |
 | `make test-watch` | Same as test but re-run on file change. |
@@ -461,7 +463,7 @@ These Makefile targets don't exist yet but should be the first artifacts:
 
 Every feature from now on follows this pattern:
 
-1. **Check the docs.** Read `architecture.md` § relevant to feature, then `specs/`.
+1. **Check the docs.** Read `docs/architecture.md` § relevant to feature, then `specs/`.
 2. **Write the failing test first.** Integration test covering happy path + one error case.
 3. **Create a migration.** `make migrate-create`, then write `ALTER TABLE` or `CREATE TABLE`.
 4. **Implement service + router + React component.** Start with service (no HTTP). Then router (thin). Then React (optimistic UI).
@@ -469,7 +471,7 @@ Every feature from now on follows this pattern:
 
 **Example (Add PAN field to Party):**
 
-1. Check: Party is in `architecture.md` §5.3.1 and `specs/screens-phase1.md` Masters section.
+1. Check: Party is in `docs/architecture.md` §5.3.1 and `specs/screens-phase1.md` Masters section.
 2. Test:
    ```python
    async def test_party_pan_optional():
@@ -534,10 +536,10 @@ These will blow up the project if broken:
 
 When starting a session:
 
-1. **architecture.md** — skim § headers. Read § relevant to your task (e.g., § 5.7 for sales invoice).
+1. **docs/architecture.md** — skim § headers. Read § relevant to your task (e.g., § 5.7 for sales invoice).
 2. **TASKS.md** — pick the next Ready task.
 3. **specs/** — read the spec for your feature (api-phase1.yaml, screens-phase1.md, etc.).
-4. **review.md** — skim to know what's broken; reference fixes if they're in your path.
+4. **docs/review.md** — skim to know what's broken; reference fixes if they're in your path.
 
 Don't re-read the whole architecture. It's 300+ lines. Jump to the relevant section.
 

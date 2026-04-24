@@ -7,7 +7,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 1 — Week 1: Project Bootstrap
 
 ### TASK-001: Repository scaffolding & Makefile
-**Status:** Ready  
+**Status:** Done  
 **Blocks:** TASK-002, TASK-003, TASK-004, TASK-005  
 **Files touched:** Makefile, .env.example, .gitignore, pyproject.toml, package.json, docker-compose.yml, .github/workflows/ci.yml
 
@@ -37,7 +37,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-002: FastAPI boilerplate & middleware
-**Status:** Blocked by TASK-001  
+**Status:** Ready  
 **Blocks:** TASK-006, TASK-007, TASK-008  
 **Files touched:** backend/main.py, backend/app/config.py, backend/app/db.py, backend/app/middleware/*, backend/app/exceptions.py
 
@@ -66,7 +66,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-003: React + Vite + Tailwind scaffolding
-**Status:** Blocked by TASK-001  
+**Status:** Ready  
 **Blocks:** TASK-011, TASK-012, TASK-013  
 **Files touched:** frontend/vite.config.ts, frontend/tsconfig.json, frontend/tailwind.config.ts, frontend/index.html, frontend/src/main.tsx, frontend/src/App.tsx, frontend/src/styles/globals.css
 
@@ -93,12 +93,12 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-004: Postgres DDL schema bootstrap
-**Status:** Blocked by TASK-001  
+**Status:** Ready  
 **Blocks:** TASK-009, TASK-010, TASK-015  
 **Files touched:** backend/schema/ddl.sql, backend/alembic/env.py, backend/alembic/script.py.mako
 
 **Scope:**
-- Copy DDL from `schema/ddl.sql` (fix the `uuid-ossp` syntax error from review.md).
+- Copy DDL from `schema/ddl.sql` (fix the `uuid-ossp` syntax error from docs/review.md).
 - Create Alembic migration folder structure.
 - Initialize Postgres in docker-compose with health check.
 - `make migrate` target runs `alembic upgrade head`.
@@ -113,13 +113,13 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 
 **Approximate time:** 1 hour  
 **Notes:**
-- Fix P0-1 from review.md: `uuid-ossp` → `"uuid-ossp"` (quoted).
+- Fix P0-1 from docs/review.md: `uuid-ossp` → `"uuid-ossp"` (quoted).
 - Or remove uuid-ossp if not used; schema uses `gen_random_uuid()` from pgcrypto.
 
 ---
 
 ### TASK-005: GitHub Actions CI setup
-**Status:** Blocked by TASK-001  
+**Status:** Ready  
 **Blocks:** (none; gate for merges)  
 **Files touched:** .github/workflows/ci.yml, .github/workflows/deploy.yml (stub)
 
@@ -244,7 +244,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 
 **Scope:**
 - Seed system roles on org creation: Owner, Accountant, Salesperson, Warehouse, Production Manager.
-- Each role has a preset bundle of permissions (from architecture.md).
+- Each role has a preset bundle of permissions (from docs/architecture.md).
 - `get_user_permissions(user_id, firm_id)` → query role_permission for user's role, return set of permission codes.
 - `has_permission(user_id, firm_id, permission_code)` → boolean check.
 - `assign_role(user_id, firm_id, role_id)` → user has role in firm (can be different role in another firm).
@@ -432,7 +432,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 **Acceptance:**
 - [ ] Unauthorized request returns 403.
 - [ ] Authorized request proceeds.
-- [ ] Permissions match architecture.md list.
+- [ ] Permissions match docs/architecture.md list.
 
 **Approximate time:** 1 hour  
 **Notes:**
@@ -1653,7 +1653,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ### TASK-064: Dogfood feedback loop (weekly backlog grooming)
 **Status:** Blocked by TASK-063  
 **Blocks:** (none; ongoing)  
-**Files touched:** TASKS.md (this file), implementation-plan.md (weekly updates)
+**Files touched:** TASKS.md (this file), docs/implementation-plan.md (weekly updates)
 
 **Scope:**
 - Each week (W11, W12):

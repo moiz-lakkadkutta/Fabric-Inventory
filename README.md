@@ -21,10 +21,10 @@ Next action: open a session with Claude Code in this repo and run `TASK-001` fro
 | Document | Purpose |
 |----------|---------|
 | [CLAUDE.md](./CLAUDE.md) | Instructions for Claude Code sessions in this repo |
-| [architecture.md](./architecture.md) | System design, tenancy, modules, principles |
-| [implementation-plan.md](./implementation-plan.md) | 12-week MVP timeline, scope decisions, budget |
+| [docs/architecture.md](./docs/architecture.md) | System design, tenancy, modules, principles |
+| [docs/implementation-plan.md](./docs/implementation-plan.md) | 12-week MVP timeline, scope decisions, budget |
 | [TASKS.md](./TASKS.md) | Ordered task list for Claude Code to execute |
-| [review.md](./review.md) | Design review, known issues, fixes |
+| [docs/review.md](./docs/review.md) | Design review, known issues, fixes |
 | [schema/ddl.sql](./schema/ddl.sql) | Postgres schema (multi-tenant, RLS-enabled) |
 | [specs/api-phase1.yaml](./specs/api-phase1.yaml) | Phase-1 REST API surface |
 | [specs/screens-phase1.md](./specs/screens-phase1.md) | Phase-1 UI screens inventory |
@@ -88,7 +88,7 @@ Full documentation in [CLAUDE.md](./CLAUDE.md) under "Commands."
 - Architecture and principles ✓
 - API spec outline ✓
 - Screen inventory ✓
-- Known issues documented (see [review.md](./review.md))
+- Known issues documented (see [docs/review.md](./docs/review.md))
 - Code scaffolding → Week 1 of implementation plan
 
 No production deployment yet. Dogfooding starts Week 2 with schema fixtures and core API.
