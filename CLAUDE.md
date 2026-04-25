@@ -44,14 +44,15 @@ These were confirmed by Moiz. Do not change them without his explicit sign-off.
 
 **Frontend:**
 - Node 20+ (LTS)
-- React 18.3+
-- TypeScript 5.3+
-- Vite 5.0+ (dev server & build)
-- Tailwind CSS 3.4+ (via CDN for prototyping, npm for built)
-- shadcn/ui (component library)
-- React Hook Form 7.50+ (form state)
-- TanStack Query 5.0+ (server state)
-- Vitest (unit tests)
+- React 19.2+
+- TypeScript 5.7+
+- Vite 6.0+ (dev server & build)
+- Tailwind CSS 4.0+ (via `@tailwindcss/vite` plugin; CSS-first `@theme` config)
+- shadcn/ui (component library; new-york style; slate base)
+- React Router 7.1+ (data-router via `createBrowserRouter`)
+- React Hook Form 7.54+ (form state)
+- TanStack Query 5.90+ (server state)
+- Vitest 2.x (unit tests)
 - Playwright 1.40+ (E2E tests)
 
 **Infrastructure & Database:**
