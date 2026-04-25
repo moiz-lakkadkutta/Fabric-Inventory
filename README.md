@@ -1,5 +1,8 @@
 # Fabric & Ladies-Suit ERP
 
+<!-- Replace <owner>/<repo> once the GitHub repo URL is finalized. -->
+[![CI](https://github.com/<owner>/<repo>/actions/workflows/ci.yml/badge.svg)](https://github.com/<owner>/<repo>/actions/workflows/ci.yml)
+
 Multi-tenant cloud ERP for the Indian ladies-suit / fabric textile trade. Track procurement, inventory, manufacturing, sales, and accounting—with full GST compliance and non-GST workflows as first-class citizens.
 
 **Status:** Design phase complete → Pre-implementation (Week 1 kickoff planned)
