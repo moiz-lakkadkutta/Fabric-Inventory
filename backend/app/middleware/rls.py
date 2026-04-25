@@ -1,11 +1,17 @@
 """RLS middleware — best-effort JWT decode → request.state.org_id.
 
-This is a stub for Wave 1. Real auth lands in TASK-007. Until then,
-this middleware decodes any Bearer token best-effort and stashes the
-`org_id` claim on `request.state` for the get_db dependency to use.
+This is a Wave-1 stub with mixed concerns: it decodes JWTs *and* preps
+RLS. Real auth lands in TASK-007 and SHOULD pull JWT decoding out of
+this file entirely. Post-TASK-007 shape:
 
-Bad tokens are silently dropped (treated as no auth). Real validation
-with audience, expiry, and key rotation is TASK-007's job.
+    request.state.org_id = getattr(request.state.user, "org_id", None)
+
+…and nothing more. Until then we accept the smell so /ready and the
+get_db dependency have a populated `org_id` to work against during
+manual smoke tests.
+
+Bad tokens are silently dropped (treated as no auth). Real audience,
+expiry, and signature validation is TASK-007's job — not this file's.
 """
 
 from __future__ import annotations

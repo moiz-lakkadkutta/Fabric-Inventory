@@ -7,10 +7,14 @@ fail fast with a clear error rather than blowing up later at request time.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# Safe dev default — explicit, narrow, and works with allow_credentials=True.
+# In staging/prod we refuse to start without a real allowlist (see model validator).
+_DEV_DEFAULT_CORS_ORIGINS = ["http://localhost:5173"]
 
 
 class Settings(BaseSettings):
@@ -25,7 +29,10 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(min_length=16)
     environment: Literal["dev", "staging", "prod"] = "dev"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
-    cors_origins: list[str] = Field(default_factory=list)
+    # `NoDecode` blocks pydantic-settings' default "JSON-decode list-typed env
+    # vars" pass — without it, comma-separated CORS_ORIGINS would fail before
+    # our field_validator runs.
+    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
     sentry_dsn: str | None = None
 
     @field_validator("cors_origins", mode="before")
@@ -47,6 +54,24 @@ class Settings(BaseSettings):
                     pass
             return [x.strip() for x in stripped.split(",") if x.strip()]
         return v
+
+    @model_validator(mode="after")
+    def _require_cors_origins_outside_dev(self) -> Settings:
+        """Wildcard (`*`) is silently broken with `allow_credentials=True`
+        (browsers reject the response). So we never fall back to `*`.
+
+        - dev: empty CORS_ORIGINS → safe localhost default.
+        - staging/prod: empty CORS_ORIGINS → fail fast at startup.
+        """
+        if not self.cors_origins:
+            if self.environment == "dev":
+                self.cors_origins = list(_DEV_DEFAULT_CORS_ORIGINS)
+            else:
+                raise ValueError(
+                    f"CORS_ORIGINS must be set when ENVIRONMENT={self.environment!r}; "
+                    "wildcard '*' with allow_credentials=True is rejected by browsers."
+                )
+        return self
 
 
 _settings: Settings | None = None

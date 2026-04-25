@@ -21,10 +21,11 @@ from .db import get_sessionmaker
 async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
     """Yield an async session and apply RLS `org_id` if the middleware set one.
 
-    Middleware (RLSMiddleware) validates the JWT and sets `request.state.org_id`
-    to a UUID string before this dep runs. We re-validate here as a defense in
-    depth before formatting it into a SET LOCAL — there are no parameter binds
-    for SET in Postgres, so the only safe path is strict UUID validation.
+    `RLSMiddleware` (today; `AuthMiddleware` post-TASK-007) sets
+    `request.state.org_id` to a UUID string. We re-validate here as
+    defense-in-depth and pass it through `set_config(setting, value, is_local)`
+    — the parameterized form of `SET LOCAL`, which accepts bind params and
+    keeps the value out of the SQL string entirely.
     """
     async with get_sessionmaker()() as session:
         org_id = getattr(request.state, "org_id", None)
@@ -32,10 +33,13 @@ async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
             try:
                 validated = str(UUID(str(org_id)))
             except (ValueError, TypeError):
-                # Refuse to set an invalid org_id; surface as RLS-empty.
+                # Refuse an invalid org_id; surface as RLS-empty (default-deny).
                 validated = None
             if validated is not None:
-                await session.execute(text(f"SET LOCAL app.current_org_id = '{validated}'"))
+                await session.execute(
+                    text("SELECT set_config('app.current_org_id', :v, true)"),
+                    {"v": validated},
+                )
         yield session
 
 
