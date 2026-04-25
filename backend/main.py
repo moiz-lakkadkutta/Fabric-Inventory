@@ -61,7 +61,10 @@ def create_app() -> FastAPI:
                 import redis.asyncio as aioredis
 
                 client = aioredis.from_url(settings.redis_url)
-                pong = await client.ping()
+                # redis-py types ping() as `Awaitable[bool] | bool` because the
+                # client class is shared with the sync library. The asyncio
+                # subclass always returns the awaitable branch.
+                pong = await client.ping()  # type: ignore[misc]
                 await client.aclose()
                 checks["redis"] = bool(pong)
             except Exception:

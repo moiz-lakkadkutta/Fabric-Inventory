@@ -11,6 +11,7 @@ import os
 from collections.abc import AsyncIterator
 
 import pytest
+from httpx import AsyncClient
 
 # Set required env BEFORE the app imports — pydantic-settings validates at import.
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test")
@@ -20,9 +21,9 @@ os.environ.setdefault("LOG_LEVEL", "INFO")
 
 
 @pytest.fixture
-async def client() -> AsyncIterator:
+async def client() -> AsyncIterator[AsyncClient]:
     """Async HTTP client over the FastAPI app's ASGI transport."""
-    from httpx import ASGITransport, AsyncClient
+    from httpx import ASGITransport
 
     # Reset settings cache so any test-local env overrides take effect.
     from app.config import reset_settings
