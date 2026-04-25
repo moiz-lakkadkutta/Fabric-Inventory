@@ -43,15 +43,11 @@ jobs:
 
       - name: mypy
         working-directory: backend
-        # `app/` lands in TASK-002. Until then skip rather than fail so this
-        # workflow stays green on every Wave-1 commit. Strictness is configured
-        # in pyproject.toml.
-        run: |
-          if [ -d app ]; then
-            uv run mypy app/
-          else
-            echo "backend/app/ not present yet — skipping mypy until TASK-002 lands."
-          fi
+        # Match what `make lint` runs locally (`mypy .`, not `mypy app/`) so
+        # the CI signal can't drift from the dev signal. Pre-TASK-002 there's
+        # still main.py + tests/ to check, and once TASK-002 lands `app/` is
+        # picked up automatically. Strictness is configured in pyproject.toml.
+        run: uv run mypy .
 
   backend-test:
     name: Backend tests (pytest)
