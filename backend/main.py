@@ -17,6 +17,7 @@ from app.middleware import (
     configure_logging,
     register_error_handlers,
 )
+from app.routers import auth as auth_router
 
 
 @asynccontextmanager
@@ -52,6 +53,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Routers
+    app.include_router(auth_router.router)
 
     @app.get("/live")
     async def live() -> dict[str, str]:

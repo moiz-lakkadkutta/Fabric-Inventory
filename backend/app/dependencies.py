@@ -7,15 +7,16 @@ written ahead of those tasks without churn.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
-from .db import get_sessionmaker
+from .db import get_sessionmaker, get_sync_sessionmaker
 
 
 async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
@@ -44,6 +45,37 @@ async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
 
 
 DBSession = Annotated[AsyncSession, Depends(get_db)]
+
+
+def get_db_sync(request: Request) -> Iterator[Session]:
+    """Yield a sync session for one request and apply RLS `org_id` if the
+    middleware set one. Mirror of `get_db` for sync route handlers / the
+    sync service layer (`rbac_service`, `identity_service`).
+
+    FastAPI runs sync route handlers in a threadpool, so blocking on
+    `Session` operations here doesn't stall the event loop.
+    """
+    with get_sync_sessionmaker()() as session:
+        org_id = getattr(request.state, "org_id", None)
+        if org_id is not None:
+            try:
+                validated = str(UUID(str(org_id)))
+            except (ValueError, TypeError):
+                validated = None
+            if validated is not None:
+                session.execute(
+                    text("SELECT set_config('app.current_org_id', :v, true)"),
+                    {"v": validated},
+                )
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+
+
+SyncDBSession = Annotated[Session, Depends(get_db_sync)]
 
 
 async def get_current_user(request: Request) -> object | None:
