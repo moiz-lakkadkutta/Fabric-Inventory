@@ -423,19 +423,25 @@ def test_list_skus_for_item_via_items_endpoint(http_client: TestClient) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_list_uoms_returns_empty_for_unseeded_org(http_client: TestClient) -> None:
+def test_list_uoms_returns_seeded_catalog(http_client: TestClient) -> None:
+    """TASK-015: signup auto-seeds the UOM catalog. Every fresh org sees
+    the 10-row system catalog without any extra setup."""
     me = _signup_owner(http_client)
     resp = http_client.get("/uoms", headers=_auth(me["access_token"]))
     assert resp.status_code == 200
     body = resp.json()
-    assert body["items"] == []
-    assert body["count"] == 0
+    assert body["count"] == 10
+    codes = {row["code"] for row in body["items"]}
+    assert {"MTR", "PCS", "KG"}.issubset(codes)
 
 
-def test_list_hsn_returns_empty_for_unseeded_org(http_client: TestClient) -> None:
+def test_list_hsn_returns_seeded_catalog(http_client: TestClient) -> None:
+    """TASK-015: signup auto-seeds the HSN catalog. Common textile-trade
+    codes (5208, 6204) are present out-of-the-box."""
     me = _signup_owner(http_client)
     resp = http_client.get("/hsn", headers=_auth(me["access_token"]))
     assert resp.status_code == 200
     body = resp.json()
-    assert body["items"] == []
-    assert body["count"] == 0
+    assert body["count"] == 10
+    codes = {row["hsn_code"] for row in body["items"]}
+    assert {"5208", "6204"}.issubset(codes)

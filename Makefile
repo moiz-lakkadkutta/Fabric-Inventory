@@ -51,7 +51,9 @@ migrate-create:
 	cd backend && uv run alembic revision -m "$(M)"
 
 seed:
-	@echo "Implement in TASK-006+ (seed fixtures)."
+	@echo "System catalog (UOM/HSN/COA) auto-seeds on /auth/signup; nothing to do here."
+	@echo "To re-seed an existing org by id, run:"
+	@echo "  cd backend && uv run python -m app.cli.seed --org-id <UUID>"
 
 deploy:
 	@echo "Implement in TASK-005 (GitHub Actions deploy workflow)."

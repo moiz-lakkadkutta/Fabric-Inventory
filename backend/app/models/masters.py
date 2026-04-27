@@ -415,9 +415,16 @@ class Sku(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
 
 
 class Uom(Base):
-    """Global catalog of UOM types (METER, KG, PIECE, …). Audit-sweep exempt."""
+    """Per-org catalog of UOM types (METER, KG, PIECE, …). Each tenant
+    seeds its own copy at signup; (org_id, code) is the natural key.
+    Audit-sweep exempt.
+    """
 
     __tablename__ = "uom"
+    __table_args__ = (
+        UniqueConstraint("org_id", "code", name="uom_org_id_code_key"),
+        UniqueConstraint("org_id", "name", name="uom_org_id_name_key"),
+    )
 
     uom_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
@@ -427,8 +434,8 @@ class Uom(Base):
         ForeignKey("organization.org_id", ondelete="RESTRICT"),
         nullable=False,
     )
-    code: Mapped[str] = mapped_column(String(10), nullable=False, unique=True)
-    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    code: Mapped[str] = mapped_column(String(10), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
     uom_type: Mapped[UomType] = mapped_column(_UOM_TYPE_PG, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -468,9 +475,13 @@ class ItemUomAlt(Base):
 
 
 class Hsn(Base):
-    """Global HSN catalog. Audit-sweep exempt."""
+    """Per-org HSN catalog. Indian HSN codes are national standards but the
+    catalog is seeded per-tenant so each org owns its rows; (org_id,
+    hsn_code) is the natural key. Audit-sweep exempt.
+    """
 
     __tablename__ = "hsn"
+    __table_args__ = (UniqueConstraint("org_id", "hsn_code", name="hsn_org_id_hsn_code_key"),)
 
     hsn_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
@@ -480,7 +491,7 @@ class Hsn(Base):
         ForeignKey("organization.org_id", ondelete="RESTRICT"),
         nullable=False,
     )
-    hsn_code: Mapped[str] = mapped_column(String(8), nullable=False, unique=True)
+    hsn_code: Mapped[str] = mapped_column(String(8), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     gst_rate: Mapped[Any | None] = mapped_column(Numeric(5, 2), nullable=True)
     is_rcm_applicable: Mapped[bool | None] = mapped_column(
