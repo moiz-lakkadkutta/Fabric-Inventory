@@ -1,10 +1,10 @@
-"""TASK-004: smoke test for the baseline migration.
+"""TASK-004: smoke test for the migration chain.
 
 Wipes the public schema, runs `alembic upgrade head`, asserts the result
-has at least 102 tables and that the `task_004_baseline` revision is
-recorded. Skipped when no real Postgres is reachable so devs without
-Docker running locally still get a green test suite — CI's Postgres
-service container makes the test a real regression net.
+has at least 102 tables and that the latest revision is recorded.
+Skipped when no real Postgres is reachable so devs without Docker
+running locally still get a green test suite — CI's Postgres service
+container makes the test a real regression net.
 """
 
 from __future__ import annotations
@@ -81,4 +81,5 @@ def test_baseline_migration_smoke(sync_postgres_engine: Engine) -> None:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
 
     assert table_count >= _MIN_TABLES, f"expected >= {_MIN_TABLES} tables, got {table_count}"
-    assert version == "task_004_baseline", f"unexpected revision: {version!r}"
+    # Latest forward-only migration head; bump on each new migration.
+    assert version == "task_015_uom_hsn_per_org", f"unexpected revision: {version!r}"

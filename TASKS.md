@@ -392,7 +392,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-015: Seed data fixture (parties, items, GL accounts)
-**Status:** Ready (TASK-004, TASK-009 Done)  
+**Status:** Done  
 **Blocks:** TASK-026  
 **Files touched:** backend/app/seeds.py, backend/Makefile (make seed target)
 

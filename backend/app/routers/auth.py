@@ -38,7 +38,7 @@ from app.schemas.auth import (
     SignupResponse,
     TokenPairResponse,
 )
-from app.service import identity_service, rbac_service
+from app.service import identity_service, rbac_service, seed_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -124,6 +124,7 @@ def signup(
     db.flush()
 
     rbac_service.seed_system_roles(db, org_id=org.org_id)
+    seed_service.seed_system_catalog(db, org_id=org.org_id)
     roles_owner = db.execute(
         select(Role).where(Role.org_id == org.org_id, Role.code == "OWNER")
     ).scalar_one()

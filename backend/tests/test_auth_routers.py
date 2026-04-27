@@ -95,6 +95,17 @@ def test_signup_returns_tokens_and_creates_org_firm_user(http_client: TestClient
     # Owner perm set on the JWT — proves RBAC seeding worked.
     assert "sales.invoice.finalize" in payload.permissions
 
+    # System catalog auto-seeded for the new org (TASK-015 wire-in):
+    # GET /uoms returns the 10-row UOM catalog without any extra setup.
+    uoms_resp = http_client.get(
+        "/uoms", headers={"Authorization": f"Bearer {body['access_token']}"}
+    )
+    assert uoms_resp.status_code == 200
+    assert uoms_resp.json()["count"] == 10
+    hsn_resp = http_client.get("/hsn", headers={"Authorization": f"Bearer {body['access_token']}"})
+    assert hsn_resp.status_code == 200
+    assert hsn_resp.json()["count"] == 10
+
 
 def test_signup_duplicate_org_name_returns_422(http_client: TestClient) -> None:
     org_name = _unique_org_name()
