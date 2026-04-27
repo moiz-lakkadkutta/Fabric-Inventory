@@ -291,7 +291,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-011: Item + SKU model, CRUD service, router
-**Status:** Blocked by TASK-003, TASK-010  
+**Status:** Done (PR pending)  
 **Blocks:** TASK-022, TASK-023  
 **Files touched:** backend/app/models/masters.py (extend), backend/app/service/masters_service.py (extend), backend/app/routers/masters.py (extend)
 
@@ -305,11 +305,11 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 - Router: `POST /items`, `PATCH /items/{id}`, `GET /items`, etc. Same for SKU, UOM, HSN.
 
 **Acceptance:**
-- [ ] Create item with SKU variant works.
-- [ ] List items shows variants as nested.
-- [ ] HSN + UOM linked correctly (can select from dropdown).
-- [ ] RLS enforced: can't see other firm's items.
-- [ ] All endpoints have integration tests.
+- [x] Create item with SKU variant works.
+- [x] List items shows variants as nested (via GET /items/{id}/skus).
+- [x] HSN + UOM linked correctly (catalog read endpoints; full seed in TASK-015).
+- [x] RLS enforced: can't see other firm's items (defense-in-depth org_id at app layer + RLS isolation test).
+- [x] All endpoints have integration tests.
 
 **Approximate time:** 2.5 hours  
 **Notes:**

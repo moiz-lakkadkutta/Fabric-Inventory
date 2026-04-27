@@ -18,6 +18,7 @@ from app.middleware import (
     register_error_handlers,
 )
 from app.routers import auth as auth_router
+from app.routers import items as items_router
 from app.routers import masters as masters_router
 
 
@@ -58,6 +59,10 @@ def create_app() -> FastAPI:
     # Routers
     app.include_router(auth_router.router)
     app.include_router(masters_router.router)
+    app.include_router(items_router.items_router)
+    app.include_router(items_router.skus_router)
+    app.include_router(items_router.uoms_router)
+    app.include_router(items_router.hsn_router)
 
     @app.get("/live")
     async def live() -> dict[str, str]:
