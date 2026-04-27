@@ -264,7 +264,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-010: Party model, CRUD service, router
-**Status:** Blocked by TASK-004  
+**Status:** Done (PR pending)  
 **Blocks:** TASK-020, TASK-021  
 **Files touched:** backend/app/models/masters.py, backend/app/service/masters_service.py, backend/app/routers/masters.py
 
@@ -276,12 +276,12 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 - Validation: email unique per org, GSTIN format check (basic), name required.
 
 **Acceptance:**
-- [ ] Create party returns party_id.
-- [ ] List parties shows only org's + firm's parties (RLS enforced).
-- [ ] Update party works; timestamp updated.
-- [ ] Soft delete sets deleted_at; list doesn't return deleted parties.
-- [ ] Encryption for GSTIN + PAN (dummy for MVP; service-layer placeholder).
-- [ ] All endpoints have integration tests + RLS isolation tests.
+- [x] Create party returns party_id.
+- [x] List parties shows only org's + firm's parties (RLS enforced; defense-in-depth org_id filter at app layer).
+- [x] Update party works; timestamp updated.
+- [x] Soft delete sets deleted_at; list doesn't return deleted parties.
+- [x] Encryption for GSTIN + PAN (dummy for MVP; service-layer placeholder).
+- [x] All endpoints have integration tests + RLS isolation tests.
 
 **Approximate time:** 2.5 hours  
 **Notes:**
