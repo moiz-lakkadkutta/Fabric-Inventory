@@ -6,6 +6,12 @@ backfill existing tenants.
 
 Usage:
     uv run python -m app.cli.seed --org-id <UUID>
+
+RLS note: this CLI does INSERTs only, with `org_id` set explicitly on
+every row, so the RLS policies (SELECT-side filters) don't apply and
+we deliberately don't `SET LOCAL app.current_org_id`. If a future
+operation here needs to SELECT, set the GUC first or rows will silently
+disappear from the result set.
 """
 
 from __future__ import annotations

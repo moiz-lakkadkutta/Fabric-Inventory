@@ -28,13 +28,14 @@ def test_seed_uoms_is_idempotent(db_session: OrmSession, fresh_org_id: uuid.UUID
 
 
 def test_seed_hsn_creates_full_catalog(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
+    from decimal import Decimal
+
     hsn = seed_service.seed_hsn(db_session, org_id=fresh_org_id)
     expected = {code for code, _, _ in seed_service._SYSTEM_HSN}
     assert set(hsn.keys()) == expected
-    # GST rates copied through verbatim.
-    rate_5208 = hsn["5208"].gst_rate
-    assert rate_5208 is not None
-    assert float(rate_5208) == 5.0
+    # GST rates copied through verbatim — Decimal compare, not float
+    # (project-wide "never float for money" rule).
+    assert hsn["5208"].gst_rate == Decimal("5.00")
 
 
 def test_seed_hsn_is_idempotent(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
