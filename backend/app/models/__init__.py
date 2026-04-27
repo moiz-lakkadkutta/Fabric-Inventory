@@ -26,7 +26,12 @@ class Base(DeclarativeBase):
 # Re-export model classes lazily — import the modules so models register
 # their tables into Base.metadata. Order matters: parents (Organization)
 # before dependents (Firm, AppUser, ...).
-from . import identity, inventory, masters  # noqa: E402  (import after Base definition is required)
+from . import (  # noqa: E402  (import after Base definition is required)
+    identity,
+    inventory,
+    masters,
+    procurement,
+)
 from .identity import (  # noqa: E402
     AppUser,
     AuditLog,
@@ -70,6 +75,11 @@ from .masters import (  # noqa: E402
     Uom,
     UomType,
 )
+from .procurement import (  # noqa: E402
+    POLine,
+    PurchaseOrder,
+    PurchaseOrderStatus,
+)
 
 __all__ = [
     "AppUser",
@@ -90,6 +100,7 @@ __all__ = [
     "LocationType",
     "Lot",
     "Organization",
+    "POLine",
     "Party",
     "PartyAddress",
     "PartyBank",
@@ -97,6 +108,8 @@ __all__ = [
     "Permission",
     "PriceList",
     "PriceListLine",
+    "PurchaseOrder",
+    "PurchaseOrderStatus",
     "Role",
     "RolePermission",
     "Session",
@@ -116,4 +129,5 @@ __all__ = [
     "identity",
     "inventory",
     "masters",
+    "procurement",
 ]
