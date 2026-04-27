@@ -25,13 +25,10 @@ from __future__ import annotations
 
 import datetime
 import hashlib
-import os
 import uuid
-from collections.abc import Iterator
 
 import pytest
-from sqlalchemy import create_engine, select, text
-from sqlalchemy.engine import Engine
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session as OrmSession
 
 from app.models import (
@@ -262,52 +259,8 @@ def test_relationships_are_bidirectional() -> None:
 
 # ──────────────────────────────────────────────────────────────────────
 # Round-trip: requires DATABASE_URL pointing at a migrated Postgres.
-# CI hard-fails on missing DATABASE_URL; local dev skips.
+# `sync_engine` and `db_session` fixtures live in conftest.py.
 # ──────────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def sync_engine() -> Iterator[Engine]:
-    db_url = os.environ.get("DATABASE_URL", "")
-    if not db_url:
-        if os.environ.get("CI") == "true":
-            pytest.fail(
-                "DATABASE_URL must be set in CI — this test is the round-trip "
-                "drift detector. Check the workflow's services.postgres block."
-            )
-        pytest.skip("DATABASE_URL not set (set CI=true to fail-loud)")
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
-    try:
-        engine = create_engine(sync_url, future=True)
-        with engine.connect() as conn:
-            ver = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-            if ver is None:
-                pytest.skip("alembic schema not migrated; run `make migrate` first")
-    except Exception as exc:
-        if os.environ.get("CI") == "true":
-            pytest.fail(f"Postgres not reachable / unmigrated in CI: {exc}")
-        pytest.skip(f"Postgres not reachable / unmigrated: {exc}")
-    try:
-        yield engine
-    finally:
-        engine.dispose()
-
-
-@pytest.fixture
-def db_session(sync_engine: Engine) -> Iterator[OrmSession]:
-    """Transactional fixture: each test runs inside a transaction that
-    is rolled back on teardown. No row persists across tests; no need
-    for cascade-delete cleanup hacks.
-    """
-    connection = sync_engine.connect()
-    transaction = connection.begin()
-    session = OrmSession(bind=connection)
-    try:
-        yield session
-    finally:
-        session.close()
-        transaction.rollback()
-        connection.close()
 
 
 def _make_org(session: OrmSession, suffix: str = "") -> Organization:
