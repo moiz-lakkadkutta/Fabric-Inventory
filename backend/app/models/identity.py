@@ -1,16 +1,31 @@
 """Identity-domain ORM models: org, firm, user, role, permission, audit log, etc.
 
-Mirrors `schema/ddl.sql` lines 54-279 (identity section). Mixin columns
-(timestamps, audit-by, soft-delete) come from `app.models.mixins`.
+Mirrors `schema/ddl.sql` lines 54-279 (identity section). The post-DDL
+audit_sweep DO block (`schema/ddl.sql` lines 2275-2347) adds
+`updated_at`/`created_by`/`updated_by`/`deleted_at` to every NON-EXEMPT
+tenant table; the exempt list is:
 
-Notes:
+    uom, hsn, permission, plan, role_permission, user_role, item_uom_alt,
+    api_idempotency, audit_log, production_event, stock_ledger,
+    voucher_line, alembic_version
+
+Models match that list exactly: identity tables in the exempt set
+(Permission, RolePermission, UserRole, AuditLog) skip the audit mixins;
+the rest (Organization, Firm, AppUser, Role, UserFirmScope, Device,
+Session) inherit all three.
+
+A drift gate (`tests/test_orm_ddl_drift.py`) runs `alembic` autogenerate
+diff against a migrated Postgres on every CI run so this never silently
+rots again.
+
+Other notes:
 - Encrypted fields (gstin, pan, cin, tan, mfa_secret, phone) are `BYTEA`.
-  The model exposes them as `bytes`; the service layer handles AES-GCM
-  envelope encryption/decryption (TASK-007+).
-- `app_user` is named `AppUser` in Python to avoid colliding with the
-  `User` name people often pick for domain types in services later.
-- AuditLog is intentionally append-only — it inherits no mixins beyond
-  TimestampMixin; service layer enforces "no UPDATE / no DELETE".
+  Service layer handles AES-GCM envelope crypto (TASK-007+).
+- `app_user` is `AppUser` in Python so a future `User` domain object
+  doesn't shadow it.
+- All datetimes are `TIMESTAMPTZ` — every `mapped_column` for a datetime
+  uses `DateTime(timezone=True)` explicitly. Mapped[datetime.datetime]
+  alone does NOT carry timezone info to the schema.
 - RLS policies are in DDL; ORM doesn't redeclare them.
 """
 
@@ -20,7 +35,20 @@ import datetime
 import uuid
 from typing import Any
 
-from sqlalchemy import Boolean, ForeignKey, Integer, LargeBinary, SmallInteger, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    LargeBinary,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -42,17 +70,24 @@ class Organization(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     legal_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     admin_email: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    country: Mapped[str | None] = mapped_column(String(2), default="IN")
+    country: Mapped[str | None] = mapped_column(String(2), server_default="IN", nullable=True)
     state_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
-    timezone: Mapped[str | None] = mapped_column(String(50), default="Asia/Kolkata")
+    timezone: Mapped[str | None] = mapped_column(
+        String(50), server_default="Asia/Kolkata", nullable=True
+    )
     logo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    has_foreign_txns: Mapped[bool] = mapped_column(Boolean, default=False)
-    is_exporter: Mapped[bool] = mapped_column(Boolean, default=False)
-    feature_flags: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    has_foreign_txns: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("false"), nullable=True
+    )
+    is_exporter: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("false"), nullable=True
+    )
+    feature_flags: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"), nullable=True
+    )
     prev_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     this_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
-    # Relationships
     firms: Mapped[list[Firm]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"
     )
@@ -66,6 +101,7 @@ class Organization(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
 
 class Firm(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     __tablename__ = "firm"
+    __table_args__ = (UniqueConstraint("org_id", "code", name="firm_org_id_code_key"),)
 
     firm_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
@@ -90,14 +126,20 @@ class Firm(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     tan: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    fy_start_month: Mapped[int] = mapped_column(SmallInteger, default=4)
+    fy_start_month: Mapped[int | None] = mapped_column(
+        SmallInteger, server_default=text("4"), nullable=True
+    )
     primary_godown_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True
     )
-    financial_year_close_date: Mapped[datetime.date | None] = mapped_column(nullable=True)
-    invoicing_mode: Mapped[str] = mapped_column(String(20), default="PER_DISPATCH")
-    has_gst: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    is_sez: Mapped[bool] = mapped_column(Boolean, default=False)
+    financial_year_close_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
+    invoicing_mode: Mapped[str | None] = mapped_column(
+        String(20), server_default="PER_DISPATCH", nullable=True
+    )
+    has_gst: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
+    is_sez: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("false"), nullable=True
+    )
     prev_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     this_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
@@ -109,6 +151,7 @@ class Firm(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
 
 class AppUser(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     __tablename__ = "app_user"
+    __table_args__ = (UniqueConstraint("org_id", "email", name="app_user_org_id_email_key"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
@@ -122,12 +165,20 @@ class AppUser(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     legal_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # encrypted
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    mfa_enabled: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("false"), nullable=True
+    )
     mfa_secret: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # encrypted
-    last_login_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
+    last_login_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_login_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    is_suspended: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("true"), nullable=True
+    )
+    is_suspended: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("false"), nullable=True
+    )
     prev_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     this_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
@@ -151,6 +202,7 @@ class AppUser(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
 
 class Role(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     __tablename__ = "role"
+    __table_args__ = (UniqueConstraint("org_id", "code", name="role_org_id_code_key"),)
 
     role_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
@@ -163,7 +215,9 @@ class Role(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     code: Mapped[str] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_system_role: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_system_role: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("false"), nullable=True
+    )
 
     role_permissions: Mapped[list[RolePermission]] = relationship(
         back_populates="role", cascade="all, delete-orphan"
@@ -177,9 +231,14 @@ class Role(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
 
 
 class Permission(Base):
-    """Append-only catalog row. Has only `created_at` from DDL."""
+    """Append-only catalog row. Exempt from audit_sweep — only `created_at`."""
 
     __tablename__ = "permission"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id", "resource", "action", name="permission_org_id_resource_action_key"
+        ),
+    )
 
     permission_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
@@ -192,8 +251,12 @@ class Permission(Base):
     resource: Mapped[str] = mapped_column(String(100), nullable=False)
     action: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_system_permission: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now(), nullable=False)
+    is_system_permission: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("false"), nullable=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
     role_permissions: Mapped[list[RolePermission]] = relationship(
         back_populates="permission", cascade="all, delete-orphan"
@@ -206,9 +269,14 @@ class Permission(Base):
 
 
 class RolePermission(Base):
-    """Pure join table (no audit cols per DDL exempt list)."""
+    """Pure join table. Exempt from audit_sweep."""
 
     __tablename__ = "role_permission"
+    __table_args__ = (
+        UniqueConstraint(
+            "role_id", "permission_id", name="role_permission_role_id_permission_id_key"
+        ),
+    )
 
     role_permission_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
@@ -224,16 +292,30 @@ class RolePermission(Base):
         ForeignKey("permission.permission_id", ondelete="CASCADE"),
         nullable=False,
     )
-    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
     role: Mapped[Role] = relationship(back_populates="role_permissions")
     permission: Mapped[Permission] = relationship(back_populates="role_permissions")
 
 
 class UserRole(Base):
-    """Pure join table — no soft-delete; revoke = hard-delete."""
+    """Pure join. Exempt from audit_sweep. Uniqueness is via a partial unique
+    index that treats NULL `firm_id` as the "org-level" sentinel
+    (`COALESCE(firm_id, '00000000-...')`); inline UNIQUE can't express that.
+    """
 
     __tablename__ = "user_role"
+    __table_args__ = (
+        Index(
+            "uq_user_role_user_role_firm",
+            "user_id",
+            "role_id",
+            text("COALESCE(firm_id, '00000000-0000-0000-0000-000000000000'::uuid)"),
+            unique=True,
+        ),
+    )
 
     user_role_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
@@ -254,14 +336,21 @@ class UserRole(Base):
         ForeignKey("firm.firm_id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
     user: Mapped[AppUser] = relationship(back_populates="user_roles")
     role: Mapped[Role] = relationship(back_populates="user_roles")
 
 
-class UserFirmScope(Base):
+class UserFirmScope(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
+    """NOT in audit_sweep exempt list — gets the full audit-column suite."""
+
     __tablename__ = "user_firm_scope"
+    __table_args__ = (
+        UniqueConstraint("user_id", "firm_id", name="user_firm_scope_user_id_firm_id_key"),
+    )
 
     user_firm_scope_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
@@ -281,14 +370,19 @@ class UserFirmScope(Base):
         ForeignKey("firm.firm_id", ondelete="CASCADE"),
         nullable=False,
     )
-    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now(), nullable=False)
+    is_primary: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("false"), nullable=True
+    )
 
     user: Mapped[AppUser] = relationship(back_populates="firm_scopes")
+    firm: Mapped[Firm] = relationship()
 
 
-class Device(Base):
-    """Trusted device for offline-sync push (architecture §17.8)."""
+class Device(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
+    """NOT in audit_sweep exempt list — gets the full audit-column suite.
+
+    Trusted device for offline-sync push (architecture §17.8).
+    """
 
     __tablename__ = "device"
 
@@ -308,16 +402,22 @@ class Device(Base):
     device_public_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     device_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now(), nullable=False)
+    is_active: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("true"), nullable=True
+    )
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     user: Mapped[AppUser] = relationship(back_populates="devices")
 
 
-class Session(Base):
-    """JWT refresh-token row. Append + revoke; not soft-deleted."""
+class Session(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
+    """NOT in audit_sweep exempt list — gets the full audit-column suite.
+
+    JWT refresh-token row. Append + revoke; soft-delete tracks a separate
+    `deleted_at` from `revoked_at` (the latter is the auth-event time).
+    """
 
     __tablename__ = "session"
 
@@ -341,21 +441,21 @@ class Session(Base):
     )
     access_token_hash: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     refresh_token_hash: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    expires_at: Mapped[datetime.datetime] = mapped_column(nullable=False)
-    revoked_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now(), nullable=False)
 
     user: Mapped[AppUser] = relationship(back_populates="sessions")
+    device: Mapped[Device | None] = relationship()
 
 
 class AuditLog(Base):
-    """Hash-chained, append-only audit log (architecture §6).
-
-    Service layer enforces "no UPDATE / no DELETE"; the ORM doesn't have
-    triggers for that, but a future migration can add a Postgres-level
-    rule. For now we rely on app-layer discipline.
+    """Append-only audit log. Inherits `Base` only — exempt from audit_sweep
+    per the DDL exempt list. Service layer enforces "no UPDATE / no DELETE";
+    a future migration may add a Postgres rule for the same.
     """
 
     __tablename__ = "audit_log"
@@ -385,10 +485,11 @@ class AuditLog(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     prev_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     this_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
-
-# Suppress F401 — Integer is imported for clarity (used in DB-side checks downstream).
-_unused_keepalive = (Integer,)
+    firm: Mapped[Firm | None] = relationship()
+    user: Mapped[AppUser | None] = relationship()

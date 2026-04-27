@@ -7,7 +7,24 @@
 
 ## Summary
 
-Identity-domain ORM models landed in `backend/app/models/`: `Base` (DeclarativeBase) + reusable mixins (`TimestampMixin`, `AuditByMixin`, `SoftDeleteMixin`) + 11 models mirroring `schema/ddl.sql` lines 54-279 (`Organization`, `Firm`, `AppUser`, `Role`, `Permission`, `RolePermission`, `UserRole`, `UserFirmScope`, `Device`, `Session`, `AuditLog`). `alembic/env.py` now imports `app.models` so `target_metadata = models.Base.metadata` — autogenerate is on. 14 tests: 13 pure-Python schema-shape assertions + 1 round-trip insert/query/relationship-load against a migrated Postgres. All green; mypy strict clean across 30 source files.
+Identity-domain ORM models landed in `backend/app/models/`: `Base` (DeclarativeBase) + reusable mixins (`TimestampMixin`, `AuditByMixin`, `SoftDeleteMixin`) + 11 models mirroring `schema/ddl.sql` lines 54-279 (`Organization`, `Firm`, `AppUser`, `Role`, `Permission`, `RolePermission`, `UserRole`, `UserFirmScope`, `Device`, `Session`, `AuditLog`). `alembic/env.py` imports `app.models` so `target_metadata = models.Base.metadata` — autogenerate is on. 38 tests: pure-Python schema-shape + 5 round-trip insert/query tests covering every modeled type + a permanent ORM↔DDL drift gate via `compare_metadata`. All green; mypy strict clean across 31 source files.
+
+## Post-review correction (2026-04-27)
+
+The first push of this PR shipped material ORM↔DDL drift on 8 models. PR review caught it; this section documents what was wrong and how the gate now prevents recurrence.
+
+**What was wrong:**
+- I misread the `audit_sweep` exempt list. `Session`, `Device`, `UserFirmScope` are NOT exempt — DDL adds `updated_at`/`created_by`/`updated_by`/`deleted_at` to them. The first push's models inherited no audit mixins on those three.
+- Inlined datetime columns (`Permission.created_at`, `RolePermission.created_at`, `UserRole.created_at`, `Device.last_seen_at`, `Session.expires_at`/`revoked_at`/`created_at`, `AuditLog.created_at`, `AppUser.last_login_at`) used `Mapped[datetime.datetime]` alone, which defaults to `DateTime()` (no tz). DDL has `TIMESTAMPTZ` — drift.
+- 7 `UNIQUE` constraints declared in DDL were not in the models (firm/app_user/role/permission/role_permission/user_firm_scope/user_role).
+- `default=` (Python-side) instead of `server_default=` (SQL-side) on every column with a DDL `DEFAULT`. Multiple `nullable=False` mismatches.
+- The original round-trip test only inserted Org/Firm/AppUser — the three tables that were correctly modeled — so the test passing was consistent with all of the above being undetected.
+
+**How it's fixed:**
+- All 11 identity models now match DDL exactly. Verified via `alembic.autogenerate.compare_metadata` returning **zero diffs** scoped to modeled tables.
+- `tests/test_orm_ddl_drift.py` is a permanent gate: it wipes the DB, runs `alembic upgrade head`, then asserts `compare_metadata` finds no schema-correctness drift. Index drift is intentionally ignored (DDL owns performance indexes; ORM declares only invariants).
+- `tests/test_identity_models.py` now has **5 round-trip tests** covering every modeled type, using a `SAVEPOINT`-rollback fixture so a single test can never leak rows into a sibling.
+- DB-bound tests `pytest.fail()` when `CI=true` and Postgres isn't reachable; locally they skip. CI no longer silently masks drift on a misconfigured workflow.
 
 ## Deviations from plan
 
