@@ -46,6 +46,7 @@ from .inventory import (  # noqa: E402
     Lot,
     StockLedger,
     StockPosition,
+    StockStage,
 )
 from .masters import (  # noqa: E402
     CoaGroup,
@@ -103,6 +104,7 @@ __all__ = [
     "SoftDeleteMixin",
     "StockLedger",
     "StockPosition",
+    "StockStage",
     "SupplyClassification",
     "TaxStatus",
     "TimestampMixin",
