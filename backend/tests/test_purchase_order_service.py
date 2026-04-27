@@ -539,7 +539,26 @@ def test_soft_delete_confirmed_po_raises(
     firm, party, item = po_setup
     po = _make_po(db_session, org_id=fresh_org_id, firm=firm, party=party, item=item)
     procurement_service.confirm_po(db_session, org_id=fresh_org_id, po_id=po.purchase_order_id)
-    with pytest.raises(InvoiceStateError, match="cancel first"):
+    with pytest.raises(InvoiceStateError, match=r"only DRAFT or\s+CANCELLED"):
+        procurement_service.soft_delete_po(
+            db_session, org_id=fresh_org_id, po_id=po.purchase_order_id
+        )
+
+
+def test_soft_delete_fully_received_po_raises(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    po_setup: tuple[Firm, Party, Item],
+) -> None:
+    """A FULLY_RECEIVED PO has GRN rows + ledger postings against it (TASK-028+).
+    Soft-deleting it would orphan downstream FKs — the service must refuse.
+    """
+    firm, party, item = po_setup
+    po = _make_po(db_session, org_id=fresh_org_id, firm=firm, party=party, item=item)
+    # Simulate the GRN-driven advancement that TASK-028 will do.
+    po.status = PurchaseOrderStatus.FULLY_RECEIVED
+    db_session.flush()
+    with pytest.raises(InvoiceStateError, match=r"only DRAFT or\s+CANCELLED"):
         procurement_service.soft_delete_po(
             db_session, org_id=fresh_org_id, po_id=po.purchase_order_id
         )

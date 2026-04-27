@@ -25,15 +25,12 @@ import datetime
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError, InvoiceStateError
 from app.models import Firm, Item, Party, POLine, PurchaseOrder
 from app.models.procurement import PurchaseOrderStatus
-
-_TERMINAL_STATES = {PurchaseOrderStatus.FULLY_RECEIVED, PurchaseOrderStatus.CANCELLED}
-
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -223,7 +220,7 @@ def list_pos(
         .where(PurchaseOrder.org_id == org_id, PurchaseOrder.deleted_at.is_(None))
     )
     if firm_id is not None:
-        stmt = stmt.where(or_(PurchaseOrder.firm_id == firm_id))
+        stmt = stmt.where(PurchaseOrder.firm_id == firm_id)
     if party_id is not None:
         stmt = stmt.where(PurchaseOrder.party_id == party_id)
     if status is not None:
@@ -315,9 +312,10 @@ def soft_delete_po(
     po_id: uuid.UUID,
     deleted_by: uuid.UUID | None = None,
 ) -> None:
-    """Soft-delete a PO. Refuses if status is non-terminal **and** has
-    received any goods — protect downstream stock/ledger refs. DRAFT /
-    CANCELLED can always be soft-deleted.
+    """Soft-delete a PO. Only DRAFT or CANCELLED POs may be soft-deleted —
+    everything else (APPROVED / CONFIRMED / PARTIAL_GRN / FULLY_RECEIVED)
+    has either committed work or downstream FK refs (GRNs in TASK-028,
+    PIs in TASK-029) that would be orphaned.
     """
     po = session.execute(
         select(PurchaseOrder).where(
@@ -329,9 +327,11 @@ def soft_delete_po(
         raise AppValidationError(f"PurchaseOrder {po_id} not found")
     if po.deleted_at is not None:
         return
-    if po.status not in _TERMINAL_STATES and po.status != PurchaseOrderStatus.DRAFT:
-        # APPROVED / CONFIRMED / PARTIAL_GRN — block delete; cancel first.
-        raise InvoiceStateError(f"Cannot delete PO {po_id} in status {po.status}: cancel first")
+    if po.status not in {PurchaseOrderStatus.DRAFT, PurchaseOrderStatus.CANCELLED}:
+        raise InvoiceStateError(
+            f"Cannot delete PO {po_id} in status {po.status}: only DRAFT or "
+            f"CANCELLED POs are deletable; cancel first if needed"
+        )
     po.deleted_at = datetime.datetime.now(tz=datetime.UTC)
     if deleted_by is not None:
         po.updated_by = deleted_by
