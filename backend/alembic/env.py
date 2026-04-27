@@ -1,4 +1,4 @@
-"""Alembic env.py — sync (psycopg2) engine for migrations.
+"""Alembic env.py - sync (psycopg2) engine for migrations.
 
 The app uses async (asyncpg) at runtime, but migrations use sync (psycopg2).
 This is the standard Alembic pattern: asyncpg can't `prepare` multi-statement
@@ -6,8 +6,9 @@ DDL files, while psycopg2 happily executes them via `cursor.execute()`.
 
 `DATABASE_URL` (env) is the source of truth. If it's asyncpg-shaped
 (`postgresql+asyncpg://...` per backend/.env.example), we rewrite it to
-`postgresql+psycopg2://...` here. `target_metadata` stays None until
-SQLAlchemy models exist (TASK-006+); autogenerate is OFF until then.
+`postgresql+psycopg2://...` here. `target_metadata` is wired to
+`app.models.Base.metadata` so `alembic revision --autogenerate` sees
+the ORM-declared schema as soon as TASK-006+ models exist.
 """
 
 from __future__ import annotations
@@ -37,7 +38,12 @@ if db_url.startswith("postgresql+asyncpg://"):
 config.set_main_option("sqlalchemy.url", db_url)
 
 
-target_metadata = None  # No models yet; autogenerate is OFF until TASK-006.
+# Models register themselves into Base.metadata on import. Importing
+# `app.models` is what makes `alembic revision --autogenerate` see the
+# schema declared by identity.py / (future) masters.py / etc.
+from app import models  # noqa: E402 -- must run after path setup above.
+
+target_metadata = models.Base.metadata
 
 
 def run_migrations_offline() -> None:
