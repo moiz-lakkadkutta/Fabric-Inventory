@@ -76,3 +76,13 @@ class LogoutRequest(BaseModel):
 
 class LogoutResponse(BaseModel):
     revoked: bool
+
+
+class MeResponse(BaseModel):
+    """Current user info, derived from the access-token JWT payload."""
+
+    user_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID | None = None
+    permissions: list[str]
+    token_expires_at: datetime.datetime
