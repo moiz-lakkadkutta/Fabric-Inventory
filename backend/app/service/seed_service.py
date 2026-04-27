@@ -185,9 +185,7 @@ def seed_coa(session: Session, *, org_id: uuid.UUID) -> dict[str, Ledger]:
         # Catch typos in `_SYSTEM_LEDGERS` early — without this guard a
         # bad parent_code would surface as a confusing KeyError mid-seed.
         if parent_code not in groups:
-            raise RuntimeError(
-                f"Ledger {code!r} references unknown COA group {parent_code!r}"
-            )
+            raise RuntimeError(f"Ledger {code!r} references unknown COA group {parent_code!r}")
         ledger = Ledger(
             org_id=org_id,
             firm_id=None,

@@ -565,7 +565,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 3 — Week 3: Inventory
 
 ### TASK-022: Stock ledger + position service
-**Status:** Ready (TASK-011, TASK-004 Done) — DEEP-FOCUS, no T3 split per plan §8  
+**Status:** Done  
 **Blocks:** TASK-029, TASK-030, TASK-031  
 **Files touched:** backend/app/models/inventory.py, backend/app/service/inventory_service.py
 

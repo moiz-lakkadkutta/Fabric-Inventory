@@ -92,9 +92,15 @@ def _include_only_modeled(
         there; declaring every `idx_*` on the ORM doubles maintenance
         for zero correctness value. Unique constraints (which DO matter
         for correctness) are declared on the ORM and are checked.
-      - tables not yet in `Base.metadata` (sales_invoice, party, …).
-        autogenerate would want to drop them; we ignore them until the
-        owning task models them.
+      - tables not yet in `Base.metadata` (sales_invoice, etc. — landing
+        in their owning task). autogenerate would want to drop them; we
+        ignore them until the owning task models them.
+      - foreign keys whose REFERRED table isn't modeled. Some columns
+        have a Phase-3 FK in DDL (e.g. `stock_ledger.mo_operation_id`
+        → `mo_operation.mo_operation_id`). Declaring those FKs on the
+        ORM would fail metadata-compile because the referred table
+        doesn't exist in `Base.metadata` yet. The DB enforces them; we
+        skip them in the drift comparison.
     """
     modeled = _modeled_tables()
     if type_ == "table":
@@ -102,6 +108,14 @@ def _include_only_modeled(
     if type_ == "index":
         # Skip indexes entirely. Unique constraints come through type_ == "unique_constraint".
         return False
+    if type_ == "foreign_key_constraint":
+        # Skip FKs that reference an unmodeled table.
+        elements = getattr(object_, "elements", []) or []
+        for fk in elements:
+            target_table = getattr(getattr(fk, "column", None), "table", None)
+            target_name = getattr(target_table, "name", None)
+            if target_name is not None and target_name not in modeled:
+                return False
     # Columns / fks / unique constraints / etc.: keep if their parent table is modeled.
     parent = getattr(object_, "table", None)
     if parent is not None and getattr(parent, "name", None) is not None:
