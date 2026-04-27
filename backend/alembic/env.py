@@ -26,10 +26,15 @@ if config.config_file_name is not None:
 
 # DATABASE_URL is asyncpg-shaped per backend/.env.example. Transform for migrations.
 db_url = os.environ.get("DATABASE_URL", "")
-if db_url:
-    if db_url.startswith("postgresql+asyncpg://"):
-        db_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
-    config.set_main_option("sqlalchemy.url", db_url)
+if not db_url:
+    raise RuntimeError(
+        "DATABASE_URL is not set. "
+        "Run `make dev` first (boots Postgres + populates env), "
+        "or export DATABASE_URL=postgresql+asyncpg://user:pw@host:port/db."
+    )
+if db_url.startswith("postgresql+asyncpg://"):
+    db_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+config.set_main_option("sqlalchemy.url", db_url)
 
 
 target_metadata = None  # No models yet; autogenerate is OFF until TASK-006.
