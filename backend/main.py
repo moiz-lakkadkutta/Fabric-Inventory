@@ -18,6 +18,7 @@ from app.middleware import (
     register_error_handlers,
 )
 from app.routers import auth as auth_router
+from app.routers import inventory as inventory_router
 from app.routers import items as items_router
 from app.routers import masters as masters_router
 from app.routers import procurement as procurement_router
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(items_router.hsn_router)
     app.include_router(procurement_router.router)
     app.include_router(procurement_router.grn_router)
+    app.include_router(inventory_router.router)
 
     @app.get("/live")
     async def live() -> dict[str, str]:

@@ -595,7 +595,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-023: Stock adjustment service + router
-**Status:** Blocked by TASK-022, TASK-016  
+**Status:** Done  
 **Blocks:** TASK-031  
 **Files touched:** backend/app/service/inventory_service.py (extend), backend/app/routers/inventory.py
 
