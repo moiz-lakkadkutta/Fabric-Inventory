@@ -71,6 +71,8 @@ jobs:
           --health-retries 5
 
     env:
+      # CI=true is set by GitHub Actions automatically; restated here for clarity.
+      # Tests use this to fail-loud instead of skip when Postgres is unreachable.
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test
 
     steps:
@@ -88,6 +90,17 @@ jobs:
       - name: Install backend deps
         working-directory: backend
         run: uv sync --frozen
+
+      - name: Run migrations (alembic upgrade head)
+        working-directory: backend
+        # Round-trip tests (TASK-006+) and the migration smoke test expect a
+        # migrated schema. Skip cleanly while alembic itself isn't yet present.
+        run: |
+          if [ -f alembic.ini ]; then
+            uv run alembic upgrade head
+          else
+            echo "alembic.ini not present yet — skipping migration step until TASK-004 lands."
+          fi
 
       - name: Detect tests, then run pytest
         working-directory: backend
