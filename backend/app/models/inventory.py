@@ -304,10 +304,95 @@ class StockPosition(Base, AuditByMixin, SoftDeleteMixin):
     )
 
 
+# ──────────────────────────────────────────────────────────────────────
+# StockAdjustment — header row for an inventory adjustment
+# ──────────────────────────────────────────────────────────────────────
+
+
+class StockAdjustment(Base, SoftDeleteMixin):
+    """Header row for a stock adjustment.
+
+    Each row records a deliberate manual correction to on-hand qty at a
+    given (item, location, lot) tuple. The DDL stores `qty_change` as a
+    signed NUMERIC: positive = increase, negative = decrease.
+
+    Linked to a `stock_ledger` row via `reference_type='ADJUSTMENT'` +
+    `reference_id = stock_adjustment_id`. The ledger row is the
+    authoritative qty-movement record; this header adds the human-readable
+    reason and the approval audit trail.
+
+    The audit_sweep DO block in ddl.sql adds `updated_at`, `updated_by`,
+    and `deleted_at` to every non-exempt table; `stock_adjustment` is not
+    exempt, so we declare all three here for drift parity. The DDL also
+    places explicit FK constraints on `created_by` and `approved_by`
+    referencing `app_user(user_id)` with ON DELETE SET NULL; we declare
+    those FK constraints here so autogenerate sees parity.
+    """
+
+    __tablename__ = "stock_adjustment"
+
+    stock_adjustment_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    firm_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("firm.firm_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("item.item_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("lot.lot_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    location_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("location.location_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    qty_change: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    requires_approval: Mapped[bool | None] = mapped_column(
+        Boolean, server_default=text("false"), nullable=True
+    )
+    # approved_by + created_by have explicit REFERENCES app_user(user_id) in DDL
+    # (P1-2 fold-in changes the FK ondelete to SET NULL). Declare the FK here so
+    # the drift gate sees parity. We don't add ORM-level relationship() to avoid
+    # the circular-import footgun with AppUser.
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    approved_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # updated_at and updated_by added by audit_sweep DO block in ddl.sql
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    # deleted_at comes from SoftDeleteMixin
+
+
 __all__ = [
     "Location",
     "LocationType",
     "Lot",
+    "StockAdjustment",
     "StockLedger",
     "StockPosition",
     "StockStage",
