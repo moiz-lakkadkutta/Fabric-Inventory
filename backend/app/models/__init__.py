@@ -27,11 +27,17 @@ class Base(DeclarativeBase):
 # their tables into Base.metadata. Order matters: parents (Organization)
 # before dependents (Firm, AppUser, ...).
 from . import (  # noqa: E402  (import after Base definition is required)
+    banking,
     identity,
     inventory,
     masters,
     procurement,
     sales,
+)
+from .banking import (  # noqa: E402
+    BankAccount,
+    Cheque,
+    ChequeStatus,
 )
 from .identity import (  # noqa: E402
     AppUser,
@@ -96,7 +102,10 @@ __all__ = [
     "AppUser",
     "AuditByMixin",
     "AuditLog",
+    "BankAccount",
     "Base",
+    "Cheque",
+    "ChequeStatus",
     "CoaGroup",
     "CostCentre",
     "CostCentreType",
@@ -143,6 +152,7 @@ __all__ = [
     "UomType",
     "UserFirmScope",
     "UserRole",
+    "banking",
     "identity",
     "inventory",
     "masters",
