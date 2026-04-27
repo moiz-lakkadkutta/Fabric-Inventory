@@ -688,7 +688,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 4 — Week 4: Procurement
 
 ### TASK-027: Purchase Order model + service
-**Status:** Ready (was: Blocked by TASK-021 UI — re-pointed at TASK-011 Item CRUD service, which is Done)  
+**Status:** Done  
 **Blocks:** TASK-033  
 **Files touched:** backend/app/models/procurement.py (new), backend/app/service/procurement_service.py (new)
 

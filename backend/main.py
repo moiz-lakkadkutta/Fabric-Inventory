@@ -20,6 +20,7 @@ from app.middleware import (
 from app.routers import auth as auth_router
 from app.routers import items as items_router
 from app.routers import masters as masters_router
+from app.routers import procurement as procurement_router
 
 
 @asynccontextmanager
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(items_router.skus_router)
     app.include_router(items_router.uoms_router)
     app.include_router(items_router.hsn_router)
+    app.include_router(procurement_router.router)
 
     @app.get("/live")
     async def live() -> dict[str, str]:
