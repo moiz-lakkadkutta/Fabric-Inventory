@@ -88,6 +88,10 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("accounting.voucher", "read", "View vouchers"),
     ("accounting.report", "view", "View P&L, BS, TB, ageing reports"),
     ("accounting.period", "close", "Close accounting periods"),
+    # Banking
+    ("banking.bank", "create", "Create bank accounts / cheques"),
+    ("banking.bank", "read", "View bank accounts / cheques"),
+    ("banking.bank", "update", "Update bank accounts / cheques"),
     # Admin
     ("admin.firm", "manage", "Manage firm settings"),
     ("admin.audit", "read", "View audit log"),
@@ -128,6 +132,8 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "accounting.voucher.read",
                 "accounting.report.view",
                 "accounting.period.close",
+                "banking.bank.read",
+                "banking.bank.create",
                 "admin.audit.read",
                 "sales.order.read",
             }

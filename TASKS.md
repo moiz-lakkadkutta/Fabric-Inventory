@@ -1329,7 +1329,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-053: Bank account + Cheque register models
-**Status:** Ready (TASK-004 Done)  
+**Status:** Done  
 **Blocks:** TASK-058  
 **Files touched:** backend/app/models/accounting.py (extend)
 
