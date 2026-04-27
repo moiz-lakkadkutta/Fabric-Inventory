@@ -824,7 +824,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 5 — Week 5: Sales
 
 ### TASK-032: Sales Order model + service
-**Status:** Ready (was: Blocked by TASK-021 UI — re-pointed at TASK-011 Item CRUD service, which is Done)  
+**Status:** Done  
 **Blocks:** TASK-039  
 **Files touched:** backend/app/models/sales.py (new), backend/app/service/sales_service.py (new)
 

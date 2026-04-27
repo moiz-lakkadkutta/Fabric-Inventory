@@ -92,6 +92,9 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("admin.firm", "manage", "Manage firm settings"),
     ("admin.audit", "read", "View audit log"),
     ("admin.user", "manage", "Assign roles to users"),
+    # Sales order — read + approve added in TASK-032
+    ("sales.order", "read", "View sales orders"),
+    ("sales.order", "approve", "Approve / cancel sales orders"),
 )
 
 
@@ -126,6 +129,7 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "accounting.report.view",
                 "accounting.period.close",
                 "admin.audit.read",
+                "sales.order.read",
             }
         ),
     ),
@@ -147,6 +151,7 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "sales.invoice.read",
                 "sales.return.create",
                 "inventory.stock.read",
+                "sales.order.read",
             }
         ),
     ),

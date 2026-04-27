@@ -31,6 +31,7 @@ from . import (  # noqa: E402  (import after Base definition is required)
     inventory,
     masters,
     procurement,
+    sales,
 )
 from .identity import (  # noqa: E402
     AppUser,
@@ -84,6 +85,11 @@ from .procurement import (  # noqa: E402
     PurchaseOrder,
     PurchaseOrderStatus,
 )
+from .sales import (  # noqa: E402
+    SalesOrder,
+    SalesOrderStatus,
+    SOLine,
+)
 
 __all__ = [
     "GRN",
@@ -119,6 +125,9 @@ __all__ = [
     "PurchaseOrderStatus",
     "Role",
     "RolePermission",
+    "SOLine",
+    "SalesOrder",
+    "SalesOrderStatus",
     "Session",
     "Sku",
     "SoftDeleteMixin",
@@ -138,4 +147,5 @@ __all__ = [
     "inventory",
     "masters",
     "procurement",
+    "sales",
 ]
