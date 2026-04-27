@@ -29,8 +29,9 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError, InvoiceStateError
-from app.models import Firm, Item, Party, POLine, PurchaseOrder
-from app.models.procurement import PurchaseOrderStatus
+from app.models import GRN, Firm, GRNLine, Item, Party, POLine, PurchaseOrder
+from app.models.procurement import GRNStatus, PurchaseOrderStatus
+from app.service import inventory_service
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -338,13 +339,283 @@ def soft_delete_po(
     session.flush()
 
 
+# ──────────────────────────────────────────────────────────────────────
+# GRN — TASK-028
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _allocate_grn_number(
+    session: Session, *, org_id: uuid.UUID, firm_id: uuid.UUID, series: str
+) -> str:
+    """Gapless GRN serial per (org, firm, series). Same lock pattern as
+    `_allocate_number` for PO.
+    """
+    session.execute(
+        select(Firm).where(Firm.firm_id == firm_id).with_for_update()
+    ).scalar_one_or_none()
+    last = session.execute(
+        select(func.coalesce(func.max(GRN.number), "0")).where(
+            GRN.org_id == org_id,
+            GRN.firm_id == firm_id,
+            GRN.series == series,
+        )
+    ).scalar_one()
+    try:
+        last_int = int(last)
+    except (ValueError, TypeError):
+        last_int = 0
+    return f"{last_int + 1:04d}"
+
+
+def _advance_po_status_after_grn(session: Session, *, po: PurchaseOrder) -> None:
+    """Recompute PO status from cumulative qty_received vs qty_ordered.
+
+    Walks every po_line; sums grn_line.qty_received per po_line. If all
+    lines are fully received → FULLY_RECEIVED; if any is partially
+    received → PARTIAL_GRN; else no change.
+    """
+    line_received: dict[uuid.UUID, Decimal] = {}
+    rows = session.execute(
+        select(GRNLine.po_line_id, func.sum(GRNLine.qty_received))
+        .where(GRNLine.po_line_id.in_([line.po_line_id for line in po.lines]))
+        .group_by(GRNLine.po_line_id)
+    ).all()
+    for po_line_id, total in rows:
+        if po_line_id is not None:
+            line_received[po_line_id] = Decimal(total or 0)
+
+    any_received = False
+    fully_received = True
+    for line in po.lines:
+        received = line_received.get(line.po_line_id, Decimal("0"))
+        ordered = Decimal(line.qty_ordered)
+        line.qty_received = received
+        if received > 0:
+            any_received = True
+        if received < ordered:
+            fully_received = False
+    if fully_received and any_received:
+        po.status = PurchaseOrderStatus.FULLY_RECEIVED
+    elif any_received:
+        po.status = PurchaseOrderStatus.PARTIAL_GRN
+    po.updated_at = datetime.datetime.now(tz=datetime.UTC)
+
+
+def create_grn(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    party_id: uuid.UUID,
+    grn_date: datetime.date,
+    series: str,
+    lines: list[dict[str, object]],
+    purchase_order_id: uuid.UUID | None = None,
+    notes: str | None = None,
+    created_by: uuid.UUID | None = None,
+) -> GRN:
+    """Create a GRN in DRAFT state. Does NOT post to stock — that happens
+    on `receive_grn`.
+
+    `lines` shape: `[{po_line_id?, item_id, qty_received, rate?, lot_number?,
+    line_sequence?}]`. If a `purchase_order_id` is provided, lines must
+    reference that PO's `po_line_id`s.
+    """
+    if not lines:
+        raise AppValidationError("GRN must have at least one line")
+
+    _ensure_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+    _ensure_party_in_org(session, org_id=org_id, party_id=party_id)
+    _ensure_items_in_org(
+        session,
+        org_id=org_id,
+        item_ids=[line["item_id"] for line in lines],  # type: ignore[misc]
+    )
+
+    if purchase_order_id is not None:
+        po = get_po(session, org_id=org_id, po_id=purchase_order_id)
+        if po.status in {PurchaseOrderStatus.DRAFT, PurchaseOrderStatus.CANCELLED}:
+            raise InvoiceStateError(
+                f"Cannot GRN against PO in status {po.status}: must be CONFIRMED+"
+            )
+
+    number = _allocate_grn_number(session, org_id=org_id, firm_id=firm_id, series=series)
+
+    grn = GRN(
+        org_id=org_id,
+        firm_id=firm_id,
+        series=series,
+        number=number,
+        party_id=party_id,
+        purchase_order_id=purchase_order_id,
+        grn_date=grn_date,
+        status=GRNStatus.DRAFT.value,
+        notes=notes,
+        created_by=created_by,
+        updated_by=created_by,
+    )
+    session.add(grn)
+    session.flush()
+
+    total_qty = Decimal("0")
+    total_amount = Decimal("0")
+    for idx, line in enumerate(lines):
+        qty = Decimal(str(line["qty_received"]))
+        if qty <= 0:
+            raise AppValidationError(f"GRN line qty_received must be positive (got {qty})")
+        rate = Decimal(str(line["rate"])) if line.get("rate") is not None else None
+        total_qty += qty
+        if rate is not None:
+            total_amount += qty * rate
+        grn_line = GRNLine(
+            org_id=org_id,
+            grn_id=grn.grn_id,
+            po_line_id=line.get("po_line_id"),
+            item_id=line["item_id"],
+            qty_received=qty,
+            rate=rate,
+            lot_number=line.get("lot_number"),
+            line_sequence=line.get("line_sequence", idx + 1),
+            created_by=created_by,
+            updated_by=created_by,
+        )
+        session.add(grn_line)
+    grn.total_qty_received = total_qty
+    grn.total_amount = total_amount if total_amount > 0 else None
+    session.flush()
+    return grn
+
+
+def get_grn(session: Session, *, org_id: uuid.UUID, grn_id: uuid.UUID) -> GRN:
+    grn = session.execute(
+        select(GRN)
+        .options(selectinload(GRN.lines))
+        .where(
+            GRN.grn_id == grn_id,
+            GRN.org_id == org_id,
+            GRN.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if grn is None:
+        raise AppValidationError(f"GRN {grn_id} not found")
+    return grn
+
+
+def list_grns(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID | None = None,
+    purchase_order_id: uuid.UUID | None = None,
+    status: GRNStatus | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[GRN]:
+    stmt = (
+        select(GRN)
+        .options(selectinload(GRN.lines))
+        .where(GRN.org_id == org_id, GRN.deleted_at.is_(None))
+    )
+    if firm_id is not None:
+        stmt = stmt.where(GRN.firm_id == firm_id)
+    if purchase_order_id is not None:
+        stmt = stmt.where(GRN.purchase_order_id == purchase_order_id)
+    if status is not None:
+        stmt = stmt.where(GRN.status == status.value)
+    stmt = stmt.order_by(GRN.grn_date.desc(), GRN.number.desc()).limit(limit).offset(offset)
+    return list(session.execute(stmt).scalars())
+
+
+def receive_grn(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    grn_id: uuid.UUID,
+    updated_by: uuid.UUID | None = None,
+) -> GRN:
+    """DRAFT → ACKNOWLEDGED. Posts each grn_line to the stock ledger via
+    `inventory_service.add_stock` and (if linked to a PO) advances the PO
+    status to PARTIAL_GRN / FULLY_RECEIVED.
+
+    Idempotent in the sense that an already-ACKNOWLEDGED GRN raises an
+    `InvoiceStateError` rather than double-posting stock.
+    """
+    grn = get_grn(session, org_id=org_id, grn_id=grn_id)
+    if grn.status != GRNStatus.DRAFT.value:
+        raise InvoiceStateError(
+            f"Cannot receive GRN {grn_id}: current status is {grn.status}, expected DRAFT"
+        )
+
+    location = inventory_service.get_or_create_default_location(
+        session, org_id=org_id, firm_id=grn.firm_id
+    )
+    for line in grn.lines:
+        unit_cost = Decimal(line.rate) if line.rate is not None else Decimal("0")
+        inventory_service.add_stock(
+            session,
+            org_id=org_id,
+            firm_id=grn.firm_id,
+            item_id=line.item_id,
+            location_id=location.location_id,
+            qty=Decimal(line.qty_received),
+            unit_cost=unit_cost,
+            reference_type="GRN",
+            reference_id=grn.grn_id,
+            txn_date=grn.grn_date,
+        )
+
+    grn.status = GRNStatus.ACKNOWLEDGED.value
+    grn.updated_at = datetime.datetime.now(tz=datetime.UTC)
+    if updated_by is not None:
+        grn.updated_by = updated_by
+
+    if grn.purchase_order_id is not None:
+        po = get_po(session, org_id=org_id, po_id=grn.purchase_order_id)
+        _advance_po_status_after_grn(session, po=po)
+
+    session.flush()
+    return grn
+
+
+def soft_delete_grn(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    grn_id: uuid.UUID,
+    deleted_by: uuid.UUID | None = None,
+) -> None:
+    """Soft-delete a GRN. Only DRAFT GRNs are deletable — once received,
+    the stock ledger has rows that would orphan.
+    """
+    grn = session.execute(
+        select(GRN).where(GRN.grn_id == grn_id, GRN.org_id == org_id)
+    ).scalar_one_or_none()
+    if grn is None:
+        raise AppValidationError(f"GRN {grn_id} not found")
+    if grn.deleted_at is not None:
+        return
+    if grn.status != GRNStatus.DRAFT.value:
+        raise InvoiceStateError(
+            f"Cannot delete GRN {grn_id} in status {grn.status}: only DRAFT is deletable"
+        )
+    grn.deleted_at = datetime.datetime.now(tz=datetime.UTC)
+    if deleted_by is not None:
+        grn.updated_by = deleted_by
+    session.flush()
+
+
 __all__ = [
     "approve_po",
     "cancel_po",
     "confirm_po",
+    "create_grn",
     "create_po",
+    "get_grn",
     "get_po",
+    "list_grns",
     "list_pos",
+    "receive_grn",
+    "soft_delete_grn",
     "soft_delete_po",
 ]
 

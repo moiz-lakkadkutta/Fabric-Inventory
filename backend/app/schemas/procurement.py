@@ -1,4 +1,4 @@
-"""Procurement request/response schemas — PurchaseOrder + POLine (TASK-027)."""
+"""Procurement request/response schemas — PO + POLine (TASK-027), GRN + GRNLine (TASK-028)."""
 
 from __future__ import annotations
 
@@ -64,6 +64,61 @@ class POResponse(BaseModel):
 
 class POListResponse(BaseModel):
     items: list[POResponse]
+    limit: int
+    offset: int
+    count: int
+
+
+class GRNLineRequest(BaseModel):
+    item_id: uuid.UUID
+    qty_received: Annotated[Decimal, Field(gt=0)]
+    rate: Decimal | None = None
+    lot_number: str | None = Field(default=None, max_length=100)
+    po_line_id: uuid.UUID | None = None
+    line_sequence: int | None = None
+
+
+class GRNLineResponse(BaseModel):
+    grn_line_id: uuid.UUID
+    grn_id: uuid.UUID
+    item_id: uuid.UUID
+    po_line_id: uuid.UUID | None
+    qty_received: Decimal
+    rate: Decimal | None
+    lot_number: str | None
+    line_sequence: int | None
+
+
+class GRNCreateRequest(BaseModel):
+    party_id: uuid.UUID
+    firm_id: uuid.UUID
+    grn_date: datetime.date
+    series: str = Field(min_length=1, max_length=50)
+    purchase_order_id: uuid.UUID | None = None
+    notes: str | None = None
+    lines: list[GRNLineRequest] = Field(min_length=1)
+
+
+class GRNResponse(BaseModel):
+    grn_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    series: str
+    number: str
+    party_id: uuid.UUID
+    purchase_order_id: uuid.UUID | None
+    grn_date: datetime.date
+    status: str
+    total_qty_received: Decimal | None
+    total_amount: Decimal | None
+    notes: str | None
+    lines: list[GRNLineResponse]
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class GRNListResponse(BaseModel):
+    items: list[GRNResponse]
     limit: int
     offset: int
     count: int
