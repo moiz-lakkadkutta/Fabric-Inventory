@@ -18,11 +18,8 @@ from app.middleware import (
     register_error_handlers,
 )
 from app.routers import auth as auth_router
-<<<<<<< HEAD
-from app.routers import inventory as inventory_router
-=======
 from app.routers import banking as banking_router
->>>>>>> 9488475 (TASK-053: Bank account + Cheque register models, service, router, RBAC)
+from app.routers import inventory as inventory_router
 from app.routers import items as items_router
 from app.routers import masters as masters_router
 from app.routers import procurement as procurement_router

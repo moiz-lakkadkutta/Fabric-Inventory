@@ -76,6 +76,7 @@ def get_bank_account(
         select(BankAccount).where(
             BankAccount.bank_account_id == bank_account_id,
             BankAccount.org_id == org_id,
+            BankAccount.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
     if row is None:
@@ -92,7 +93,10 @@ def list_bank_accounts(
     offset: int = 0,
 ) -> list[BankAccount]:
     """List BankAccounts for `org_id`, optionally filtered by `firm_id`."""
-    stmt = select(BankAccount).where(BankAccount.org_id == org_id)
+    stmt = select(BankAccount).where(
+        BankAccount.org_id == org_id,
+        BankAccount.deleted_at.is_(None),
+    )
     if firm_id is not None:
         stmt = stmt.where(BankAccount.firm_id == firm_id)
     stmt = stmt.order_by(BankAccount.created_at).limit(limit).offset(offset)
@@ -186,11 +190,12 @@ def create_cheque(
     if not cheque_number:
         raise AppValidationError("Cheque number is required")
 
-    # Cross-org defense: verify bank_account is in the same org.
+    # Cross-org defense: verify bank_account is in the same org and not soft-deleted.
     account = session.execute(
         select(BankAccount).where(
             BankAccount.bank_account_id == bank_account_id,
             BankAccount.org_id == org_id,
+            BankAccount.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
     if account is None:
@@ -202,6 +207,7 @@ def create_cheque(
             Cheque.firm_id == firm_id,
             Cheque.bank_account_id == bank_account_id,
             Cheque.cheque_number == cheque_number,
+            Cheque.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
     if existing is not None:
@@ -240,6 +246,7 @@ def list_cheques_for_account(
     stmt = select(Cheque).where(
         Cheque.org_id == org_id,
         Cheque.bank_account_id == bank_account_id,
+        Cheque.deleted_at.is_(None),
     )
     if status is not None:
         stmt = stmt.where(Cheque.status == status)
