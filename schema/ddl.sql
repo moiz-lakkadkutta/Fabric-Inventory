@@ -191,9 +191,14 @@ CREATE TABLE user_role (
     user_id UUID NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
     role_id UUID NOT NULL REFERENCES role(role_id) ON DELETE CASCADE,
     firm_id UUID REFERENCES firm(firm_id) ON DELETE SET NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (user_id, role_id, COALESCE(firm_id, '00000000-0000-0000-0000-000000000000'))
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Postgres disallows expressions inside an inline UNIQUE constraint; the
+-- semantically correct uniqueness — one (user, role, firm) tuple where a
+-- NULL firm_id is treated as the org-level scope — must be expressed as a
+-- UNIQUE INDEX with COALESCE.
+CREATE UNIQUE INDEX uq_user_role_user_role_firm
+    ON user_role(user_id, role_id, COALESCE(firm_id, '00000000-0000-0000-0000-000000000000'::uuid));
 CREATE INDEX idx_user_role_user ON user_role(user_id);
 CREATE INDEX idx_user_role_role ON user_role(role_id);
 CREATE INDEX idx_user_role_firm ON user_role(firm_id);
@@ -652,9 +657,17 @@ CREATE TABLE stock_position (
     ) STORED,
     current_cost NUMERIC(15,6),
     as_of_date DATE NOT NULL DEFAULT CURRENT_DATE,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (org_id, firm_id, item_id, COALESCE(lot_id, '00000000-0000-0000-0000-000000000000'), location_id)
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Postgres disallows expressions inside an inline UNIQUE constraint; the
+-- semantically correct uniqueness — one row per (org, firm, item, lot, location)
+-- where NULL lot_id is treated as the no-lot sentinel — must be a UNIQUE INDEX.
+CREATE UNIQUE INDEX uq_stock_position_org_firm_item_lot_location
+    ON stock_position(
+        org_id, firm_id, item_id,
+        COALESCE(lot_id, '00000000-0000-0000-0000-000000000000'::uuid),
+        location_id
+    );
 CREATE INDEX idx_stock_position_org_firm ON stock_position(org_id, firm_id);
 CREATE INDEX idx_stock_position_atp ON stock_position(atp_qty);
 ALTER TABLE stock_position ENABLE ROW LEVEL SECURITY;
@@ -1966,9 +1979,16 @@ CREATE TABLE budget (
     ledger_id UUID REFERENCES ledger(ledger_id) ON DELETE RESTRICT,
     month SMALLINT,
     budget_amount NUMERIC(15,2),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (firm_id, fy_year, COALESCE(cost_centre_id, '00000000-0000-0000-0000-000000000000'), ledger_id, month)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Postgres disallows expressions inside an inline UNIQUE constraint; convert to
+-- a UNIQUE INDEX so NULL cost_centre_id is treated as the no-cost-centre sentinel.
+CREATE UNIQUE INDEX uq_budget_firm_fy_cc_ledger_month
+    ON budget(
+        firm_id, fy_year,
+        COALESCE(cost_centre_id, '00000000-0000-0000-0000-000000000000'::uuid),
+        ledger_id, month
+    );
 CREATE INDEX idx_budget_firm_fy ON budget(firm_id, fy_year);
 ALTER TABLE budget ENABLE ROW LEVEL SECURITY;
 CREATE POLICY budget_rls ON budget USING (org_id = current_setting('app.current_org_id')::uuid);
@@ -2263,7 +2283,8 @@ DECLARE
         'uom', 'hsn', 'permission', 'plan',                         -- global catalogs
         'role_permission', 'user_role', 'item_uom_alt',             -- pure join tables
         'api_idempotency', 'audit_log', 'production_event',          -- append-only / system
-        'stock_ledger', 'voucher_line'                               -- append-only ledgers
+        'stock_ledger', 'voucher_line',                              -- append-only ledgers
+        'alembic_version'                                            -- alembic internals (no org_id)
     ];
     has_col BOOLEAN;
 BEGIN

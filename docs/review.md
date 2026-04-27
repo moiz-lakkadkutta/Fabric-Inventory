@@ -76,6 +76,24 @@ Phase 1: 0 references. Phase 3: 1 reference (definition only — never on any op
 
 ---
 
+### P0-5. DDL: schema didn't actually load — three real bugs (added retroactively in TASK-004)
+
+Three inline `UNIQUE (..., COALESCE(...))` constraints prevented `make migrate` from ever succeeding on a fresh Postgres before TASK-004:
+
+1. `user_role` line 195 — `UNIQUE (user_id, role_id, COALESCE(firm_id, '00…0'))`
+2. `stock_position` line 661 — `UNIQUE (org_id, firm_id, item_id, COALESCE(lot_id, '00…0'), location_id)`
+3. `budget` line 1975 — `UNIQUE (firm_id, fy_year, COALESCE(cost_centre_id, '00…0'), ledger_id, month)`
+
+Postgres disallows expressions inside an inline `UNIQUE` constraint; only `UNIQUE INDEX` accepts expressions.
+
+A fourth bug surfaced in the same window: PATCH 1's `audit_sweep` `DO` block iterated over every public table to add `deleted_at` and a partial index on `(org_id) WHERE deleted_at IS NULL`. `alembic_version` lives in the same schema, doesn't have `org_id`, and shouldn't have audit columns at all → `column "org_id" does not exist`.
+
+**Fix (TASK-004):** Each inline `UNIQUE (..., COALESCE(...))` was converted to a separate `CREATE UNIQUE INDEX` with the COALESCE expression (legal in indexes). `alembic_version` was added to the `audit_sweep` exempt list. Schema now loads cleanly on a fresh Postgres.
+
+**Lesson:** ship a CI smoke test that runs `alembic upgrade head` against a real Postgres and asserts the table count, so this regression class can't return silently.
+
+---
+
 ## P1 — Correctness gaps that will bite in testing
 
 ### P1-1. DDL: "standard audit columns" not standard

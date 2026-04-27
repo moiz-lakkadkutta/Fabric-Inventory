@@ -4,6 +4,7 @@ Wildcard `*` with `allow_credentials=True` is silently broken in browsers,
 so we never fall back to `*`. dev gets a localhost default; staging/prod
 fail fast at startup.
 """
+
 from __future__ import annotations
 
 import os

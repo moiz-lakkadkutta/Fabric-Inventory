@@ -12,7 +12,8 @@ help:
 	@echo "  make lint         Run ruff + mypy + eslint + prettier + tsc"
 	@echo "  make lint-fix     Auto-fix ruff + prettier violations"
 	@echo "  make e2e-setup    Install Playwright browsers (opt-in, ~400MB)"
-	@echo "  make migrate      (stub — implemented in TASK-004)"
+	@echo "  make migrate      Run alembic upgrade head (DATABASE_URL must be set)"
+	@echo "  make migrate-create M=\"msg\"  Generate a new alembic revision"
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -41,10 +42,13 @@ lint-fix:
 	cd frontend && pnpm lint:fix
 
 migrate:
-	@echo "Implement in TASK-004 (Alembic)."
+	cd backend && uv run alembic upgrade head
 
 migrate-create:
-	@echo "Implement in TASK-004 (alembic revision)."
+	@if [ -z "$(M)" ]; then \
+		echo "usage: make migrate-create M=\"short message\""; exit 1; \
+	fi
+	cd backend && uv run alembic revision -m "$(M)"
 
 seed:
 	@echo "Implement in TASK-006+ (seed fixtures)."
