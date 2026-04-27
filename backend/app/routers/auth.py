@@ -18,7 +18,7 @@ import uuid
 from fastapi import APIRouter, Header, HTTPException, status
 from sqlalchemy import select
 
-from app.dependencies import SyncDBSession
+from app.dependencies import CurrentUser, SyncDBSession
 from app.exceptions import (
     AppValidationError,
     InvalidCredentialsError,
@@ -31,6 +31,7 @@ from app.schemas.auth import (
     LoginResponse,
     LogoutRequest,
     LogoutResponse,
+    MeResponse,
     MfaVerifyRequest,
     RefreshRequest,
     SignupRequest,
@@ -328,3 +329,29 @@ def logout(
     db_session_row.revoked_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
     return LogoutResponse(revoked=True)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# /auth/me — protected; returns the JWT payload as user-info
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/me",
+    response_model=MeResponse,
+    summary="Return the authenticated user's identity + permissions",
+)
+def me(current_user: CurrentUser) -> MeResponse:
+    """Reads the JWT payload (set by AuthMiddleware). Frontend uses this
+    to populate the session header / decide UI affordances.
+
+    Requires a valid access token (refresh tokens are explicitly rejected
+    by AuthMiddleware — only access tokens populate request.state.user).
+    """
+    return MeResponse(
+        user_id=current_user.user_id,
+        org_id=current_user.org_id,
+        firm_id=current_user.firm_id,
+        permissions=list(current_user.permissions),
+        token_expires_at=datetime.datetime.fromtimestamp(current_user.exp, tz=datetime.UTC),
+    )
