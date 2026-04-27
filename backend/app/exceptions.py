@@ -40,3 +40,28 @@ class IdempotencyConflictError(AppError):
 class AppValidationError(AppError):
     code = "validation_error"
     http_status = 422
+
+
+class InvalidCredentialsError(AppError):
+    """Login: email/password wrong, account inactive/suspended, etc.
+
+    Message is intentionally generic at the call site so the response
+    doesn't leak whether an email is registered.
+    """
+
+    code = "invalid_credentials"
+    http_status = 401
+
+
+class TokenInvalidError(AppError):
+    """JWT is malformed, signed wrong, expired, or revoked."""
+
+    code = "token_invalid"
+    http_status = 401
+
+
+class MfaError(AppError):
+    """TOTP code mismatch, MFA not enabled when required, etc."""
+
+    code = "mfa_error"
+    http_status = 401
