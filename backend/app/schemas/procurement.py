@@ -72,7 +72,7 @@ class POListResponse(BaseModel):
 class GRNLineRequest(BaseModel):
     item_id: uuid.UUID
     qty_received: Annotated[Decimal, Field(gt=0)]
-    rate: Decimal | None = None
+    rate: Annotated[Decimal | None, Field(ge=0)] = None
     lot_number: str | None = Field(default=None, max_length=100)
     po_line_id: uuid.UUID | None = None
     line_sequence: int | None = None
