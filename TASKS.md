@@ -2,6 +2,8 @@
 
 Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the next **Ready** task; only Ready tasks have no blockers. Update status after each session.
 
+> **2026-04-27 — Backend-first execution.** Frontend design is still in progress, so every UI task (Login UI, Dashboard, Admin panel, list/create screens, etc.) is marked **Deferred — frontend design pending** and should not be picked up. Pick the next **Ready** task from the backend pool only. The "Frontend Phase" picks up wholesale once the design system lands. Backend tasks that previously listed a UI task as blocker (TASK-027, TASK-032, TASK-061a all named TASK-021) have been re-pointed at the backend predecessor (TASK-011 Item CRUD) so they unblock cleanly.
+
 ---
 
 ## Milestone 1 — Week 1: Project Bootstrap
@@ -37,7 +39,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-002: FastAPI boilerplate & middleware
-**Status:** Ready  
+**Status:** Done  
 **Blocks:** TASK-006, TASK-007, TASK-008  
 **Files touched:** backend/main.py, backend/app/config.py, backend/app/db.py, backend/app/middleware/*, backend/app/exceptions.py
 
@@ -66,8 +68,8 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-003: React + Vite + Tailwind scaffolding
-**Status:** Ready  
-**Blocks:** TASK-011, TASK-012, TASK-013  
+**Status:** Done  
+**Blocks:** TASK-012, TASK-013  
 **Files touched:** frontend/vite.config.ts, frontend/tsconfig.json, frontend/tailwind.config.ts, frontend/index.html, frontend/src/main.tsx, frontend/src/App.tsx, frontend/src/styles/globals.css
 
 **Scope:**
@@ -93,7 +95,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-004: Postgres DDL schema bootstrap
-**Status:** Ready  
+**Status:** Done  
 **Blocks:** TASK-009, TASK-010, TASK-015  
 **Files touched:** backend/schema/ddl.sql, backend/alembic/env.py, backend/alembic/script.py.mako
 
@@ -119,7 +121,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-005: GitHub Actions CI setup
-**Status:** Ready  
+**Status:** Done  
 **Blocks:** (none; gate for merges)  
 **Files touched:** .github/workflows/ci.yml, .github/workflows/deploy.yml (stub)
 
@@ -148,7 +150,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 2 — Week 2: Auth + RBAC + Core Masters
 
 ### TASK-006: SQLAlchemy models scaffold (identity)
-**Status:** Blocked by TASK-002  
+**Status:** Done  
 **Blocks:** TASK-007, TASK-014, TASK-015  
 **Files touched:** backend/app/models/identity.py
 
@@ -179,7 +181,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-007: Auth service (JWT + password + MFA)
-**Status:** Blocked by TASK-006  
+**Status:** Done  
 **Blocks:** TASK-016, TASK-017  
 **Files touched:** backend/app/service/identity_service.py
 
@@ -209,7 +211,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-008: Auth routers (login, refresh, MFA, signup)
-**Status:** Blocked by TASK-007  
+**Status:** Done  
 **Blocks:** TASK-011, TASK-012  
 **Files touched:** backend/app/routers/auth.py
 
@@ -238,7 +240,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-009: RBAC service (role creation, permission assignment)
-**Status:** Blocked by TASK-006  
+**Status:** Done  
 **Blocks:** TASK-018, TASK-019  
 **Files touched:** backend/app/service/rbac_service.py
 
@@ -264,7 +266,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-010: Party model, CRUD service, router
-**Status:** Done (PR pending)  
+**Status:** Done  
 **Blocks:** TASK-020, TASK-021  
 **Files touched:** backend/app/models/masters.py, backend/app/service/masters_service.py, backend/app/routers/masters.py
 
@@ -291,7 +293,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-011: Item + SKU model, CRUD service, router
-**Status:** Done (PR pending)  
+**Status:** Done  
 **Blocks:** TASK-022, TASK-023  
 **Files touched:** backend/app/models/masters.py (extend), backend/app/service/masters_service.py (extend), backend/app/routers/masters.py (extend)
 
@@ -319,7 +321,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-012: Login UI (auth form, JWT storage, routing)
-**Status:** Blocked by TASK-003, TASK-008  
+**Status:** Deferred — frontend design pending (backend gates TASK-003, TASK-008 already Done)  
 **Blocks:** TASK-024, TASK-025  
 **Files touched:** frontend/src/pages/auth/Login.tsx, frontend/src/api/auth.ts, frontend/src/hooks/useAuth.ts, frontend/src/store/authStore.ts
 
@@ -349,7 +351,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-013: MFA UI (TOTP input, QR setup)
-**Status:** Blocked by TASK-012  
+**Status:** Deferred — frontend design pending (also gated by TASK-012)  
 **Blocks:** (none; TASK-012 depends on this being optional)  
 **Files touched:** frontend/src/pages/auth/MFA.tsx, frontend/src/pages/auth/MFASetup.tsx, frontend/src/api/auth.ts (extend)
 
@@ -372,7 +374,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-014: SQLAlchemy models scaffold (masters)
-**Status:** Blocked by TASK-006  
+**Status:** Done  
 **Blocks:** TASK-010, TASK-011  
 **Files touched:** backend/app/models/masters.py (new file)
 
@@ -390,7 +392,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-015: Seed data fixture (parties, items, GL accounts)
-**Status:** Blocked by TASK-004, TASK-009  
+**Status:** Ready (TASK-004, TASK-009 Done)  
 **Blocks:** TASK-026  
 **Files touched:** backend/app/seeds.py, backend/Makefile (make seed target)
 
@@ -416,7 +418,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-016: Permission checks in routers
-**Status:** Blocked by TASK-007  
+**Status:** Done  
 **Blocks:** TASK-020, TASK-021, TASK-022, TASK-023  
 **Files touched:** backend/app/dependencies.py, backend/app/routers/*.py
 
@@ -441,7 +443,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-017: Refresh token rotation + Redis integration
-**Status:** Blocked by TASK-007  
+**Status:** Ready (TASK-007 Done; basic rotation already in DB session table — this swaps the store)  
 **Blocks:** (none; nice-to-have for W1 but can defer to W2)  
 **Files touched:** backend/app/service/identity_service.py (extend), backend/app/db.py (add Redis client)
 
@@ -462,7 +464,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-018: Dashboard page (stub layout)
-**Status:** Blocked by TASK-012  
+**Status:** Deferred — frontend design pending (also gated by TASK-012)  
 **Blocks:** (none; can build on in W3+)  
 **Files touched:** frontend/src/pages/Dashboard.tsx
 
@@ -489,7 +491,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-019: Admin panel (user, role, firm management stub)
-**Status:** Blocked by TASK-009, TASK-012  
+**Status:** Deferred — frontend design pending (backend gate TASK-009 Done; also gated by TASK-012)  
 **Blocks:** (none; full wireup in W2 later)  
 **Files touched:** frontend/src/pages/admin/Users.tsx, frontend/src/pages/admin/Roles.tsx, frontend/src/pages/admin/Firms.tsx
 
@@ -512,7 +514,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-020: Party list + create UI
-**Status:** Blocked by TASK-011, TASK-016  
+**Status:** Deferred — frontend design pending (backend gates TASK-011, TASK-016 already Done)  
 **Blocks:** TASK-027  
 **Files touched:** frontend/src/pages/masters/PartyList.tsx, frontend/src/pages/masters/PartyForm.tsx, frontend/src/api/masters.ts
 
@@ -539,7 +541,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-021: Item + SKU list + create UI
-**Status:** Blocked by TASK-011, TASK-016  
+**Status:** Deferred — frontend design pending (backend gates TASK-011, TASK-016 already Done)  
 **Blocks:** TASK-028  
 **Files touched:** frontend/src/pages/masters/ItemList.tsx, frontend/src/pages/masters/ItemForm.tsx, frontend/src/api/masters.ts (extend)
 
@@ -563,7 +565,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 3 — Week 3: Inventory
 
 ### TASK-022: Stock ledger + position service
-**Status:** Blocked by TASK-011, TASK-004  
+**Status:** Ready (TASK-011, TASK-004 Done) — DEEP-FOCUS, no T3 split per plan §8  
 **Blocks:** TASK-029, TASK-030, TASK-031  
 **Files touched:** backend/app/models/inventory.py, backend/app/service/inventory_service.py
 
@@ -615,7 +617,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-024: Opening balance import UI (wizard)
-**Status:** Blocked by TASK-022, TASK-012  
+**Status:** Deferred — frontend design pending (also gated by TASK-022 backend, TASK-012 frontend)  
 **Blocks:** TASK-032  
 **Files touched:** frontend/src/pages/onboarding/OpeningBalance.tsx, frontend/src/api/masters.ts (extend)
 
@@ -661,7 +663,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-026: Dashboard wiring (stats from DB)
-**Status:** Blocked by TASK-015, TASK-022  
+**Status:** Backend portion Ready once TASK-015 + TASK-022 land (`GET /dashboard/stats` endpoint); UI wiring Deferred — frontend design pending  
 **Blocks:** (none; nice-to-have for milestone completion)  
 **Files touched:** frontend/src/pages/Dashboard.tsx (extend), backend/app/routers/reports.py (new endpoint)
 
@@ -686,7 +688,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 4 — Week 4: Procurement
 
 ### TASK-027: Purchase Order model + service
-**Status:** Blocked by TASK-021  
+**Status:** Ready (was: Blocked by TASK-021 UI — re-pointed at TASK-011 Item CRUD service, which is Done)  
 **Blocks:** TASK-033  
 **Files touched:** backend/app/models/procurement.py (new), backend/app/service/procurement_service.py (new)
 
@@ -789,7 +791,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-031: PO + GRN + PI UI (forms + lists)
-**Status:** Blocked by TASK-028, TASK-029, TASK-020  
+**Status:** Deferred — frontend design pending (backend gates TASK-028, TASK-029; also TASK-020 frontend)  
 **Blocks:** TASK-038  
 **Files touched:** frontend/src/pages/procurement/PurchaseOrder.tsx, frontend/src/pages/procurement/GRN.tsx, frontend/src/pages/procurement/PurchaseInvoice.tsx, frontend/src/api/procurement.ts
 
@@ -822,7 +824,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 5 — Week 5: Sales
 
 ### TASK-032: Sales Order model + service
-**Status:** Blocked by TASK-021  
+**Status:** Ready (was: Blocked by TASK-021 UI — re-pointed at TASK-011 Item CRUD service, which is Done)  
 **Blocks:** TASK-039  
 **Files touched:** backend/app/models/sales.py (new), backend/app/service/sales_service.py (new)
 
@@ -964,7 +966,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-038: Sales Order + DC + Invoice UI (forms + lists)
-**Status:** Blocked by TASK-033, TASK-034  
+**Status:** Deferred — frontend design pending (backend gates TASK-033, TASK-034)  
 **Blocks:** TASK-044  
 **Files touched:** frontend/src/pages/sales/*.tsx, frontend/src/api/sales.ts
 
@@ -1110,7 +1112,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-044: Sales Invoice UI wiring + state transition buttons
-**Status:** Blocked by TASK-038, TASK-034  
+**Status:** Deferred — frontend design pending (backend gate TASK-034; also TASK-038 frontend)  
 **Blocks:** TASK-051  
 **Files touched:** frontend/src/pages/sales/InvoiceDetail.tsx, frontend/src/api/sales.ts (extend)
 
@@ -1327,7 +1329,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-053: Bank account + Cheque register models
-**Status:** Blocked by TASK-004  
+**Status:** Ready (TASK-004 Done)  
 **Blocks:** TASK-058  
 **Files touched:** backend/app/models/accounting.py (extend)
 
@@ -1370,7 +1372,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-055: Payment + Receipt UI (forms + lists)
-**Status:** Blocked by TASK-051, TASK-052, TASK-020  
+**Status:** Deferred — frontend design pending (backend gates TASK-051, TASK-052; also TASK-020 frontend)  
 **Blocks:** TASK-059  
 **Files touched:** frontend/src/pages/accounting/Payment.tsx, frontend/src/pages/accounting/Receipt.tsx, frontend/src/api/accounting.ts
 
@@ -1505,7 +1507,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 10 — Week 10: Data Migration
 
 ### TASK-061a: MigrationAdapter protocol + normalized intermediate format
-**Status:** Blocked by TASK-021, TASK-040
+**Status:** Blocked by TASK-011, TASK-040 (was: TASK-021 UI — re-pointed at TASK-011 Item CRUD service, which is Done; TASK-040 COA still pending)
 **Blocks:** TASK-061b, TASK-061c, TASK-061d, TASK-062
 **Files touched:** `backend/app/service/migration/__init__.py`, `backend/app/service/migration/adapter.py`, `backend/app/service/migration/intermediate.py`
 
@@ -1676,7 +1678,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 12 — Week 12: Hardening + Deployment
 
 ### TASK-065: Automated daily backups + weekly restore test
-**Status:** Blocked by TASK-001  
+**Status:** Ready (TASK-001 Done; can land any wave but kept in W12 batch)  
 **Blocks:** (none; gate to production)  
 **Files touched:** backend/app/scripts/backup.py, docker-compose.yml (extend), Makefile (extend make backup)
 
@@ -1698,7 +1700,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-066: Uptime monitoring + Sentry integration
-**Status:** Blocked by TASK-002  
+**Status:** Ready (TASK-002 Done; Sentry stub in place — flips real DSN)  
 **Blocks:** (none; observability)  
 **Files touched:** backend/app/config.py (extend), backend/main.py (extend)
 
