@@ -436,9 +436,7 @@ def _pi_to_response(pi: PurchaseInvoice) -> PIResponse:
 def create_pi(
     body: PICreateRequest,
     db: SyncDBSession,
-    current_user: Annotated[
-        TokenPayload, Depends(require_permission("purchase.invoice.create"))
-    ],
+    current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.create"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> PIResponse:
     _validate_idempotency_key(idempotency_key)
