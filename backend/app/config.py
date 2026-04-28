@@ -92,14 +92,28 @@ def reset_settings() -> None:
 
 
 def init_sentry(dsn: str | None, environment: str) -> None:
-    """Initialize Sentry SDK if DSN is provided. No-op when DSN is empty/None."""
+    """Initialize Sentry SDK if DSN is provided. No-op when DSN is empty/None.
+
+    Wires up the FastAPI integration so unhandled exceptions are captured
+    automatically without wrapping individual routes.
+
+    Args:
+        dsn: Sentry DSN from SENTRY_DSN env var. Empty string or None → no-op.
+        environment: One of "dev", "staging", "prod" (from ENVIRONMENT env var).
+    """
     if not dsn:
         return
     import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.starlette import StarletteIntegration
 
     sentry_sdk.init(
         dsn=dsn,
         environment=environment,
         traces_sample_rate=0.1,
         send_default_pii=False,
+        integrations=[
+            StarletteIntegration(),
+            FastApiIntegration(),
+        ],
     )
