@@ -13,8 +13,14 @@ from __future__ import annotations
 import datetime
 import uuid
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+# The five canonical Indian-COA top-level groupings. Free text in DDL
+# but constrained at the API boundary so callers can't drift into
+# nonsense values (caught at request validation, returns 422).
+CoaGroupType = Literal["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"]
 
 # ──────────────────────────────────────────────────────────────────────
 # CoaGroup
@@ -24,7 +30,7 @@ from pydantic import BaseModel, Field
 class CoaGroupCreateRequest(BaseModel):
     code: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=255)
-    group_type: str | None = Field(default=None, max_length=50)
+    group_type: CoaGroupType | None = None
     parent_group_id: uuid.UUID | None = None
 
 
