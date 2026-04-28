@@ -103,6 +103,9 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     # Sales order — read + approve added in TASK-032
     ("sales.order", "read", "View sales orders"),
     ("sales.order", "approve", "Approve / cancel sales orders"),
+    # COA admin endpoints (TASK-040)
+    ("accounting.coa", "read", "View chart of accounts groups and ledgers"),
+    ("accounting.coa", "update", "Create and update custom COA groups and ledgers"),
 )
 
 
@@ -128,6 +131,8 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "masters.party.read",
                 "masters.item.read",
                 "masters.coa.manage",
+                "accounting.coa.read",
+                "accounting.coa.update",
                 "sales.invoice.read",
                 "purchase.invoice.read",
                 "purchase.invoice.post",

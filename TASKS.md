@@ -1009,9 +1009,9 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ## Milestone 6 — Week 6: Accounting Engine
 
 ### TASK-040: Chart of Accounts seeding + COA model
-**Status:** Blocked by TASK-015  
-**Blocks:** TASK-045, TASK-046  
-**Files touched:** backend/app/models/accounting.py (new), backend/app/seeds.py (extend)
+**Status:** Done (2026-04-28) — admin endpoints only; seed half was shipped in TASK-015  
+**Blocks:** TASK-041, TASK-045, TASK-046  
+**Files touched:** backend/app/service/coa_service.py (new), backend/app/schemas/accounting.py (new), backend/app/routers/accounting.py (new), backend/app/service/rbac_service.py (new perms), backend/main.py (router registered)
 
 **Scope:**
 - Model:
