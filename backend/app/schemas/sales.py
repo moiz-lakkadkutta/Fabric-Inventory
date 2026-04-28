@@ -1,4 +1,4 @@
-"""Sales request/response schemas — SalesOrder + SOLine (TASK-032)."""
+"""Sales request/response schemas — SalesOrder + SOLine (TASK-032), DC + DCLine (TASK-033)."""
 
 from __future__ import annotations
 
@@ -62,6 +62,70 @@ class SOResponse(BaseModel):
 
 class SOListResponse(BaseModel):
     items: list[SOResponse]
+    limit: int
+    offset: int
+    count: int
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Delivery Challan schemas — TASK-033
+# ──────────────────────────────────────────────────────────────────────
+
+
+class DCLineRequest(BaseModel):
+    """One line in a create-DC request body."""
+
+    item_id: uuid.UUID
+    qty_dispatched: Annotated[Decimal, Field(gt=0)]
+    price: Annotated[Decimal | None, Field(ge=0)] = None
+    lot_id: uuid.UUID | None = None
+    sequence: int | None = None
+
+
+class DCLineResponse(BaseModel):
+    dc_line_id: uuid.UUID
+    delivery_challan_id: uuid.UUID
+    item_id: uuid.UUID
+    lot_id: uuid.UUID | None
+    qty_dispatched: Decimal
+    price: Decimal | None
+    sequence: int | None
+
+
+class DCCreateRequest(BaseModel):
+    party_id: uuid.UUID
+    firm_id: uuid.UUID
+    dispatch_date: datetime.date
+    series: str = Field(min_length=1, max_length=50)
+    sales_order_id: uuid.UUID | None = None
+    bill_to_address: str | None = None
+    ship_to_address: str | None = None
+    place_of_supply_state: str | None = Field(default=None, max_length=2)
+    lines: list[DCLineRequest] = Field(min_length=1)
+
+
+class DCResponse(BaseModel):
+    delivery_challan_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    series: str
+    number: str
+    sales_order_id: uuid.UUID | None
+    party_id: uuid.UUID
+    bill_to_address: str | None
+    ship_to_address: str | None
+    place_of_supply_state: str | None
+    dispatch_date: datetime.date
+    status: str
+    total_qty: Decimal | None
+    total_amount: Decimal | None
+    lines: list[DCLineResponse]
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class DCListResponse(BaseModel):
+    items: list[DCResponse]
     limit: int
     offset: int
     count: int

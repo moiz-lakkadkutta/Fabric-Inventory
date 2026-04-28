@@ -96,6 +96,9 @@ from .procurement import (  # noqa: E402
     VoucherStatus,
 )
 from .sales import (  # noqa: E402
+    DCLine,
+    DCStatus,
+    DeliveryChallan,
     SalesOrder,
     SalesOrderStatus,
     SOLine,
@@ -113,6 +116,9 @@ __all__ = [
     "CoaGroup",
     "CostCentre",
     "CostCentreType",
+    "DCLine",
+    "DCStatus",
+    "DeliveryChallan",
     "Device",
     "Firm",
     "GRNLine",

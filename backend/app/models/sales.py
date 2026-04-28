@@ -1,14 +1,18 @@
-"""Sales-domain ORM models — SalesOrder, SOLine.
+"""Sales-domain ORM models — SalesOrder, SOLine, DeliveryChallan, DCLine.
 
-Mirrors `schema/ddl.sql` lines 1350-1391. SalesOrder has a state machine
-(`DRAFT → CONFIRMED → PARTIAL_DC → FULLY_DISPATCHED → INVOICED` or `CANCELLED`)
-encoded in the `sales_order_status` Postgres ENUM. Document numbering
-is composite: `(series, number)` with `(org_id, firm_id, series, number)`
-uniqueness — gapless per FY is enforced at the service layer.
+Mirrors `schema/ddl.sql` lines 1350-1433.
 
-Delivery Challan (TASK-033) and Sales Invoice (TASK-034) will extend this
-module rather than duplicate the same imports. PARTIAL_DC / FULLY_DISPATCHED /
-INVOICED transitions are reserved for those tasks.
+SalesOrder state machine:
+  DRAFT → CONFIRMED → PARTIAL_DC → FULLY_DISPATCHED → INVOICED | CANCELLED
+
+DeliveryChallan state machine (TASK-033):
+  DRAFT → ISSUED → ACKNOWLEDGED → IN_PROCESS → RETURNED | CLOSED
+
+The `challan_status` Postgres enum in DDL is a free-form VARCHAR(50) in the
+delivery_challan table; we constrain it via `DCStatus` StrEnum at the ORM
+level (same pattern as GRNStatus).
+
+Sales Invoice (TASK-034) will extend this module.
 """
 
 from __future__ import annotations
@@ -167,11 +171,138 @@ class SOLine(Base):
     sales_order: Mapped[SalesOrder] = relationship(back_populates="lines")
 
 
+class DCStatus(enum.StrEnum):
+    """Delivery Challan lifecycle. DDL stores `status` as VARCHAR(50); we
+    constrain values at the ORM level. DRAFT is before stock posting; ISSUED
+    is post-stock-posting (the canonical 'dispatched' state). ACKNOWLEDGED
+    means the customer signed off. IN_PROCESS, RETURNED, CLOSED are reserved
+    for future edge flows (partial returns, job-work acknowledgement, etc.).
+    """
+
+    DRAFT = "DRAFT"
+    ISSUED = "ISSUED"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    IN_PROCESS = "IN_PROCESS"
+    RETURNED = "RETURNED"
+    CLOSED = "CLOSED"
+
+
+class DeliveryChallan(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
+    """A Delivery Challan — header. Each DC belongs to a firm and optionally
+    to a Sales Order (direct dispatches have NULL sales_order_id).
+
+    State transitions live in `sales_service`; never write to `status`
+    directly from outside that module. Stock is removed (outbound) on
+    `issue_dc` (DRAFT → ISSUED).
+    """
+
+    __tablename__ = "delivery_challan"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "firm_id",
+            "series",
+            "number",
+            name="delivery_challan_org_id_firm_id_series_number_key",
+        ),
+    )
+
+    delivery_challan_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    firm_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("firm.firm_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    series: Mapped[str] = mapped_column(String(50), nullable=False)
+    number: Mapped[str] = mapped_column(String(50), nullable=False)
+    sales_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("sales_order.sales_order_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    party_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("party.party_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    bill_to_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ship_to_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    place_of_supply_state: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    dispatch_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    # DDL has VARCHAR(50) DEFAULT 'DRAFT'. Constrained to DCStatus values.
+    status: Mapped[str | None] = mapped_column(
+        String(50), server_default=text("'DRAFT'"), nullable=True
+    )
+    total_qty: Mapped[Any | None] = mapped_column(Numeric(15, 4), nullable=True)
+    total_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    # `delivery_challan.created_by` declared inline in DDL with FK.
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    lines: Mapped[list[DCLine]] = relationship(
+        back_populates="delivery_challan", cascade="all, delete-orphan"
+    )
+
+
+class DCLine(Base):
+    """A single line on a Delivery Challan. Audit-sweep adds the standard
+    audit columns on dc_line; we declare them for drift parity.
+    """
+
+    __tablename__ = "dc_line"
+
+    dc_line_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    delivery_challan_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("delivery_challan.delivery_challan_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("item.item_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("lot.lot_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    qty_dispatched: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
+    price: Mapped[Any | None] = mapped_column(Numeric(15, 4), nullable=True)
+    sequence: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Audit-sweep columns (DDL DO block adds these on dc_line).
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    deleted_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    delivery_challan: Mapped[DeliveryChallan] = relationship(back_populates="lines")
+
+
 # Re-exported for tests / introspection.
 _unused_json = JSON
 
 
 __all__ = [
+    "DCLine",
+    "DCStatus",
+    "DeliveryChallan",
     "SOLine",
     "SalesOrder",
     "SalesOrderStatus",
