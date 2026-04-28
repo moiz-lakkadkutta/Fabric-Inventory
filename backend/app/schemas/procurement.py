@@ -122,3 +122,69 @@ class GRNListResponse(BaseModel):
     limit: int
     offset: int
     count: int
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Purchase Invoice — TASK-029
+# ──────────────────────────────────────────────────────────────────────
+
+
+class PILineRequest(BaseModel):
+    item_id: uuid.UUID
+    qty: Annotated[Decimal, Field(gt=0)]
+    rate: Annotated[Decimal, Field(ge=0)]
+    gst_rate: Annotated[Decimal | None, Field(ge=0, le=100)] = None
+    line_sequence: int | None = None
+
+
+class PILineResponse(BaseModel):
+    pi_line_id: uuid.UUID
+    purchase_invoice_id: uuid.UUID
+    item_id: uuid.UUID
+    qty: Decimal | None
+    rate: Decimal | None
+    line_amount: Decimal | None
+    gst_rate: Decimal | None
+    gst_amount: Decimal | None
+    line_sequence: int | None
+
+
+class PICreateRequest(BaseModel):
+    party_id: uuid.UUID
+    firm_id: uuid.UUID
+    invoice_date: datetime.date
+    series: str = Field(min_length=1, max_length=50)
+    grn_id: uuid.UUID | None = None
+    rcm_applicable: bool = False
+    due_date: datetime.date | None = None
+    notes: str | None = None
+    lines: list[PILineRequest] = Field(min_length=1)
+
+
+class PIResponse(BaseModel):
+    purchase_invoice_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    series: str
+    number: str
+    party_id: uuid.UUID
+    grn_id: uuid.UUID | None
+    invoice_date: datetime.date
+    invoice_amount: Decimal | None
+    gst_amount: Decimal | None
+    rcm_applicable: bool | None
+    status: str
+    lifecycle_status: str
+    paid_amount: Decimal
+    due_date: datetime.date | None
+    notes: str | None
+    lines: list[PILineResponse]
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class PIListResponse(BaseModel):
+    items: list[PIResponse]
+    limit: int
+    offset: int
+    count: int

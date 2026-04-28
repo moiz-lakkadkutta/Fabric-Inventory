@@ -741,7 +741,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-029: Purchase Invoice model + service
-**Status:** Blocked by TASK-028  
+**Status:** Done  
 **Blocks:** TASK-036  
 **Files touched:** backend/app/models/procurement.py (extend), backend/app/service/procurement_service.py (extend)
 
