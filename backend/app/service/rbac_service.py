@@ -76,8 +76,10 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("purchase.grn", "create", "Create goods received notes (GRN)"),
     ("purchase.grn", "read", "View goods received notes"),
     ("purchase.grn", "approve", "Receive / acknowledge / cancel GRNs"),
+    ("purchase.invoice", "create", "Create draft purchase invoices"),
     ("purchase.invoice", "post", "Post purchase invoices"),
     ("purchase.invoice", "read", "View purchase invoices"),
+    ("purchase.invoice", "void", "Void posted purchase invoices"),
     # Inventory
     ("inventory.stock", "read", "View stock positions"),
     ("inventory.adjustment", "create", "Create stock adjustments"),

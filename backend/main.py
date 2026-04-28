@@ -69,6 +69,7 @@ def create_app() -> FastAPI:
     app.include_router(items_router.hsn_router)
     app.include_router(procurement_router.router)
     app.include_router(procurement_router.grn_router)
+    app.include_router(procurement_router.pi_router)
     app.include_router(inventory_router.router)
     app.include_router(sales_router.router)
     app.include_router(banking_router.router)

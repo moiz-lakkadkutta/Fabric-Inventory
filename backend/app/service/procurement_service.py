@@ -29,8 +29,23 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError, InvoiceStateError
-from app.models import GRN, Firm, GRNLine, Item, Party, POLine, PurchaseOrder
-from app.models.procurement import GRNStatus, PurchaseOrderStatus
+from app.models import (
+    GRN,
+    Firm,
+    GRNLine,
+    Item,
+    Party,
+    PILine,
+    POLine,
+    PurchaseInvoice,
+    PurchaseOrder,
+)
+from app.models.procurement import (
+    GRNStatus,
+    PurchaseInvoiceLifecycleStatus,
+    PurchaseOrderStatus,
+    VoucherStatus,
+)
 from app.service import inventory_service
 
 # ──────────────────────────────────────────────────────────────────────
@@ -604,19 +619,301 @@ def soft_delete_grn(
     session.flush()
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Purchase Invoice — TASK-029
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _allocate_pi_number(
+    session: Session, *, org_id: uuid.UUID, firm_id: uuid.UUID, series: str
+) -> str:
+    """Gapless PI serial per (org, firm, series). Same lock pattern as PO/GRN."""
+    session.execute(
+        select(Firm).where(Firm.firm_id == firm_id).with_for_update()
+    ).scalar_one_or_none()
+    last = session.execute(
+        select(func.coalesce(func.max(PurchaseInvoice.number), "0")).where(
+            PurchaseInvoice.org_id == org_id,
+            PurchaseInvoice.firm_id == firm_id,
+            PurchaseInvoice.series == series,
+        )
+    ).scalar_one()
+    try:
+        last_int = int(last)
+    except (ValueError, TypeError):
+        last_int = 0
+    return f"{last_int + 1:04d}"
+
+
+def create_pi(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    party_id: uuid.UUID,
+    invoice_date: datetime.date,
+    series: str,
+    lines: list[dict[str, object]],
+    grn_id: uuid.UUID | None = None,
+    rcm_applicable: bool = False,
+    due_date: datetime.date | None = None,
+    notes: str | None = None,
+    created_by: uuid.UUID | None = None,
+) -> PurchaseInvoice:
+    """Create a Purchase Invoice in DRAFT state. GL posting happens later
+    via `post_pi` (and TASK-041 voucher autoposting).
+
+    `lines` shape: `[{item_id, qty, rate, gst_rate?, line_sequence?}]`.
+    Each line's `line_amount = qty * rate`; `gst_amount = line_amount *
+    gst_rate / 100`. Header `invoice_amount = sum(line_amount)`,
+    `gst_amount = sum(gst_amount)`.
+
+    If `grn_id` is provided, the GRN must be in this org and ACKNOWLEDGED
+    (you can't invoice against a draft GRN).
+    """
+    if not lines:
+        raise AppValidationError("PurchaseInvoice must have at least one line")
+    _ensure_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+    _ensure_party_in_org(session, org_id=org_id, party_id=party_id)
+    _ensure_items_in_org(
+        session,
+        org_id=org_id,
+        item_ids=[line["item_id"] for line in lines],  # type: ignore[misc]
+    )
+
+    if grn_id is not None:
+        grn = get_grn(session, org_id=org_id, grn_id=grn_id)
+        if grn.status != GRNStatus.ACKNOWLEDGED.value:
+            raise InvoiceStateError(
+                f"Cannot invoice against GRN {grn_id} in status {grn.status}: "
+                f"GRN must be ACKNOWLEDGED first"
+            )
+
+    number = _allocate_pi_number(session, org_id=org_id, firm_id=firm_id, series=series)
+
+    pi = PurchaseInvoice(
+        org_id=org_id,
+        firm_id=firm_id,
+        series=series,
+        number=number,
+        party_id=party_id,
+        grn_id=grn_id,
+        invoice_date=invoice_date,
+        rcm_applicable=rcm_applicable,
+        due_date=due_date,
+        status=VoucherStatus.DRAFT,
+        lifecycle_status=PurchaseInvoiceLifecycleStatus.DRAFT,
+        paid_amount=Decimal("0"),
+        notes=notes,
+        created_by=created_by,
+        updated_by=created_by,
+    )
+    session.add(pi)
+    session.flush()
+
+    invoice_total = Decimal("0")
+    gst_total = Decimal("0")
+    for idx, line in enumerate(lines):
+        qty = Decimal(str(line["qty"]))
+        if qty <= 0:
+            raise AppValidationError(f"PI line qty must be positive (got {qty})")
+        rate = Decimal(str(line["rate"]))
+        if rate < 0:
+            raise AppValidationError(f"PI line rate cannot be negative (got {rate})")
+        line_amount = qty * rate
+        gst_rate = Decimal(str(line["gst_rate"])) if line.get("gst_rate") is not None else None
+        gst_amount = (line_amount * gst_rate / Decimal("100")) if gst_rate is not None else None
+        invoice_total += line_amount
+        if gst_amount is not None:
+            gst_total += gst_amount
+        pi_line = PILine(
+            org_id=org_id,
+            purchase_invoice_id=pi.purchase_invoice_id,
+            item_id=line["item_id"],
+            qty=qty,
+            rate=rate,
+            line_amount=line_amount,
+            gst_rate=gst_rate,
+            gst_amount=gst_amount,
+            line_sequence=line.get("line_sequence", idx + 1),
+            created_by=created_by,
+            updated_by=created_by,
+        )
+        session.add(pi_line)
+    pi.invoice_amount = invoice_total
+    pi.gst_amount = gst_total if gst_total > 0 else None
+    session.flush()
+    return pi
+
+
+def get_pi(session: Session, *, org_id: uuid.UUID, pi_id: uuid.UUID) -> PurchaseInvoice:
+    pi = session.execute(
+        select(PurchaseInvoice)
+        .options(selectinload(PurchaseInvoice.lines))
+        .where(
+            PurchaseInvoice.purchase_invoice_id == pi_id,
+            PurchaseInvoice.org_id == org_id,
+            PurchaseInvoice.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if pi is None:
+        raise AppValidationError(f"PurchaseInvoice {pi_id} not found")
+    return pi
+
+
+def list_pis(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID | None = None,
+    party_id: uuid.UUID | None = None,
+    grn_id: uuid.UUID | None = None,
+    status: VoucherStatus | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[PurchaseInvoice]:
+    stmt = (
+        select(PurchaseInvoice)
+        .options(selectinload(PurchaseInvoice.lines))
+        .where(PurchaseInvoice.org_id == org_id, PurchaseInvoice.deleted_at.is_(None))
+    )
+    if firm_id is not None:
+        stmt = stmt.where(PurchaseInvoice.firm_id == firm_id)
+    if party_id is not None:
+        stmt = stmt.where(PurchaseInvoice.party_id == party_id)
+    if grn_id is not None:
+        stmt = stmt.where(PurchaseInvoice.grn_id == grn_id)
+    if status is not None:
+        stmt = stmt.where(PurchaseInvoice.status == status)
+    stmt = (
+        stmt.order_by(PurchaseInvoice.invoice_date.desc(), PurchaseInvoice.number.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def post_pi(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    pi_id: uuid.UUID,
+    updated_by: uuid.UUID | None = None,
+) -> PurchaseInvoice:
+    """DRAFT → POSTED. GL voucher generation lives in TASK-041; this stage
+    just advances the state.
+
+    Loose 3-way match: if the PI is linked to a GRN, log a warning when
+    the PI total drifts from the sum of GRN line amounts (GRN.total_amount)
+    by more than 1%. We don't block — Moiz wants flexibility for
+    rounding / freight / surcharge differences.
+    """
+    pi = get_pi(session, org_id=org_id, pi_id=pi_id)
+    if pi.status != VoucherStatus.DRAFT:
+        raise InvoiceStateError(
+            f"Cannot post PI {pi_id}: current status is {pi.status}, expected DRAFT"
+        )
+    if pi.grn_id is not None and pi.invoice_amount is not None:
+        grn = get_grn(session, org_id=org_id, grn_id=pi.grn_id)
+        if grn.total_amount is not None and grn.total_amount > 0:
+            invoice_amount = Decimal(pi.invoice_amount)
+            grn_amount = Decimal(grn.total_amount)
+            drift_pct = abs(invoice_amount - grn_amount) / grn_amount * Decimal("100")
+            if drift_pct > Decimal("1"):
+                # Loose match — log + carry forward in match_result; don't raise.
+                pi.match_result = {
+                    "warning": "amount_drift",
+                    "pi_total": str(invoice_amount),
+                    "grn_total": str(grn_amount),
+                    "drift_pct": str(drift_pct),
+                }
+    pi.status = VoucherStatus.POSTED
+    pi.lifecycle_status = PurchaseInvoiceLifecycleStatus.POSTED
+    pi.updated_at = datetime.datetime.now(tz=datetime.UTC)
+    if updated_by is not None:
+        pi.updated_by = updated_by
+    session.flush()
+    return pi
+
+
+def void_pi(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    pi_id: uuid.UUID,
+    updated_by: uuid.UUID | None = None,
+) -> PurchaseInvoice:
+    """Void a PI. Refuses if RECONCILED (payment-allocated) or already
+    VOIDED — for the latter it's a no-op success.
+    """
+    pi = get_pi(session, org_id=org_id, pi_id=pi_id)
+    if pi.status == VoucherStatus.VOIDED:
+        return pi
+    if pi.status == VoucherStatus.RECONCILED:
+        raise InvoiceStateError(
+            f"Cannot void PI {pi_id}: status is RECONCILED (payment-allocated); "
+            f"use a debit-note workflow instead"
+        )
+    pi.status = VoucherStatus.VOIDED
+    pi.lifecycle_status = PurchaseInvoiceLifecycleStatus.CANCELLED
+    pi.updated_at = datetime.datetime.now(tz=datetime.UTC)
+    if updated_by is not None:
+        pi.updated_by = updated_by
+    session.flush()
+    return pi
+
+
+def soft_delete_pi(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    pi_id: uuid.UUID,
+    deleted_by: uuid.UUID | None = None,
+) -> None:
+    """Only DRAFT or VOIDED PIs may be soft-deleted (strict allow-list).
+    POSTED/RECONCILED PIs have GL postings + payment refs that would
+    orphan; void or use credit-note workflow instead.
+    """
+    pi = session.execute(
+        select(PurchaseInvoice).where(
+            PurchaseInvoice.purchase_invoice_id == pi_id,
+            PurchaseInvoice.org_id == org_id,
+        )
+    ).scalar_one_or_none()
+    if pi is None:
+        raise AppValidationError(f"PurchaseInvoice {pi_id} not found")
+    if pi.deleted_at is not None:
+        return
+    if pi.status not in {VoucherStatus.DRAFT, VoucherStatus.VOIDED}:
+        raise InvoiceStateError(
+            f"Cannot delete PI {pi_id} in status {pi.status}: only DRAFT or "
+            f"VOIDED PIs are deletable; void first if needed"
+        )
+    pi.deleted_at = datetime.datetime.now(tz=datetime.UTC)
+    if deleted_by is not None:
+        pi.updated_by = deleted_by
+    session.flush()
+
+
 __all__ = [
     "approve_po",
     "cancel_po",
     "confirm_po",
     "create_grn",
+    "create_pi",
     "create_po",
     "get_grn",
+    "get_pi",
     "get_po",
     "list_grns",
+    "list_pis",
     "list_pos",
+    "post_pi",
     "receive_grn",
     "soft_delete_grn",
+    "soft_delete_pi",
     "soft_delete_po",
+    "void_pi",
 ]
 
 

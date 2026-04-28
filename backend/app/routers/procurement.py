@@ -8,19 +8,24 @@ through `purchase.po.approve` since they're administrative state changes.
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
-from app.models import GRN, GRNLine, POLine, PurchaseOrder
-from app.models.procurement import GRNStatus, PurchaseOrderStatus
+from app.models import GRN, GRNLine, PILine, POLine, PurchaseInvoice, PurchaseOrder
+from app.models.procurement import GRNStatus, PurchaseOrderStatus, VoucherStatus
 from app.routers.auth import _validate_idempotency_key
 from app.schemas.procurement import (
     GRNCreateRequest,
     GRNLineResponse,
     GRNListResponse,
     GRNResponse,
+    PICreateRequest,
+    PILineResponse,
+    PIListResponse,
+    PIResponse,
     POCreateRequest,
     POLineResponse,
     POListResponse,
@@ -373,4 +378,189 @@ def delete_grn(
     _validate_idempotency_key(idempotency_key)
     procurement_service.soft_delete_grn(
         db, org_id=current_user.org_id, grn_id=grn_id, deleted_by=current_user.user_id
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# PI endpoints — TASK-029
+# ──────────────────────────────────────────────────────────────────────
+
+
+pi_router = APIRouter(prefix="/purchase-invoices", tags=["procurement", "pi"])
+
+
+def _pi_line_to_response(line: PILine) -> PILineResponse:
+    return PILineResponse(
+        pi_line_id=line.pi_line_id,
+        purchase_invoice_id=line.purchase_invoice_id,
+        item_id=line.item_id,
+        qty=line.qty,
+        rate=line.rate,
+        line_amount=line.line_amount,
+        gst_rate=line.gst_rate,
+        gst_amount=line.gst_amount,
+        line_sequence=line.line_sequence,
+    )
+
+
+def _pi_to_response(pi: PurchaseInvoice) -> PIResponse:
+    return PIResponse(
+        purchase_invoice_id=pi.purchase_invoice_id,
+        org_id=pi.org_id,
+        firm_id=pi.firm_id,
+        series=pi.series,
+        number=pi.number,
+        party_id=pi.party_id,
+        grn_id=pi.grn_id,
+        invoice_date=pi.invoice_date,
+        invoice_amount=pi.invoice_amount,
+        gst_amount=pi.gst_amount,
+        rcm_applicable=pi.rcm_applicable,
+        status=str(pi.status) if pi.status is not None else "DRAFT",
+        lifecycle_status=str(pi.lifecycle_status),
+        paid_amount=pi.paid_amount or Decimal("0"),
+        due_date=pi.due_date,
+        notes=pi.notes,
+        lines=[_pi_line_to_response(line) for line in pi.lines],
+        created_at=pi.created_at,
+        updated_at=pi.updated_at,
+    )
+
+
+@pi_router.post(
+    "",
+    response_model=PIResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a Purchase Invoice (DRAFT)",
+)
+def create_pi(
+    body: PICreateRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.create"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> PIResponse:
+    _validate_idempotency_key(idempotency_key)
+    pi = procurement_service.create_pi(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        party_id=body.party_id,
+        invoice_date=body.invoice_date,
+        series=body.series,
+        grn_id=body.grn_id,
+        rcm_applicable=body.rcm_applicable,
+        due_date=body.due_date,
+        lines=[
+            {
+                "item_id": line.item_id,
+                "qty": line.qty,
+                "rate": line.rate,
+                "gst_rate": line.gst_rate,
+                "line_sequence": line.line_sequence,
+            }
+            for line in body.lines
+        ],
+        notes=body.notes,
+        created_by=current_user.user_id,
+    )
+    return _pi_to_response(pi)
+
+
+@pi_router.get(
+    "",
+    response_model=PIListResponse,
+    summary="List purchase invoices for the caller's org",
+)
+def list_pis(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.read"))],
+    firm_id: Annotated[uuid.UUID | None, Query()] = None,
+    party_id: Annotated[uuid.UUID | None, Query()] = None,
+    grn_id: Annotated[uuid.UUID | None, Query()] = None,
+    status_filter: Annotated[VoucherStatus | None, Query(alias="status")] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> PIListResponse:
+    pis = procurement_service.list_pis(
+        db,
+        org_id=current_user.org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        grn_id=grn_id,
+        status=status_filter,
+        limit=limit,
+        offset=offset,
+    )
+    return PIListResponse(
+        items=[_pi_to_response(pi) for pi in pis],
+        limit=limit,
+        offset=offset,
+        count=len(pis),
+    )
+
+
+@pi_router.get(
+    "/{pi_id}",
+    response_model=PIResponse,
+    summary="Get a Purchase Invoice by id",
+)
+def get_pi(
+    pi_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.read"))],
+) -> PIResponse:
+    pi = procurement_service.get_pi(db, org_id=current_user.org_id, pi_id=pi_id)
+    return _pi_to_response(pi)
+
+
+@pi_router.post(
+    "/{pi_id}/post",
+    response_model=PIResponse,
+    summary="Post a draft PI (DRAFT → POSTED). Loose 3-way match logged in match_result.",
+)
+def post_pi(
+    pi_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.post"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> PIResponse:
+    _validate_idempotency_key(idempotency_key)
+    pi = procurement_service.post_pi(
+        db, org_id=current_user.org_id, pi_id=pi_id, updated_by=current_user.user_id
+    )
+    return _pi_to_response(pi)
+
+
+@pi_router.post(
+    "/{pi_id}/void",
+    response_model=PIResponse,
+    summary="Void a posted PI (refused if RECONCILED)",
+)
+def void_pi(
+    pi_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.void"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> PIResponse:
+    _validate_idempotency_key(idempotency_key)
+    pi = procurement_service.void_pi(
+        db, org_id=current_user.org_id, pi_id=pi_id, updated_by=current_user.user_id
+    )
+    return _pi_to_response(pi)
+
+
+@pi_router.delete(
+    "/{pi_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Soft-delete a DRAFT or VOIDED PI",
+)
+def delete_pi(
+    pi_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.void"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> None:
+    _validate_idempotency_key(idempotency_key)
+    procurement_service.soft_delete_pi(
+        db, org_id=current_user.org_id, pi_id=pi_id, deleted_by=current_user.user_id
     )
