@@ -1,4 +1,4 @@
-"""Sales service — Sales Order CRUD + state machine (TASK-032).
+"""Sales service — Sales Order CRUD + state machine (TASK-032) + Delivery Challan (TASK-033).
 
 SO lifecycle:
 
@@ -7,15 +7,13 @@ SO lifecycle:
             └─→ CANCELLED  (only from DRAFT/CONFIRMED — not
                             once any DC has been dispatched)
 
-State changes are method calls, never generic UPDATEs. The service is
-the single entry point.
+DC lifecycle:
 
-SO numbering is **gapless per (org, firm, series, FY)**. The series is
-typically `SO/2025-26` and `number` is a serial like `0001`, padded to
-4 digits. Allocation uses `SELECT … FOR UPDATE` on the firm row to
-serialize concurrent creates within a series.
+    DRAFT ─→ ISSUED ─→ ACKNOWLEDGED ─→ IN_PROCESS ─→ RETURNED | CLOSED
 
-TODO (TASK-033): DC posting moves SO status to PARTIAL_DC / FULLY_DISPATCHED.
+`issue_dc` posts outbound stock via `inventory_service.remove_stock` and
+advances the linked SO status to PARTIAL_DC / FULLY_DISPATCHED.
+
 TODO (TASK-034): Sales Invoice posting moves SO status to INVOICED.
 """
 
@@ -29,8 +27,9 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError, InvoiceStateError
-from app.models import Firm, Item, Party, SalesOrder, SOLine
-from app.models.sales import SalesOrderStatus
+from app.models import DCLine, DeliveryChallan, Firm, Item, Party, SalesOrder, SOLine
+from app.models.sales import DCStatus, SalesOrderStatus
+from app.service import inventory_service
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -316,12 +315,302 @@ def soft_delete_so(
     session.flush()
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Delivery Challan — TASK-033
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _allocate_dc_number(
+    session: Session, *, org_id: uuid.UUID, firm_id: uuid.UUID, series: str
+) -> str:
+    """Gapless DC serial per (org, firm, series). Same lock pattern as
+    `_allocate_so_number` for SO.
+    """
+    session.execute(
+        select(Firm).where(Firm.firm_id == firm_id).with_for_update()
+    ).scalar_one_or_none()
+    last = session.execute(
+        select(func.coalesce(func.max(DeliveryChallan.number), "0")).where(
+            DeliveryChallan.org_id == org_id,
+            DeliveryChallan.firm_id == firm_id,
+            DeliveryChallan.series == series,
+        )
+    ).scalar_one()
+    try:
+        last_int = int(last)
+    except (ValueError, TypeError):
+        last_int = 0
+    return f"{last_int + 1:04d}"
+
+
+def _advance_so_status_after_dc(session: Session, *, so: SalesOrder) -> None:
+    """Recompute SO status from cumulative qty_dispatched vs qty_ordered.
+
+    Walks every so_line; sums dc_line.qty_dispatched per item on confirmed
+    DCs (status == ISSUED or beyond). If all lines are fully dispatched →
+    FULLY_DISPATCHED; if any is partially dispatched → PARTIAL_DC.
+    """
+    # Sum qty_dispatched per item across all non-soft-deleted issued DC lines
+    # linked to this SO.
+    rows = session.execute(
+        select(DCLine.item_id, func.sum(DCLine.qty_dispatched))
+        .join(DeliveryChallan, DCLine.delivery_challan_id == DeliveryChallan.delivery_challan_id)
+        .where(
+            DeliveryChallan.sales_order_id == so.sales_order_id,
+            DeliveryChallan.org_id == so.org_id,
+            DeliveryChallan.deleted_at.is_(None),
+            DeliveryChallan.status != DCStatus.DRAFT.value,
+            DCLine.deleted_at.is_(None),
+        )
+        .group_by(DCLine.item_id)
+    ).all()
+    item_dispatched: dict[uuid.UUID, Decimal] = {
+        item_id: Decimal(total or 0) for item_id, total in rows
+    }
+
+    any_dispatched = False
+    fully_dispatched = True
+    for line in so.lines:
+        dispatched = item_dispatched.get(line.item_id, Decimal("0"))
+        ordered = Decimal(line.qty_ordered)
+        # Update denormalized qty_dispatched on the SO line.
+        line.qty_dispatched = dispatched
+        if dispatched > 0:
+            any_dispatched = True
+        if dispatched < ordered:
+            fully_dispatched = False
+    if fully_dispatched and any_dispatched:
+        so.status = SalesOrderStatus.FULLY_DISPATCHED
+    elif any_dispatched:
+        so.status = SalesOrderStatus.PARTIAL_DC
+    so.updated_at = datetime.datetime.now(tz=datetime.UTC)
+
+
+def create_dc(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    party_id: uuid.UUID,
+    dispatch_date: datetime.date,
+    series: str,
+    lines: list[dict[str, object]],
+    sales_order_id: uuid.UUID | None = None,
+    bill_to_address: str | None = None,
+    ship_to_address: str | None = None,
+    place_of_supply_state: str | None = None,
+    created_by: uuid.UUID | None = None,
+) -> DeliveryChallan:
+    """Create a DC in DRAFT state. Does NOT post to stock — that happens
+    on `issue_dc`.
+
+    `lines` shape: `[{item_id, qty_dispatched, price?, lot_id?, sequence?}]`.
+    If `sales_order_id` is provided it must be CONFIRMED+.
+    """
+    if not lines:
+        raise AppValidationError("DC must have at least one line")
+
+    _ensure_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+    _ensure_party_in_org(session, org_id=org_id, party_id=party_id)
+    _ensure_items_in_org(
+        session,
+        org_id=org_id,
+        item_ids=[line["item_id"] for line in lines],  # type: ignore[misc]
+    )
+
+    if sales_order_id is not None:
+        so = get_so(session, org_id=org_id, so_id=sales_order_id)
+        if so.status in {SalesOrderStatus.DRAFT, SalesOrderStatus.CANCELLED}:
+            raise InvoiceStateError(
+                f"Cannot DC against SO in status {so.status}: must be CONFIRMED+"
+            )
+
+    number = _allocate_dc_number(session, org_id=org_id, firm_id=firm_id, series=series)
+
+    dc = DeliveryChallan(
+        org_id=org_id,
+        firm_id=firm_id,
+        series=series,
+        number=number,
+        party_id=party_id,
+        sales_order_id=sales_order_id,
+        dispatch_date=dispatch_date,
+        bill_to_address=bill_to_address,
+        ship_to_address=ship_to_address,
+        place_of_supply_state=place_of_supply_state,
+        status=DCStatus.DRAFT.value,
+        created_by=created_by,
+        updated_by=created_by,
+    )
+    session.add(dc)
+    session.flush()
+
+    total_qty = Decimal("0")
+    total_amount = Decimal("0")
+    for idx, line in enumerate(lines):
+        qty = Decimal(str(line["qty_dispatched"]))
+        if qty <= 0:
+            raise AppValidationError(f"DC line qty_dispatched must be positive (got {qty})")
+        price = Decimal(str(line["price"])) if line.get("price") is not None else None
+        total_qty += qty
+        if price is not None:
+            total_amount += qty * price
+        dc_line = DCLine(
+            org_id=org_id,
+            delivery_challan_id=dc.delivery_challan_id,
+            item_id=line["item_id"],
+            lot_id=line.get("lot_id"),
+            qty_dispatched=qty,
+            price=price,
+            sequence=line.get("sequence", idx + 1),
+            created_by=created_by,
+            updated_by=created_by,
+        )
+        session.add(dc_line)
+    dc.total_qty = total_qty
+    dc.total_amount = total_amount if total_amount > 0 else None
+    session.flush()
+    return dc
+
+
+def get_dc(session: Session, *, org_id: uuid.UUID, dc_id: uuid.UUID) -> DeliveryChallan:
+    dc = session.execute(
+        select(DeliveryChallan)
+        .options(selectinload(DeliveryChallan.lines))
+        .where(
+            DeliveryChallan.delivery_challan_id == dc_id,
+            DeliveryChallan.org_id == org_id,
+            DeliveryChallan.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if dc is None:
+        raise AppValidationError(f"DeliveryChallan {dc_id} not found")
+    return dc
+
+
+def list_dcs(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID | None = None,
+    sales_order_id: uuid.UUID | None = None,
+    status: DCStatus | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[DeliveryChallan]:
+    stmt = (
+        select(DeliveryChallan)
+        .options(selectinload(DeliveryChallan.lines))
+        .where(DeliveryChallan.org_id == org_id, DeliveryChallan.deleted_at.is_(None))
+    )
+    if firm_id is not None:
+        stmt = stmt.where(DeliveryChallan.firm_id == firm_id)
+    if sales_order_id is not None:
+        stmt = stmt.where(DeliveryChallan.sales_order_id == sales_order_id)
+    if status is not None:
+        stmt = stmt.where(DeliveryChallan.status == status.value)
+    stmt = (
+        stmt.order_by(DeliveryChallan.dispatch_date.desc(), DeliveryChallan.number.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def issue_dc(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    dc_id: uuid.UUID,
+    updated_by: uuid.UUID | None = None,
+) -> DeliveryChallan:
+    """DRAFT → ISSUED. Posts each dc_line to the stock ledger via
+    `inventory_service.remove_stock` and (if linked to a SO) advances the
+    SO status to PARTIAL_DC / FULLY_DISPATCHED.
+
+    The entire operation is atomic — if any stock removal fails (e.g. no
+    position), the whole transaction rolls back.
+
+    Idempotent in the sense that an already-ISSUED DC raises an
+    `InvoiceStateError` rather than double-posting stock.
+    """
+    dc = get_dc(session, org_id=org_id, dc_id=dc_id)
+    if dc.status != DCStatus.DRAFT.value:
+        raise InvoiceStateError(
+            f"Cannot issue DC {dc_id}: current status is {dc.status}, expected DRAFT"
+        )
+
+    location = inventory_service.get_or_create_default_location(
+        session, org_id=org_id, firm_id=dc.firm_id
+    )
+    for line in dc.lines:
+        inventory_service.remove_stock(
+            session,
+            org_id=org_id,
+            firm_id=dc.firm_id,
+            item_id=line.item_id,
+            location_id=location.location_id,
+            qty=Decimal(line.qty_dispatched),
+            lot_id=line.lot_id,
+            reference_type="DC",
+            reference_id=dc.delivery_challan_id,
+            txn_date=dc.dispatch_date,
+        )
+
+    dc.status = DCStatus.ISSUED.value
+    dc.updated_at = datetime.datetime.now(tz=datetime.UTC)
+    if updated_by is not None:
+        dc.updated_by = updated_by
+
+    if dc.sales_order_id is not None:
+        so = get_so(session, org_id=org_id, so_id=dc.sales_order_id)
+        _advance_so_status_after_dc(session, so=so)
+
+    session.flush()
+    return dc
+
+
+def soft_delete_dc(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    dc_id: uuid.UUID,
+    deleted_by: uuid.UUID | None = None,
+) -> None:
+    """Soft-delete a DC. Only DRAFT DCs are deletable — once issued, the
+    stock ledger has rows that would orphan.
+    """
+    dc = session.execute(
+        select(DeliveryChallan).where(
+            DeliveryChallan.delivery_challan_id == dc_id,
+            DeliveryChallan.org_id == org_id,
+        )
+    ).scalar_one_or_none()
+    if dc is None:
+        raise AppValidationError(f"DeliveryChallan {dc_id} not found")
+    if dc.deleted_at is not None:
+        return
+    if dc.status != DCStatus.DRAFT.value:
+        raise InvoiceStateError(
+            f"Cannot delete DC {dc_id} in status {dc.status}: only DRAFT is deletable"
+        )
+    dc.deleted_at = datetime.datetime.now(tz=datetime.UTC)
+    if deleted_by is not None:
+        dc.updated_by = deleted_by
+    session.flush()
+
+
 __all__ = [
     "cancel_so",
     "confirm_so",
+    "create_dc",
     "create_so",
+    "get_dc",
     "get_so",
+    "issue_dc",
+    "list_dcs",
     "list_sos",
+    "soft_delete_dc",
     "soft_delete_so",
 ]
 

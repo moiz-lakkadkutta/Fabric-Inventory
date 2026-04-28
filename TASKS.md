@@ -849,7 +849,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-033: Delivery Challan model + service
-**Status:** Blocked by TASK-032, TASK-022  
+**Status:** Done  
 **Blocks:** TASK-040  
 **Files touched:** backend/app/models/sales.py (extend), backend/app/service/sales_service.py (extend)
 
@@ -872,7 +872,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-034: Sales Invoice model + state machine service
-**Status:** Blocked by TASK-033  
+**Status:** Ready  
 **Blocks:** TASK-041  
 **Files touched:** backend/app/models/sales.py (extend), backend/app/service/sales_service.py (extend), backend/app/service/invoice_service.py (new)
 
