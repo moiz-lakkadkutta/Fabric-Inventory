@@ -1700,7 +1700,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-066: Uptime monitoring + Sentry integration
-**Status:** Ready (TASK-002 Done; Sentry stub in place — flips real DSN)  
+**Status:** Done  
 **Blocks:** (none; observability)  
 **Files touched:** backend/app/config.py (extend), backend/main.py (extend)
 
@@ -1722,7 +1722,7 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 ---
 
 ### TASK-067: Deployment runbook + Moiz training
-**Status:** Blocked by TASK-065, TASK-066  
+**Status:** Blocked by TASK-065  
 **Blocks:** (none; handoff)  
 **Files touched:** docs/DEPLOYMENT.md (new), docs/OPERATIONS.md (new)
 
