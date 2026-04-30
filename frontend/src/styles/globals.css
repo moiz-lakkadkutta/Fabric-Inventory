@@ -1,39 +1,112 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
-@custom-variant dark (&:is(.dark *));
+/*
+  Taana — Fabric ERP design system. Light mode only per current brief.
+  Source of truth: design-bundle fabric-2/project/tokens.css.
+  shadcn primitives consume the --color-* aliases at the bottom; bespoke
+  Taana primitives consume the semantic tokens directly.
+*/
+:root {
+  /* ── neutrals (warm, not blue-cool) ─────────────────────── */
+  --bg-canvas: #f7f6f2;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-sunken: #efede6;
 
-/* shadcn/ui base tokens (slate). Customize brand colors here. */
-@theme {
+  --text-primary: #1a1a17;
+  --text-secondary: #5c5a52;
+  --text-tertiary: #8a8880;
+  --text-disabled: #b5b3ab;
+  --text-inverse: #fafaf7;
+
+  --border-subtle: #ecead2;
+  --border-default: #e0ddd2;
+  --border-strong: #c8c5b8;
+  --border-focus: #0f7a4e;
+
+  /* ── accent: emerald ─────────────────────────────────────── */
+  --accent: #0f7a4e;
+  --accent-hover: #0c6541;
+  --accent-pressed: #094f33;
+  --accent-subtle: #e1f0e8;
+  --accent-text: #fafaf7;
+
+  /* ── semantics ──────────────────────────────────────────── */
+  --success: #137a48;
+  --success-subtle: #ddefe4;
+  --success-text: #0a4a2b;
+  --warning: #a26710;
+  --warning-subtle: #f5e8d1;
+  --warning-text: #6b4309;
+  --danger: #b5311e;
+  --danger-subtle: #f5dcd7;
+  --danger-text: #7a1f12;
+  --info: #3f4c5a;
+  --info-subtle: #e4e7eb;
+  --info-text: #283038;
+
+  /* ── data tokens ────────────────────────────────────────── */
+  --data-positive: #0f7a4e;
+  --data-negative: #b5311e;
+  --data-neutral: #5c5a52;
+
+  /* ── radii ──────────────────────────────────────────────── */
+  --r-chip: 4px;
+  --r-input: 6px;
+  --r-card: 8px;
+  --r-sheet: 12px;
+  --r-pill: 999px;
+
+  /* ── elevation ──────────────────────────────────────────── */
+  --shadow-1: 0 1px 2px rgba(20, 20, 18, 0.05);
+  --shadow-2: 0 2px 6px rgba(20, 20, 18, 0.06), 0 1px 2px rgba(20, 20, 18, 0.04);
+  --shadow-3: 0 8px 24px rgba(20, 20, 18, 0.08), 0 2px 6px rgba(20, 20, 18, 0.05);
+  --shadow-4: 0 16px 48px rgba(20, 20, 18, 0.14), 0 4px 12px rgba(20, 20, 18, 0.06);
+
+  /* ── type ───────────────────────────────────────────────── */
+  --font-ui: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-num: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+
+  /* ── shadcn-compat aliases (existing primitives read these) ─ */
+  --color-background: var(--bg-canvas);
+  --color-foreground: var(--text-primary);
+  --color-card: var(--bg-surface);
+  --color-card-foreground: var(--text-primary);
+  --color-popover: var(--bg-elevated);
+  --color-popover-foreground: var(--text-primary);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-text);
+  --color-secondary: var(--bg-sunken);
+  --color-secondary-foreground: var(--text-primary);
+  --color-muted: var(--bg-sunken);
+  --color-muted-foreground: var(--text-tertiary);
+  --color-accent: var(--accent-subtle);
+  --color-accent-foreground: var(--accent);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--text-inverse);
+  --color-border: var(--border-default);
+  --color-input: var(--border-default);
+  --color-ring: var(--accent);
   --radius: 0.5rem;
+}
 
-  --color-background: hsl(0 0% 100%);
-  --color-foreground: hsl(222.2 84% 4.9%);
+/*
+  Expose a tiny subset of Taana tokens as Tailwind v4 utilities
+  (bg-canvas, text-fg-muted, font-ui, etc.) for use in pages.
+*/
+@theme {
+  --color-canvas: #f7f6f2;
+  --color-surface: #ffffff;
+  --color-sunken: #efede6;
+  --color-fg: #1a1a17;
+  --color-fg-muted: #5c5a52;
+  --color-fg-subtle: #8a8880;
+  --color-brand: #0f7a4e;
+  --color-brand-soft: #e1f0e8;
 
-  --color-card: hsl(0 0% 100%);
-  --color-card-foreground: hsl(222.2 84% 4.9%);
-
-  --color-popover: hsl(0 0% 100%);
-  --color-popover-foreground: hsl(222.2 84% 4.9%);
-
-  --color-primary: hsl(222.2 47.4% 11.2%);
-  --color-primary-foreground: hsl(210 40% 98%);
-
-  --color-secondary: hsl(210 40% 96.1%);
-  --color-secondary-foreground: hsl(222.2 47.4% 11.2%);
-
-  --color-muted: hsl(210 40% 96.1%);
-  --color-muted-foreground: hsl(215.4 16.3% 46.9%);
-
-  --color-accent: hsl(210 40% 96.1%);
-  --color-accent-foreground: hsl(222.2 47.4% 11.2%);
-
-  --color-destructive: hsl(0 84.2% 60.2%);
-  --color-destructive-foreground: hsl(210 40% 98%);
-
-  --color-border: hsl(214.3 31.8% 91.4%);
-  --color-input: hsl(214.3 31.8% 91.4%);
-  --color-ring: hsl(222.2 84% 4.9%);
+  --font-ui: 'Hanken Grotesk', -apple-system, sans-serif;
+  --font-num: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 html,
@@ -43,15 +116,43 @@ body,
 }
 
 body {
-  background: var(--color-background);
-  color: var(--color-foreground);
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-canvas);
+  font-feature-settings: 'ss01', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+.mono {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+@keyframes taana-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
