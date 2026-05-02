@@ -342,19 +342,29 @@ def test_refresh_with_valid_token_returns_new_pair(http_client: TestClient) -> N
 
 
 def test_refresh_with_access_token_returns_401(http_client: TestClient) -> None:
+    """Sending an access token in the body — with no refresh cookie — must 401."""
     body = _signup(
         http_client,
         email=_unique_email(),
         password="strong-password-1",
         org_name=_unique_org_name(),
     )
+    # Clear the refresh cookie that signup just set, so the body path is
+    # exercised in isolation. (Cookie-with-access-token is a different
+    # scenario; the cookie carries a valid refresh token here.)
+    http_client.cookies.clear()
     resp = http_client.post("/auth/refresh", json={"refresh_token": body["access_token"]})
     assert resp.status_code == 401
     assert resp.json()["code"] == "TOKEN_INVALID"
 
 
 def test_refresh_replay_returns_401(http_client: TestClient) -> None:
-    """Once a refresh token has been rotated, replaying it should fail."""
+    """Once a refresh token has been rotated, replaying it should fail.
+
+    We clear the cookie between calls so the body-path is exercised in
+    isolation — otherwise the cookie (which auto-rotates on each refresh)
+    would shadow the stale body and mask the replay.
+    """
     body = _signup(
         http_client,
         email=_unique_email(),
@@ -362,7 +372,9 @@ def test_refresh_replay_returns_401(http_client: TestClient) -> None:
         org_name=_unique_org_name(),
     )
     first_refresh = body["refresh_token"]
+    http_client.cookies.clear()
     http_client.post("/auth/refresh", json={"refresh_token": first_refresh}).raise_for_status()
+    http_client.cookies.clear()
     replay = http_client.post("/auth/refresh", json={"refresh_token": first_refresh})
     assert replay.status_code == 401
 
