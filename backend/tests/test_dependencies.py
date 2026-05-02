@@ -121,9 +121,16 @@ def _make_protected_app() -> FastAPI:
 
 @pytest.fixture
 def protected_client(sync_engine: Engine) -> Iterator[TestClient]:
+    """Like the shared `http_client` but uses the synthetic protected app
+    that adds the require_permission test routes. Wrapped in
+    IdempotentTestClient so the inner /auth/signup POST passes the
+    idempotency middleware.
+    """
+    from tests.conftest import IdempotentTestClient
+
     _ = sync_engine
     app = _make_protected_app()
-    with TestClient(app) as client:
+    with IdempotentTestClient(app) as client:
         yield client
 
 
