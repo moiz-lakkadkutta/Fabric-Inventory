@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router-dom';
 
+import { BottomNav } from './BottomNav';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 
@@ -15,6 +16,7 @@ export function AppLayout() {
           </div>
         </main>
       </div>
+      <BottomNav />
     </div>
   );
 }

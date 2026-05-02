@@ -20,6 +20,17 @@ const router = createBrowserRouter([
       { index: true, element: <Dashboard /> },
       { path: 'sales', element: <Navigate to="/sales/invoices" replace /> },
       { path: 'sales/invoices', element: <InvoiceList /> },
+      { path: 'sales/quotes', element: <Placeholder title="Quotes" task="TASK-038" /> },
+      { path: 'sales/orders', element: <Placeholder title="Sales orders" task="TASK-038" /> },
+      {
+        path: 'sales/challans',
+        element: <Placeholder title="Delivery challans" task="TASK-033" />,
+      },
+      { path: 'sales/returns', element: <Placeholder title="Returns" task="TASK-038" /> },
+      {
+        path: 'sales/credit-control',
+        element: <Placeholder title="Credit control" task="TASK-055" />,
+      },
       { path: 'purchase', element: <Placeholder title="Purchase" task="TASK-031" /> },
       { path: 'inventory', element: <Placeholder title="Inventory" task="TASK-024" /> },
       { path: 'manufacturing', element: <Placeholder title="Manufacturing" task="Phase 3" /> },

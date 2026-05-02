@@ -1,32 +1,39 @@
-import { Bell, Building2, ChevronDown, Search } from 'lucide-react';
+import { Bell, ChevronRight, Search } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 
-import { Monogram } from '@/components/ui/monogram';
 import { TaanaMark } from '@/components/ui/taana-mark';
-import { currentUser, defaultFirm } from '@/lib/mock';
 
-const ROUTE_LABELS: Record<string, string> = {
-  '/': 'Home',
-  '/sales': 'Sales',
-  '/sales/invoices': 'Sales · Invoices',
-  '/purchase': 'Purchase',
-  '/inventory': 'Inventory',
-  '/manufacturing': 'Manufacturing',
-  '/jobwork': 'Job work',
-  '/accounting': 'Accounts',
-  '/reports': 'Reports',
-  '/masters': 'Masters',
-  '/admin': 'Admin',
+import { FirmSwitcher } from './FirmSwitcher';
+import { UserMenu } from './UserMenu';
+
+const ROUTE_LABELS: Record<string, string[]> = {
+  '/': ['Home'],
+  '/sales': ['Sales'],
+  '/sales/invoices': ['Sales', 'Invoices'],
+  '/sales/quotes': ['Sales', 'Quotes'],
+  '/sales/orders': ['Sales', 'Sales orders'],
+  '/sales/challans': ['Sales', 'Delivery challans'],
+  '/sales/returns': ['Sales', 'Returns'],
+  '/sales/credit-control': ['Sales', 'Credit control'],
+  '/purchase': ['Purchase'],
+  '/inventory': ['Inventory'],
+  '/manufacturing': ['Manufacturing'],
+  '/jobwork': ['Job work'],
+  '/accounting': ['Accounts'],
+  '/reports': ['Reports'],
+  '/masters': ['Masters'],
+  '/admin': ['Admin'],
 };
 
 export function TopBar() {
   const { pathname } = useLocation();
-  const breadcrumb = ROUTE_LABELS[pathname] ?? 'Home';
+  const breadcrumb = ROUTE_LABELS[pathname] ?? ['Home'];
 
   return (
     <div
-      className="flex h-14 items-center gap-3 px-4"
+      className="flex items-center gap-2 px-3 md:gap-3.5 md:px-4"
       style={{
+        height: 56,
         background: 'var(--bg-surface)',
         borderBottom: '1px solid var(--border-default)',
       }}
@@ -41,42 +48,37 @@ export function TopBar() {
         </span>
       </div>
 
-      <button
-        type="button"
-        className="ml-2 inline-flex h-9 max-w-[18rem] items-center gap-2 rounded-md px-2.5"
-        style={{
-          background: 'transparent',
-          border: '1px solid var(--border-default)',
-          color: 'var(--text-primary)',
-        }}
-      >
-        <Building2 size={14} color="var(--text-secondary)" />
-        <span className="truncate" style={{ fontSize: 13, fontWeight: 500 }}>
-          {defaultFirm.name}
-        </span>
-        <span
-          className="mono hidden truncate md:inline"
-          style={{
-            fontSize: 11,
-            color: 'var(--text-tertiary)',
-            maxWidth: 130,
-          }}
-        >
-          · {defaultFirm.gstin}
-        </span>
-        <ChevronDown size={14} color="var(--text-tertiary)" />
-      </button>
+      <div className="ml-1 md:ml-2">
+        <FirmSwitcher />
+      </div>
 
-      <span
-        className="hidden md:inline truncate"
-        style={{ fontSize: 13, color: 'var(--text-secondary)' }}
+      <nav
+        aria-label="Breadcrumb"
+        className="hidden min-w-0 items-center gap-1.5 md:flex"
+        style={{ fontSize: 13, color: 'var(--text-tertiary)' }}
       >
-        {breadcrumb}
-      </span>
+        {breadcrumb.map((b, i) => (
+          <span key={`${b}-${i}`} className="inline-flex items-center gap-1.5">
+            {i > 0 && <ChevronRight size={12} color="var(--text-tertiary)" />}
+            <span
+              className="whitespace-nowrap"
+              style={{
+                color:
+                  i === breadcrumb.length - 1 ? 'var(--text-primary)' : 'var(--text-secondary)',
+                fontWeight: i === breadcrumb.length - 1 ? 500 : 400,
+              }}
+            >
+              {b}
+            </span>
+          </span>
+        ))}
+      </nav>
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex items-center gap-1.5 md:gap-2">
         <button
           type="button"
+          name="search"
+          aria-label="Search"
           className="hidden md:inline-flex h-9 min-w-[14rem] items-center gap-2 rounded-md px-3"
           style={{
             background: 'var(--bg-sunken)',
@@ -100,6 +102,19 @@ export function TopBar() {
           >
             ⌘K
           </span>
+        </button>
+
+        <button
+          type="button"
+          aria-label="Search"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-md md:hidden"
+          style={{
+            background: 'transparent',
+            border: '1px solid var(--border-default)',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          <Search size={16} />
         </button>
 
         <button
@@ -128,20 +143,7 @@ export function TopBar() {
           </span>
         </button>
 
-        <button
-          type="button"
-          aria-label="User menu"
-          className="inline-flex items-center justify-center"
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 999,
-            background: 'transparent',
-            border: '1px solid var(--border-default)',
-          }}
-        >
-          <Monogram initials={currentUser.initials} size={28} tone="info" />
-        </button>
+        <UserMenu />
       </div>
     </div>
   );
