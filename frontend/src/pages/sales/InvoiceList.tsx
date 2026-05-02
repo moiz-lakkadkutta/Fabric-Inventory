@@ -1,16 +1,13 @@
 import { Plus, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { Pill, type PillKind } from '@/components/ui/pill';
-import {
-  formatAgeing,
-  formatDateShort,
-  formatINRCompact,
-  invoices,
-  type Invoice,
-  type InvoiceStatus,
-} from '@/lib/mock';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useInvoices } from '@/lib/queries/invoices';
+import { formatAgeing, formatDateShort, formatINRCompact } from '@/lib/mock';
+import type { Invoice, InvoiceStatus } from '@/lib/mock/types';
 
 type FilterKey = 'all' | InvoiceStatus;
 
@@ -35,9 +32,13 @@ const STATUS_PILL: Record<Invoice['status'], { kind: PillKind; label: string }> 
 export default function InvoiceList() {
   const [filter, setFilter] = useState<FilterKey>('all');
   const [query, setQuery] = useState('');
+  const navigate = useNavigate();
+  const invoicesQuery = useInvoices();
+
+  const allRows = useMemo(() => invoicesQuery.data ?? [], [invoicesQuery.data]);
 
   const rows = useMemo(() => {
-    return invoices.filter((i) => {
+    return allRows.filter((i) => {
       if (filter !== 'all' && i.status !== filter) return false;
       if (query) {
         const q = query.toLowerCase();
@@ -45,20 +46,20 @@ export default function InvoiceList() {
       }
       return true;
     });
-  }, [filter, query]);
+  }, [allRows, filter, query]);
 
   return (
     <div className="space-y-4">
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.015em' }}>Sales invoices</h1>
         <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
-          {rows.length} of {invoices.length}
+          {invoicesQuery.isPending ? '—' : `${rows.length} of ${allRows.length}`}
         </span>
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" size="default">
             Export CSV
           </Button>
-          <Button size="default">
+          <Button size="default" onClick={() => navigate('/sales/invoices/new')}>
             <Plus />
             New invoice
           </Button>
@@ -120,97 +121,109 @@ export default function InvoiceList() {
           overflow: 'hidden',
         }}
       >
-        <table className="w-full text-left">
-          <thead style={{ background: 'var(--bg-sunken)' }}>
-            <tr style={{ color: 'var(--text-tertiary)' }}>
-              <Th>Invoice #</Th>
-              <Th>Date</Th>
-              <Th>Party</Th>
-              <Th>Status</Th>
-              <Th align="right">Amount</Th>
-              <Th align="right">Paid</Th>
-              <Th>Ageing</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 && (
-              <tr>
-                <td
-                  colSpan={7}
-                  className="px-4 py-12 text-center"
-                  style={{ color: 'var(--text-tertiary)', fontSize: 13 }}
-                >
-                  No invoices match this filter.
-                </td>
+        {invoicesQuery.isPending ? (
+          <ListSkeleton rows={10} />
+        ) : (
+          <table className="w-full text-left">
+            <thead style={{ background: 'var(--bg-sunken)' }}>
+              <tr style={{ color: 'var(--text-tertiary)' }}>
+                <Th>Invoice #</Th>
+                <Th>Date</Th>
+                <Th>Party</Th>
+                <Th>Status</Th>
+                <Th align="right">Amount</Th>
+                <Th align="right">Paid</Th>
+                <Th>Ageing</Th>
               </tr>
-            )}
-            {rows.map((inv) => {
-              const pill = STATUS_PILL[inv.status];
-              const overdue = inv.ageing_days > 0 && inv.status !== 'PAID';
-              return (
-                <tr
-                  key={inv.invoice_id}
-                  style={{ borderTop: '1px solid var(--border-subtle)' }}
-                  className="hover:bg-(--bg-sunken)/40"
-                >
-                  <Td>
-                    <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>
-                      {inv.number}
-                    </span>
-                  </Td>
-                  <Td>
-                    <span style={{ fontSize: 13, whiteSpace: 'nowrap' }} className="num">
-                      {formatDateShort(inv.date)}
-                    </span>
-                  </Td>
-                  <Td>
-                    <span
-                      className="block max-w-[18rem] truncate"
-                      style={{ fontSize: 13.5, fontWeight: 500 }}
-                    >
-                      {inv.party_name}
-                    </span>
-                  </Td>
-                  <Td>
-                    <Pill kind={pill.kind}>{pill.label}</Pill>
-                  </Td>
-                  <Td align="right">
-                    <span className="num" style={{ fontSize: 13.5, fontWeight: 500 }}>
-                      {formatINRCompact(inv.total)}
-                    </span>
-                  </Td>
-                  <Td align="right">
-                    <span
-                      className="num"
-                      style={{
-                        fontSize: 13,
-                        color:
-                          inv.paid === inv.total
-                            ? 'var(--success-text)'
-                            : inv.paid > 0
-                              ? 'var(--text-secondary)'
-                              : 'var(--text-tertiary)',
-                      }}
-                    >
-                      {formatINRCompact(inv.paid)}
-                    </span>
-                  </Td>
-                  <Td>
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: overdue ? 'var(--danger)' : 'var(--text-tertiary)',
-                        fontWeight: overdue ? 500 : 400,
-                      }}
-                    >
-                      {formatAgeing(inv.ageing_days, inv.status)}
-                    </span>
-                  </Td>
+            </thead>
+            <tbody>
+              {rows.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={7}
+                    className="px-4 py-12 text-center"
+                    style={{ color: 'var(--text-tertiary)', fontSize: 13 }}
+                  >
+                    No invoices match this filter.
+                  </td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              )}
+              {rows.map((inv) => {
+                const pill = STATUS_PILL[inv.status];
+                const overdue = inv.ageing_days > 0 && inv.status !== 'PAID';
+                return (
+                  <tr
+                    key={inv.invoice_id}
+                    style={{ borderTop: '1px solid var(--border-subtle)' }}
+                    className="hover:bg-(--bg-sunken)/40"
+                  >
+                    <Td>
+                      <Link
+                        to={`/sales/invoices/${inv.invoice_id}`}
+                        className="mono"
+                        style={{
+                          fontSize: 12.5,
+                          fontWeight: 500,
+                          color: 'var(--accent)',
+                        }}
+                      >
+                        {inv.number}
+                      </Link>
+                    </Td>
+                    <Td>
+                      <span style={{ fontSize: 13, whiteSpace: 'nowrap' }} className="num">
+                        {formatDateShort(inv.date)}
+                      </span>
+                    </Td>
+                    <Td>
+                      <span
+                        className="block max-w-[18rem] truncate"
+                        style={{ fontSize: 13.5, fontWeight: 500 }}
+                      >
+                        {inv.party_name}
+                      </span>
+                    </Td>
+                    <Td>
+                      <Pill kind={pill.kind}>{pill.label}</Pill>
+                    </Td>
+                    <Td align="right">
+                      <span className="num" style={{ fontSize: 13.5, fontWeight: 500 }}>
+                        {formatINRCompact(inv.total)}
+                      </span>
+                    </Td>
+                    <Td align="right">
+                      <span
+                        className="num"
+                        style={{
+                          fontSize: 13,
+                          color:
+                            inv.paid === inv.total
+                              ? 'var(--success-text)'
+                              : inv.paid > 0
+                                ? 'var(--text-secondary)'
+                                : 'var(--text-tertiary)',
+                        }}
+                      >
+                        {formatINRCompact(inv.paid)}
+                      </span>
+                    </Td>
+                    <Td>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color: overdue ? 'var(--danger)' : 'var(--text-tertiary)',
+                          fontWeight: overdue ? 500 : 400,
+                        }}
+                      >
+                        {formatAgeing(inv.ageing_days, inv.status)}
+                      </span>
+                    </Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
@@ -238,5 +251,23 @@ function Td({ children, align = 'left' }: { children: React.ReactNode; align?: '
     <td className="px-3 py-3" style={{ textAlign: align, verticalAlign: 'middle' }}>
       {children}
     </td>
+  );
+}
+
+function ListSkeleton({ rows }: { rows: number }) {
+  return (
+    <div role="status" aria-label="Loading invoices" className="flex flex-col gap-2 p-4">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="flex items-center gap-3">
+          <Skeleton width={88} height={14} />
+          <Skeleton width={56} height={14} />
+          <Skeleton width="32%" height={14} />
+          <Skeleton width={72} height={20} radius={10} />
+          <div className="flex-1" />
+          <Skeleton width={84} height={14} />
+          <Skeleton width={64} height={14} />
+        </div>
+      ))}
+    </div>
   );
 }

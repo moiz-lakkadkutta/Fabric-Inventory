@@ -156,3 +156,12 @@ textarea {
     transform: rotate(360deg);
   }
 }
+
+@keyframes taana-skeleton-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
