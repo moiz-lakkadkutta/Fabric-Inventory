@@ -120,7 +120,7 @@ def test_signup_duplicate_org_name_returns_422(http_client: TestClient) -> None:
         },
     )
     assert resp.status_code == 422
-    assert resp.json()["error_code"] == "validation_error"
+    assert resp.json()["code"] == "VALIDATION_ERROR"
 
 
 def test_signup_weak_password_rejected_by_pydantic(http_client: TestClient) -> None:
@@ -211,7 +211,7 @@ def test_login_with_wrong_password_returns_401(http_client: TestClient) -> None:
         json={"email": email, "password": "wrong-password", "org_name": org_name},
     )
     assert resp.status_code == 401
-    assert resp.json()["error_code"] == "invalid_credentials"
+    assert resp.json()["code"] == "INVALID_CREDENTIALS"
 
 
 def test_login_with_unknown_email_returns_401(http_client: TestClient) -> None:
@@ -365,7 +365,7 @@ def test_refresh_with_access_token_returns_401(http_client: TestClient) -> None:
     )
     resp = http_client.post("/auth/refresh", json={"refresh_token": body["access_token"]})
     assert resp.status_code == 401
-    assert resp.json()["error_code"] == "token_invalid"
+    assert resp.json()["code"] == "TOKEN_INVALID"
 
 
 def test_refresh_replay_returns_401(http_client: TestClient) -> None:

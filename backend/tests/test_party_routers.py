@@ -117,8 +117,8 @@ def test_create_party_with_no_type_flag_returns_422(http_client: TestClient) -> 
     )
     assert resp.status_code == 422
     body = resp.json()
-    # AppValidationError → 422 via the global handler.
-    assert body["error_code"] == "validation_error"
+    # AppValidationError → 422 via the Q8a envelope.
+    assert body["code"] == "VALIDATION_ERROR"
 
 
 def test_create_party_with_idempotency_key_succeeds(http_client: TestClient) -> None:

@@ -76,7 +76,7 @@ def test_me_with_valid_access_token_returns_payload(http_client: TestClient) -> 
 def test_me_without_token_returns_401(http_client: TestClient) -> None:
     resp = http_client.get("/auth/me")
     assert resp.status_code == 401
-    assert resp.json()["error_code"] == "token_invalid"
+    assert resp.json()["code"] == "TOKEN_INVALID"
 
 
 def test_me_with_malformed_token_returns_401(http_client: TestClient) -> None:
@@ -155,7 +155,7 @@ def test_require_permission_denies_when_user_lacks_perm(
         headers={"Authorization": f"Bearer {body['access_token']}"},
     )
     assert resp.status_code == 403
-    assert resp.json()["error_code"] == "permission_denied"
+    assert resp.json()["code"] == "PERMISSION_DENIED"
 
 
 def test_require_permission_returns_401_without_token(protected_client: TestClient) -> None:
