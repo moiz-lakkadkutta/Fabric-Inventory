@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 from fastapi.testclient import TestClient
@@ -64,13 +64,13 @@ class IdempotentTestClient(TestClient):
 
     _MUTATING: ClassVar[set[str]] = {"POST", "PATCH", "PUT", "DELETE"}
 
-    def request(self, method: str, url: str, **kwargs: object) -> object:  # type: ignore[override]
+    def request(self, method: str, url: str, **kwargs: Any) -> Any:  # type: ignore[override]
         if method.upper() in self._MUTATING:
-            headers = dict(kwargs.get("headers") or {})  # type: ignore[arg-type]
+            headers = dict(kwargs.get("headers") or {})
             if "Idempotency-Key" not in headers:
                 headers["Idempotency-Key"] = str(uuid.uuid4())
                 kwargs["headers"] = headers
-        return super().request(method, url, **kwargs)  # type: ignore[arg-type]
+        return super().request(method, url, **kwargs)
 
 
 @pytest.fixture

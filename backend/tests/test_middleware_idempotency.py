@@ -80,7 +80,7 @@ async def client(
     node: object | None = app.middleware_stack
     while node is not None:
         if isinstance(node, IdempotencyMiddleware):
-            node._redis_client = fake_redis  # type: ignore[attr-defined]
+            node._redis_client = fake_redis
             node._redis_url = "redis://fake"  # any non-None unlocks dedup
             break
         node = getattr(node, "app", None)

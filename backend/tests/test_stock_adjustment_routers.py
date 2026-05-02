@@ -185,6 +185,7 @@ def test_create_adjustment_with_idempotency_key_succeeds(
 
 
 def test_create_adjustment_invalid_idempotency_key_rejected(http_client: TestClient) -> None:
+    """Malformed key now caught by IdempotencyMiddleware → 400 (was 422 pre-T-INT-1)."""
     me = _signup_owner(http_client)
     resp = http_client.post(
         "/stock-adjustments",
@@ -197,7 +198,8 @@ def test_create_adjustment_invalid_idempotency_key_rejected(http_client: TestCli
             "direction": "INCREASE",
         },
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 
 
 # ──────────────────────────────────────────────────────────────────────
