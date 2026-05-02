@@ -16,7 +16,6 @@ from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
 from app.models.banking import BankAccount, Cheque
-from app.routers.auth import _validate_idempotency_key
 from app.schemas.banking import (
     BankAccountCreateRequest,
     BankAccountListResponse,
@@ -95,7 +94,6 @@ def create_bank_account(
     current_user: Annotated[TokenPayload, Depends(require_permission("banking.bank.create"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> BankAccountResponse:
-    _validate_idempotency_key(idempotency_key)
     account = banking_service.create_bank_account(
         db,
         org_id=current_user.org_id,
@@ -168,7 +166,6 @@ def update_bank_account(
     current_user: Annotated[TokenPayload, Depends(require_permission("banking.bank.update"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> BankAccountResponse:
-    _validate_idempotency_key(idempotency_key)
     account = banking_service.update_bank_account(
         db,
         org_id=current_user.org_id,
@@ -194,7 +191,6 @@ def delete_bank_account(
     current_user: Annotated[TokenPayload, Depends(require_permission("banking.bank.update"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> None:
-    _validate_idempotency_key(idempotency_key)
     banking_service.soft_delete_bank_account(
         db,
         org_id=current_user.org_id,
@@ -220,7 +216,6 @@ def create_cheque(
     firm_id: Annotated[uuid.UUID, Query(description="Firm scope for this cheque")],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> ChequeResponse:
-    _validate_idempotency_key(idempotency_key)
     cheque = banking_service.create_cheque(
         db,
         org_id=current_user.org_id,

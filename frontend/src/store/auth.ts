@@ -21,16 +21,34 @@ export interface MeResponse {
   token_expires_at: string;
 }
 
+/**
+ * The credentials Login needs to re-present to /auth/mfa-verify. Lives
+ * in memory only between login (requires_mfa=true) and the next MFA
+ * submit. Cleared on success, error, or navigating back to /login.
+ *
+ * Storing the password in memory is the documented trade-off — the
+ * MFA endpoint demands re-validation of credentials (Q3 rationale: a
+ * leaked user_id alone shouldn't let an attacker brute-force the
+ * 6-digit TOTP). The window is bounded to a single user interaction.
+ */
+export interface PendingMfa {
+  email: string;
+  password: string;
+  org_name: string;
+}
+
 export interface AuthState {
   accessToken: string | null;
   me: MeResponse | null;
   status: 'unknown' | 'authenticated' | 'unauthenticated';
+  pendingMfa: PendingMfa | null;
 }
 
 const initialState: AuthState = {
   accessToken: null,
   me: null,
   status: 'unknown',
+  pendingMfa: null,
 };
 
 let state: AuthState = initialState;
@@ -59,9 +77,17 @@ export const authStore = {
   setMe(me: MeResponse | null): void {
     setState({ me, status: me ? 'authenticated' : 'unauthenticated' });
   },
+  setPendingMfa(pending: PendingMfa | null): void {
+    setState({ pendingMfa: pending });
+  },
   /** Wipe everything — used on logout + on bootstrap failure. */
   clear(): void {
-    setState({ accessToken: null, me: null, status: 'unauthenticated' });
+    setState({
+      accessToken: null,
+      me: null,
+      status: 'unauthenticated',
+      pendingMfa: null,
+    });
   },
   /** Test helper — reset to initial unknown state. */
   reset(): void {
@@ -91,4 +117,8 @@ export function useAuthStatus(): AuthState['status'] {
 
 export function useFeatureFlag(key: string): boolean {
   return useAuthStore((s) => s.me?.flags[key] === true);
+}
+
+export function usePendingMfa(): PendingMfa | null {
+  return useAuthStore((s) => s.pendingMfa);
 }

@@ -4,7 +4,9 @@ import { useState } from 'react';
 import { Monogram } from '@/components/ui/monogram';
 import { Pill } from '@/components/ui/pill';
 import { useClickOutside } from '@/hooks/useClickOutside';
+import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { firms } from '@/lib/mock';
+import { useSwitchFirm } from '@/lib/queries/identity';
 import { cn } from '@/lib/utils';
 
 const FY_LABEL = 'FY 2025-26';
@@ -24,16 +26,41 @@ interface FirmSwitcherProps {
 
 /*
   Firm-switcher trigger + popover. Click toggles a 380px popover anchored
-  below the trigger; click-outside or Esc closes it. The "current firm"
-  state is component-local for the click dummy; the real flow ties to
-  identity.currentFirm in T2/T7.
+  below the trigger; click-outside or Esc closes it.
+
+  Mock mode keeps the local-state behavior (instant-switch, no backend).
+  Live mode dispatches `useSwitchFirm` which POSTs /auth/switch-firm,
+  swaps the access token, clears all cached queries, and re-fetches /me.
+  The popover's `currentId` is the optimistic UI state; the live
+  mutation is fire-and-forget for now (errors revert via onError).
 */
 export function FirmSwitcher({ compact = false }: FirmSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [currentId, setCurrentId] = useState(firms[0].firm_id);
   const ref = useClickOutside<HTMLDivElement>(open, () => setOpen(false));
+  const switchFirm = useSwitchFirm();
+  const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
 
   const current = firms.find((f) => f.firm_id === currentId) ?? firms[0];
+
+  const onSelect = (firmId: string) => {
+    const previousId = currentId;
+    setCurrentId(firmId);
+    setOpen(false);
+    switchFirm.mutate(
+      { firm_id: firmId, idempotencyKey },
+      {
+        onSuccess: () => {
+          resetKey();
+        },
+        onError: () => {
+          resetKey();
+          // Revert optimistic UI on failure.
+          setCurrentId(previousId);
+        },
+      },
+    );
+  };
 
   return (
     <div ref={ref} className="relative">
@@ -105,10 +132,7 @@ export function FirmSwitcher({ compact = false }: FirmSwitcherProps) {
                   type="button"
                   role="menuitemradio"
                   aria-checked={isCurrent}
-                  onClick={() => {
-                    setCurrentId(f.firm_id);
-                    setOpen(false);
-                  }}
+                  onClick={() => onSelect(f.firm_id)}
                   className={cn(
                     'flex w-full items-center gap-3 px-3.5 text-left',
                     'hover:bg-(--bg-sunken)',

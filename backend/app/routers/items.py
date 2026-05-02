@@ -18,7 +18,6 @@ from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
 from app.models import Hsn, Item, Sku, Uom
-from app.routers.auth import _validate_idempotency_key
 from app.schemas.masters import (
     HsnListResponse,
     HsnResponse,
@@ -99,7 +98,6 @@ def create_item(
     current_user: Annotated[TokenPayload, Depends(require_permission("masters.item.create"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> ItemResponse:
-    _validate_idempotency_key(idempotency_key)
     item = items_service.create_item(
         db,
         org_id=current_user.org_id,
@@ -193,7 +191,6 @@ def update_item(
     current_user: Annotated[TokenPayload, Depends(require_permission("masters.item.update"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> ItemResponse:
-    _validate_idempotency_key(idempotency_key)
     item = items_service.update_item(
         db,
         org_id=current_user.org_id,
@@ -225,7 +222,6 @@ def delete_item(
     current_user: Annotated[TokenPayload, Depends(require_permission("masters.item.update"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> None:
-    _validate_idempotency_key(idempotency_key)
     items_service.soft_delete_item(
         db,
         org_id=current_user.org_id,
@@ -266,7 +262,6 @@ def create_sku(
     current_user: Annotated[TokenPayload, Depends(require_permission("masters.item.create"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SkuResponse:
-    _validate_idempotency_key(idempotency_key)
     sku = items_service.create_sku(
         db,
         org_id=current_user.org_id,
@@ -307,7 +302,6 @@ def update_sku(
     current_user: Annotated[TokenPayload, Depends(require_permission("masters.item.update"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SkuResponse:
-    _validate_idempotency_key(idempotency_key)
     sku = items_service.update_sku(
         db,
         org_id=current_user.org_id,
@@ -331,7 +325,6 @@ def delete_sku(
     current_user: Annotated[TokenPayload, Depends(require_permission("masters.item.update"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> None:
-    _validate_idempotency_key(idempotency_key)
     items_service.soft_delete_sku(
         db,
         org_id=current_user.org_id,
