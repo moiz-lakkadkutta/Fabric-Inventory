@@ -2,8 +2,10 @@ import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
 
 import { AppLayout } from '@/components/layout/AppLayout';
 import Forgot from '@/pages/auth/Forgot';
+import Invite from '@/pages/auth/Invite';
 import Login from '@/pages/auth/Login';
 import Mfa from '@/pages/auth/Mfa';
+import Onboarding from '@/pages/auth/Onboarding';
 import Dashboard from '@/pages/Dashboard';
 import NotFound from '@/pages/NotFound';
 import Placeholder from '@/pages/Placeholder';
@@ -13,6 +15,8 @@ const router = createBrowserRouter([
   { path: '/login', element: <Login /> },
   { path: '/mfa', element: <Mfa /> },
   { path: '/forgot', element: <Forgot /> },
+  { path: '/invite', element: <Invite /> },
+  { path: '/onboarding', element: <Onboarding /> },
   {
     path: '/',
     element: <AppLayout />,
