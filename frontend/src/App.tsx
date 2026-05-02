@@ -9,6 +9,10 @@ import Onboarding from '@/pages/auth/Onboarding';
 import Dashboard from '@/pages/Dashboard';
 import NotFound from '@/pages/NotFound';
 import Placeholder from '@/pages/Placeholder';
+import InventoryList from '@/pages/inventory/InventoryList';
+import LotDetail from '@/pages/inventory/LotDetail';
+import JobWorkOverview from '@/pages/jobwork/JobWorkOverview';
+import ManufacturingPipeline from '@/pages/manufacturing/ManufacturingPipeline';
 import InvoiceCreate from '@/pages/sales/InvoiceCreate';
 import InvoiceDetail from '@/pages/sales/InvoiceDetail';
 import InvoiceList from '@/pages/sales/InvoiceList';
@@ -40,9 +44,10 @@ const router = createBrowserRouter([
         element: <Placeholder title="Credit control" task="TASK-055" />,
       },
       { path: 'purchase', element: <Placeholder title="Purchase" task="TASK-031" /> },
-      { path: 'inventory', element: <Placeholder title="Inventory" task="TASK-024" /> },
-      { path: 'manufacturing', element: <Placeholder title="Manufacturing" task="Phase 3" /> },
-      { path: 'jobwork', element: <Placeholder title="Job work" task="Phase 3" /> },
+      { path: 'inventory', element: <InventoryList /> },
+      { path: 'inventory/lots/:id', element: <LotDetail /> },
+      { path: 'manufacturing', element: <ManufacturingPipeline /> },
+      { path: 'jobwork', element: <JobWorkOverview /> },
       { path: 'accounting', element: <Placeholder title="Accounts" task="TASK-044" /> },
       { path: 'reports', element: <Placeholder title="Reports" task="TASK-046" /> },
       { path: 'masters', element: <Placeholder title="Masters" task="TASK-020" /> },
