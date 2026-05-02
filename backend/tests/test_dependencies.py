@@ -61,6 +61,8 @@ def test_me_with_valid_access_token_returns_payload(http_client: TestClient) -> 
     # Owner role → all 38 system permissions.
     assert "sales.invoice.finalize" in out["permissions"]
     assert "accounting.voucher.post" in out["permissions"]
+    # Q10c: flags map is part of the response; empty when no firm is active.
+    assert out["flags"] == {}
 
 
 def test_me_without_token_returns_401(http_client: TestClient) -> None:

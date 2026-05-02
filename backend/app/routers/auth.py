@@ -39,7 +39,7 @@ from app.schemas.auth import (
     SignupResponse,
     TokenPairResponse,
 )
-from app.service import identity_service, rbac_service, seed_service
+from app.service import feature_flag_service, identity_service, rbac_service, seed_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -408,19 +408,26 @@ def logout(
 @router.get(
     "/me",
     response_model=MeResponse,
-    summary="Return the authenticated user's identity + permissions",
+    summary="Return the authenticated user's identity + permissions + flags",
 )
-def me(current_user: CurrentUser) -> MeResponse:
-    """Reads the JWT payload (set by AuthMiddleware). Frontend uses this
-    to populate the session header / decide UI affordances.
+def me(current_user: CurrentUser, db: SyncDBSession) -> MeResponse:
+    """Reads the JWT payload (set by AuthMiddleware) plus per-firm feature
+    flags from `feature_flag_service`. Frontend useAuth bootstrap-on-load
+    consumes this.
 
     Requires a valid access token (refresh tokens are explicitly rejected
     by AuthMiddleware — only access tokens populate request.state.user).
     """
+    flags: dict[str, bool] = (
+        feature_flag_service.get_flags_for_firm(db, firm_id=current_user.firm_id)
+        if current_user.firm_id is not None
+        else {}
+    )
     return MeResponse(
         user_id=current_user.user_id,
         org_id=current_user.org_id,
         firm_id=current_user.firm_id,
         permissions=list(current_user.permissions),
+        flags=flags,
         token_expires_at=datetime.datetime.fromtimestamp(current_user.exp, tz=datetime.UTC),
     )

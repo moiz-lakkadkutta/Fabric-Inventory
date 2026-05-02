@@ -28,6 +28,7 @@ class Base(DeclarativeBase):
 # before dependents (Firm, AppUser, ...).
 from . import (  # noqa: E402  (import after Base definition is required)
     banking,
+    feature_flag,
     identity,
     inventory,
     masters,
@@ -39,6 +40,7 @@ from .banking import (  # noqa: E402
     Cheque,
     ChequeStatus,
 )
+from .feature_flag import FeatureFlag  # noqa: E402
 from .identity import (  # noqa: E402
     AppUser,
     AuditLog,
@@ -120,6 +122,7 @@ __all__ = [
     "DCStatus",
     "DeliveryChallan",
     "Device",
+    "FeatureFlag",
     "Firm",
     "GRNLine",
     "GRNStatus",
@@ -167,6 +170,7 @@ __all__ = [
     "UserRole",
     "VoucherStatus",
     "banking",
+    "feature_flag",
     "identity",
     "inventory",
     "masters",
