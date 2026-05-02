@@ -14,22 +14,8 @@ should never read org B's data even if RLS hypothetically failed).
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
 
-import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.engine import Engine
-
-
-@pytest.fixture
-def http_client(sync_engine: Engine) -> Iterator[TestClient]:
-    _ = sync_engine
-    from main import create_app
-
-    app = create_app()
-    with TestClient(app) as client:
-        yield client
-
 
 VALID_GSTIN = "27ABCDE1234F1Z5"
 VALID_PAN = "ABCDE1234F"
@@ -132,13 +118,15 @@ def test_create_party_with_idempotency_key_succeeds(http_client: TestClient) -> 
 
 
 def test_create_party_with_malformed_idempotency_key_rejected(http_client: TestClient) -> None:
+    """Malformed key now caught by IdempotencyMiddleware → 400 (was 422 pre-T-INT-1)."""
     me = _signup_owner(http_client)
     resp = http_client.post(
         "/parties",
         headers={**_auth(me["access_token"]), "Idempotency-Key": "not-a-uuid"},
         json={"code": "P-X", "name": "X", "is_supplier": True},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 
 
 # ──────────────────────────────────────────────────────────────────────

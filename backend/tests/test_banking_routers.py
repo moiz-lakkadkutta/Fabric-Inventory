@@ -8,22 +8,11 @@ then exercises /bank-accounts and /cheques endpoints with that owner's JWT.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
-
-
-@pytest.fixture
-def http_client(sync_engine: Engine) -> Iterator[TestClient]:
-    _ = sync_engine
-    from main import create_app
-
-    app = create_app()
-    with TestClient(app) as client:
-        yield client
 
 
 def _signup_owner(client: TestClient) -> dict[str, str]:

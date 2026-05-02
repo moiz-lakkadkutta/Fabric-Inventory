@@ -14,8 +14,10 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from typing import ClassVar
 
 import pytest
+from fastapi.testclient import TestClient
 from httpx import AsyncClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -42,6 +44,48 @@ async def client() -> AsyncIterator[AsyncClient]:
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+# ──────────────────────────────────────────────────────────────────────
+# IdempotentTestClient + shared http_client fixture
+# ──────────────────────────────────────────────────────────────────────
+#
+# T-INT-1 added IdempotencyMiddleware which strict-rejects mutating
+# requests without an `Idempotency-Key` header. To keep existing tests
+# focused on what they actually assert, this wrapper auto-injects a UUID
+# key on every POST/PATCH/PUT/DELETE unless one is already provided.
+# Tests that need to test the missing-key path can pass
+# `Idempotency-Key=""` explicitly or use a raw TestClient.
+
+
+class IdempotentTestClient(TestClient):
+    """TestClient that auto-injects an Idempotency-Key on mutating requests."""
+
+    _MUTATING: ClassVar[set[str]] = {"POST", "PATCH", "PUT", "DELETE"}
+
+    def request(self, method: str, url: str, **kwargs: object) -> object:  # type: ignore[override]
+        if method.upper() in self._MUTATING:
+            headers = dict(kwargs.get("headers") or {})  # type: ignore[arg-type]
+            if "Idempotency-Key" not in headers:
+                headers["Idempotency-Key"] = str(uuid.uuid4())
+                kwargs["headers"] = headers
+        return super().request(method, url, **kwargs)  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def http_client(sync_engine: Engine) -> Iterator[IdempotentTestClient]:
+    """Shared HTTP client for router tests. Hits the real Postgres via
+    `sync_engine` (skipped locally without DB; fail-loud in CI).
+
+    Auto-injects Idempotency-Key on mutating requests so individual tests
+    don't have to mint UUIDs themselves.
+    """
+    _ = sync_engine  # keep the fixture's connection check + skip semantics
+    from main import create_app
+
+    app = create_app()
+    with IdempotentTestClient(app) as c:
         yield c
 
 

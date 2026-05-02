@@ -30,16 +30,6 @@ from app.service.identity_service import TokenPayload
 # ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def http_client(sync_engine: Engine) -> Iterator[TestClient]:
-    _ = sync_engine
-    from main import create_app
-
-    app = create_app()
-    with TestClient(app) as client:
-        yield client
-
-
 def _signup_and_login(client: TestClient) -> dict[str, str]:
     org_name = f"Org {uuid.uuid4().hex[:8]}"
     email = f"u-{uuid.uuid4().hex[:10]}@example.com"

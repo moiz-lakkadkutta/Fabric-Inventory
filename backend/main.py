@@ -12,6 +12,7 @@ from app.config import get_settings, init_sentry
 from app.db import check_db_health, dispose_engine
 from app.middleware import (
     AuthMiddleware,
+    IdempotencyMiddleware,
     LoggingMiddleware,
     RLSMiddleware,
     configure_logging,
@@ -43,12 +44,14 @@ def create_app() -> FastAPI:
     # Exception handlers run after middleware; register on the app instance.
     register_error_handlers(app)
 
-    # Middleware execution order (inbound): CORS → logging → auth → RLS → handler.
-    # Starlette runs them in REVERSE registration order, so register: RLS → auth →
-    # logging → CORS. AuthMiddleware is a no-op pass-through today; TASK-007 makes
-    # it the single owner of JWT decoding + `request.state.user`. RLS will then
-    # only read the populated state, not decode tokens itself.
+    # Middleware execution order (inbound): CORS → logging → auth →
+    # idempotency → RLS → handler. Starlette runs them in REVERSE
+    # registration order, so register: RLS → idempotency → auth →
+    # logging → CORS. Idempotency sits between auth and RLS so
+    # presence-of-key is enforced after the user is identified but
+    # before any DB connection is opened for handler work.
     app.add_middleware(RLSMiddleware)
+    app.add_middleware(IdempotencyMiddleware)
     app.add_middleware(AuthMiddleware)
     app.add_middleware(LoggingMiddleware)
     # `cors_origins` is guaranteed non-empty by Settings.model_validator

@@ -14,28 +14,11 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import Iterator
 
 import pyotp
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
-
-
-@pytest.fixture
-def http_client(sync_engine: Engine) -> Iterator[TestClient]:
-    """A FastAPI TestClient pointed at the same DATABASE_URL as
-    `sync_engine`. The app uses `get_db_sync` internally, which opens
-    its own connection — but it shares the same Postgres, so rows the
-    handlers create are visible to the test for inspection.
-    """
-    _ = sync_engine  # keep the fixture's connection check + skip semantics
-    from main import create_app
-
-    app = create_app()
-    with TestClient(app) as client:
-        yield client
 
 
 def _unique_email() -> str:
@@ -166,6 +149,7 @@ def test_signup_with_idempotency_key_succeeds(http_client: TestClient) -> None:
 
 
 def test_signup_with_malformed_idempotency_key_rejected(http_client: TestClient) -> None:
+    """Malformed key now caught by IdempotencyMiddleware → 400 (was 422 pre-T-INT-1)."""
     resp = http_client.post(
         "/auth/signup",
         headers={"Idempotency-Key": "not-a-uuid"},
@@ -176,7 +160,8 @@ def test_signup_with_malformed_idempotency_key_rejected(http_client: TestClient)
             "firm_name": "F",
         },
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 
 
 # ──────────────────────────────────────────────────────────────────────
