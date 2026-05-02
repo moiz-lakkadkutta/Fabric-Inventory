@@ -29,6 +29,7 @@ test-results/
 
 # Claude Code — user-local settings only; project commands in .claude/commands/ are shared
 .claude/settings.local.json
+.claude/worktrees/
 
 # Build artifacts
 *.log
