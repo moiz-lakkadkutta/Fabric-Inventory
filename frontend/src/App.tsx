@@ -9,10 +9,14 @@ import Onboarding from '@/pages/auth/Onboarding';
 import Dashboard from '@/pages/Dashboard';
 import NotFound from '@/pages/NotFound';
 import Placeholder from '@/pages/Placeholder';
+import AccountingHub from '@/pages/accounting/AccountingHub';
 import InventoryList from '@/pages/inventory/InventoryList';
 import LotDetail from '@/pages/inventory/LotDetail';
 import JobWorkOverview from '@/pages/jobwork/JobWorkOverview';
 import ManufacturingPipeline from '@/pages/manufacturing/ManufacturingPipeline';
+import PartyDetail from '@/pages/masters/PartyDetail';
+import PartyList from '@/pages/masters/PartyList';
+import PurchaseOrderList from '@/pages/purchase/PurchaseOrderList';
 import InvoiceCreate from '@/pages/sales/InvoiceCreate';
 import InvoiceDetail from '@/pages/sales/InvoiceDetail';
 import InvoiceList from '@/pages/sales/InvoiceList';
@@ -43,14 +47,16 @@ const router = createBrowserRouter([
         path: 'sales/credit-control',
         element: <Placeholder title="Credit control" task="TASK-055" />,
       },
-      { path: 'purchase', element: <Placeholder title="Purchase" task="TASK-031" /> },
+      { path: 'purchase', element: <PurchaseOrderList /> },
       { path: 'inventory', element: <InventoryList /> },
       { path: 'inventory/lots/:id', element: <LotDetail /> },
       { path: 'manufacturing', element: <ManufacturingPipeline /> },
       { path: 'jobwork', element: <JobWorkOverview /> },
-      { path: 'accounting', element: <Placeholder title="Accounts" task="TASK-044" /> },
+      { path: 'accounting', element: <AccountingHub /> },
       { path: 'reports', element: <Placeholder title="Reports" task="TASK-046" /> },
-      { path: 'masters', element: <Placeholder title="Masters" task="TASK-020" /> },
+      { path: 'masters', element: <Navigate to="/masters/parties" replace /> },
+      { path: 'masters/parties', element: <PartyList /> },
+      { path: 'masters/parties/:id', element: <PartyDetail /> },
       { path: 'admin', element: <Placeholder title="Admin" task="TASK-019" /> },
       { path: '*', element: <NotFound /> },
     ],
