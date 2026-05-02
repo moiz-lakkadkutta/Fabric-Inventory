@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -5,14 +6,19 @@ import { describe, expect, it } from 'vitest';
 import Login from '@/pages/auth/Login';
 
 function renderLoginIntoFlow() {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(
-    <MemoryRouter initialEntries={['/login']}>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/" element={<div>DASHBOARD_REACHED</div>} />
-        <Route path="/mfa" element={<div>MFA_REACHED</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/login']}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/" element={<div>DASHBOARD_REACHED</div>} />
+          <Route path="/mfa" element={<div>MFA_REACHED</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

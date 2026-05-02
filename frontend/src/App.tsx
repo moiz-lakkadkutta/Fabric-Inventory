@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom';
 
 import { AppLayout } from '@/components/layout/AppLayout';
+import { useAuthBootstrap } from '@/hooks/useAuth';
 import Forgot from '@/pages/auth/Forgot';
 import Invite from '@/pages/auth/Invite';
 import Login from '@/pages/auth/Login';
@@ -66,5 +67,6 @@ const router = createBrowserRouter([
 ]);
 
 export default function App() {
+  useAuthBootstrap();
   return <RouterProvider router={router} />;
 }
