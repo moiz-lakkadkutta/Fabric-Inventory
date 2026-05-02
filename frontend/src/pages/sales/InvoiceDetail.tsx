@@ -2,6 +2,7 @@ import { ArrowLeft, Check, Printer } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
+import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useFinalizeInvoice, useInvoice } from '@/lib/queries/invoices';
@@ -21,6 +22,10 @@ export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const invoiceQuery = useInvoice(id);
   const finalize = useFinalizeInvoice();
+  const print = useComingSoon({
+    feature: 'Print invoice (GST-compliant PDF)',
+    task: 'TASK-051 (Invoice PDF)',
+  });
 
   if (invoiceQuery.isPending) {
     return (
@@ -66,10 +71,11 @@ export default function InvoiceDetail() {
         </h1>
         <Pill kind={pill.kind}>{pill.label}</Pill>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline">
+          <Button variant="outline" {...print.triggerProps}>
             <Printer size={14} />
             Print
           </Button>
+          {print.dialog}
           {inv.status === 'DRAFT' && (
             <Button onClick={onFinalize} disabled={finalize.isPending}>
               <Check size={14} />

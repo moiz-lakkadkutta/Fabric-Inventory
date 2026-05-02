@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
+import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useSkus } from '@/lib/queries/inventory';
 import { lots } from '@/lib/mock/inventory';
@@ -21,6 +22,14 @@ const ALL_STAGES: StageId[] = [
 export default function InventoryList() {
   const skusQuery = useSkus();
   const [query, setQuery] = useState('');
+  const adjust = useComingSoon({
+    feature: 'Adjust stock',
+    task: 'TASK-024 (Inventory adjustments)',
+  });
+  const newGrn = useComingSoon({
+    feature: 'New GRN intake',
+    task: 'TASK-027 (GRN screen)',
+  });
 
   const rows = useMemo(() => {
     const all = skusQuery.data ?? [];
@@ -39,13 +48,17 @@ export default function InventoryList() {
             : `${rows.length} SKUs · ${rows.reduce((s, r) => s + r.lots, 0)} active lots`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline">Adjust stock</Button>
-          <Button>
+          <Button variant="outline" {...adjust.triggerProps}>
+            Adjust stock
+          </Button>
+          <Button {...newGrn.triggerProps}>
             <Plus />
             New GRN
           </Button>
         </div>
       </header>
+      {adjust.dialog}
+      {newGrn.dialog}
 
       <div
         className="ml-auto inline-flex h-9 w-72 items-center gap-2 rounded-md px-3"

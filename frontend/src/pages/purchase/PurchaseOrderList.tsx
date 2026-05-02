@@ -1,6 +1,7 @@
 import { Plus } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatINRCompact } from '@/lib/mock';
@@ -18,6 +19,14 @@ const STATUS_PILL: Record<PoStatus, { kind: PillKind; label: string }> = {
 
 export default function PurchaseOrderList() {
   const poQuery = usePurchaseOrders();
+  const receiveGrn = useComingSoon({
+    feature: 'Receive GRN against PO',
+    task: 'TASK-027 (GRN screen)',
+  });
+  const newPo = useComingSoon({
+    feature: 'New purchase order',
+    task: 'TASK-028 (PO create)',
+  });
 
   return (
     <div className="space-y-4">
@@ -29,13 +38,17 @@ export default function PurchaseOrderList() {
             : `${poQuery.data?.length ?? 0} POs · 3-way match status per row`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline">Receive GRN</Button>
-          <Button>
+          <Button variant="outline" {...receiveGrn.triggerProps}>
+            Receive GRN
+          </Button>
+          <Button {...newPo.triggerProps}>
             <Plus />
             New PO
           </Button>
         </div>
       </header>
+      {receiveGrn.dialog}
+      {newPo.dialog}
 
       <div
         style={{

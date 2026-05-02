@@ -2,6 +2,7 @@ import { Plus } from 'lucide-react';
 import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
+import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useReceipts, useVouchers } from '@/lib/queries/accounts';
@@ -27,6 +28,14 @@ export default function AccountingHub() {
   const [tab, setTab] = useState<Tab>('receipts');
   const receipts = useReceipts();
   const vouchers = useVouchers();
+  const reconcile = useComingSoon({
+    feature: 'Bank reconciliation',
+    task: 'TASK-045 (Bank statement match)',
+  });
+  const newEntry = useComingSoon({
+    feature: tab === 'receipts' ? 'New receipt' : 'New voucher',
+    task: tab === 'receipts' ? 'TASK-042 (Receipt screen)' : 'TASK-044 (Voucher post)',
+  });
 
   return (
     <div className="space-y-4">
@@ -38,13 +47,17 @@ export default function AccountingHub() {
             : `${receipts.data?.length ?? 0} receipts · ${vouchers.data?.length ?? 0} vouchers`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline">Reconcile bank</Button>
-          <Button>
+          <Button variant="outline" {...reconcile.triggerProps}>
+            Reconcile bank
+          </Button>
+          <Button {...newEntry.triggerProps}>
             <Plus />
             New {tab === 'receipts' ? 'receipt' : 'voucher'}
           </Button>
         </div>
       </header>
+      {reconcile.dialog}
+      {newEntry.dialog}
 
       <div
         className="inline-flex items-center rounded-md p-1"

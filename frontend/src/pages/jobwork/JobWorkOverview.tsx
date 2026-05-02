@@ -1,6 +1,7 @@
 import { Plus } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Monogram } from '@/components/ui/monogram';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -18,6 +19,14 @@ const JOB_PILL: Record<JobStatus, { kind: PillKind; label: string }> = {
 export default function JobWorkOverview() {
   const karigarsQuery = useKarigars();
   const jobsQuery = useJobs();
+  const receive = useComingSoon({
+    feature: 'Receive back from karigar',
+    task: 'TASK-034 (Job receive-back)',
+  });
+  const send = useComingSoon({
+    feature: 'Send out to karigar',
+    task: 'TASK-032 (Job send-out)',
+  });
 
   return (
     <div className="space-y-4">
@@ -29,13 +38,17 @@ export default function JobWorkOverview() {
             : `${karigarsQuery.data?.length ?? 0} karigars · ${jobsQuery.data?.length ?? 0} active jobs`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline">Receive back</Button>
-          <Button>
+          <Button variant="outline" {...receive.triggerProps}>
+            Receive back
+          </Button>
+          <Button {...send.triggerProps}>
             <Plus />
             Send out
           </Button>
         </div>
       </header>
+      {receive.dialog}
+      {send.dialog}
 
       <section
         style={{

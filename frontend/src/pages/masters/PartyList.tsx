@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
+import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Monogram } from '@/components/ui/monogram';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -29,6 +30,14 @@ export default function PartyList() {
   const partiesQuery = useParties();
   const [filter, setFilter] = useState<PartyKind | 'all'>('all');
   const [query, setQuery] = useState('');
+  const importParties = useComingSoon({
+    feature: 'Import parties (CSV / Vyapar .vyp)',
+    task: 'TASK-019 (Party import)',
+  });
+  const newParty = useComingSoon({
+    feature: 'New party',
+    task: 'TASK-020 (Party edit form)',
+  });
 
   const rows = useMemo(() => {
     const all = partiesQuery.data ?? [];
@@ -54,13 +63,17 @@ export default function PartyList() {
           {partiesQuery.isPending ? '—' : `${rows.length} of ${partiesQuery.data?.length ?? 0}`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline">Import</Button>
-          <Button>
+          <Button variant="outline" {...importParties.triggerProps}>
+            Import
+          </Button>
+          <Button {...newParty.triggerProps}>
             <Plus />
             New party
           </Button>
         </div>
       </header>
+      {importParties.dialog}
+      {newParty.dialog}
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1">
