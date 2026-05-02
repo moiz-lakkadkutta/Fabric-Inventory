@@ -1,9 +1,10 @@
-import { Plus, Search } from 'lucide-react';
+import { Building2, Plus, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
+import { EmptyState } from '@/components/ui/empty-state';
 import { Monogram } from '@/components/ui/monogram';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -122,17 +123,30 @@ export default function PartyList() {
       </div>
 
       <div
+        className="overflow-x-auto"
         style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-default)',
           borderRadius: 8,
-          overflow: 'hidden',
         }}
       >
         {partiesQuery.isPending ? (
           <ListSkeleton rows={10} />
+        ) : rows.length === 0 ? (
+          <EmptyState
+            icon={Building2}
+            title={query ? `No parties match "${query}"` : 'No parties in this filter'}
+            body="Try a different filter, or clear the search to see everyone."
+            cta={{
+              label: 'Clear filter',
+              onClick: () => {
+                setFilter('all');
+                setQuery('');
+              },
+            }}
+          />
         ) : (
-          <table className="w-full text-left">
+          <table className="w-full text-left" style={{ minWidth: 720 }}>
             <thead style={{ background: 'var(--bg-sunken)' }}>
               <tr style={{ color: 'var(--text-tertiary)' }}>
                 <Th>Code</Th>

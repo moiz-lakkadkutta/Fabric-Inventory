@@ -81,17 +81,17 @@ export default function InventoryList() {
       </div>
 
       <div
+        className="overflow-x-auto"
         style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-default)',
           borderRadius: 8,
-          overflow: 'hidden',
         }}
       >
         {skusQuery.isPending ? (
           <ListSkeleton rows={8} />
         ) : (
-          <table className="w-full text-left">
+          <table className="w-full text-left" style={{ minWidth: 880 }}>
             <thead style={{ background: 'var(--bg-sunken)' }}>
               <tr style={{ color: 'var(--text-tertiary)' }}>
                 <Th>Code</Th>

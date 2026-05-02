@@ -1,10 +1,12 @@
-import { Plus, Search } from 'lucide-react';
+import { FileText, Plus, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
+import { EmptyState } from '@/components/ui/empty-state';
 import { Pill, type PillKind } from '@/components/ui/pill';
+import { QueryError } from '@/components/ui/query-error';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useInvoices } from '@/lib/queries/invoices';
 import { formatAgeing, formatDateShort, formatINRCompact } from '@/lib/mock';
@@ -120,17 +122,46 @@ export default function InvoiceList() {
 
       {/* Table */}
       <div
+        className="overflow-x-auto"
         style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-default)',
           borderRadius: 8,
-          overflow: 'hidden',
         }}
       >
-        {invoicesQuery.isPending ? (
+        {invoicesQuery.isError ? (
+          <QueryError onRetry={() => invoicesQuery.refetch()} />
+        ) : invoicesQuery.isPending ? (
           <ListSkeleton rows={10} />
+        ) : rows.length === 0 ? (
+          <EmptyState
+            icon={FileText}
+            title={
+              query
+                ? `No invoices match "${query}"`
+                : filter === 'all'
+                  ? 'No invoices yet'
+                  : 'No invoices in this filter'
+            }
+            body={
+              query || filter !== 'all'
+                ? 'Try clearing the filter or searching by party name.'
+                : 'Create your first invoice to start the books.'
+            }
+            cta={
+              query || filter !== 'all'
+                ? {
+                    label: 'Clear filter',
+                    onClick: () => {
+                      setFilter('all');
+                      setQuery('');
+                    },
+                  }
+                : { label: 'New invoice', onClick: () => navigate('/sales/invoices/new') }
+            }
+          />
         ) : (
-          <table className="w-full text-left">
+          <table className="w-full text-left" style={{ minWidth: 760 }}>
             <thead style={{ background: 'var(--bg-sunken)' }}>
               <tr style={{ color: 'var(--text-tertiary)' }}>
                 <Th>Invoice #</Th>
@@ -143,17 +174,6 @@ export default function InvoiceList() {
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={7}
-                    className="px-4 py-12 text-center"
-                    style={{ color: 'var(--text-tertiary)', fontSize: 13 }}
-                  >
-                    No invoices match this filter.
-                  </td>
-                </tr>
-              )}
               {rows.map((inv) => {
                 const pill = STATUS_PILL[inv.status];
                 const overdue = inv.ageing_days > 0 && inv.status !== 'PAID';

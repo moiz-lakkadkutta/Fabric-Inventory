@@ -248,6 +248,7 @@ export default function InvoiceCreate() {
                         <td className="px-2 py-2">
                           <select
                             aria-label="Item"
+                            name={`line-${l.line_id}-item`}
                             value={l.item_id ?? ''}
                             onChange={(e) => onItemPick(l.line_id, e.target.value)}
                             className="h-9 w-full rounded-md px-2"
@@ -269,6 +270,7 @@ export default function InvoiceCreate() {
                           <input
                             type="number"
                             aria-label="Qty"
+                            name={`line-${l.line_id}-qty`}
                             min={0}
                             value={l.qty}
                             onChange={(e) =>
@@ -284,6 +286,8 @@ export default function InvoiceCreate() {
                         </td>
                         <td className="px-2 py-2" style={{ textAlign: 'right' }}>
                           <Input
+                            aria-label="Rate"
+                            name={`line-${l.line_id}-rate`}
                             value={String((l.rate / 100).toFixed(2))}
                             onChange={(e) =>
                               updateLine(l.line_id, {
@@ -295,6 +299,8 @@ export default function InvoiceCreate() {
                         </td>
                         <td className="px-2 py-2" style={{ textAlign: 'right' }}>
                           <Input
+                            aria-label="GST %"
+                            name={`line-${l.line_id}-gst`}
                             value={String(l.gst_pct)}
                             onChange={(e) =>
                               updateLine(l.line_id, {
