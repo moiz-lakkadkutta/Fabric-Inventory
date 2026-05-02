@@ -506,7 +506,7 @@ components:
         variant_map:
           type: object
           additionalProperties: true
-          description: JSON map of variant axes (e.g., {size: M, color: RED})
+          description: "JSON map of variant axes (e.g., {size: M, color: RED})"
         barcode:
           type: string
           nullable: true
