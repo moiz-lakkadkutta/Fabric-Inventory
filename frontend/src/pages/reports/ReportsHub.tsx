@@ -2,6 +2,7 @@ import { Download, Printer } from 'lucide-react';
 import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
+import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -29,6 +30,14 @@ const COMPARE = 'vs Mar 2026';
 
 export default function ReportsHub() {
   const [tab, setTab] = useState<Tab>('pnl');
+  const print = useComingSoon({
+    feature: 'Print report (PDF)',
+    task: 'TASK-046 (Reports → CSV/PDF)',
+  });
+  const exportR = useComingSoon({
+    feature: 'Export report (CSV / Excel)',
+    task: 'TASK-046 (Reports → CSV/PDF)',
+  });
 
   return (
     <div className="space-y-4">
@@ -38,16 +47,18 @@ export default function ReportsHub() {
           {PERIOD} · {COMPARE}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline">
+          <Button variant="outline" {...print.triggerProps}>
             <Printer size={14} />
             Print
           </Button>
-          <Button variant="outline">
+          <Button variant="outline" {...exportR.triggerProps}>
             <Download size={14} />
             Export
           </Button>
         </div>
       </header>
+      {print.dialog}
+      {exportR.dialog}
 
       <nav
         role="tablist"

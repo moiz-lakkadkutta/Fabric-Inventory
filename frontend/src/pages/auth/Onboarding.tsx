@@ -75,7 +75,9 @@ export default function Onboarding() {
             style={{ borderColor: 'var(--border-subtle)' }}
           >
             {step === 0 ? (
-              <Button variant="ghost">Cancel</Button>
+              <Button variant="ghost" onClick={() => navigate('/login')}>
+                Cancel
+              </Button>
             ) : (
               <Button
                 variant="secondary"

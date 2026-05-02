@@ -1,9 +1,10 @@
-import { Bell, ChevronRight, Search } from 'lucide-react';
+import { ChevronRight, Search } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 
 import { TaanaMark } from '@/components/ui/taana-mark';
 
 import { FirmSwitcher } from './FirmSwitcher';
+import { NotificationsPopover } from './NotificationsPopover';
 import { UserMenu } from './UserMenu';
 
 const ROUTE_LABELS: Record<string, string[]> = {
@@ -117,31 +118,7 @@ export function TopBar() {
           <Search size={16} />
         </button>
 
-        <button
-          type="button"
-          aria-label="Notifications"
-          className="relative inline-flex h-9 w-9 items-center justify-center rounded-md"
-          style={{
-            background: 'transparent',
-            border: '1px solid var(--border-default)',
-            color: 'var(--text-secondary)',
-          }}
-        >
-          <Bell size={16} />
-          <span
-            className="absolute -right-1 -top-1 inline-flex min-w-[16px] items-center justify-center px-1"
-            style={{
-              height: 16,
-              borderRadius: 999,
-              background: 'var(--accent)',
-              color: 'var(--accent-text)',
-              fontSize: 10,
-              fontWeight: 600,
-            }}
-          >
-            3
-          </span>
-        </button>
+        <NotificationsPopover />
 
         <UserMenu />
       </div>

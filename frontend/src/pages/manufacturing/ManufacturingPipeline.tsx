@@ -2,12 +2,21 @@ import { Plus } from 'lucide-react';
 import { useMemo } from 'react';
 
 import { Button } from '@/components/ui/button';
+import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useManufacturingOrders } from '@/lib/queries/manufacturing';
 import { KANBAN_COLUMNS, type ManufacturingOrder, type MoStage } from '@/lib/mock/manufacturing';
 
 export default function ManufacturingPipeline() {
   const moQuery = useManufacturingOrders();
+  const viewList = useComingSoon({
+    feature: 'MO list view',
+    task: 'TASK-052 (MO list + filters)',
+  });
+  const newMo = useComingSoon({
+    feature: 'New manufacturing order',
+    task: 'TASK-050 (MO create + BOM)',
+  });
 
   const grouped = useMemo(() => {
     const out = new Map<MoStage, ManufacturingOrder[]>();
@@ -26,13 +35,17 @@ export default function ManufacturingPipeline() {
           {moQuery.isPending ? '—' : `${moQuery.data?.length ?? 0} active orders in pipeline`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline">View list</Button>
-          <Button>
+          <Button variant="outline" {...viewList.triggerProps}>
+            View list
+          </Button>
+          <Button {...newMo.triggerProps}>
             <Plus />
             New MO
           </Button>
         </div>
       </header>
+      {viewList.dialog}
+      {newMo.dialog}
 
       {moQuery.isPending ? (
         <Skeleton width="100%" height={520} radius={8} />

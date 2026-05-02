@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
+import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useInvoices } from '@/lib/queries/invoices';
@@ -34,6 +35,10 @@ export default function InvoiceList() {
   const [query, setQuery] = useState('');
   const navigate = useNavigate();
   const invoicesQuery = useInvoices();
+  const exportCsv = useComingSoon({
+    feature: 'Export invoices to CSV',
+    task: 'TASK-046 (Reports → CSV/PDF)',
+  });
 
   const allRows = useMemo(() => invoicesQuery.data ?? [], [invoicesQuery.data]);
 
@@ -56,7 +61,7 @@ export default function InvoiceList() {
           {invoicesQuery.isPending ? '—' : `${rows.length} of ${allRows.length}`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" size="default">
+          <Button variant="outline" size="default" {...exportCsv.triggerProps}>
             Export CSV
           </Button>
           <Button size="default" onClick={() => navigate('/sales/invoices/new')}>
@@ -65,6 +70,7 @@ export default function InvoiceList() {
           </Button>
         </div>
       </header>
+      {exportCsv.dialog}
 
       {/* Filters + search */}
       <div className="flex flex-wrap items-center gap-2">

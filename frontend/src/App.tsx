@@ -10,6 +10,7 @@ import Dashboard from '@/pages/Dashboard';
 import NotFound from '@/pages/NotFound';
 import Placeholder from '@/pages/Placeholder';
 import AccountingHub from '@/pages/accounting/AccountingHub';
+import AdminHub from '@/pages/admin/AdminHub';
 import InventoryList from '@/pages/inventory/InventoryList';
 import LotDetail from '@/pages/inventory/LotDetail';
 import JobWorkOverview from '@/pages/jobwork/JobWorkOverview';
@@ -58,7 +59,7 @@ const router = createBrowserRouter([
       { path: 'masters', element: <Navigate to="/masters/parties" replace /> },
       { path: 'masters/parties', element: <PartyList /> },
       { path: 'masters/parties/:id', element: <PartyDetail /> },
-      { path: 'admin', element: <Placeholder title="Admin" task="TASK-019" /> },
+      { path: 'admin', element: <AdminHub /> },
       { path: '*', element: <NotFound /> },
     ],
   },
