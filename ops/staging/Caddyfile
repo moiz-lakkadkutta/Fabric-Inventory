@@ -1,0 +1,48 @@
+# Caddyfile for staging.taana.in
+#
+# Caddy auto-provisions Let's Encrypt certs on first start. The DNS A record
+# for staging.taana.in must already resolve to this box before bringing the
+# stack up — otherwise the ACME HTTP-01 challenge will fail and Caddy will
+# back off.
+#
+# Routing:
+#   /api/*  → fastapi:8000   (strips /api prefix; FastAPI sees /v1/...)
+#   /*      → web:80         (static Vite bundle)
+#
+# Email is the contact Let's Encrypt uses for cert-expiry warnings. Set it
+# via the CADDY_EMAIL env var (Caddy substitutes {$CADDY_EMAIL}).
+
+{
+	email {$CADDY_EMAIL}
+}
+
+staging.taana.in {
+	encode zstd gzip
+
+	# Backend — note Caddy strips the /api prefix before proxying so the
+	# FastAPI app keeps its native /v1/... paths.
+	handle_path /api/* {
+		reverse_proxy fastapi:8000 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	# Health check passthrough so external uptime monitors hit FastAPI directly.
+	handle /healthz {
+		reverse_proxy fastapi:8000
+	}
+
+	# SPA — fall through to the static bundle for everything else.
+	handle {
+		reverse_proxy web:80
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+		format json
+	}
+}

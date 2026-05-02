@@ -1,0 +1,87 @@
+# Staging stack — runs on the Hetzner CX22 box behind Caddy at staging.taana.in.
+#
+# Differences from docker-compose.yml (dev):
+#   - Pinned, non-bind-mount images (built from this repo's Dockerfile).
+#   - Persistent named volumes for Postgres + Caddy certs.
+#   - Caddy fronts both /api → fastapi:8000 and / → web (built static bundle).
+#   - No source bind mounts; no Vite dev server. The web service is the
+#     statically built React app served by Caddy from a shared volume.
+#   - Production-style settings come from /opt/fabric/.env.staging on the box
+#     (not committed; populated by the deploy workflow from GitHub secrets).
+#
+# Bring up on the box:
+#   docker compose -f docker-compose.staging.yml --env-file /opt/fabric/.env.staging up -d
+#
+# Provisioning order on a fresh box is documented in docs/ops/staging-runbook.md.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./ops/staging/pg-backups:/backups
+    # No host port published — only fastapi reaches it on the docker network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  fastapi:
+    image: ${API_IMAGE:-ghcr.io/moiz-l/fabric-api:latest}
+    restart: unless-stopped
+    env_file:
+      - /opt/fabric/.env.staging
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: staging
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No host port; Caddy reverse-proxies on the docker network.
+
+  web:
+    image: ${WEB_IMAGE:-ghcr.io/moiz-l/fabric-web:latest}
+    restart: unless-stopped
+    # The web image is a tiny nginx:alpine that serves the built Vite bundle
+    # from /usr/share/nginx/html. Caddy proxies /* here.
+    # No host port; Caddy fronts it.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./ops/staging/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - fastapi
+      - web
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
