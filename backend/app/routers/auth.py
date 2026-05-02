@@ -15,9 +15,10 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Cookie, Header, HTTPException, Response, status
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.dependencies import CurrentUser, SyncDBSession
 from app.exceptions import (
     AppValidationError,
@@ -38,9 +39,38 @@ from app.schemas.auth import (
     SignupResponse,
     TokenPairResponse,
 )
-from app.service import identity_service, rbac_service, seed_service
+from app.service import feature_flag_service, identity_service, rbac_service, seed_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Per Q2 (hybrid token storage): refresh token in httpOnly Secure
+# SameSite=Lax cookie; access token in memory on the frontend.
+REFRESH_COOKIE_NAME = "fabric_refresh"
+
+
+def _set_refresh_cookie(response: Response, refresh_token: str, *, max_age_seconds: int) -> None:
+    """Write the refresh-token cookie. Secure=True except in dev so
+    Playwright + curl over http://localhost still work without HTTPS.
+    """
+    settings = get_settings()
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=refresh_token,
+        max_age=max_age_seconds,
+        httponly=True,
+        secure=settings.environment != "dev",
+        samesite="lax",
+        path="/auth",
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(key=REFRESH_COOKIE_NAME, path="/auth")
+
+
+def _seconds_until(when: datetime.datetime) -> int:
+    delta = when - datetime.datetime.now(tz=datetime.UTC)
+    return max(int(delta.total_seconds()), 0)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -101,6 +131,7 @@ def _make_firm_code(firm_name: str) -> str:
 def signup(
     body: SignupRequest,
     db: SyncDBSession,
+    response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SignupResponse:
     _validate_idempotency_key(idempotency_key)
@@ -141,6 +172,11 @@ def signup(
     )
 
     pair = identity_service.issue_tokens(db, user=user, firm_id=None)
+    _set_refresh_cookie(
+        response,
+        pair.refresh_token,
+        max_age_seconds=_seconds_until(pair.refresh_expires_at),
+    )
     return SignupResponse(
         user_id=user.user_id,
         org_id=org.org_id,
@@ -161,6 +197,7 @@ def signup(
 def login(
     body: LoginRequest,
     db: SyncDBSession,
+    response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> LoginResponse:
     _validate_idempotency_key(idempotency_key)
@@ -191,6 +228,11 @@ def login(
     user.last_login_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
     pair = identity_service.issue_tokens(db, user=user, firm_id=None)
+    _set_refresh_cookie(
+        response,
+        pair.refresh_token,
+        max_age_seconds=_seconds_until(pair.refresh_expires_at),
+    )
     return LoginResponse(
         requires_mfa=False,
         user_id=user.user_id,
@@ -214,6 +256,7 @@ def login(
 def mfa_verify(
     body: MfaVerifyRequest,
     db: SyncDBSession,
+    response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TokenPairResponse:
     _validate_idempotency_key(idempotency_key)
@@ -246,6 +289,11 @@ def mfa_verify(
     user.last_login_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
     pair = identity_service.issue_tokens(db, user=user, firm_id=None)
+    _set_refresh_cookie(
+        response,
+        pair.refresh_token,
+        max_age_seconds=_seconds_until(pair.refresh_expires_at),
+    )
     return TokenPairResponse(
         access_token=pair.access_token,
         refresh_token=pair.refresh_token,
@@ -267,15 +315,30 @@ def mfa_verify(
 def refresh(
     body: RefreshRequest,
     db: SyncDBSession,
+    response: Response,
+    fabric_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TokenPairResponse:
     _validate_idempotency_key(idempotency_key)
+
+    # Cookie takes precedence over body — the cookie is the canonical
+    # transport per Q2; body remains accepted for the legacy path.
+    refresh_token = fabric_refresh or body.refresh_token
+    if not refresh_token:
+        raise TokenInvalidError("Missing refresh token")
+
     try:
-        pair = identity_service.refresh_token(db, refresh_token=body.refresh_token)
+        pair = identity_service.refresh_token(db, refresh_token=refresh_token)
     except TokenInvalidError:
         # All token-invalid cases (expired, revoked, unknown, malformed) ->
         # uniform 401 to avoid information leakage.
         raise
+
+    _set_refresh_cookie(
+        response,
+        pair.refresh_token,
+        max_age_seconds=_seconds_until(pair.refresh_expires_at),
+    )
     return TokenPairResponse(
         access_token=pair.access_token,
         refresh_token=pair.refresh_token,
@@ -297,9 +360,14 @@ def refresh(
 def logout(
     body: LogoutRequest,
     db: SyncDBSession,
+    response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> LogoutResponse:
     _validate_idempotency_key(idempotency_key)
+
+    # Always clear the cookie even if revocation no-ops — local state
+    # should match the user's intent.
+    _clear_refresh_cookie(response)
 
     # Verify token before lookup so we don't admit row existence on garbage input.
     try:
@@ -340,19 +408,26 @@ def logout(
 @router.get(
     "/me",
     response_model=MeResponse,
-    summary="Return the authenticated user's identity + permissions",
+    summary="Return the authenticated user's identity + permissions + flags",
 )
-def me(current_user: CurrentUser) -> MeResponse:
-    """Reads the JWT payload (set by AuthMiddleware). Frontend uses this
-    to populate the session header / decide UI affordances.
+def me(current_user: CurrentUser, db: SyncDBSession) -> MeResponse:
+    """Reads the JWT payload (set by AuthMiddleware) plus per-firm feature
+    flags from `feature_flag_service`. Frontend useAuth bootstrap-on-load
+    consumes this.
 
     Requires a valid access token (refresh tokens are explicitly rejected
     by AuthMiddleware — only access tokens populate request.state.user).
     """
+    flags: dict[str, bool] = (
+        feature_flag_service.get_flags_for_firm(db, firm_id=current_user.firm_id)
+        if current_user.firm_id is not None
+        else {}
+    )
     return MeResponse(
         user_id=current_user.user_id,
         org_id=current_user.org_id,
         firm_id=current_user.firm_id,
         permissions=list(current_user.permissions),
+        flags=flags,
         token_expires_at=datetime.datetime.fromtimestamp(current_user.exp, tz=datetime.UTC),
     )

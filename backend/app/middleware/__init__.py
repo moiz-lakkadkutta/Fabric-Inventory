@@ -6,11 +6,13 @@ Starlette runs middleware in REVERSE registration order, so register last → fi
 
 from .auth import AuthMiddleware
 from .errors import register_error_handlers
+from .idempotency import IdempotencyMiddleware
 from .logging import LoggingMiddleware, configure_logging
 from .rls import RLSMiddleware
 
 __all__ = [
     "AuthMiddleware",
+    "IdempotencyMiddleware",
     "LoggingMiddleware",
     "RLSMiddleware",
     "configure_logging",

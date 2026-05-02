@@ -16,7 +16,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "openapi:gen": "openapi-typescript ../specs/api-phase1.yaml -o src/types/api.generated.ts",
+    "openapi:check": "openapi-typescript ../specs/api-phase1.yaml -o /tmp/api.generated.tmp.ts && diff -q src/types/api.generated.ts /tmp/api.generated.tmp.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.1.0",
@@ -44,6 +46,7 @@
     "eslint-plugin-react-hooks": "^5.0.0",
     "globals": "^17.5.0",
     "jsdom": "^25.0.0",
+    "openapi-typescript": "^7",
     "prettier": "^3.3.0",
     "tailwindcss": "^4.0.0",
     "tw-animate-css": "^1.2.0",

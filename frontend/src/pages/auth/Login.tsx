@@ -6,15 +6,18 @@ import { AuthCard, AuthShell } from '@/components/layout/AuthShell';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { useIdempotencyKey } from '@/lib/api/idempotency';
+import { useLogin } from '@/lib/queries/identity';
 
 /*
   Login — visual port of fabric-2/project/shell-screens.jsx :: LoginIdle.
-  Click-dummy auth: any non-sentinel credential routes to /mfa (the bundle
-  defines MFA as a separate step). The reserved sentinel `error@taana.test`
-  drives the error layout without faking a network failure. Real auth
-  wires in TASK-008.
+
+  Both Q6 branches via useLogin():
+    - mock mode keeps the click-dummy sentinel: `error@taana.test` shows
+      the inline error; anything else routes to /mfa.
+    - live mode hits POST /v1/auth/login through the api() wrapper. The
+      mutation's onSuccess routes based on `requires_mfa`.
 */
-const ERROR_SENTINEL = 'error@taana.test';
 
 export default function Login() {
   const [email, setEmail] = React.useState('moiz@rajeshtextiles.in');
@@ -22,14 +25,30 @@ export default function Login() {
   const [remember, setRemember] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const navigate = useNavigate();
+  const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
+  const login = useLogin();
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (email.trim().toLowerCase() === ERROR_SENTINEL) {
-      setError('Email or password is incorrect.');
-      return;
-    }
-    navigate('/mfa');
+    setError(null);
+    login.mutate(
+      {
+        email: email.trim(),
+        password,
+        org_name: 'Rajesh Textiles',
+        idempotencyKey,
+      },
+      {
+        onSuccess: (result) => {
+          resetKey();
+          navigate(result.requires_mfa ? '/mfa' : '/');
+        },
+        onError: () => {
+          resetKey();
+          setError('Email or password is incorrect.');
+        },
+      },
+    );
   };
 
   return (

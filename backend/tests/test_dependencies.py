@@ -30,16 +30,6 @@ from app.service.identity_service import TokenPayload
 # ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def http_client(sync_engine: Engine) -> Iterator[TestClient]:
-    _ = sync_engine
-    from main import create_app
-
-    app = create_app()
-    with TestClient(app) as client:
-        yield client
-
-
 def _signup_and_login(client: TestClient) -> dict[str, str]:
     org_name = f"Org {uuid.uuid4().hex[:8]}"
     email = f"u-{uuid.uuid4().hex[:10]}@example.com"
@@ -71,12 +61,14 @@ def test_me_with_valid_access_token_returns_payload(http_client: TestClient) -> 
     # Owner role → all 38 system permissions.
     assert "sales.invoice.finalize" in out["permissions"]
     assert "accounting.voucher.post" in out["permissions"]
+    # Q10c: flags map is part of the response; empty when no firm is active.
+    assert out["flags"] == {}
 
 
 def test_me_without_token_returns_401(http_client: TestClient) -> None:
     resp = http_client.get("/auth/me")
     assert resp.status_code == 401
-    assert resp.json()["error_code"] == "token_invalid"
+    assert resp.json()["code"] == "TOKEN_INVALID"
 
 
 def test_me_with_malformed_token_returns_401(http_client: TestClient) -> None:
@@ -131,9 +123,16 @@ def _make_protected_app() -> FastAPI:
 
 @pytest.fixture
 def protected_client(sync_engine: Engine) -> Iterator[TestClient]:
+    """Like the shared `http_client` but uses the synthetic protected app
+    that adds the require_permission test routes. Wrapped in
+    IdempotentTestClient so the inner /auth/signup POST passes the
+    idempotency middleware.
+    """
+    from tests.conftest import IdempotentTestClient
+
     _ = sync_engine
     app = _make_protected_app()
-    with TestClient(app) as client:
+    with IdempotentTestClient(app) as client:
         yield client
 
 
@@ -155,7 +154,7 @@ def test_require_permission_denies_when_user_lacks_perm(
         headers={"Authorization": f"Bearer {body['access_token']}"},
     )
     assert resp.status_code == 403
-    assert resp.json()["error_code"] == "permission_denied"
+    assert resp.json()["code"] == "PERMISSION_DENIED"
 
 
 def test_require_permission_returns_401_without_token(protected_client: TestClient) -> None:

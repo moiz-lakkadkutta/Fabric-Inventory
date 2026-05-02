@@ -67,7 +67,12 @@ class MfaVerifyRequest(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    """Refresh token can come from the httpOnly cookie set by login OR
+    from the request body (legacy path used by existing CLI / tests).
+    Cookie takes precedence in the handler.
+    """
+
+    refresh_token: str | None = None
 
 
 class LogoutRequest(BaseModel):
@@ -79,10 +84,15 @@ class LogoutResponse(BaseModel):
 
 
 class MeResponse(BaseModel):
-    """Current user info, derived from the access-token JWT payload."""
+    """Current user info, derived from the access-token JWT payload + DB lookup.
+
+    `flags` is the per-firm feature-flag map (Q10c). Empty dict when no
+    firm is active or when the firm has no flags set.
+    """
 
     user_id: uuid.UUID
     org_id: uuid.UUID
     firm_id: uuid.UUID | None = None
     permissions: list[str]
+    flags: dict[str, bool] = Field(default_factory=dict)
     token_expires_at: datetime.datetime

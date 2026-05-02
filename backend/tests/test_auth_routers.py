@@ -14,28 +14,11 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import Iterator
 
 import pyotp
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
-
-
-@pytest.fixture
-def http_client(sync_engine: Engine) -> Iterator[TestClient]:
-    """A FastAPI TestClient pointed at the same DATABASE_URL as
-    `sync_engine`. The app uses `get_db_sync` internally, which opens
-    its own connection — but it shares the same Postgres, so rows the
-    handlers create are visible to the test for inspection.
-    """
-    _ = sync_engine  # keep the fixture's connection check + skip semantics
-    from main import create_app
-
-    app = create_app()
-    with TestClient(app) as client:
-        yield client
 
 
 def _unique_email() -> str:
@@ -120,7 +103,7 @@ def test_signup_duplicate_org_name_returns_422(http_client: TestClient) -> None:
         },
     )
     assert resp.status_code == 422
-    assert resp.json()["error_code"] == "validation_error"
+    assert resp.json()["code"] == "VALIDATION_ERROR"
 
 
 def test_signup_weak_password_rejected_by_pydantic(http_client: TestClient) -> None:
@@ -166,6 +149,7 @@ def test_signup_with_idempotency_key_succeeds(http_client: TestClient) -> None:
 
 
 def test_signup_with_malformed_idempotency_key_rejected(http_client: TestClient) -> None:
+    """Malformed key now caught by IdempotencyMiddleware → 400 (was 422 pre-T-INT-1)."""
     resp = http_client.post(
         "/auth/signup",
         headers={"Idempotency-Key": "not-a-uuid"},
@@ -176,7 +160,8 @@ def test_signup_with_malformed_idempotency_key_rejected(http_client: TestClient)
             "firm_name": "F",
         },
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -211,7 +196,7 @@ def test_login_with_wrong_password_returns_401(http_client: TestClient) -> None:
         json={"email": email, "password": "wrong-password", "org_name": org_name},
     )
     assert resp.status_code == 401
-    assert resp.json()["error_code"] == "invalid_credentials"
+    assert resp.json()["code"] == "INVALID_CREDENTIALS"
 
 
 def test_login_with_unknown_email_returns_401(http_client: TestClient) -> None:
@@ -357,19 +342,29 @@ def test_refresh_with_valid_token_returns_new_pair(http_client: TestClient) -> N
 
 
 def test_refresh_with_access_token_returns_401(http_client: TestClient) -> None:
+    """Sending an access token in the body — with no refresh cookie — must 401."""
     body = _signup(
         http_client,
         email=_unique_email(),
         password="strong-password-1",
         org_name=_unique_org_name(),
     )
+    # Clear the refresh cookie that signup just set, so the body path is
+    # exercised in isolation. (Cookie-with-access-token is a different
+    # scenario; the cookie carries a valid refresh token here.)
+    http_client.cookies.clear()
     resp = http_client.post("/auth/refresh", json={"refresh_token": body["access_token"]})
     assert resp.status_code == 401
-    assert resp.json()["error_code"] == "token_invalid"
+    assert resp.json()["code"] == "TOKEN_INVALID"
 
 
 def test_refresh_replay_returns_401(http_client: TestClient) -> None:
-    """Once a refresh token has been rotated, replaying it should fail."""
+    """Once a refresh token has been rotated, replaying it should fail.
+
+    We clear the cookie between calls so the body-path is exercised in
+    isolation — otherwise the cookie (which auto-rotates on each refresh)
+    would shadow the stale body and mask the replay.
+    """
     body = _signup(
         http_client,
         email=_unique_email(),
@@ -377,7 +372,9 @@ def test_refresh_replay_returns_401(http_client: TestClient) -> None:
         org_name=_unique_org_name(),
     )
     first_refresh = body["refresh_token"]
+    http_client.cookies.clear()
     http_client.post("/auth/refresh", json={"refresh_token": first_refresh}).raise_for_status()
+    http_client.cookies.clear()
     replay = http_client.post("/auth/refresh", json={"refresh_token": first_refresh})
     assert replay.status_code == 401
 

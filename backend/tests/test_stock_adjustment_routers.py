@@ -12,23 +12,11 @@ responses, and basic validation rejection.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
 from decimal import Decimal
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
-
-
-@pytest.fixture
-def http_client(sync_engine: Engine) -> Iterator[TestClient]:
-    _ = sync_engine
-    from main import create_app
-
-    app = create_app()
-    with TestClient(app) as client:
-        yield client
 
 
 def _signup_owner(client: TestClient) -> dict[str, str]:
@@ -197,6 +185,7 @@ def test_create_adjustment_with_idempotency_key_succeeds(
 
 
 def test_create_adjustment_invalid_idempotency_key_rejected(http_client: TestClient) -> None:
+    """Malformed key now caught by IdempotencyMiddleware → 400 (was 422 pre-T-INT-1)."""
     me = _signup_owner(http_client)
     resp = http_client.post(
         "/stock-adjustments",
@@ -209,7 +198,8 @@ def test_create_adjustment_invalid_idempotency_key_rejected(http_client: TestCli
             "direction": "INCREASE",
         },
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 
 
 # ──────────────────────────────────────────────────────────────────────
