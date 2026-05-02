@@ -99,9 +99,14 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        # Cache anything not a server error — same key, same intent should
-        # always replay the same outcome (incl. 4xx validation errors).
-        if redis_client is not None and response.status_code < 500:
+        # Cache deterministic outcomes only. 4xx like 422 (validation) and
+        # 409 (conflict) are intent-deterministic — same payload, same
+        # outcome, replay is correct. 401/403 are TRANSIENT auth state — a
+        # token refresh + retry must hit the handler again, not the cache.
+        # 5xx is also skipped (transient infra). See T-INT-1 hard review
+        # CRIT-1 for the failure mode this protects against.
+        cacheable = response.status_code < 500 and response.status_code not in {401, 403}
+        if redis_client is not None and cacheable:
             response_body = b""
             # Starlette's BaseHTTPMiddleware delivers responses as
             # _StreamingResponse instances, which expose `body_iterator`,

@@ -165,3 +165,78 @@ async def test_different_keys_for_same_body_both_execute(client: AsyncClient) ->
     )
     assert first.status_code == 200
     assert second.status_code == 200
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CRIT-1 regression — transient 401 / 403 must NOT be cached
+# ──────────────────────────────────────────────────────────────────────
+
+
+async def test_401_responses_are_not_cached(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """A handler that returns 401 once, then 200, should be re-executed on
+    retry. Caching the 401 would break the api() client's refresh-then-
+    retry path (T-INT-1 hard review CRIT-1)."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport
+    from httpx import AsyncClient as HxClient
+    from starlette.middleware.cors import CORSMiddleware
+    from starlette.responses import JSONResponse
+
+    from app.config import reset_settings
+
+    reset_settings()
+
+    app = FastAPI()
+    register_error_handlers(app)
+    app.add_middleware(RLSMiddleware)
+    app.add_middleware(IdempotencyMiddleware)
+    app.add_middleware(AuthMiddleware)
+    app.add_middleware(LoggingMiddleware)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    call_count = 0
+
+    @app.post("/maybe-401")
+    async def _maybe_401() -> JSONResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "code": "TOKEN_INVALID",
+                    "title": "Token expired",
+                    "detail": "",
+                    "status": 401,
+                    "field_errors": {},
+                },
+            )
+        return JSONResponse(status_code=200, content={"ok": True})
+
+    app.middleware_stack = app.build_middleware_stack()
+    node: object | None = app.middleware_stack
+    while node is not None:
+        if isinstance(node, IdempotencyMiddleware):
+            node._redis_client = fake_redis
+            node._redis_url = "redis://fake"
+            break
+        node = getattr(node, "app", None)
+
+    transport = ASGITransport(app=app)
+    async with HxClient(transport=transport, base_url="http://test") as c:
+        key = str(uuid.uuid4())
+        first = await c.post("/maybe-401", json={"x": 1}, headers={"Idempotency-Key": key})
+        assert first.status_code == 401
+
+        # Retry with the SAME key — must re-execute, not replay the 401.
+        second = await c.post("/maybe-401", json={"x": 1}, headers={"Idempotency-Key": key})
+        assert second.status_code == 200, second.text
+        assert call_count == 2
