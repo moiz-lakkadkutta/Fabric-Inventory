@@ -67,7 +67,12 @@ class MfaVerifyRequest(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    """Refresh token can come from the httpOnly cookie set by login OR
+    from the request body (legacy path used by existing CLI / tests).
+    Cookie takes precedence in the handler.
+    """
+
+    refresh_token: str | None = None
 
 
 class LogoutRequest(BaseModel):
