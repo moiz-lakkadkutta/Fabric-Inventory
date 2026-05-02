@@ -9,6 +9,8 @@ import Onboarding from '@/pages/auth/Onboarding';
 import Dashboard from '@/pages/Dashboard';
 import NotFound from '@/pages/NotFound';
 import Placeholder from '@/pages/Placeholder';
+import InvoiceCreate from '@/pages/sales/InvoiceCreate';
+import InvoiceDetail from '@/pages/sales/InvoiceDetail';
 import InvoiceList from '@/pages/sales/InvoiceList';
 
 const router = createBrowserRouter([
@@ -24,6 +26,8 @@ const router = createBrowserRouter([
       { index: true, element: <Dashboard /> },
       { path: 'sales', element: <Navigate to="/sales/invoices" replace /> },
       { path: 'sales/invoices', element: <InvoiceList /> },
+      { path: 'sales/invoices/new', element: <InvoiceCreate /> },
+      { path: 'sales/invoices/:id', element: <InvoiceDetail /> },
       { path: 'sales/quotes', element: <Placeholder title="Quotes" task="TASK-038" /> },
       { path: 'sales/orders', element: <Placeholder title="Sales orders" task="TASK-038" /> },
       {
