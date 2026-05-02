@@ -17,6 +17,7 @@ import ManufacturingPipeline from '@/pages/manufacturing/ManufacturingPipeline';
 import PartyDetail from '@/pages/masters/PartyDetail';
 import PartyList from '@/pages/masters/PartyList';
 import PurchaseOrderList from '@/pages/purchase/PurchaseOrderList';
+import ReportsHub from '@/pages/reports/ReportsHub';
 import InvoiceCreate from '@/pages/sales/InvoiceCreate';
 import InvoiceDetail from '@/pages/sales/InvoiceDetail';
 import InvoiceList from '@/pages/sales/InvoiceList';
@@ -53,7 +54,7 @@ const router = createBrowserRouter([
       { path: 'manufacturing', element: <ManufacturingPipeline /> },
       { path: 'jobwork', element: <JobWorkOverview /> },
       { path: 'accounting', element: <AccountingHub /> },
-      { path: 'reports', element: <Placeholder title="Reports" task="TASK-046" /> },
+      { path: 'reports', element: <ReportsHub /> },
       { path: 'masters', element: <Navigate to="/masters/parties" replace /> },
       { path: 'masters/parties', element: <PartyList /> },
       { path: 'masters/parties/:id', element: <PartyDetail /> },
