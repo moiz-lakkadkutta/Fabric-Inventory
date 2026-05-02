@@ -118,14 +118,14 @@ function PnLPanel() {
       </div>
 
       <div
+        className="overflow-x-auto"
         style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-default)',
           borderRadius: 8,
-          overflow: 'hidden',
         }}
       >
-        <table className="w-full text-left">
+        <table className="w-full text-left" style={{ minWidth: 720 }}>
           <thead style={{ background: 'var(--bg-sunken)' }}>
             <tr style={{ color: 'var(--text-tertiary)' }}>
               <Th>Account</Th>
@@ -281,14 +281,14 @@ function TrialBalancePanel() {
         </span>
       </div>
       <div
+        className="overflow-x-auto"
         style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-default)',
           borderRadius: 8,
-          overflow: 'hidden',
         }}
       >
-        <table className="w-full text-left">
+        <table className="w-full text-left" style={{ minWidth: 720 }}>
           <thead style={{ background: 'var(--bg-sunken)' }}>
             <tr style={{ color: 'var(--text-tertiary)' }}>
               <Th>Account</Th>
@@ -381,14 +381,14 @@ function Gstr1Panel() {
         />
       </div>
       <div
+        className="overflow-x-auto"
         style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-default)',
           borderRadius: 8,
-          overflow: 'hidden',
         }}
       >
-        <table className="w-full text-left">
+        <table className="w-full text-left" style={{ minWidth: 720 }}>
           <thead style={{ background: 'var(--bg-sunken)' }}>
             <tr style={{ color: 'var(--text-tertiary)' }}>
               <Th>Section</Th>
@@ -488,14 +488,14 @@ function StockPanel() {
         </span>
       </div>
       <div
+        className="overflow-x-auto"
         style={{
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-default)',
           borderRadius: 8,
-          overflow: 'hidden',
         }}
       >
-        <table className="w-full text-left">
+        <table className="w-full text-left" style={{ minWidth: 720 }}>
           <thead style={{ background: 'var(--bg-sunken)' }}>
             <tr style={{ color: 'var(--text-tertiary)' }}>
               <Th>Code</Th>

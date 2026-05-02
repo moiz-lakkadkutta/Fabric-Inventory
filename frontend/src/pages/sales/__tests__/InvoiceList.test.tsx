@@ -52,4 +52,15 @@ describe('InvoiceList', () => {
     expect(screen.getByText(/RT\/2526\/0001/)).toBeInTheDocument();
     expect(screen.queryByText(/RT\/2526\/0004/)).not.toBeInTheDocument();
   });
+
+  it('shows an empty state with a Clear filter CTA when the search has no matches', async () => {
+    renderInvoiceList();
+    await waitFor(() => expect(screen.getByText(/RT\/2526\/0001/)).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText(/search invoice/i), {
+      target: { value: 'zzzzzz-no-such-thing' },
+    });
+    expect(screen.getByText(/no invoices match/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /clear filter/i }));
+    expect(screen.getByText(/RT\/2526\/0001/)).toBeInTheDocument();
+  });
 });

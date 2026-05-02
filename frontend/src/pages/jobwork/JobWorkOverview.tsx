@@ -124,7 +124,6 @@ export default function JobWorkOverview() {
           background: 'var(--bg-surface)',
           border: '1px solid var(--border-default)',
           borderRadius: 8,
-          overflow: 'hidden',
         }}
       >
         <header
@@ -137,81 +136,83 @@ export default function JobWorkOverview() {
         >
           <h2 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Active jobs</h2>
         </header>
-        {jobsQuery.isPending ? (
-          <Skeleton width="100%" height={240} />
-        ) : (
-          <table className="w-full text-left">
-            <thead style={{ background: 'var(--bg-sunken)' }}>
-              <tr style={{ color: 'var(--text-tertiary)' }}>
-                <Th>Job #</Th>
-                <Th>Karigar</Th>
-                <Th>Operation</Th>
-                <Th align="right">Sent</Th>
-                <Th align="right">Returned</Th>
-                <Th>Due</Th>
-                <Th>Status</Th>
-                <Th align="right">Wastage</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {(jobsQuery.data ?? []).map((j) => {
-                const pill = JOB_PILL[j.status];
-                return (
-                  <tr key={j.job_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                    <td className="px-3 py-3">
-                      <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>
-                        {j.number}
-                      </span>
-                    </td>
-                    <td className="px-3 py-3" style={{ fontSize: 13, fontWeight: 500 }}>
-                      {j.karigar_name}
-                    </td>
-                    <td
-                      className="px-3 py-3"
-                      style={{ fontSize: 13, color: 'var(--text-secondary)' }}
-                    >
-                      {j.op}
-                    </td>
-                    <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
-                      {j.sent_qty}
-                    </td>
-                    <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
-                      {j.returned_qty}
-                    </td>
-                    <td
-                      className="num px-3 py-3"
-                      style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}
-                    >
-                      {j.due_date}
-                    </td>
-                    <td className="px-3 py-3">
-                      <Pill kind={pill.kind}>{pill.label}</Pill>
-                    </td>
-                    <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
-                      {j.wastage_pct !== undefined ? (
-                        <span
-                          style={{
-                            color:
-                              j.wastage_pct > 5
-                                ? 'var(--danger)'
-                                : j.wastage_pct > 0
-                                  ? 'var(--warning-text)'
-                                  : 'var(--text-tertiary)',
-                            fontSize: 12.5,
-                          }}
-                        >
-                          {j.wastage_pct}%
+        <div className="overflow-x-auto">
+          {jobsQuery.isPending ? (
+            <Skeleton width="100%" height={240} />
+          ) : (
+            <table className="w-full text-left" style={{ minWidth: 980 }}>
+              <thead style={{ background: 'var(--bg-sunken)' }}>
+                <tr style={{ color: 'var(--text-tertiary)' }}>
+                  <Th>Job #</Th>
+                  <Th>Karigar</Th>
+                  <Th>Operation</Th>
+                  <Th align="right">Sent</Th>
+                  <Th align="right">Returned</Th>
+                  <Th>Due</Th>
+                  <Th>Status</Th>
+                  <Th align="right">Wastage</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {(jobsQuery.data ?? []).map((j) => {
+                  const pill = JOB_PILL[j.status];
+                  return (
+                    <tr key={j.job_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                      <td className="px-3 py-3">
+                        <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>
+                          {j.number}
                         </span>
-                      ) : (
-                        <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+                      </td>
+                      <td className="px-3 py-3" style={{ fontSize: 13, fontWeight: 500 }}>
+                        {j.karigar_name}
+                      </td>
+                      <td
+                        className="px-3 py-3"
+                        style={{ fontSize: 13, color: 'var(--text-secondary)' }}
+                      >
+                        {j.op}
+                      </td>
+                      <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
+                        {j.sent_qty}
+                      </td>
+                      <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
+                        {j.returned_qty}
+                      </td>
+                      <td
+                        className="num px-3 py-3"
+                        style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}
+                      >
+                        {j.due_date}
+                      </td>
+                      <td className="px-3 py-3">
+                        <Pill kind={pill.kind}>{pill.label}</Pill>
+                      </td>
+                      <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
+                        {j.wastage_pct !== undefined ? (
+                          <span
+                            style={{
+                              color:
+                                j.wastage_pct > 5
+                                  ? 'var(--danger)'
+                                  : j.wastage_pct > 0
+                                    ? 'var(--warning-text)'
+                                    : 'var(--text-tertiary)',
+                              fontSize: 12.5,
+                            }}
+                          >
+                            {j.wastage_pct}%
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
       </section>
     </div>
   );
