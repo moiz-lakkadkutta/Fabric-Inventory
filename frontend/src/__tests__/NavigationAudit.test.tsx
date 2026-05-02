@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 
 import { TopBar } from '@/components/layout/TopBar';
+import { CommandPaletteProvider } from '@/hooks/useCommandPalette';
 import AdminHub from '@/pages/admin/AdminHub';
 import InvoiceList from '@/pages/sales/InvoiceList';
 
@@ -13,7 +14,9 @@ function wrap(node: React.ReactNode) {
   });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>{node}</MemoryRouter>
+      <MemoryRouter>
+        <CommandPaletteProvider>{node}</CommandPaletteProvider>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }

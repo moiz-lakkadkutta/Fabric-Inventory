@@ -2,6 +2,7 @@ import { ChevronRight, Search } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 
 import { TaanaMark } from '@/components/ui/taana-mark';
+import { useCommandPalette } from '@/hooks/useCommandPalette';
 
 import { FirmSwitcher } from './FirmSwitcher';
 import { NotificationsPopover } from './NotificationsPopover';
@@ -29,6 +30,7 @@ const ROUTE_LABELS: Record<string, string[]> = {
 export function TopBar() {
   const { pathname } = useLocation();
   const breadcrumb = ROUTE_LABELS[pathname] ?? ['Home'];
+  const palette = useCommandPalette();
 
   return (
     <div
@@ -79,7 +81,8 @@ export function TopBar() {
         <button
           type="button"
           name="search"
-          aria-label="Search"
+          aria-label="Open command palette"
+          onClick={() => palette.setOpen(true)}
           className="hidden md:inline-flex h-9 min-w-[14rem] items-center gap-2 rounded-md px-3"
           style={{
             background: 'var(--bg-sunken)',
@@ -107,7 +110,8 @@ export function TopBar() {
 
         <button
           type="button"
-          aria-label="Search"
+          aria-label="Open command palette"
+          onClick={() => palette.setOpen(true)}
           className="inline-flex h-9 w-9 items-center justify-center rounded-md md:hidden"
           style={{
             background: 'transparent',
