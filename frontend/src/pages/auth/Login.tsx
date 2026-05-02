@@ -1,4 +1,4 @@
-import { Check, Eye, Mail } from 'lucide-react';
+import { Building2, Check, Eye, Mail } from 'lucide-react';
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -8,6 +8,7 @@ import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { useLogin } from '@/lib/queries/identity';
+import { authStore } from '@/store/auth';
 
 /*
   Login — visual port of fabric-2/project/shell-screens.jsx :: LoginIdle.
@@ -17,11 +18,20 @@ import { useLogin } from '@/lib/queries/identity';
       the inline error; anything else routes to /mfa.
     - live mode hits POST /v1/auth/login through the api() wrapper. The
       mutation's onSuccess routes based on `requires_mfa`.
+
+  Org name is a real form field (CRIT-3 fix) — every tenant has a
+  different org so we can't hardcode. Defaults to 'Rajesh Textiles'
+  for click-dummy continuity; required input in live mode.
+
+  When `requires_mfa=true`, we stash {email, password, org_name} on
+  authStore.pendingMfa so the /mfa page can re-present them to the
+  backend's mfa-verify endpoint without persisting the password.
 */
 
 export default function Login() {
   const [email, setEmail] = React.useState('moiz@rajeshtextiles.in');
   const [password, setPassword] = React.useState('••••••••••••');
+  const [orgName, setOrgName] = React.useState('Rajesh Textiles');
   const [remember, setRemember] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const navigate = useNavigate();
@@ -31,17 +41,29 @@ export default function Login() {
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    const trimmedEmail = email.trim();
+    const trimmedOrg = orgName.trim();
     login.mutate(
       {
-        email: email.trim(),
+        email: trimmedEmail,
         password,
-        org_name: 'Rajesh Textiles',
+        org_name: trimmedOrg,
         idempotencyKey,
       },
       {
         onSuccess: (result) => {
           resetKey();
-          navigate(result.requires_mfa ? '/mfa' : '/');
+          if (result.requires_mfa) {
+            authStore.setPendingMfa({
+              email: trimmedEmail,
+              password,
+              org_name: trimmedOrg,
+            });
+            navigate('/mfa');
+          } else {
+            authStore.setPendingMfa(null);
+            navigate('/');
+          }
         },
         onError: () => {
           resetKey();
@@ -55,6 +77,17 @@ export default function Login() {
     <AuthShell>
       <AuthCard title="Sign in to your books" subtitle="Use the email associated with your firm.">
         <form className="flex flex-col gap-3.5" onSubmit={onSubmit}>
+          <Field label="Organization" htmlFor="org-name">
+            <Input
+              id="org-name"
+              type="text"
+              autoComplete="organization"
+              value={orgName}
+              onChange={(e) => setOrgName(e.target.value)}
+              icon={<Building2 size={14} />}
+            />
+          </Field>
+
           <Field label="Email" htmlFor="email">
             <Input
               id="email"

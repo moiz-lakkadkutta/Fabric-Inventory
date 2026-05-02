@@ -4,11 +4,22 @@ import { Link, useNavigate } from 'react-router-dom';
 
 import { AuthCard, AuthShell } from '@/components/layout/AuthShell';
 import { Button } from '@/components/ui/button';
+import { useIdempotencyKey } from '@/lib/api/idempotency';
+import { useMfaVerify } from '@/lib/queries/identity';
+import { authStore, usePendingMfa } from '@/store/auth';
 
 /*
   Mfa — visual port of fabric-2/project/shell-screens.jsx :: MfaIdle/Error.
-  Click-dummy verification: any 6-digit code routes to /; the reserved
-  000000 sentinel drives the error layout. Real TOTP wires in TASK-008.
+
+  Both Q6 branches via useMfaVerify():
+    - mock mode keeps the sentinel: 000000 → error layout, anything else → /.
+    - live mode re-presents the credentials stashed by Login (authStore
+      .pendingMfa) plus the TOTP code to POST /v1/auth/mfa-verify.
+
+  Live-mode users who land here directly without a pending login fall
+  back to the mock-style sentinel — typically that path means a stale
+  page; the redirect to /login on success of the mfa-verify still
+  works once the user re-enters Login.
 */
 const ERROR_SENTINEL = '000000';
 
@@ -16,6 +27,9 @@ export default function Mfa() {
   const [code, setCode] = React.useState('');
   const [error, setError] = React.useState(false);
   const navigate = useNavigate();
+  const pending = usePendingMfa();
+  const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
+  const mfa = useMfaVerify();
 
   const onChange = (next: string) => {
     const cleaned = next.replace(/\D/g, '').slice(0, 6);
@@ -24,11 +38,37 @@ export default function Mfa() {
   };
 
   const onVerify = () => {
-    if (code === ERROR_SENTINEL) {
-      setError(true);
+    // Mock-mode shortcut OR live-mode fallback when the pending stash
+    // is empty (e.g. user landed on /mfa directly).
+    if (!pending) {
+      if (code === ERROR_SENTINEL) {
+        setError(true);
+        return;
+      }
+      navigate('/');
       return;
     }
-    navigate('/');
+
+    mfa.mutate(
+      {
+        email: pending.email,
+        password: pending.password,
+        org_name: pending.org_name,
+        totp_code: code,
+        idempotencyKey,
+      },
+      {
+        onSuccess: () => {
+          authStore.setPendingMfa(null);
+          resetKey();
+          navigate('/');
+        },
+        onError: () => {
+          resetKey();
+          setError(true);
+        },
+      },
+    );
   };
 
   const ready = code.length === 6;

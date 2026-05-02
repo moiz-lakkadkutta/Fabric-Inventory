@@ -75,6 +75,18 @@ class RefreshRequest(BaseModel):
     refresh_token: str | None = None
 
 
+class SwitchFirmRequest(BaseModel):
+    """Switch the active firm in the current session — issues a new
+    token pair carrying the new firm_id and re-rolls the refresh cookie.
+    """
+
+    firm_id: uuid.UUID
+
+
+class SwitchFirmResponse(TokenPairResponse):
+    firm_id: uuid.UUID
+
+
 class LogoutRequest(BaseModel):
     refresh_token: str
 

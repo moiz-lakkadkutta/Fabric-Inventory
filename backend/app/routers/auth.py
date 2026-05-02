@@ -1,13 +1,13 @@
-"""Auth routes — signup, login, refresh, MFA verify, logout (TASK-008).
+"""Auth routes — signup, login, refresh, MFA verify, logout.
 
 Sync handlers; FastAPI runs them in a threadpool. This matches the sync
 service layer (`identity_service`, `rbac_service`) and avoids the
 `asyncio.to_thread` wrapping the retros for those tasks discussed.
 
-`Idempotency-Key` header is accepted on all mutating endpoints. Real
-dedupe lands in TASK-017 (Redis-backed via `api_idempotency` table).
-For now we only validate the header is a UUID v4 if present — clients
-that send a key won't be rejected; the server just doesn't dedupe yet.
+`Idempotency-Key` is enforced + dedup'd by `IdempotencyMiddleware`
+(see `app/middleware/idempotency.py`). Routes still declare the header
+parameter so OpenAPI documents the requirement; the per-router
+validator was removed in T-INT-1b.
 """
 
 from __future__ import annotations
@@ -23,9 +23,11 @@ from app.dependencies import CurrentUser, SyncDBSession
 from app.exceptions import (
     AppValidationError,
     InvalidCredentialsError,
+    NotFoundError,
+    PermissionDeniedError,
     TokenInvalidError,
 )
-from app.models import AppUser, Firm, Organization, Role
+from app.models import AppUser, AuditLog, Firm, Organization, Role
 from app.models import Session as DbSession
 from app.schemas.auth import (
     LoginRequest,
@@ -37,6 +39,8 @@ from app.schemas.auth import (
     RefreshRequest,
     SignupRequest,
     SignupResponse,
+    SwitchFirmRequest,
+    SwitchFirmResponse,
     TokenPairResponse,
 )
 from app.service import feature_flag_service, identity_service, rbac_service, seed_service
@@ -78,23 +82,6 @@ def _seconds_until(when: datetime.datetime) -> int:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _validate_idempotency_key(idempotency_key: str | None) -> None:
-    """Accept and validate the header shape; real dedupe lands in TASK-017.
-
-    Clients can send any UUID string; we only confirm well-formed-ness so
-    a malformed key surfaces a 422 here rather than a confusing 500 later.
-    """
-    if idempotency_key is None:
-        return
-    try:
-        uuid.UUID(idempotency_key)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error_code": "validation_error", "detail": "Idempotency-Key must be a UUID"},
-        ) from exc
-
-
 def _resolve_org_by_name(session: SyncDBSession, org_name: str) -> Organization:
     org = session.execute(
         select(Organization).where(Organization.name == org_name)
@@ -134,7 +121,6 @@ def signup(
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SignupResponse:
-    _validate_idempotency_key(idempotency_key)
 
     # Org-name uniqueness is DB-enforced (organization.name UNIQUE). Surface
     # a clean 422 here rather than waiting for the IntegrityError.
@@ -200,7 +186,6 @@ def login(
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> LoginResponse:
-    _validate_idempotency_key(idempotency_key)
     org = _resolve_org_by_name(db, body.org_name)
 
     user = db.execute(
@@ -259,7 +244,6 @@ def mfa_verify(
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TokenPairResponse:
-    _validate_idempotency_key(idempotency_key)
     org = _resolve_org_by_name(db, body.org_name)
 
     user = db.execute(
@@ -319,7 +303,6 @@ def refresh(
     fabric_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TokenPairResponse:
-    _validate_idempotency_key(idempotency_key)
 
     # Cookie takes precedence over body — the cookie is the canonical
     # transport per Q2; body remains accepted for the legacy path.
@@ -363,7 +346,6 @@ def logout(
     response: Response,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> LogoutResponse:
-    _validate_idempotency_key(idempotency_key)
 
     # Always clear the cookie even if revocation no-ops — local state
     # should match the user's intent.
@@ -398,6 +380,90 @@ def logout(
     db_session_row.revoked_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
     return LogoutResponse(revoked=True)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Switch firm — protected; reissues tokens with a new firm_id (Q3)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/switch-firm",
+    response_model=SwitchFirmResponse,
+    summary="Switch the active firm; reissues access + refresh tokens",
+)
+def switch_firm(
+    body: SwitchFirmRequest,
+    db: SyncDBSession,
+    response: Response,
+    current_user: CurrentUser,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> SwitchFirmResponse:
+    """Reissue token pair with `firm_id` set to the requested firm. RLS
+    is reset on the next request from the new JWT.
+
+    Failure modes:
+      - Cross-org switch (firm.org_id != current_user.org_id) → 404
+        (RLS-style, no leak about firm existence in another org).
+      - User has zero permissions for the requested firm → 403
+        PERMISSION_DENIED. We don't issue empty-permission tokens.
+    """
+    firm = db.execute(
+        select(Firm).where(
+            Firm.firm_id == body.firm_id,
+            Firm.org_id == current_user.org_id,
+            Firm.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if firm is None:
+        # 404 not 403 — same posture as RLS leakage protection.
+        raise NotFoundError(f"Firm {body.firm_id} not found.")
+
+    permissions = rbac_service.get_user_permissions(
+        db, user_id=current_user.user_id, firm_id=firm.firm_id
+    )
+    if not permissions:
+        raise PermissionDeniedError(
+            f"User has no roles assigned for firm {firm.name!r}.",
+            title="No access to that firm",
+        )
+
+    user = db.execute(select(AppUser).where(AppUser.user_id == current_user.user_id)).scalar_one()
+
+    pair = identity_service.issue_tokens(db, user=user, firm_id=firm.firm_id)
+    _set_refresh_cookie(
+        response,
+        pair.refresh_token,
+        max_age_seconds=_seconds_until(pair.refresh_expires_at),
+    )
+
+    # Audit the switch — diff the firm context.
+    db.add(
+        AuditLog(
+            org_id=current_user.org_id,
+            firm_id=firm.firm_id,
+            user_id=current_user.user_id,
+            entity_type="auth.session",
+            entity_id=current_user.user_id,
+            action="switch_firm",
+            changes={
+                "before": {"firm_id": str(current_user.firm_id) if current_user.firm_id else None},
+                "after": {"firm_id": str(firm.firm_id)},
+            },
+        )
+    )
+    db.flush()
+
+    # Invalidate the per-firm flag cache so the next /me call re-resolves.
+    feature_flag_service.invalidate_firm(firm.firm_id)
+
+    return SwitchFirmResponse(
+        access_token=pair.access_token,
+        refresh_token=pair.refresh_token,
+        access_expires_at=pair.access_expires_at,
+        refresh_expires_at=pair.refresh_expires_at,
+        firm_id=firm.firm_id,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────

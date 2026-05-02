@@ -156,3 +156,54 @@ export function useLogout() {
  * directly. Live mode reads from authStore via useMe().
  */
 export const mockFirms = [defaultFirm];
+
+// ──────────────────────────────────────────────────────────────────────
+// Switch firm (Q3)
+// ──────────────────────────────────────────────────────────────────────
+
+export interface SwitchFirmInput {
+  firm_id: string;
+  idempotencyKey: string;
+}
+
+interface SwitchFirmEnvelope {
+  access_token: string;
+  refresh_token: string;
+  access_expires_at: string;
+  refresh_expires_at: string;
+  firm_id: string;
+}
+
+async function liveSwitchFirm(input: SwitchFirmInput): Promise<SwitchFirmEnvelope> {
+  const data = await api<SwitchFirmEnvelope>('/auth/switch-firm', {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body: { firm_id: input.firm_id },
+  });
+  authStore.setAccessToken(data.access_token);
+  // Refresh /me so flags + permissions reflect the new firm context.
+  const me = await api<MeResponse>('/auth/me');
+  authStore.setMe(me);
+  return data;
+}
+
+async function mockSwitchFirm(input: SwitchFirmInput): Promise<SwitchFirmEnvelope> {
+  await fakeFetch(undefined);
+  return {
+    access_token: 'mock-access-token',
+    refresh_token: 'mock-refresh-token',
+    access_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    refresh_expires_at: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+    firm_id: input.firm_id,
+  };
+}
+
+export function useSwitchFirm() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: SwitchFirmInput) =>
+      IS_LIVE ? liveSwitchFirm(input) : mockSwitchFirm(input),
+    // Cross-firm data isolation: drop everything cached for the old firm.
+    onSuccess: () => qc.clear(),
+  });
+}

@@ -23,7 +23,6 @@ from fastapi import APIRouter, Depends, Header, Query, status
 from app.dependencies import SyncDBSession, require_permission
 from app.exceptions import PermissionDeniedError
 from app.models import CoaGroup, Ledger
-from app.routers.auth import _validate_idempotency_key
 from app.schemas.accounting import (
     CoaGroupCreateRequest,
     CoaGroupListResponse,
@@ -117,7 +116,6 @@ def create_coa_group(
     current_user: Annotated[TokenPayload, Depends(require_permission("accounting.coa.update"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> CoaGroupResponse:
-    _validate_idempotency_key(idempotency_key)
     group = coa_service.create_coa_group(
         db,
         org_id=current_user.org_id,
@@ -192,7 +190,6 @@ def create_ledger(
     current_user: Annotated[TokenPayload, Depends(require_permission("accounting.coa.update"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> LedgerResponse:
-    _validate_idempotency_key(idempotency_key)
     ledger = coa_service.create_ledger(
         db,
         org_id=current_user.org_id,
@@ -236,7 +233,6 @@ def update_ledger(
     current_user: Annotated[TokenPayload, Depends(require_permission("accounting.coa.update"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> LedgerResponse:
-    _validate_idempotency_key(idempotency_key)
     try:
         ledger = coa_service.update_ledger(
             db,

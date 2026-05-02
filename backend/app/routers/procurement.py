@@ -16,7 +16,6 @@ from fastapi import APIRouter, Depends, Header, Query, status
 from app.dependencies import SyncDBSession, require_permission
 from app.models import GRN, GRNLine, PILine, POLine, PurchaseInvoice, PurchaseOrder
 from app.models.procurement import GRNStatus, PurchaseOrderStatus, VoucherStatus
-from app.routers.auth import _validate_idempotency_key
 from app.schemas.procurement import (
     GRNCreateRequest,
     GRNLineResponse,
@@ -83,7 +82,6 @@ def create_po(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.po.create"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> POResponse:
-    _validate_idempotency_key(idempotency_key)
     po = procurement_service.create_po(
         db,
         org_id=current_user.org_id,
@@ -165,7 +163,6 @@ def approve_po(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.po.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> POResponse:
-    _validate_idempotency_key(idempotency_key)
     po = procurement_service.approve_po(
         db, org_id=current_user.org_id, po_id=po_id, updated_by=current_user.user_id
     )
@@ -183,7 +180,6 @@ def confirm_po(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.po.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> POResponse:
-    _validate_idempotency_key(idempotency_key)
     po = procurement_service.confirm_po(
         db, org_id=current_user.org_id, po_id=po_id, updated_by=current_user.user_id
     )
@@ -201,7 +197,6 @@ def cancel_po(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.po.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> POResponse:
-    _validate_idempotency_key(idempotency_key)
     po = procurement_service.cancel_po(
         db, org_id=current_user.org_id, po_id=po_id, updated_by=current_user.user_id
     )
@@ -219,7 +214,6 @@ def delete_po(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.po.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> None:
-    _validate_idempotency_key(idempotency_key)
     procurement_service.soft_delete_po(
         db, org_id=current_user.org_id, po_id=po_id, deleted_by=current_user.user_id
     )
@@ -275,7 +269,6 @@ def create_grn(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.grn.create"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> GRNResponse:
-    _validate_idempotency_key(idempotency_key)
     grn = procurement_service.create_grn(
         db,
         org_id=current_user.org_id,
@@ -357,7 +350,6 @@ def receive_grn(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.grn.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> GRNResponse:
-    _validate_idempotency_key(idempotency_key)
     grn = procurement_service.receive_grn(
         db, org_id=current_user.org_id, grn_id=grn_id, updated_by=current_user.user_id
     )
@@ -375,7 +367,6 @@ def delete_grn(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.grn.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> None:
-    _validate_idempotency_key(idempotency_key)
     procurement_service.soft_delete_grn(
         db, org_id=current_user.org_id, grn_id=grn_id, deleted_by=current_user.user_id
     )
@@ -439,7 +430,6 @@ def create_pi(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.create"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> PIResponse:
-    _validate_idempotency_key(idempotency_key)
     pi = procurement_service.create_pi(
         db,
         org_id=current_user.org_id,
@@ -524,7 +514,6 @@ def post_pi(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.post"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> PIResponse:
-    _validate_idempotency_key(idempotency_key)
     pi = procurement_service.post_pi(
         db, org_id=current_user.org_id, pi_id=pi_id, updated_by=current_user.user_id
     )
@@ -542,7 +531,6 @@ def void_pi(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.void"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> PIResponse:
-    _validate_idempotency_key(idempotency_key)
     pi = procurement_service.void_pi(
         db, org_id=current_user.org_id, pi_id=pi_id, updated_by=current_user.user_id
     )
@@ -560,7 +548,6 @@ def delete_pi(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.void"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> None:
-    _validate_idempotency_key(idempotency_key)
     procurement_service.soft_delete_pi(
         db, org_id=current_user.org_id, pi_id=pi_id, deleted_by=current_user.user_id
     )

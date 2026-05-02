@@ -20,7 +20,6 @@ from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
 from app.models import StockAdjustment
-from app.routers.auth import _validate_idempotency_key
 from app.schemas.inventory import (
     StockAdjustmentListResponse,
     StockAdjustmentRequest,
@@ -70,7 +69,6 @@ def create_stock_adjustment(
     - **DECREASE**: remove `qty` units; raises 422 if insufficient stock.
     - **COUNT_RESET**: set on-hand to `qty`; auto-computes delta direction.
     """
-    _validate_idempotency_key(idempotency_key)
     adj, _ledger = stock_service.create_adjustment(
         db,
         org_id=current_user.org_id,

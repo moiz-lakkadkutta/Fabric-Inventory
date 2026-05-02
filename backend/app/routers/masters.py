@@ -13,7 +13,6 @@ from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
 from app.models import Party
-from app.routers.auth import _validate_idempotency_key
 from app.schemas.masters import (
     PartyCreateRequest,
     PartyListResponse,
@@ -71,7 +70,6 @@ def create_party(
     current_user: Annotated[TokenPayload, Depends(require_permission("masters.party.create"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> PartyResponse:
-    _validate_idempotency_key(idempotency_key)
     party = masters_service.create_party(
         db,
         org_id=current_user.org_id,
@@ -157,7 +155,6 @@ def update_party(
     current_user: Annotated[TokenPayload, Depends(require_permission("masters.party.update"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> PartyResponse:
-    _validate_idempotency_key(idempotency_key)
     party = masters_service.update_party(
         db,
         org_id=current_user.org_id,
@@ -198,7 +195,6 @@ def delete_party(
     separate delete permission in the system catalog (deletes are a form
     of update; hard-deletes are out of scope by policy).
     """
-    _validate_idempotency_key(idempotency_key)
     masters_service.soft_delete_party(
         db,
         org_id=current_user.org_id,

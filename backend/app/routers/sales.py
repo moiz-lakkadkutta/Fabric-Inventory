@@ -19,7 +19,6 @@ from fastapi import APIRouter, Depends, Header, Query, status
 from app.dependencies import SyncDBSession, require_permission
 from app.models import DCLine, DeliveryChallan, SalesOrder, SOLine
 from app.models.sales import DCStatus, SalesOrderStatus
-from app.routers.auth import _validate_idempotency_key
 from app.schemas.sales import (
     DCCreateRequest,
     DCLineResponse,
@@ -81,7 +80,6 @@ def create_so(
     current_user: Annotated[TokenPayload, Depends(require_permission("sales.order.create"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SOResponse:
-    _validate_idempotency_key(idempotency_key)
     so = sales_service.create_so(
         db,
         org_id=current_user.org_id,
@@ -162,7 +160,6 @@ def confirm_so(
     current_user: Annotated[TokenPayload, Depends(require_permission("sales.order.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SOResponse:
-    _validate_idempotency_key(idempotency_key)
     so = sales_service.confirm_so(
         db, org_id=current_user.org_id, so_id=so_id, updated_by=current_user.user_id
     )
@@ -180,7 +177,6 @@ def cancel_so(
     current_user: Annotated[TokenPayload, Depends(require_permission("sales.order.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SOResponse:
-    _validate_idempotency_key(idempotency_key)
     so = sales_service.cancel_so(
         db, org_id=current_user.org_id, so_id=so_id, updated_by=current_user.user_id
     )
@@ -198,7 +194,6 @@ def delete_so(
     current_user: Annotated[TokenPayload, Depends(require_permission("sales.order.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> None:
-    _validate_idempotency_key(idempotency_key)
     sales_service.soft_delete_so(
         db, org_id=current_user.org_id, so_id=so_id, deleted_by=current_user.user_id
     )
@@ -255,7 +250,6 @@ def create_dc(
     current_user: Annotated[TokenPayload, Depends(require_permission("sales.dc.create"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> DCResponse:
-    _validate_idempotency_key(idempotency_key)
     dc = sales_service.create_dc(
         db,
         org_id=current_user.org_id,
@@ -338,7 +332,6 @@ def issue_dc(
     current_user: Annotated[TokenPayload, Depends(require_permission("sales.dc.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> DCResponse:
-    _validate_idempotency_key(idempotency_key)
     dc = sales_service.issue_dc(
         db, org_id=current_user.org_id, dc_id=dc_id, updated_by=current_user.user_id
     )
@@ -356,7 +349,6 @@ def delete_dc(
     current_user: Annotated[TokenPayload, Depends(require_permission("sales.dc.approve"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> None:
-    _validate_idempotency_key(idempotency_key)
     sales_service.soft_delete_dc(
         db, org_id=current_user.org_id, dc_id=dc_id, deleted_by=current_user.user_id
     )

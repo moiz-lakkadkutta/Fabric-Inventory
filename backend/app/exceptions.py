@@ -152,3 +152,12 @@ class MfaError(AppError):
     code = ErrorCode.MFA_INVALID
     title = "MFA verification failed"
     http_status = 401
+
+
+class NotFoundError(AppError):
+    """Generic 404 — also used for RLS-style "you can't see this" responses
+    where leaking a 403 would confirm the row exists in another tenant."""
+
+    code = ErrorCode.NOT_FOUND
+    title = "Not found"
+    http_status = 404

@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -12,25 +13,30 @@ function ControlledPalette() {
 }
 
 function wrap(initialPath = '/') {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <CommandPaletteProvider>
-        <Routes>
-          <Route
-            path="/"
-            element={
-              <>
-                <TopBar />
-                <ControlledPalette />
-                <div>HOME_REACHED</div>
-              </>
-            }
-          />
-          <Route path="/sales/invoices/:id" element={<div>INVOICE_DETAIL_REACHED</div>} />
-          <Route path="/masters/parties/:id" element={<div>PARTY_DETAIL_REACHED</div>} />
-        </Routes>
-      </CommandPaletteProvider>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <CommandPaletteProvider>
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <>
+                  <TopBar />
+                  <ControlledPalette />
+                  <div>HOME_REACHED</div>
+                </>
+              }
+            />
+            <Route path="/sales/invoices/:id" element={<div>INVOICE_DETAIL_REACHED</div>} />
+            <Route path="/masters/parties/:id" element={<div>PARTY_DETAIL_REACHED</div>} />
+          </Routes>
+        </CommandPaletteProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
