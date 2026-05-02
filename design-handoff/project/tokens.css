@@ -1,0 +1,102 @@
+/* Taana — Design tokens. Light mode only per current brief. */
+:root {
+  /* ── neutrals (warm, not blue-cool) ─────────────────────── */
+  --bg-canvas:        #F7F6F2;     /* page */
+  --bg-surface:       #FFFFFF;     /* cards */
+  --bg-elevated:      #FFFFFF;     /* popovers */
+  --bg-sunken:        #EFEDE6;     /* table headers, code, sub-areas */
+
+  --text-primary:     #1A1A17;     /* contrast 16.4 on canvas */
+  --text-secondary:   #5C5A52;     /* 7.0 on canvas */
+  --text-tertiary:    #8A8880;     /* 4.6 on canvas — labels only */
+  --text-disabled:    #B5B3AB;
+  --text-inverse:     #FAFAF7;
+
+  --border-subtle:    #ECEAE2;
+  --border-default:   #E0DDD2;
+  --border-strong:    #C8C5B8;
+  --border-focus:     #0F7A4E;     /* same as accent */
+
+  /* ── accent: emerald ────────────────────────────────────── */
+  /* Chosen #0F7A4E — deeper than Khatabook mint, warmer than QB green,
+     reads on warm-white canvas at 6.4:1. */
+  --accent:           #0F7A4E;
+  --accent-hover:     #0C6541;
+  --accent-pressed:   #094F33;
+  --accent-subtle:    #E1F0E8;     /* bg tint */
+  --accent-text:      #FAFAF7;     /* on accent bg */
+
+  /* ── semantics ──────────────────────────────────────────── */
+  --success:          #137A48;
+  --success-subtle:   #DDEFE4;
+  --success-text:     #0A4A2B;
+
+  --warning:          #A26710;     /* deep amber, not yellow */
+  --warning-subtle:   #F5E8D1;
+  --warning-text:     #6B4309;
+
+  --danger:           #B5311E;
+  --danger-subtle:    #F5DCD7;
+  --danger-text:      #7A1F12;
+
+  --info:             #3F4C5A;     /* slate, not blue */
+  --info-subtle:      #E4E7EB;
+  --info-text:        #283038;
+
+  /* ── data tokens (P&L, charts) ──────────────────────────── */
+  --data-positive:    #0F7A4E;
+  --data-negative:    #B5311E;
+  --data-neutral:     #5C5A52;
+
+  /* ── radii ──────────────────────────────────────────────── */
+  --r-chip:    4px;
+  --r-input:   6px;
+  --r-card:    8px;
+  --r-sheet:  12px;
+  --r-pill:  999px;
+
+  /* ── spacing ─────────────────────────────────────────────  */
+  --s-1:  4px; --s-2:  8px; --s-3: 12px; --s-4: 16px;
+  --s-5: 20px; --s-6: 24px; --s-7: 32px; --s-8: 40px;
+  --s-9: 48px; --s-10:64px;
+
+  /* ── elevation ──────────────────────────────────────────── */
+  --shadow-1: 0 1px 2px rgba(20,20,18,.05);
+  --shadow-2: 0 2px 6px rgba(20,20,18,.06), 0 1px 2px rgba(20,20,18,.04);
+  --shadow-3: 0 8px 24px rgba(20,20,18,.08), 0 2px 6px rgba(20,20,18,.05);
+  --shadow-4: 0 16px 48px rgba(20,20,18,.14), 0 4px 12px rgba(20,20,18,.06);
+
+  /* ── type ───────────────────────────────────────────────── */
+  --font-ui: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-num: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+
+  --t-caption:   12px;   /* metadata, sub-labels */
+  --t-small:     13px;   /* helper, table dense */
+  --t-body:      14px;   /* default body */
+  --t-body-lg:   15px;   /* form inputs, primary table */
+  --t-h4:        18px;
+  --t-h3:        20px;
+  --t-h2:        24px;
+  --t-h1:        30px;
+  --t-display:   36px;
+}
+
+/* ── base resets ─────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-ui);
+  font-size: var(--t-body);
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-canvas);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+.mono { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+
+/* default focus ring (2px solid accent + 2px offset) */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+button, input, select, textarea { font-family: inherit; }

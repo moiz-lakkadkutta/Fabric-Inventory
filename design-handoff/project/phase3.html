@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Taana — Inventory · Job Work · Manufacturing</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css" />
+
+<style>
+  @keyframes taanaSpin { to { transform: rotate(360deg); } }
+  @keyframes taanaShimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  /* Stage timeline node entrance */
+  @keyframes timelineNodeIn {
+    0%   { opacity: 0; transform: translateX(-12px); }
+    100% { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes timelineConnectorIn {
+    0%   { transform: scaleY(0); }
+    100% { transform: scaleY(1); }
+  }
+  @keyframes timelinePulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(15,122,78,0.45); }
+    50%      { box-shadow: 0 0 0 6px rgba(15,122,78,0.0); }
+  }
+
+  .stage { min-height: 100vh; background: var(--bg-sunken); padding: 32px 16px 120px; display: flex; justify-content: center; }
+  input[readonly] { caret-color: transparent; }
+</style>
+</head>
+<body data-screen-label="Inventory · Job Work · Mfg">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+  <script type="text/babel" src="components.jsx"></script>
+  <script type="text/babel" src="shell-chrome.jsx"></script>
+  <script type="text/babel" src="phase3-inventory.jsx"></script>
+  <script type="text/babel" src="phase3-jobwork.jsx"></script>
+  <script type="text/babel" src="phase3-mfg.jsx"></script>
+  <script type="text/babel" src="phase3-canvas.jsx"></script>
+
+  <script type="text/babel">
+    const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+      "device": "desktop"
+    }/*EDITMODE-END*/;
+
+    function App() {
+      const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+      return (
+        <div className="stage">
+          <P3Root device={t.device} />
+          <TweaksPanel>
+            <TweakSection title="Device">
+              <TweakRadio
+                value={t.device}
+                onChange={(v) => setTweak('device', v)}
+                options={[
+                  { value: 'desktop', label: 'Desktop' },
+                  { value: 'tablet',  label: 'Tablet' },
+                  { value: 'mobile',  label: 'Mobile' },
+                ]}
+              />
+            </TweakSection>
+          </TweaksPanel>
+        </div>
+      );
+    }
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
