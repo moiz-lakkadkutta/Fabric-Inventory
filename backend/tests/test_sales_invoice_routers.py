@@ -169,7 +169,9 @@ def test_list_invoices_filters_by_status(http_client: TestClient, sync_engine: E
 
     with OrmSession(sync_engine) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
-        invoice = session.execute(select(SalesInvoice)).scalar_one()
+        invoice = session.execute(
+            select(SalesInvoice).where(SalesInvoice.org_id == uuid.UUID(me["org_id"]))
+        ).scalar_one()
         from app.models.sales import InvoiceLifecycleStatus
 
         invoice.lifecycle_status = InvoiceLifecycleStatus.FINALIZED
