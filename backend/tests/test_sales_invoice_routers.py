@@ -191,12 +191,24 @@ def test_list_invoices_filters_by_status(http_client: TestClient, sync_engine: E
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _seed_party_and_item(sync_engine: Engine, *, org_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
-    from app.models import Item, Party
+def _seed_party_and_item(
+    sync_engine: Engine, *, org_id: uuid.UUID, firm_id: uuid.UUID
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Seed a customer party + item AND backfill the firm's state_code.
+
+    Signup creates the firm with state_code NULL; without it, the
+    place-of-supply engine sees seller_state="" and the CGST_SGST vs
+    IGST decision goes off the rails. Setting MH here matches Moiz's
+    production setup. Surfaces as CRIT in the hard review (state_code
+    needs to be a signup field or an Admin → Firm settings affordance).
+    """
+    from app.models import Firm, Item, Party
     from app.models.masters import ItemType, TrackingType, UomType
 
     with OrmSession(sync_engine) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        firm = session.execute(select(Firm).where(Firm.firm_id == firm_id)).scalar_one()
+        firm.state_code = "MH"
         party = Party(
             org_id=org_id,
             code=f"P{uuid.uuid4().hex[:6].upper()}",
@@ -223,7 +235,9 @@ def test_create_invoice_returns_draft_with_computed_gst(
     http_client: TestClient, sync_engine: Engine
 ) -> None:
     me = _signup_owner(http_client)
-    party_id, item_id = _seed_party_and_item(sync_engine, org_id=uuid.UUID(me["org_id"]))
+    party_id, item_id = _seed_party_and_item(
+        sync_engine, org_id=uuid.UUID(me["org_id"]), firm_id=uuid.UUID(me["firm_id"])
+    )
 
     resp = http_client.post(
         "/invoices",
@@ -252,7 +266,9 @@ def test_finalize_invoice_advances_to_finalized(
     http_client: TestClient, sync_engine: Engine
 ) -> None:
     me = _signup_owner(http_client)
-    party_id, item_id = _seed_party_and_item(sync_engine, org_id=uuid.UUID(me["org_id"]))
+    party_id, item_id = _seed_party_and_item(
+        sync_engine, org_id=uuid.UUID(me["org_id"]), firm_id=uuid.UUID(me["firm_id"])
+    )
 
     create = http_client.post(
         "/invoices",
@@ -281,7 +297,9 @@ def test_finalize_already_finalized_returns_409(
     http_client: TestClient, sync_engine: Engine
 ) -> None:
     me = _signup_owner(http_client)
-    party_id, item_id = _seed_party_and_item(sync_engine, org_id=uuid.UUID(me["org_id"]))
+    party_id, item_id = _seed_party_and_item(
+        sync_engine, org_id=uuid.UUID(me["org_id"]), firm_id=uuid.UUID(me["firm_id"])
+    )
 
     create = http_client.post(
         "/invoices",
@@ -308,7 +326,9 @@ def test_finalize_already_finalized_returns_409(
 
 def test_create_invoice_writes_audit_log(http_client: TestClient, sync_engine: Engine) -> None:
     me = _signup_owner(http_client)
-    party_id, item_id = _seed_party_and_item(sync_engine, org_id=uuid.UUID(me["org_id"]))
+    party_id, item_id = _seed_party_and_item(
+        sync_engine, org_id=uuid.UUID(me["org_id"]), firm_id=uuid.UUID(me["firm_id"])
+    )
 
     resp = http_client.post(
         "/invoices",
@@ -347,7 +367,9 @@ def test_create_invoice_writes_audit_log(http_client: TestClient, sync_engine: E
 def test_inter_state_invoice_uses_igst(http_client: TestClient, sync_engine: Engine) -> None:
     """Customer in KA, ship_to_state=KA → IGST regardless of seller state."""
     me = _signup_owner(http_client)
-    party_id, item_id = _seed_party_and_item(sync_engine, org_id=uuid.UUID(me["org_id"]))
+    party_id, item_id = _seed_party_and_item(
+        sync_engine, org_id=uuid.UUID(me["org_id"]), firm_id=uuid.UUID(me["firm_id"])
+    )
 
     # Override the party state to KA so the PoS engine sees inter-state.
     from app.models import Party
