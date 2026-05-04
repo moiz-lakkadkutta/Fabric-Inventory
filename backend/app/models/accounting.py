@@ -131,6 +131,9 @@ class Voucher(Base, SoftDeleteMixin):
         ForeignKey("app_user.user_id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Audit-sweep adds updated_by on `voucher` (not in the exempt list);
+    # no inline FK on this column in DDL, so plain UUID is faithful.
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
