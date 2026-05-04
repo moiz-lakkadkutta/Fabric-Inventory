@@ -1,4 +1,6 @@
-"""Sales request/response schemas — SalesOrder + SOLine (TASK-032), DC + DCLine (TASK-033)."""
+"""Sales request/response schemas — SalesOrder + SOLine (TASK-032),
+DC + DCLine (TASK-033), SalesInvoice + SiLine (T-INT-3 read).
+"""
 
 from __future__ import annotations
 
@@ -9,7 +11,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-from app.models.sales import SalesOrderStatus
+from app.models.sales import InvoiceLifecycleStatus, SalesOrderStatus
 
 
 class SOLineRequest(BaseModel):
@@ -126,6 +128,79 @@ class DCResponse(BaseModel):
 
 class DCListResponse(BaseModel):
     items: list[DCResponse]
+    limit: int
+    offset: int
+    count: int
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sales Invoice schemas — T-INT-3 read endpoints
+# ──────────────────────────────────────────────────────────────────────
+
+
+class SiLineResponse(BaseModel):
+    si_line_id: uuid.UUID
+    item_id: uuid.UUID
+    item_name: str | None = None
+    qty: Decimal
+    price: Decimal
+    line_amount: Decimal | None
+    gst_rate: Decimal | None
+    gst_amount: Decimal | None
+    sequence: int | None
+
+
+class SalesInvoiceListItem(BaseModel):
+    """Trimmed list-page row — no lines, no addresses, no notes. The
+    detail endpoint returns the full SalesInvoiceResponse.
+    """
+
+    sales_invoice_id: uuid.UUID
+    firm_id: uuid.UUID
+    series: str
+    number: str
+    party_id: uuid.UUID
+    party_name: str | None = None
+    invoice_date: datetime.date
+    due_date: datetime.date | None
+    invoice_amount: Decimal | None
+    paid_amount: Decimal
+    lifecycle_status: InvoiceLifecycleStatus
+    place_of_supply_state: str | None
+    created_at: datetime.datetime
+
+
+class SalesInvoiceResponse(BaseModel):
+    sales_invoice_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    series: str
+    number: str
+    party_id: uuid.UUID
+    party_name: str | None = None
+    delivery_challan_id: uuid.UUID | None
+    salesperson_id: uuid.UUID | None
+    invoice_date: datetime.date
+    bill_to_address: str | None
+    ship_to_address: str | None
+    place_of_supply_state: str | None
+    invoice_type: str | None
+    invoice_amount: Decimal | None
+    gst_amount: Decimal | None
+    paid_amount: Decimal
+    due_date: datetime.date | None
+    lifecycle_status: InvoiceLifecycleStatus
+    finalized_at: datetime.datetime | None
+    tax_type: str | None
+    round_off: Decimal
+    notes: str | None
+    lines: list[SiLineResponse]
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class SalesInvoiceListResponse(BaseModel):
+    items: list[SalesInvoiceListItem]
     limit: int
     offset: int
     count: int

@@ -1,6 +1,7 @@
-"""Sales-domain ORM models — SalesOrder, SOLine, DeliveryChallan, DCLine.
+"""Sales-domain ORM models — SalesOrder, SOLine, DeliveryChallan, DCLine,
+SalesInvoice, SiLine.
 
-Mirrors `schema/ddl.sql` lines 1350-1433.
+Mirrors `schema/ddl.sql` lines 1350-1433 (SO/DC) + 1435-1482 (SI).
 
 SalesOrder state machine:
   DRAFT → CONFIRMED → PARTIAL_DC → FULLY_DISPATCHED → INVOICED | CANCELLED
@@ -8,11 +9,13 @@ SalesOrder state machine:
 DeliveryChallan state machine (TASK-033):
   DRAFT → ISSUED → ACKNOWLEDGED → IN_PROCESS → RETURNED | CLOSED
 
+SalesInvoice lifecycle (T-INT-3 read; T-INT-4 create + finalize):
+  DRAFT → CONFIRMED → FINALIZED → POSTED →
+  PARTIALLY_PAID → PAID, OVERDUE, CANCELLED, DISCARDED
+
 The `challan_status` Postgres enum in DDL is a free-form VARCHAR(50) in the
 delivery_challan table; we constrain it via `DCStatus` StrEnum at the ORM
 level (same pattern as GRNStatus).
-
-Sales Invoice (TASK-034) will extend this module.
 """
 
 from __future__ import annotations
@@ -299,11 +302,206 @@ class DCLine(Base):
 _unused_json = JSON
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Sales Invoice — DDL `sales_invoice` + ALTER-extensions in lines 2138-2152.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class VoucherStatus(enum.StrEnum):
+    """Basic voucher status (DRAFT/POSTED/RECONCILED/VOIDED). Mirrors
+    procurement.py's identically-named enum — same Postgres `voucher_status`
+    type. We declare a parallel StrEnum here so callers don't have to
+    import across domains.
+    """
+
+    DRAFT = "DRAFT"
+    POSTED = "POSTED"
+    RECONCILED = "RECONCILED"
+    VOIDED = "VOIDED"
+
+
+class InvoiceLifecycleStatus(enum.StrEnum):
+    """Richer per-document lifecycle for sales invoices, layered on top
+    of the basic `voucher_status` (which the DDL keeps as a parallel
+    column for backwards compatibility). Bound to the
+    `invoice_lifecycle_status` Postgres enum (DDL line 2020).
+    """
+
+    DRAFT = "DRAFT"
+    CONFIRMED = "CONFIRMED"
+    FINALIZED = "FINALIZED"
+    POSTED = "POSTED"
+    PARTIALLY_PAID = "PARTIALLY_PAID"
+    PAID = "PAID"
+    OVERDUE = "OVERDUE"
+    CANCELLED = "CANCELLED"
+    DISCARDED = "DISCARDED"
+
+
+_SALES_VOUCHER_STATUS_PG = PG_ENUM(
+    VoucherStatus, name="voucher_status", create_type=False, native_enum=True
+)
+_SI_LIFECYCLE_STATUS_PG = PG_ENUM(
+    InvoiceLifecycleStatus,
+    name="invoice_lifecycle_status",
+    create_type=False,
+    native_enum=True,
+)
+
+
+class SalesInvoice(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
+    """Customer invoice header. Lines hang off `lines`. State transitions
+    live in `sales_service`; never write directly to `lifecycle_status`
+    from outside that module.
+    """
+
+    __tablename__ = "sales_invoice"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "firm_id",
+            "series",
+            "number",
+            name="sales_invoice_org_id_firm_id_series_number_key",
+        ),
+    )
+
+    sales_invoice_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    firm_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("firm.firm_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    series: Mapped[str] = mapped_column(String(50), nullable=False)
+    number: Mapped[str] = mapped_column(String(50), nullable=False)
+    party_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("party.party_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    delivery_challan_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("delivery_challan.delivery_challan_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    salesperson_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    invoice_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    bill_to_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ship_to_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    place_of_supply_state: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    invoice_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    invoice_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    gst_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    status: Mapped[VoucherStatus | None] = mapped_column(
+        _SALES_VOUCHER_STATUS_PG,
+        server_default=text("'DRAFT'::voucher_status"),
+        nullable=True,
+    )
+    irn_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    eway_bill_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Lifecycle extensions (DDL ALTER lines 2138-2152).
+    lifecycle_status: Mapped[InvoiceLifecycleStatus] = mapped_column(
+        _SI_LIFECYCLE_STATUS_PG,
+        server_default=text("'DRAFT'::invoice_lifecycle_status"),
+        nullable=False,
+    )
+    finalized_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    paid_amount: Mapped[Any] = mapped_column(
+        Numeric(18, 2), server_default=text("0"), nullable=False
+    )
+    due_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
+    irn_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    irn_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    eway_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    revises_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("sales_invoice.sales_invoice_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    linked_mo_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("manufacturing_order.manufacturing_order_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    cost_centre_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("cost_centre.cost_centre_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    tax_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    round_off: Mapped[Any] = mapped_column(Numeric(6, 2), server_default=text("0"), nullable=False)
+    dispatched_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    lines: Mapped[list[SiLine]] = relationship(
+        back_populates="sales_invoice", cascade="all, delete-orphan"
+    )
+
+
+class SiLine(Base):
+    """One sales-invoice line. Audit-sweep adds the standard columns;
+    declared here for drift parity (matches PILine's pattern).
+    """
+
+    __tablename__ = "si_line"
+
+    si_line_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    sales_invoice_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("sales_invoice.sales_invoice_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("item.item_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    qty: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
+    price: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
+    line_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    gst_rate: Mapped[Any | None] = mapped_column(Numeric(5, 2), nullable=True)
+    gst_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    sequence: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Audit-sweep columns (DDL DO block adds these on si_line).
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    deleted_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    sales_invoice: Mapped[SalesInvoice] = relationship(back_populates="lines")
+
+
 __all__ = [
     "DCLine",
     "DCStatus",
     "DeliveryChallan",
+    "InvoiceLifecycleStatus",
     "SOLine",
+    "SalesInvoice",
     "SalesOrder",
     "SalesOrderStatus",
+    "SiLine",
+    "VoucherStatus",
 ]
