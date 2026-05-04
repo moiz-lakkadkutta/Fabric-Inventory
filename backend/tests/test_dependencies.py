@@ -40,6 +40,7 @@ def _signup_and_login(client: TestClient) -> dict[str, str]:
             "password": "strong-password-1",
             "org_name": org_name,
             "firm_name": "Primary Firm",
+            "state_code": "MH",
         },
     ).json()
     return body

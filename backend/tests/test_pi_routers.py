@@ -24,6 +24,7 @@ def _signup_owner(client: TestClient) -> dict[str, str]:
             "password": "strong-password-1",
             "org_name": f"Org-{uuid.uuid4().hex[:8]}",
             "firm_name": "Primary",
+            "state_code": "MH",
         },
     )
     assert resp.status_code == 201, resp.text

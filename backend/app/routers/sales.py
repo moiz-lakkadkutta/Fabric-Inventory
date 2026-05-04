@@ -449,12 +449,22 @@ def _invoice_to_list_item(invoice: SalesInvoice, *, party_name: str | None) -> S
 @invoice_router.get(
     "",
     response_model=SalesInvoiceListResponse,
-    summary="List sales invoices for the current org",
+    summary="List sales invoices for the current firm (defaults from JWT)",
 )
 def list_invoices(
     db: SyncDBSession,
     current_user: Annotated[TokenPayload, Depends(require_permission("sales.invoice.read"))],
-    firm_id: Annotated[uuid.UUID | None, Query()] = None,
+    firm_id: Annotated[
+        uuid.UUID | None,
+        Query(
+            description=(
+                "Filter to a specific firm in the caller's org. "
+                "Defaults to the JWT's firm_id when omitted; pass "
+                "`?firm_id=<other>` to view another firm in the same org "
+                "(requires the user to have access to that firm)."
+            ),
+        ),
+    ] = None,
     party_id: Annotated[uuid.UUID | None, Query()] = None,
     lifecycle_status: Annotated[
         InvoiceLifecycleStatus | None,
@@ -470,10 +480,15 @@ def list_invoices(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> SalesInvoiceListResponse:
+    # T-INT-4 CRIT-3: default to the JWT's firm so a B-token user
+    # can't list A's invoices by omitting the filter. Cross-firm-same-
+    # org views require an explicit `?firm_id=` (gated by RBAC later).
+    effective_firm_id = firm_id if firm_id is not None else current_user.firm_id
+
     invoices = sales_service.list_sales_invoices(
         db,
         org_id=current_user.org_id,
-        firm_id=firm_id,
+        firm_id=effective_firm_id,
         party_id=party_id,
         lifecycle_status=lifecycle_status,
         q=q,
