@@ -20,6 +20,7 @@ def _signup(client: IdempotentTestClient) -> dict[str, str]:
             "password": "strong-password-1",
             "org_name": f"Org {uuid.uuid4().hex[:8]}",
             "firm_name": "Primary Firm",
+            "state_code": "MH",
         },
     ).json()
     return body
@@ -38,6 +39,7 @@ def test_signup_sets_refresh_cookie(http_client: IdempotentTestClient) -> None:
             "password": "strong-password-1",
             "org_name": f"Org {uuid.uuid4().hex[:8]}",
             "firm_name": "Primary Firm",
+            "state_code": "MH",
         },
     )
     assert resp.status_code == 201

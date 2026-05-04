@@ -135,7 +135,9 @@ def signup(
         org_id=org.org_id,
         code=_make_firm_code(body.firm_name),
         name=body.firm_name,
-        has_gst=True,
+        has_gst=body.gstin is not None,
+        state_code=body.state_code.upper(),
+        gstin=body.gstin.encode("utf-8") if body.gstin else None,
     )
     db.add(firm)
     db.flush()

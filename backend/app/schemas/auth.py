@@ -20,10 +20,25 @@ from pydantic import BaseModel, EmailStr, Field
 
 
 class SignupRequest(BaseModel):
+    """Initial signup creates org + first firm + Owner user.
+
+    `state_code` is the 2-character Indian state code for the firm
+    (e.g. "MH" for Maharashtra). Required so the GST place-of-supply
+    engine can compute the right tax_type from the first invoice
+    onward — without it, every B2C inter-state sale misfires per
+    T-INT-4 CRIT-2.
+
+    `gstin` is optional at signup; firms below the GST threshold or
+    yet-to-register can leave it blank and patch it later via the
+    Admin → Firm settings flow when that ships.
+    """
+
     email: EmailStr
     password: str = Field(min_length=8, max_length=200)
     org_name: str = Field(min_length=1, max_length=255)
     firm_name: str = Field(min_length=1, max_length=255)
+    state_code: str = Field(min_length=2, max_length=2)
+    gstin: str | None = Field(default=None, min_length=15, max_length=15)
 
 
 class TokenPairResponse(BaseModel):

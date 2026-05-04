@@ -40,7 +40,7 @@ from app.models import (
     SOLine,
 )
 from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
-from app.service import dashboard_service, gst_service, inventory_service
+from app.service import accounting_service, dashboard_service, gst_service, inventory_service
 from app.service.gst_service import BuyerStatus, TaxType
 
 # ──────────────────────────────────────────────────────────────────────
@@ -922,13 +922,12 @@ def finalize_invoice(
     sales_invoice_id: uuid.UUID,
     updated_by: uuid.UUID | None = None,
 ) -> SalesInvoice:
-    """DRAFT → FINALIZED. Writes an audit_log entry and stamps
-    `finalized_at`. Ledger postings (DR Sundry Debtors / CR Sales / CR
-    GST Payable) are deferred until the Voucher ORM lands; tracked as
-    a CRIT in the T-INT-4 hard review.
+    """DRAFT → FINALIZED. Writes an audit_log entry, stamps
+    `finalized_at`, and posts a balanced GL voucher (DR AR / CR Sales /
+    CR GST Payable) via `accounting_service.post_invoice_to_gl`.
 
-    Raises `InvoiceStateError` (mapped to 409 INVOICE_ALREADY_FINALIZED
-    via the router) when the invoice has already moved past DRAFT.
+    Raises `InvoiceStateError` (mapped to 409 by the router) when the
+    invoice has already moved past DRAFT.
     """
     invoice = get_sales_invoice(session, org_id=org_id, sales_invoice_id=sales_invoice_id)
 
@@ -947,6 +946,8 @@ def finalize_invoice(
     if updated_by is not None:
         invoice.updated_by = updated_by
 
+    voucher = accounting_service.post_invoice_to_gl(session, invoice=invoice, posted_by=updated_by)
+
     session.add(
         AuditLog(
             org_id=org_id,
@@ -960,6 +961,8 @@ def finalize_invoice(
                 "after": {
                     "lifecycle_status": InvoiceLifecycleStatus.FINALIZED.value,
                     "finalized_at": now.isoformat(),
+                    "voucher_id": str(voucher.voucher_id),
+                    "voucher_number": f"{voucher.series}/{voucher.number}",
                 },
             },
         )

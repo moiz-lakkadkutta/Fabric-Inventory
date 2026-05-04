@@ -25,6 +25,7 @@ def _signup_owner(client: TestClient) -> dict[str, str]:
             "password": "strong-password-1",
             "org_name": f"Org-{uuid.uuid4().hex[:8]}",
             "firm_name": "Primary",
+            "state_code": "MH",
         },
     )
     assert resp.status_code == 201, resp.text
@@ -396,3 +397,132 @@ def test_inter_state_invoice_uses_igst(http_client: TestClient, sync_engine: Eng
     body = resp.json()
     # 10 * 30,000 = 3,00,000 → over the ₹2.5L B2C threshold → IGST.
     assert body["place_of_supply_state"] == "KA"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# T-INT-4 CRIT-3 — cross-firm-same-org RLS isolation
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_list_invoices_isolated_after_switch_firm(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Create invoice in Firm A, switch to Firm B, list invoices →
+    A's invoice must NOT appear. Behavior #8 from the plan.
+    """
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    firm_a = uuid.UUID(me["firm_id"])
+    party_id, item_id = _seed_party_and_item(sync_engine, org_id=org_id, firm_id=firm_a)
+
+    # Create invoice in Firm A.
+    create = http_client.post(
+        "/invoices",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": str(firm_a),
+            "party_id": str(party_id),
+            "invoice_date": "2026-04-30",
+            "ship_to_state": "MH",
+            "lines": [{"item_id": str(item_id), "qty": "1", "price": "1000", "gst_rate": "5"}],
+        },
+    )
+    assert create.status_code == 201, create.text
+    firm_a_invoice_id = create.json()["sales_invoice_id"]
+
+    # Build a sibling firm under the same org.
+    from app.models import Firm
+
+    with OrmSession(sync_engine) as session:
+        firm_b = Firm(
+            org_id=org_id,
+            code=f"FB{uuid.uuid4().hex[:5].upper()}",
+            name="Sibling Firm",
+            has_gst=False,
+            state_code="MH",
+        )
+        session.add(firm_b)
+        session.commit()
+        firm_b_id = firm_b.firm_id
+
+    # Switch to Firm B → new JWT carries firm_b_id.
+    switch = http_client.post(
+        "/auth/switch-firm",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": str(firm_b_id)},
+    )
+    assert switch.status_code == 200, switch.text
+    new_token = switch.json()["access_token"]
+
+    # GET /invoices with the new token (no explicit firm_id) — must
+    # default to firm B and therefore exclude Firm A's invoice.
+    listing = http_client.get("/invoices", headers=_auth(new_token))
+    assert listing.status_code == 200, listing.text
+    visible_ids = {item["sales_invoice_id"] for item in listing.json()["items"]}
+    assert firm_a_invoice_id not in visible_ids, (
+        "Cross-firm RLS leak: Firm B token should not see Firm A invoices"
+    )
+    # And Firm A's view (token before switch) still shows it.
+    a_listing = http_client.get("/invoices", headers=_auth(me["access_token"]))
+    a_ids = {item["sales_invoice_id"] for item in a_listing.json()["items"]}
+    assert firm_a_invoice_id in a_ids
+
+
+def test_finalize_writes_balanced_voucher(http_client: TestClient, sync_engine: Engine) -> None:
+    """End-to-end: create + finalize through HTTP → voucher_line shows
+    DR AR / CR Sales / CR GST that nets to zero (T-INT-4 CRIT-1).
+    """
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_id, item_id = _seed_party_and_item(
+        sync_engine, org_id=org_id, firm_id=uuid.UUID(me["firm_id"])
+    )
+
+    create = http_client.post(
+        "/invoices",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "party_id": str(party_id),
+            "invoice_date": "2026-04-30",
+            "ship_to_state": "MH",
+            "lines": [{"item_id": str(item_id), "qty": "10", "price": "1000", "gst_rate": "5"}],
+        },
+    )
+    invoice_id = create.json()["sales_invoice_id"]
+
+    fin = http_client.post(
+        f"/invoices/{invoice_id}/finalize",
+        headers=_auth(me["access_token"]),
+    )
+    assert fin.status_code == 200, fin.text
+
+    from app.models import Voucher, VoucherLine
+    from app.models.accounting import JournalLineType
+
+    with OrmSession(sync_engine) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        voucher = session.execute(
+            select(Voucher).where(
+                Voucher.org_id == org_id,
+                Voucher.reference_id == uuid.UUID(invoice_id),
+            )
+        ).scalar_one()
+        assert voucher.total_debit == Decimal("10500.00")
+        assert voucher.total_credit == Decimal("10500.00")
+
+        lines = (
+            session.execute(select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id))
+            .scalars()
+            .all()
+        )
+        debits = sum(
+            (Decimal(line.amount) for line in lines if line.line_type == JournalLineType.DR),
+            Decimal(0),
+        )
+        credits = sum(
+            (Decimal(line.amount) for line in lines if line.line_type == JournalLineType.CR),
+            Decimal(0),
+        )
+        assert debits == credits, f"voucher unbalanced: DR={debits}, CR={credits}"
+        assert debits == Decimal("10500.00")

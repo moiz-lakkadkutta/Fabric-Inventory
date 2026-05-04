@@ -41,6 +41,7 @@ def _signup(client: TestClient, *, email: str, password: str, org_name: str) -> 
             "password": password,
             "org_name": org_name,
             "firm_name": "Primary Firm",
+            "state_code": "MH",
         },
     )
     assert resp.status_code == 201, resp.text
@@ -100,6 +101,7 @@ def test_signup_duplicate_org_name_returns_422(http_client: TestClient) -> None:
             "password": "strong-password-1",
             "org_name": org_name,
             "firm_name": "Primary Firm",
+            "state_code": "MH",
         },
     )
     assert resp.status_code == 422
@@ -114,6 +116,7 @@ def test_signup_weak_password_rejected_by_pydantic(http_client: TestClient) -> N
             "password": "short",
             "org_name": _unique_org_name(),
             "firm_name": "F",
+            "state_code": "MH",
         },
     )
     # Pydantic returns 422 for min_length violation.
@@ -128,6 +131,7 @@ def test_signup_invalid_email_rejected_by_pydantic(http_client: TestClient) -> N
             "password": "strong-password-1",
             "org_name": _unique_org_name(),
             "firm_name": "F",
+            "state_code": "MH",
         },
     )
     assert resp.status_code == 422
@@ -143,6 +147,7 @@ def test_signup_with_idempotency_key_succeeds(http_client: TestClient) -> None:
             "password": "strong-password-1",
             "org_name": _unique_org_name(),
             "firm_name": "F",
+            "state_code": "MH",
         },
     )
     assert resp.status_code == 201
@@ -158,6 +163,7 @@ def test_signup_with_malformed_idempotency_key_rejected(http_client: TestClient)
             "password": "strong-password-1",
             "org_name": _unique_org_name(),
             "firm_name": "F",
+            "state_code": "MH",
         },
     )
     assert resp.status_code == 400

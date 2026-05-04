@@ -27,6 +27,7 @@ class Base(DeclarativeBase):
 # their tables into Base.metadata. Order matters: parents (Organization)
 # before dependents (Firm, AppUser, ...).
 from . import (  # noqa: E402  (import after Base definition is required)
+    accounting,
     banking,
     feature_flag,
     identity,
@@ -34,6 +35,12 @@ from . import (  # noqa: E402  (import after Base definition is required)
     masters,
     procurement,
     sales,
+)
+from .accounting import (  # noqa: E402
+    JournalLineType,
+    Voucher,
+    VoucherLine,
+    VoucherType,
 )
 from .banking import (  # noqa: E402
     BankAccount,
@@ -134,6 +141,7 @@ __all__ = [
     "Item",
     "ItemType",
     "ItemUomAlt",
+    "JournalLineType",
     "Ledger",
     "Location",
     "LocationType",
@@ -174,7 +182,11 @@ __all__ = [
     "UomType",
     "UserFirmScope",
     "UserRole",
+    "Voucher",
+    "VoucherLine",
     "VoucherStatus",
+    "VoucherType",
+    "accounting",
     "banking",
     "feature_flag",
     "identity",
