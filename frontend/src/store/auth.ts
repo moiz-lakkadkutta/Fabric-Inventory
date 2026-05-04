@@ -12,12 +12,19 @@
 
 import * as React from 'react';
 
+export interface MeFirmRef {
+  firm_id: string;
+  code: string;
+  name: string;
+}
+
 export interface MeResponse {
   user_id: string;
   org_id: string;
   firm_id: string | null;
   permissions: string[];
   flags: Record<string, boolean>;
+  available_firms: MeFirmRef[];
   token_expires_at: string;
 }
 

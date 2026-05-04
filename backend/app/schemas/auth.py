@@ -110,11 +110,25 @@ class LogoutResponse(BaseModel):
     revoked: bool
 
 
+class MeFirmRef(BaseModel):
+    """Slim firm reference exposed via /auth/me for the firm switcher."""
+
+    firm_id: uuid.UUID
+    code: str
+    name: str
+
+
 class MeResponse(BaseModel):
     """Current user info, derived from the access-token JWT payload + DB lookup.
 
     `flags` is the per-firm feature-flag map (Q10c). Empty dict when no
     firm is active or when the firm has no flags set.
+
+    `available_firms` lists every firm in the current org that the user
+    can switch to. Owners (org-wide role, firm_id=None) see every firm
+    in their org; that's how dogfood signups behave today. Frontend
+    auto-switches when this list has exactly one entry — saves the
+    second click on day-one.
     """
 
     user_id: uuid.UUID
@@ -122,4 +136,5 @@ class MeResponse(BaseModel):
     firm_id: uuid.UUID | None = None
     permissions: list[str]
     flags: dict[str, bool] = Field(default_factory=dict)
+    available_firms: list[MeFirmRef] = Field(default_factory=list)
     token_expires_at: datetime.datetime
