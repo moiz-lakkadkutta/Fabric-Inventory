@@ -106,6 +106,8 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     # COA admin endpoints (TASK-040)
     ("accounting.coa", "read", "View chart of accounts groups and ledgers"),
     ("accounting.coa", "update", "Create and update custom COA groups and ledgers"),
+    # Dashboard (T-INT-2) — KPI bundle + activity feed.
+    ("dashboard", "read", "View dashboard KPIs and activity"),
 )
 
 
@@ -145,6 +147,7 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "banking.bank.create",
                 "admin.audit.read",
                 "sales.order.read",
+                "dashboard.read",
             }
         ),
     ),
@@ -168,6 +171,7 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "sales.return.create",
                 "inventory.stock.read",
                 "sales.order.read",
+                "dashboard.read",
             }
         ),
     ),
