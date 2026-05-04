@@ -21,6 +21,7 @@ from app.middleware import (
 from app.routers import accounting as accounting_router
 from app.routers import auth as auth_router
 from app.routers import banking as banking_router
+from app.routers import dashboard as dashboard_router
 from app.routers import inventory as inventory_router
 from app.routers import items as items_router
 from app.routers import masters as masters_router
@@ -78,6 +79,8 @@ def create_app() -> FastAPI:
     app.include_router(sales_router.router)
     app.include_router(sales_router.dc_router)
     app.include_router(sales_router.invoice_router)
+    app.include_router(dashboard_router.router)
+    app.include_router(dashboard_router.activity_router)
     app.include_router(banking_router.router)
     app.include_router(accounting_router.router)
 
