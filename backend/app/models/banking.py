@@ -152,10 +152,13 @@ class Cheque(Base, AuditByMixin, SoftDeleteMixin):
     )
     clearing_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     bounce_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # voucher.voucher_id FK is DB-level only; the `voucher` table is not yet
-    # modeled in the ORM (ships in TASK-055). Declare the column without an ORM
-    # FK ref — same pattern as `firm.primary_godown_id` in identity.py.
-    voucher_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    # Voucher ORM landed in T-INT-4 follow-up; declare the FK now that
+    # the target is in metadata so the drift gate stays clean.
+    voucher_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("voucher.voucher_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
