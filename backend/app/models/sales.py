@@ -407,6 +407,14 @@ class SalesInvoice(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     irn_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     eway_bill_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # `sales_invoice.created_by` has an inline FK in DDL (line 1455);
+    # override the mixin's plain-UUID column so ORM-DDL drift stays clean.
+    # Mirrors the same pattern used by PurchaseInvoice / SalesOrder.
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     # Lifecycle extensions (DDL ALTER lines 2138-2152).
     lifecycle_status: Mapped[InvoiceLifecycleStatus] = mapped_column(
