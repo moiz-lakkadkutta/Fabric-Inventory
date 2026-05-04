@@ -345,9 +345,7 @@ def list_receipts_with_details(
     limit: int = 50,
     offset: int = 0,
 ) -> list[ReceiptListEntry]:
-    vouchers = list_receipts(
-        session, org_id=org_id, firm_id=firm_id, limit=limit, offset=offset
-    )
+    vouchers = list_receipts(session, org_id=org_id, firm_id=firm_id, limit=limit, offset=offset)
     if not vouchers:
         return []
     voucher_ids = [v.voucher_id for v in vouchers]
