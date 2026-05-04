@@ -1,8 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { _internal } from '@/lib/queries/invoices';
+import { authStore } from '@/store/auth';
 
-const { mapDetail, mapListItem, mapStatus, rupeesToPaise, ageingDays } = _internal;
+const {
+  mapDetail,
+  mapListItem,
+  mapStatus,
+  rupeesToPaise,
+  ageingDays,
+  paiseToRupees,
+  buildCreateBody,
+} = _internal;
+
+afterEach(() => {
+  authStore.reset();
+});
 
 describe('invoices live-mode mappers', () => {
   it('rupeesToPaise rounds Decimal-as-string into paise integers', () => {
@@ -128,5 +141,82 @@ describe('invoices live-mode mappers', () => {
       updated_at: '2026-04-30T00:00:00Z',
     });
     expect(out.doc_type).toBe('BILL_OF_SUPPLY');
+  });
+});
+
+describe('buildCreateBody (T-INT-4)', () => {
+  it('throws when authStore has no firm_id', () => {
+    expect(() =>
+      buildCreateBody({
+        date: '2026-04-30',
+        due_date: '2026-05-15',
+        party_id: 'p_1',
+        party_name: 'X',
+        party_state: 'MH',
+        subtotal: 0,
+        gst_total: 0,
+        total: 0,
+        paid: 0,
+        ageing_days: 0,
+        lines: [],
+        doc_type: 'TAX_INVOICE',
+      }),
+    ).toThrow(/No active firm/);
+  });
+
+  it('converts paise → rupees-as-string and forwards line shape', () => {
+    authStore.setMe({
+      user_id: 'u',
+      org_id: 'o',
+      firm_id: 'f1',
+      permissions: ['sales.invoice.create'],
+      flags: {},
+      token_expires_at: '2099-01-01T00:00:00Z',
+    });
+
+    const body = buildCreateBody({
+      date: '2026-04-30',
+      due_date: '2026-05-15',
+      party_id: 'p_1',
+      party_name: 'Anjali',
+      party_state: 'MH',
+      subtotal: 1000000, // ₹10,000.00 in paise
+      gst_total: 50000,
+      total: 1050000,
+      paid: 0,
+      ageing_days: 0,
+      lines: [
+        {
+          item_id: 'i_1',
+          item_name: 'Chiffon',
+          qty: 10,
+          uom: 'METER',
+          rate: 100000, // ₹1000.00 in paise
+          amount: 1000000,
+          gst_pct: 5,
+          gst_amount: 50000,
+        },
+      ],
+      doc_type: 'TAX_INVOICE',
+    });
+
+    expect(body.firm_id).toBe('f1');
+    expect(body.party_id).toBe('p_1');
+    expect(body.invoice_date).toBe('2026-04-30');
+    expect(body.due_date).toBe('2026-05-15');
+    expect(body.ship_to_state).toBe('MH');
+    expect(body.lines).toHaveLength(1);
+    expect(body.lines[0].qty).toBe('10');
+    expect(body.lines[0].price).toBe('1000.00'); // 100000 paise → "1000.00"
+    expect(body.lines[0].gst_rate).toBe('5');
+    expect(body.lines[0].sequence).toBe(1);
+  });
+});
+
+describe('paiseToRupees', () => {
+  it('formats integers to two decimals', () => {
+    expect(paiseToRupees(0)).toBe('0.00');
+    expect(paiseToRupees(100050)).toBe('1000.50');
+    expect(paiseToRupees(1)).toBe('0.01');
   });
 });

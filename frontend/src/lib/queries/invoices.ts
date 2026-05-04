@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { api } from '@/lib/api/client';
+import { api, ApiError } from '@/lib/api/client';
 import { IS_LIVE } from '@/lib/api/mode';
 import { fakeFetch } from '@/lib/mock/api';
 import { invoices as seedInvoices } from '@/lib/mock/invoices';
 import type { Invoice, InvoiceLine, InvoiceStatus } from '@/lib/mock/types';
+import { authStore } from '@/store/auth';
 
 const KEY = ['invoices'] as const;
 
@@ -213,20 +214,109 @@ export function useInvoice(invoiceId: string | undefined) {
   });
 }
 
-// Finalize + create remain mock-only until T-INT-4 lands the create + finalize endpoints.
+// ──────────────────────────────────────────────────────────────────────
+// create + finalize — both Q6 branches.
+//
+// Live branch maps the frontend's paise-Invoice draft into the backend's
+// rupees-as-string SalesInvoiceCreateRequest. Finalize hits
+// `/v1/invoices/{id}/finalize`; INVOICE_STATE_ERROR (already finalized)
+// is caught by the api() wrapper and surfaces as ApiError, which the
+// caller maps to a refresh affordance.
+// ──────────────────────────────────────────────────────────────────────
+
+interface BackendCreateLine {
+  item_id: string;
+  qty: string;
+  price: string;
+  gst_rate: string;
+  sequence: number;
+}
+
+interface BackendCreateBody {
+  firm_id: string;
+  party_id: string;
+  invoice_date: string;
+  due_date: string | null;
+  ship_to_state: string | null;
+  lines: BackendCreateLine[];
+}
+
+function paiseToRupees(paise: number): string {
+  return (paise / 100).toFixed(2);
+}
+
+function buildCreateBody(
+  draft: Omit<Invoice, 'invoice_id' | 'number' | 'status'>,
+): BackendCreateBody {
+  const me = authStore.get().me;
+  if (!me?.firm_id) {
+    // Live mode requires an active firm in the JWT — same posture as
+    // /v1/dashboard/kpis. Surface a clean error rather than letting the
+    // api() wrapper return a confusing PERMISSION_DENIED later.
+    throw new Error('No active firm in this session — switch to a firm first.');
+  }
+  return {
+    firm_id: me.firm_id,
+    party_id: draft.party_id,
+    invoice_date: draft.date,
+    due_date: draft.due_date || null,
+    ship_to_state: draft.party_state || null,
+    lines: draft.lines.map((line, idx) => ({
+      item_id: line.item_id,
+      qty: line.qty.toString(),
+      price: paiseToRupees(line.rate),
+      gst_rate: line.gst_pct.toString(),
+      sequence: idx + 1,
+    })),
+  };
+}
+
+async function liveCreateDraft(
+  draft: Omit<Invoice, 'invoice_id' | 'number' | 'status'>,
+  idempotencyKey: string,
+): Promise<Invoice> {
+  const body = buildCreateBody(draft);
+  const data = await api<Parameters<typeof mapDetail>[0]>('/invoices', {
+    method: 'POST',
+    idempotencyKey,
+    body,
+  });
+  return mapDetail(data);
+}
+
+async function liveFinalize(invoiceId: string, idempotencyKey: string): Promise<Invoice> {
+  const data = await api<Parameters<typeof mapDetail>[0]>(`/invoices/${invoiceId}/finalize`, {
+    method: 'POST',
+    idempotencyKey,
+    body: {},
+  });
+  return mapDetail(data);
+}
+
+export interface FinalizeInput {
+  invoiceId: string;
+  idempotencyKey: string;
+}
 
 export function useFinalizeInvoice() {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (invoiceId: string) =>
-      fakeFetch(() => {
+  return useMutation<Invoice, ApiError | Error, FinalizeInput | string>({
+    mutationFn: async (input) => {
+      // Back-compat: existing callers pass a plain invoiceId string.
+      // New callers pass {invoiceId, idempotencyKey} so the live mutation
+      // gets a proper key.
+      const invoiceId = typeof input === 'string' ? input : input.invoiceId;
+      const idempotencyKey = typeof input === 'string' ? crypto.randomUUID() : input.idempotencyKey;
+      if (IS_LIVE) return liveFinalize(invoiceId, idempotencyKey);
+      return fakeFetch(() => {
         const list = ensureStore();
         const idx = list.findIndex((i) => i.invoice_id === invoiceId);
         if (idx === -1) throw new Error(`Invoice ${invoiceId} not found`);
         const next: Invoice = { ...list[idx], status: 'FINALIZED' };
         store = [...list.slice(0, idx), next, ...list.slice(idx + 1)];
         return next;
-      }),
+      });
+    },
     onSuccess: (next) => {
       qc.setQueryData<Invoice[]>(
         KEY,
@@ -237,11 +327,29 @@ export function useFinalizeInvoice() {
   });
 }
 
+export interface CreateDraftInput {
+  draft: Omit<Invoice, 'invoice_id' | 'number' | 'status'>;
+  idempotencyKey: string;
+}
+
 export function useCreateDraftInvoice() {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (draft: Omit<Invoice, 'invoice_id' | 'number' | 'status'>) =>
-      fakeFetch(() => {
+  return useMutation<
+    Invoice,
+    ApiError | Error,
+    CreateDraftInput | Omit<Invoice, 'invoice_id' | 'number' | 'status'>
+  >({
+    mutationFn: async (input) => {
+      const draft =
+        'idempotencyKey' in input && 'draft' in input
+          ? (input as CreateDraftInput).draft
+          : (input as Omit<Invoice, 'invoice_id' | 'number' | 'status'>);
+      const idempotencyKey =
+        'idempotencyKey' in input && 'draft' in input
+          ? (input as CreateDraftInput).idempotencyKey
+          : crypto.randomUUID();
+      if (IS_LIVE) return liveCreateDraft(draft, idempotencyKey);
+      return fakeFetch(() => {
         const list = ensureStore();
         const seq = 2000 + list.length;
         const created: Invoice = {
@@ -252,7 +360,8 @@ export function useCreateDraftInvoice() {
         };
         store = [created, ...list];
         return created;
-      }),
+      });
+    },
     onSuccess: (created) => {
       qc.setQueryData<Invoice[]>(KEY, (prev) => (prev ? [created, ...prev] : [created]));
       qc.setQueryData([...KEY, created.invoice_id], created);
@@ -267,4 +376,6 @@ export const _internal = {
   mapStatus,
   rupeesToPaise,
   ageingDays,
+  paiseToRupees,
+  buildCreateBody,
 };

@@ -1,10 +1,13 @@
-import { ArrowLeft, Check, Printer } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Check, Printer } from 'lucide-react';
+import * as React from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ApiError } from '@/lib/api/client';
+import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { useFinalizeInvoice, useInvoice } from '@/lib/queries/invoices';
 import { formatDateShort, formatINRCompact } from '@/lib/mock';
 import type { Invoice } from '@/lib/mock/types';
@@ -22,6 +25,8 @@ export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const invoiceQuery = useInvoice(id);
   const finalize = useFinalizeInvoice();
+  const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
+  const [staleError, setStaleError] = React.useState<string | null>(null);
   const print = useComingSoon({
     feature: 'Print invoice (GST-compliant PDF)',
     task: 'TASK-051 (Invoice PDF)',
@@ -48,7 +53,32 @@ export default function InvoiceDetail() {
   const pill = STATUS_PILL[inv.status];
 
   const onFinalize = () => {
-    finalize.mutate(inv.invoice_id);
+    finalize.mutate(
+      { invoiceId: inv.invoice_id, idempotencyKey },
+      {
+        onSuccess: () => {
+          resetKey();
+        },
+        onError: (err) => {
+          resetKey();
+          // Backend reuses InvoiceStateError → INVOICE_STATE_ERROR (409)
+          // when this invoice already moved past DRAFT. The detail page
+          // is therefore stale; show the refresh affordance.
+          if (err instanceof ApiError && err.code === 'INVOICE_STATE_ERROR') {
+            setStaleError(
+              'This invoice was already finalized in another session. Refresh to see the latest state.',
+            );
+          } else {
+            setStaleError(err.message);
+          }
+        },
+      },
+    );
+  };
+
+  const onRefresh = () => {
+    setStaleError(null);
+    invoiceQuery.refetch();
   };
 
   return (
@@ -84,6 +114,26 @@ export default function InvoiceDetail() {
           )}
         </div>
       </header>
+
+      {staleError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2"
+          style={{
+            padding: '10px 12px',
+            background: 'var(--danger-subtle)',
+            color: 'var(--danger-text)',
+            borderRadius: 6,
+            fontSize: 12.5,
+          }}
+        >
+          <AlertCircle size={14} color="var(--danger)" />
+          <span style={{ flex: 1 }}>{staleError}</span>
+          <Button variant="outline" onClick={onRefresh}>
+            Refresh
+          </Button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px]">
         <div
