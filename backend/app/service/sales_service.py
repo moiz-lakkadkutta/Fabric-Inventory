@@ -26,9 +26,18 @@ from decimal import Decimal
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.exceptions import AppValidationError, InvoiceStateError
-from app.models import DCLine, DeliveryChallan, Firm, Item, Party, SalesOrder, SOLine
-from app.models.sales import DCStatus, SalesOrderStatus
+from app.exceptions import AppValidationError, InvoiceStateError, NotFoundError
+from app.models import (
+    DCLine,
+    DeliveryChallan,
+    Firm,
+    Item,
+    Party,
+    SalesInvoice,
+    SalesOrder,
+    SOLine,
+)
+from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
 from app.service import inventory_service
 
 # ──────────────────────────────────────────────────────────────────────
@@ -600,16 +609,126 @@ def soft_delete_dc(
     session.flush()
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Sales Invoice — read endpoints (T-INT-3); create + finalize land in T-INT-4
+# ──────────────────────────────────────────────────────────────────────
+
+
+def get_sales_invoice(
+    session: Session, *, org_id: uuid.UUID, sales_invoice_id: uuid.UUID
+) -> SalesInvoice:
+    """Returns the invoice + lines + the customer's name. RLS already
+    filters by org_id at the SQL layer; we add the explicit org_id
+    predicate as defense-in-depth.
+    """
+    invoice = session.execute(
+        select(SalesInvoice)
+        .options(selectinload(SalesInvoice.lines))
+        .where(
+            SalesInvoice.sales_invoice_id == sales_invoice_id,
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if invoice is None:
+        # 404 not 403 — same RLS-leakage protection used by switch-firm.
+        raise NotFoundError(f"Sales invoice {sales_invoice_id} not found.")
+    return invoice
+
+
+def list_sales_invoices(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID | None = None,
+    party_id: uuid.UUID | None = None,
+    lifecycle_status: InvoiceLifecycleStatus | None = None,
+    q: str | None = None,
+    recent: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[SalesInvoice]:
+    """Paginated invoice list. `q` matches on series+number prefix or on
+    party name (case-insensitive). `recent=True` overrides the default
+    sort (date desc, number desc) — same ordering today, kept as an
+    explicit flag so the dashboard can request a stable cap.
+    """
+    stmt = (
+        select(SalesInvoice)
+        .options(selectinload(SalesInvoice.lines))
+        .where(
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.deleted_at.is_(None),
+        )
+    )
+    if firm_id is not None:
+        stmt = stmt.where(SalesInvoice.firm_id == firm_id)
+    if party_id is not None:
+        stmt = stmt.where(SalesInvoice.party_id == party_id)
+    if lifecycle_status is not None:
+        stmt = stmt.where(SalesInvoice.lifecycle_status == lifecycle_status)
+    if q:
+        # Search by invoice number or party name. Join Party once if needed.
+        like = f"%{q.lower()}%"
+        stmt = stmt.join(Party, SalesInvoice.party_id == Party.party_id).where(
+            (func.lower(SalesInvoice.number).like(like)) | (func.lower(Party.name).like(like))
+        )
+
+    stmt = stmt.order_by(SalesInvoice.invoice_date.desc(), SalesInvoice.number.desc())
+    # `recent=True` ignores offset — the dashboard wants the most-recent N
+    # regardless of paging cursor.
+    stmt = stmt.limit(limit) if recent else stmt.limit(limit).offset(offset)
+
+    return list(session.execute(stmt).scalars().unique())
+
+
+def party_name_map(
+    session: Session, *, org_id: uuid.UUID, party_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """Bulk-load party names so the response builder doesn't N+1."""
+    if not party_ids:
+        return {}
+    rows = session.execute(
+        select(Party.party_id, Party.name).where(
+            Party.org_id == org_id, Party.party_id.in_(party_ids)
+        )
+    ).all()
+    return {row.party_id: row.name for row in rows}
+
+
+def item_meta_map(
+    session: Session, *, org_id: uuid.UUID, item_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, tuple[str, str]]:
+    """Return `item_id → (name, primary_uom)` for the given items.
+
+    The frontend's existing line-render expects a UOM per line; without
+    this lookup the live mode would have to invent one. Single query,
+    no N+1.
+    """
+    if not item_ids:
+        return {}
+    rows = session.execute(
+        select(Item.item_id, Item.name, Item.primary_uom).where(
+            Item.org_id == org_id, Item.item_id.in_(item_ids)
+        )
+    ).all()
+    return {row.item_id: (row.name, row.primary_uom) for row in rows}
+
+
 __all__ = [
     "cancel_so",
     "confirm_so",
     "create_dc",
     "create_so",
     "get_dc",
+    "get_sales_invoice",
     "get_so",
     "issue_dc",
+    "item_meta_map",
     "list_dcs",
+    "list_sales_invoices",
     "list_sos",
+    "party_name_map",
     "soft_delete_dc",
     "soft_delete_so",
 ]

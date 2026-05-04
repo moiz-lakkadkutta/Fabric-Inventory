@@ -17,13 +17,17 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
-from app.models import DCLine, DeliveryChallan, SalesOrder, SOLine
-from app.models.sales import DCStatus, SalesOrderStatus
+from app.models import DCLine, DeliveryChallan, SalesInvoice, SalesOrder, SiLine, SOLine
+from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
 from app.schemas.sales import (
     DCCreateRequest,
     DCLineResponse,
     DCListResponse,
     DCResponse,
+    SalesInvoiceListItem,
+    SalesInvoiceListResponse,
+    SalesInvoiceResponse,
+    SiLineResponse,
     SOCreateRequest,
     SOLineResponse,
     SOListResponse,
@@ -34,6 +38,7 @@ from app.service.identity_service import TokenPayload
 
 router = APIRouter(prefix="/sales-orders", tags=["sales", "so"])
 dc_router = APIRouter(prefix="/delivery-challans", tags=["sales", "dc"])
+invoice_router = APIRouter(prefix="/invoices", tags=["sales", "invoices"])
 
 
 def _line_to_response(line: SOLine) -> SOLineResponse:
@@ -351,4 +356,162 @@ def delete_dc(
 ) -> None:
     sales_service.soft_delete_dc(
         db, org_id=current_user.org_id, dc_id=dc_id, deleted_by=current_user.user_id
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sales Invoice — read endpoints (T-INT-3)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _si_line_to_response(
+    line: SiLine, *, item_name: str | None, item_uom: str | None
+) -> SiLineResponse:
+    return SiLineResponse(
+        si_line_id=line.si_line_id,
+        item_id=line.item_id,
+        item_name=item_name,
+        item_uom=item_uom,
+        qty=line.qty,
+        price=line.price,
+        line_amount=line.line_amount,
+        gst_rate=line.gst_rate,
+        gst_amount=line.gst_amount,
+        sequence=line.sequence,
+    )
+
+
+def _invoice_to_response(
+    invoice: SalesInvoice,
+    *,
+    party_name: str | None,
+    item_meta: dict[uuid.UUID, tuple[str, str]],
+) -> SalesInvoiceResponse:
+    return SalesInvoiceResponse(
+        sales_invoice_id=invoice.sales_invoice_id,
+        org_id=invoice.org_id,
+        firm_id=invoice.firm_id,
+        series=invoice.series,
+        number=invoice.number,
+        party_id=invoice.party_id,
+        party_name=party_name,
+        delivery_challan_id=invoice.delivery_challan_id,
+        salesperson_id=invoice.salesperson_id,
+        invoice_date=invoice.invoice_date,
+        bill_to_address=invoice.bill_to_address,
+        ship_to_address=invoice.ship_to_address,
+        place_of_supply_state=invoice.place_of_supply_state,
+        invoice_type=invoice.invoice_type,
+        invoice_amount=invoice.invoice_amount,
+        gst_amount=invoice.gst_amount,
+        paid_amount=invoice.paid_amount,
+        due_date=invoice.due_date,
+        lifecycle_status=invoice.lifecycle_status,
+        finalized_at=invoice.finalized_at,
+        tax_type=invoice.tax_type,
+        round_off=invoice.round_off,
+        notes=invoice.notes,
+        lines=sorted(
+            (
+                _si_line_to_response(
+                    line,
+                    item_name=item_meta.get(line.item_id, (None, None))[0],
+                    item_uom=item_meta.get(line.item_id, (None, None))[1],
+                )
+                for line in invoice.lines
+            ),
+            key=lambda r: (r.sequence is None, r.sequence or 0),
+        ),
+        created_at=invoice.created_at,
+        updated_at=invoice.updated_at,
+    )
+
+
+def _invoice_to_list_item(invoice: SalesInvoice, *, party_name: str | None) -> SalesInvoiceListItem:
+    return SalesInvoiceListItem(
+        sales_invoice_id=invoice.sales_invoice_id,
+        firm_id=invoice.firm_id,
+        series=invoice.series,
+        number=invoice.number,
+        party_id=invoice.party_id,
+        party_name=party_name,
+        invoice_date=invoice.invoice_date,
+        due_date=invoice.due_date,
+        invoice_amount=invoice.invoice_amount,
+        paid_amount=invoice.paid_amount,
+        lifecycle_status=invoice.lifecycle_status,
+        place_of_supply_state=invoice.place_of_supply_state,
+        created_at=invoice.created_at,
+    )
+
+
+@invoice_router.get(
+    "",
+    response_model=SalesInvoiceListResponse,
+    summary="List sales invoices for the current org",
+)
+def list_invoices(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("sales.invoice.read"))],
+    firm_id: Annotated[uuid.UUID | None, Query()] = None,
+    party_id: Annotated[uuid.UUID | None, Query()] = None,
+    lifecycle_status: Annotated[
+        InvoiceLifecycleStatus | None,
+        Query(
+            alias="status",
+            description="Filter by lifecycle status (DRAFT, FINALIZED, PARTIALLY_PAID, …).",
+        ),
+    ] = None,
+    q: Annotated[str | None, Query(description="Match invoice number or party name.")] = None,
+    recent: Annotated[
+        bool, Query(description="Most-recent N regardless of offset (dashboard call).")
+    ] = False,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> SalesInvoiceListResponse:
+    invoices = sales_service.list_sales_invoices(
+        db,
+        org_id=current_user.org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        lifecycle_status=lifecycle_status,
+        q=q,
+        recent=recent,
+        limit=limit,
+        offset=offset,
+    )
+    party_names = sales_service.party_name_map(
+        db, org_id=current_user.org_id, party_ids=[i.party_id for i in invoices]
+    )
+    return SalesInvoiceListResponse(
+        items=[
+            _invoice_to_list_item(inv, party_name=party_names.get(inv.party_id)) for inv in invoices
+        ],
+        limit=limit,
+        offset=0 if recent else offset,
+        count=len(invoices),
+    )
+
+
+@invoice_router.get(
+    "/{sales_invoice_id}",
+    response_model=SalesInvoiceResponse,
+    summary="Get one sales invoice by id, with lines",
+)
+def get_invoice(
+    sales_invoice_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("sales.invoice.read"))],
+) -> SalesInvoiceResponse:
+    invoice = sales_service.get_sales_invoice(
+        db, org_id=current_user.org_id, sales_invoice_id=sales_invoice_id
+    )
+    party_names = sales_service.party_name_map(
+        db, org_id=current_user.org_id, party_ids=[invoice.party_id]
+    )
+    item_meta = sales_service.item_meta_map(
+        db, org_id=current_user.org_id, item_ids=[line.item_id for line in invoice.lines]
+    )
+    return _invoice_to_response(
+        invoice, party_name=party_names.get(invoice.party_id), item_meta=item_meta
     )
