@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import NotFoundError
 from app.models import Firm, Item, Organization, Party, SalesInvoice, SiLine
-from app.models.masters import ItemType, TrackingType
+from app.models.masters import ItemType, TrackingType, UomType
 from app.models.sales import InvoiceLifecycleStatus
 from app.service import sales_service
 
@@ -52,8 +52,8 @@ def _seed_org(session: OrmSession) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uui
         code=f"I{uuid.uuid4().hex[:6].upper()}",
         name='Chiffon Silk 44"',
         item_type=ItemType.FINISHED,
-        tracking_type=TrackingType.NONE,
-        primary_uom="METER",
+        tracking=TrackingType.NONE,
+        primary_uom=UomType.METER,
     )
     session.add(item)
     session.flush()

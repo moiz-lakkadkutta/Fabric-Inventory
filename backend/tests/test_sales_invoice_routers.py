@@ -43,7 +43,7 @@ def _seed_invoice_for(sync_engine: Engine, *, org_id: uuid.UUID, firm_id: uuid.U
     sales_invoice_id.
     """
     from app.models import Item, Party, SalesInvoice, SiLine
-    from app.models.masters import ItemType, TrackingType
+    from app.models.masters import ItemType, TrackingType, UomType
 
     with OrmSession(sync_engine) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
@@ -61,8 +61,8 @@ def _seed_invoice_for(sync_engine: Engine, *, org_id: uuid.UUID, firm_id: uuid.U
             code=f"I{uuid.uuid4().hex[:6].upper()}",
             name='Chiffon Silk 44"',
             item_type=ItemType.FINISHED,
-            tracking_type=TrackingType.NONE,
-            primary_uom="METER",
+            tracking=TrackingType.NONE,
+            primary_uom=UomType.METER,
         )
         session.add(item)
         session.flush()
