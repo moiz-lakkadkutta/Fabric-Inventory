@@ -22,12 +22,17 @@ Modes today:
   - CASH  → DR ledger 1000 (Cash on Hand)
   - BANK  → DR ledger 1100 (Bank Accounts)  [control account, single
             row for now; per-bank accounting needs bank_account_id]
+  - UPI   → DR ledger 1100 (Bank Accounts)  [UPI lands in the bank
+            account end-of-day; bookkeeping treats it as bank for now,
+            split later if reconciliation needs it]
 """
 
 from __future__ import annotations
 
 import datetime
+import re
 import uuid
+from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -37,6 +42,7 @@ from app.exceptions import AppValidationError
 from app.models import (
     AuditLog,
     Ledger,
+    Party,
     PaymentAllocation,
     SalesInvoice,
     Voucher,
@@ -151,8 +157,8 @@ def post_receipt(
     """
     if amount <= 0:
         raise AppValidationError(f"Receipt amount must be positive; got {amount}")
-    if mode not in {"CASH", "BANK"}:
-        raise AppValidationError(f"Unknown receipt mode {mode!r}; expected CASH or BANK")
+    if mode not in {"CASH", "BANK", "UPI"}:
+        raise AppValidationError(f"Unknown receipt mode {mode!r}; expected CASH, BANK, or UPI")
 
     open_invoices = _list_open_invoices_fifo(
         session, org_id=org_id, firm_id=firm_id, party_id=party_id
@@ -305,4 +311,108 @@ def list_receipts(
     )
 
 
-__all__ = ["DEFAULT_RECEIPT_SERIES", "list_receipts", "post_receipt"]
+# ──────────────────────────────────────────────────────────────────────
+# Enriched listing for the AccountingHub receipts table.
+#
+# The Voucher row alone is not enough for the UI — the AccountingHub
+# receipts strip wants party_name, mode (CASH/BANK/UPI), and the list of
+# invoice numbers a receipt was allocated to.
+#
+# Mode is encoded in the DR voucher line description (`Receipt … (UPI)`)
+# because there's no dedicated `payment_mode` column on Voucher today
+# and adding one would mean a migration. The cash/bank ledger code is
+# not enough — UPI lands on the same bank ledger as a NEFT, so we'd
+# lose UPI-vs-BANK at GL level. We parse it back out for the listing.
+# ──────────────────────────────────────────────────────────────────────
+
+_MODE_RE = re.compile(r"\(([A-Z]+)\)\s*$")
+
+
+@dataclass(frozen=True)
+class ReceiptListEntry:
+    voucher: Voucher
+    party_id: uuid.UUID | None
+    party_name: str | None
+    mode: str | None
+    allocations: list[tuple[str, str, Decimal]]  # (invoice_number, series, amount)
+
+
+def list_receipts_with_details(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[ReceiptListEntry]:
+    vouchers = list_receipts(
+        session, org_id=org_id, firm_id=firm_id, limit=limit, offset=offset
+    )
+    if not vouchers:
+        return []
+    voucher_ids = [v.voucher_id for v in vouchers]
+
+    # Mode comes from DR cash/bank line description. Sequence=1 by
+    # convention in post_receipt, but filter by line_type=DR in case
+    # that ever shifts.
+    mode_by_voucher: dict[uuid.UUID, str] = {}
+    dr_lines = session.execute(
+        select(VoucherLine).where(
+            VoucherLine.voucher_id.in_(voucher_ids),
+            VoucherLine.line_type == JournalLineType.DR,
+        )
+    ).scalars()
+    for line in dr_lines:
+        m = _MODE_RE.search(line.description or "")
+        if m:
+            mode_by_voucher[line.voucher_id] = m.group(1)
+
+    # Allocations + invoice number/series + party for each voucher.
+    rows = session.execute(
+        select(
+            PaymentAllocation.voucher_id,
+            PaymentAllocation.amount,
+            SalesInvoice.sales_invoice_id,
+            SalesInvoice.series,
+            SalesInvoice.number,
+            SalesInvoice.party_id,
+            Party.name,
+        )
+        .join(SalesInvoice, SalesInvoice.sales_invoice_id == PaymentAllocation.sales_invoice_id)
+        .join(Party, Party.party_id == SalesInvoice.party_id)
+        .where(PaymentAllocation.voucher_id.in_(voucher_ids))
+    ).all()
+
+    allocations_by_voucher: dict[uuid.UUID, list[tuple[str, str, Decimal]]] = {}
+    party_by_voucher: dict[uuid.UUID, tuple[uuid.UUID, str]] = {}
+    for voucher_id, amount, _si_id, si_series, si_number, party_id, party_name in rows:
+        allocations_by_voucher.setdefault(voucher_id, []).append(
+            (si_number, si_series, Decimal(amount))
+        )
+        # First-seen party wins (FIFO across this voucher's invoices —
+        # all rows are for the same party by construction in post_receipt,
+        # but we don't enforce it at the schema layer).
+        party_by_voucher.setdefault(voucher_id, (party_id, party_name))
+
+    out: list[ReceiptListEntry] = []
+    for v in vouchers:
+        party = party_by_voucher.get(v.voucher_id)
+        out.append(
+            ReceiptListEntry(
+                voucher=v,
+                party_id=party[0] if party else None,
+                party_name=party[1] if party else None,
+                mode=mode_by_voucher.get(v.voucher_id),
+                allocations=allocations_by_voucher.get(v.voucher_id, []),
+            )
+        )
+    return out
+
+
+__all__ = [
+    "DEFAULT_RECEIPT_SERIES",
+    "ReceiptListEntry",
+    "list_receipts",
+    "list_receipts_with_details",
+    "post_receipt",
+]

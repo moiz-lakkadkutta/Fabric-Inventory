@@ -14,6 +14,7 @@ from app.models import PaymentAllocation, Voucher
 from app.schemas.receipts import (
     ReceiptAllocationItem,
     ReceiptCreateRequest,
+    ReceiptListAllocation,
     ReceiptListItem,
     ReceiptListResponse,
     ReceiptResponse,
@@ -126,7 +127,7 @@ def list_receipts(
             title="No active firm",
         )
 
-    vouchers = receipt_service.list_receipts(
+    entries = receipt_service.list_receipts_with_details(
         db,
         org_id=current_user.org_id,
         firm_id=current_user.firm_id,
@@ -136,17 +137,27 @@ def list_receipts(
     return ReceiptListResponse(
         items=[
             ReceiptListItem(
-                voucher_id=v.voucher_id,
-                series=v.series,
-                number=v.number,
-                voucher_date=v.voucher_date,
-                amount=Decimal(v.total_debit or 0),
-                narration=v.narration,
-                created_at=v.created_at,
+                voucher_id=e.voucher.voucher_id,
+                series=e.voucher.series,
+                number=e.voucher.number,
+                voucher_date=e.voucher.voucher_date,
+                amount=Decimal(e.voucher.total_debit or 0),
+                narration=e.voucher.narration,
+                created_at=e.voucher.created_at,
+                party_id=e.party_id,
+                party_name=e.party_name,
+                mode=e.mode,
+                allocations=[
+                    ReceiptListAllocation(
+                        invoice_number=f"{series}/{number}",
+                        amount=amount,
+                    )
+                    for (number, series, amount) in e.allocations
+                ],
             )
-            for v in vouchers
+            for e in entries
         ],
         limit=limit,
         offset=offset,
-        count=len(vouchers),
+        count=len(entries),
     )

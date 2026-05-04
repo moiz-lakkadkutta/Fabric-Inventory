@@ -34,6 +34,7 @@ from app.schemas.auth import (
     LoginResponse,
     LogoutRequest,
     LogoutResponse,
+    MeFirmRef,
     MeResponse,
     MfaVerifyRequest,
     RefreshRequest,
@@ -491,11 +492,24 @@ def me(current_user: CurrentUser, db: SyncDBSession) -> MeResponse:
         if current_user.firm_id is not None
         else {}
     )
+    # Available firms — Owners (org-wide roles) see every firm in their
+    # org; non-Owner refinement (UserFirmScope filtering) lands when
+    # other roles actually need it. For dogfood + early friendly-customer
+    # this matches the typical "one Owner per org" shape.
+    firms = list(
+        db.execute(
+            select(Firm)
+            .where(Firm.org_id == current_user.org_id, Firm.deleted_at.is_(None))
+            .order_by(Firm.created_at.asc())
+        ).scalars()
+    )
+
     return MeResponse(
         user_id=current_user.user_id,
         org_id=current_user.org_id,
         firm_id=current_user.firm_id,
         permissions=list(current_user.permissions),
         flags=flags,
+        available_firms=[MeFirmRef(firm_id=f.firm_id, code=f.code, name=f.name) for f in firms],
         token_expires_at=datetime.datetime.fromtimestamp(current_user.exp, tz=datetime.UTC),
     )

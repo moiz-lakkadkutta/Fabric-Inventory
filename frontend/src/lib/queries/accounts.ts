@@ -8,13 +8,24 @@ import type { Receipt } from '@/lib/mock/accounts';
 
 const RECEIPTS_KEY = ['accounts', 'receipts'] as const;
 
+// Mirror of backend's `mode` enum on POST /receipts. The mock fixture's
+// Receipt.mode is wider (it includes CHEQUE for legacy demo rows) — but
+// new receipts posted through the UI are constrained to what the API
+// actually accepts.
+export type ReceiptMode = 'CASH' | 'BANK' | 'UPI';
+
 // ──────────────────────────────────────────────────────────────────────
-// Live wire shape — backend returns rupees-as-string; allocations carry
-// the sales_invoice_id (UUID). The mock fixture keys allocations by
-// invoice number (display string). For live mode we just stash the UUIDs
-// in `allocated_to` — the AccountingHub's Receipt table renders them
-// verbatim, which is fine for dogfood until a join lands.
+// Live wire shape — backend returns rupees-as-string. The list endpoint
+// joins party + payment_allocation + sales_invoice so the UI gets
+// party_name, mode, and the allocated invoice numbers without a second
+// roundtrip. `mode` is parsed from the DR voucher line description on
+// the backend; it's nullable for legacy/manually-built receipts.
 // ──────────────────────────────────────────────────────────────────────
+
+interface BackendReceiptListAllocation {
+  invoice_number: string;
+  amount: string;
+}
 
 interface BackendReceiptListItem {
   voucher_id: string;
@@ -24,6 +35,10 @@ interface BackendReceiptListItem {
   amount: string;
   narration: string | null;
   created_at: string;
+  party_id: string | null;
+  party_name: string | null;
+  mode: string | null;
+  allocations: BackendReceiptListAllocation[];
 }
 
 interface BackendReceiptList {
@@ -40,18 +55,26 @@ function paiseToRupees(paise: number): string {
   return (paise / 100).toFixed(2);
 }
 
+const ALLOWED_MODES: Receipt['mode'][] = ['CASH', 'BANK', 'UPI', 'CHEQUE'];
+
+function normalizeMode(raw: string | null | undefined): Receipt['mode'] {
+  if (!raw) return 'CASH';
+  const upper = raw.toUpperCase() as Receipt['mode'];
+  return ALLOWED_MODES.includes(upper) ? upper : 'CASH';
+}
+
 function mapReceiptListItem(b: BackendReceiptListItem): Receipt {
   return {
     receipt_id: b.voucher_id,
     number: `${b.series}/${b.number}`,
     date: b.voucher_date,
-    party_id: '',
-    party_name: '',
+    party_id: b.party_id ?? '',
+    party_name: b.party_name ?? '',
     amount: rupeesToPaise(b.amount),
-    mode: 'CASH',
+    mode: normalizeMode(b.mode),
     reference: b.narration ?? '',
     status: 'POSTED',
-    allocated_to: [],
+    allocated_to: b.allocations.map((a) => a.invoice_number),
   };
 }
 
@@ -84,7 +107,7 @@ export interface PostReceiptInput {
   partyName: string;
   amountPaise: number;
   receiptDate: string;
-  mode: 'CASH' | 'BANK';
+  mode: ReceiptMode;
   reference?: string;
   idempotencyKey: string;
 }

@@ -18,7 +18,7 @@ class ReceiptCreateRequest(BaseModel):
     party_id: uuid.UUID
     amount: Annotated[Decimal, Field(gt=0)]
     receipt_date: datetime.date
-    mode: Literal["CASH", "BANK"] = "CASH"
+    mode: Literal["CASH", "BANK", "UPI"] = "CASH"
     reference: str | None = Field(default=None, max_length=255)
     series: str = Field(default="RCT/2526", min_length=1, max_length=50)
 
@@ -42,6 +42,17 @@ class ReceiptResponse(BaseModel):
     created_at: datetime.datetime
 
 
+class ReceiptListAllocation(BaseModel):
+    """A single allocation surfaced on the receipt-list row.
+
+    `invoice_number` is the display string ({series}/{number}) so the
+    UI can render it directly without a follow-up join.
+    """
+
+    invoice_number: str
+    amount: Decimal
+
+
 class ReceiptListItem(BaseModel):
     voucher_id: uuid.UUID
     series: str
@@ -50,6 +61,10 @@ class ReceiptListItem(BaseModel):
     amount: Decimal
     narration: str | None
     created_at: datetime.datetime
+    party_id: uuid.UUID | None = None
+    party_name: str | None = None
+    mode: str | None = None
+    allocations: list[ReceiptListAllocation] = Field(default_factory=list)
 
 
 class ReceiptListResponse(BaseModel):

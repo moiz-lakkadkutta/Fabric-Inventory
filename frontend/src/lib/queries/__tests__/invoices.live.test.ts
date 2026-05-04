@@ -171,6 +171,7 @@ describe('buildCreateBody (T-INT-4)', () => {
       firm_id: 'f1',
       permissions: ['sales.invoice.create'],
       flags: {},
+      available_firms: [{ firm_id: 'f1', code: 'RT', name: 'Rajesh Textiles' }],
       token_expires_at: '2099-01-01T00:00:00Z',
     });
 

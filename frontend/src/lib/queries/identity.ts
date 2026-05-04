@@ -6,6 +6,33 @@ import { fakeFetch } from '@/lib/mock/api';
 import { currentUser, defaultFirm } from '@/lib/mock/identity';
 import { authStore, type MeResponse } from '@/store/auth';
 
+/**
+ * Auto-switch to the user's only firm when the JWT lacks a firm_id.
+ *
+ * Owner signups have org-wide roles → JWT.firm_id is null. Most
+ * dogfood users have exactly one firm in their org. Forcing them to
+ * click the firm switcher on day one is friction the API doesn't
+ * actually require — `/auth/me` exposes available_firms; if there's
+ * exactly one, we hit `/auth/switch-firm` and refetch /me.
+ *
+ * No-op if firm_id is already set or available_firms is 0 / 2+.
+ * Returns the (possibly refetched) MeResponse so callers can keep
+ * using the latest snapshot. Errors propagate as ApiError.
+ */
+export async function maybeAutoSwitchSingleFirm(me: MeResponse): Promise<MeResponse> {
+  if (me.firm_id !== null) return me;
+  if (me.available_firms.length !== 1) return me;
+  const target = me.available_firms[0].firm_id;
+
+  const data = await api<{ access_token: string; firm_id: string }>('/auth/switch-firm', {
+    method: 'POST',
+    idempotencyKey: crypto.randomUUID(),
+    body: { firm_id: target },
+  });
+  authStore.setAccessToken(data.access_token);
+  return await api<MeResponse>('/auth/me');
+}
+
 /*
  * useLogin / useLogout / useMfa — both branches per Q6.
  *
@@ -55,7 +82,8 @@ async function liveLogin(input: LoginInput): Promise<LoginResult> {
   if (data.access_token) authStore.setAccessToken(data.access_token);
   if (!data.requires_mfa) {
     const me = await api<MeResponse>('/auth/me');
-    authStore.setMe(me);
+    const settled = await maybeAutoSwitchSingleFirm(me);
+    authStore.setMe(settled);
   }
   return {
     requires_mfa: data.requires_mfa,
@@ -102,7 +130,8 @@ async function liveMfaVerify(input: MfaVerifyInput): Promise<LoginEnvelope> {
   });
   if (data.access_token) authStore.setAccessToken(data.access_token);
   const me = await api<MeResponse>('/auth/me');
-  authStore.setMe(me);
+  const settled = await maybeAutoSwitchSingleFirm(me);
+  authStore.setMe(settled);
   return data;
 }
 

@@ -8,6 +8,7 @@ const FAKE_ME = {
   firm_id: 'f1',
   permissions: ['sales.invoice.create'],
   flags: { 'gst.einvoice.enabled': false },
+  available_firms: [{ firm_id: 'f1', code: 'RT', name: 'Rajesh Textiles' }],
   token_expires_at: '2099-01-01T00:00:00Z',
 };
 

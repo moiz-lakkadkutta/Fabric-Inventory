@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import { api } from '@/lib/api/client';
 import { IS_LIVE } from '@/lib/api/mode';
+import { maybeAutoSwitchSingleFirm } from '@/lib/queries/identity';
 import { authStore, type MeResponse } from '@/store/auth';
 
 /*
@@ -35,7 +36,9 @@ export function useAuthBootstrap(): void {
 
         const me = await api<MeResponse>('/auth/me');
         if (cancelled) return;
-        authStore.setMe(me);
+        const settled = await maybeAutoSwitchSingleFirm(me);
+        if (cancelled) return;
+        authStore.setMe(settled);
       } catch {
         // Any failure → unauthenticated. The router gates protected pages
         // and redirects to /login.

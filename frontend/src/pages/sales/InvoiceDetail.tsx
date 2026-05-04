@@ -10,7 +10,7 @@ import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApiError } from '@/lib/api/client';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
-import { usePostReceipt } from '@/lib/queries/accounts';
+import { usePostReceipt, type ReceiptMode } from '@/lib/queries/accounts';
 import { useFinalizeInvoice, useInvoice } from '@/lib/queries/invoices';
 import { formatDateShort, formatINRCompact } from '@/lib/mock';
 import type { Invoice } from '@/lib/mock/types';
@@ -34,7 +34,7 @@ export default function InvoiceDetail() {
   const [staleError, setStaleError] = React.useState<string | null>(null);
   const [recordOpen, setRecordOpen] = React.useState(false);
   const [recordAmount, setRecordAmount] = React.useState('');
-  const [recordMode, setRecordMode] = React.useState<'CASH' | 'BANK'>('CASH');
+  const [recordMode, setRecordMode] = React.useState<ReceiptMode>('CASH');
   const [recordRef, setRecordRef] = React.useState('');
   const [recordError, setRecordError] = React.useState<string | null>(null);
   const print = useComingSoon({
@@ -205,7 +205,7 @@ export default function InvoiceDetail() {
                 <select
                   id="receipt-mode"
                   value={recordMode}
-                  onChange={(e) => setRecordMode(e.target.value as 'CASH' | 'BANK')}
+                  onChange={(e) => setRecordMode(e.target.value as ReceiptMode)}
                   className="h-9 w-full rounded-md px-2"
                   style={{
                     border: '1px solid var(--border-default)',
@@ -215,6 +215,7 @@ export default function InvoiceDetail() {
                 >
                   <option value="CASH">Cash</option>
                   <option value="BANK">Bank</option>
+                  <option value="UPI">UPI</option>
                 </select>
               </Field>
             </div>
