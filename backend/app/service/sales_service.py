@@ -696,15 +696,23 @@ def party_name_map(
     return {row.party_id: row.name for row in rows}
 
 
-def item_name_map(
+def item_meta_map(
     session: Session, *, org_id: uuid.UUID, item_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, str]:
+) -> dict[uuid.UUID, tuple[str, str]]:
+    """Return `item_id → (name, primary_uom)` for the given items.
+
+    The frontend's existing line-render expects a UOM per line; without
+    this lookup the live mode would have to invent one. Single query,
+    no N+1.
+    """
     if not item_ids:
         return {}
     rows = session.execute(
-        select(Item.item_id, Item.name).where(Item.org_id == org_id, Item.item_id.in_(item_ids))
+        select(Item.item_id, Item.name, Item.primary_uom).where(
+            Item.org_id == org_id, Item.item_id.in_(item_ids)
+        )
     ).all()
-    return {row.item_id: row.name for row in rows}
+    return {row.item_id: (row.name, row.primary_uom) for row in rows}
 
 
 __all__ = [
@@ -716,7 +724,7 @@ __all__ = [
     "get_sales_invoice",
     "get_so",
     "issue_dc",
-    "item_name_map",
+    "item_meta_map",
     "list_dcs",
     "list_sales_invoices",
     "list_sos",

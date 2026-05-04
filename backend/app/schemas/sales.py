@@ -142,6 +142,7 @@ class SiLineResponse(BaseModel):
     si_line_id: uuid.UUID
     item_id: uuid.UUID
     item_name: str | None = None
+    item_uom: str | None = None
     qty: Decimal
     price: Decimal
     line_amount: Decimal | None

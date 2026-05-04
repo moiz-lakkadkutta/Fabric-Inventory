@@ -364,11 +364,14 @@ def delete_dc(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _si_line_to_response(line: SiLine, *, item_name: str | None) -> SiLineResponse:
+def _si_line_to_response(
+    line: SiLine, *, item_name: str | None, item_uom: str | None
+) -> SiLineResponse:
     return SiLineResponse(
         si_line_id=line.si_line_id,
         item_id=line.item_id,
         item_name=item_name,
+        item_uom=item_uom,
         qty=line.qty,
         price=line.price,
         line_amount=line.line_amount,
@@ -379,7 +382,10 @@ def _si_line_to_response(line: SiLine, *, item_name: str | None) -> SiLineRespon
 
 
 def _invoice_to_response(
-    invoice: SalesInvoice, *, party_name: str | None, item_names: dict[uuid.UUID, str]
+    invoice: SalesInvoice,
+    *,
+    party_name: str | None,
+    item_meta: dict[uuid.UUID, tuple[str, str]],
 ) -> SalesInvoiceResponse:
     return SalesInvoiceResponse(
         sales_invoice_id=invoice.sales_invoice_id,
@@ -407,7 +413,11 @@ def _invoice_to_response(
         notes=invoice.notes,
         lines=sorted(
             (
-                _si_line_to_response(line, item_name=item_names.get(line.item_id))
+                _si_line_to_response(
+                    line,
+                    item_name=item_meta.get(line.item_id, (None, None))[0],
+                    item_uom=item_meta.get(line.item_id, (None, None))[1],
+                )
                 for line in invoice.lines
             ),
             key=lambda r: (r.sequence is None, r.sequence or 0),
@@ -499,9 +509,9 @@ def get_invoice(
     party_names = sales_service.party_name_map(
         db, org_id=current_user.org_id, party_ids=[invoice.party_id]
     )
-    item_names = sales_service.item_name_map(
+    item_meta = sales_service.item_meta_map(
         db, org_id=current_user.org_id, item_ids=[line.item_id for line in invoice.lines]
     )
     return _invoice_to_response(
-        invoice, party_name=party_names.get(invoice.party_id), item_names=item_names
+        invoice, party_name=party_names.get(invoice.party_id), item_meta=item_meta
     )
