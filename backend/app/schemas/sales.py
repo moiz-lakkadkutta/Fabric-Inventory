@@ -205,3 +205,28 @@ class SalesInvoiceListResponse(BaseModel):
     limit: int
     offset: int
     count: int
+
+
+class SiLineCreateRequest(BaseModel):
+    item_id: uuid.UUID
+    qty: Annotated[Decimal, Field(gt=0)]
+    price: Annotated[Decimal, Field(ge=0)]
+    gst_rate: Decimal | None = None
+    sequence: int | None = None
+
+
+class SalesInvoiceCreateRequest(BaseModel):
+    """Body for POST /v1/invoices. Money values are rupees on the wire
+    (per CLAUDE.md). Frontend converts paise → rupees before submitting.
+    """
+
+    firm_id: uuid.UUID
+    party_id: uuid.UUID
+    invoice_date: datetime.date
+    due_date: datetime.date | None = None
+    series: str = Field(default="RT/2526", min_length=1, max_length=50)
+    ship_to_state: str | None = Field(default=None, max_length=2)
+    bill_to_address: str | None = None
+    ship_to_address: str | None = None
+    notes: str | None = None
+    lines: list[SiLineCreateRequest] = Field(min_length=1)

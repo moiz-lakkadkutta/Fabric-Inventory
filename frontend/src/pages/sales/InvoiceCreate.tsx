@@ -9,6 +9,7 @@ import { Pill } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useItems } from '@/lib/queries/items';
 import { useCustomers } from '@/lib/queries/parties';
+import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { useCreateDraftInvoice, useFinalizeInvoice } from '@/lib/queries/invoices';
 import { formatINRCompact } from '@/lib/mock';
 import type { Invoice, InvoiceLine } from '@/lib/mock/types';
@@ -33,6 +34,8 @@ export default function InvoiceCreate() {
   const itemsQuery = useItems();
   const createDraft = useCreateDraftInvoice();
   const finalize = useFinalizeInvoice();
+  const createKey = useIdempotencyKey();
+  const finalizeKey = useIdempotencyKey();
 
   const [partyId, setPartyId] = useState<string>('');
   const [docType, setDocType] = useState<Invoice['doc_type']>('TAX_INVOICE');
@@ -125,13 +128,25 @@ export default function InvoiceCreate() {
   };
 
   const onSaveDraft = async () => {
-    const created = await createDraft.mutateAsync(buildDraft());
+    const created = await createDraft.mutateAsync({
+      draft: buildDraft(),
+      idempotencyKey: createKey.key,
+    });
+    createKey.reset();
     navigate(`/sales/invoices/${created.invoice_id}`);
   };
 
   const onFinalize = async () => {
-    const created = await createDraft.mutateAsync(buildDraft());
-    await finalize.mutateAsync(created.invoice_id);
+    const created = await createDraft.mutateAsync({
+      draft: buildDraft(),
+      idempotencyKey: createKey.key,
+    });
+    createKey.reset();
+    await finalize.mutateAsync({
+      invoiceId: created.invoice_id,
+      idempotencyKey: finalizeKey.key,
+    });
+    finalizeKey.reset();
     navigate(`/sales/invoices/${created.invoice_id}`);
   };
 

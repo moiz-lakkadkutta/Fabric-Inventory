@@ -24,6 +24,7 @@ from app.schemas.sales import (
     DCLineResponse,
     DCListResponse,
     DCResponse,
+    SalesInvoiceCreateRequest,
     SalesInvoiceListItem,
     SalesInvoiceListResponse,
     SalesInvoiceResponse,
@@ -514,4 +515,92 @@ def get_invoice(
     )
     return _invoice_to_response(
         invoice, party_name=party_names.get(invoice.party_id), item_meta=item_meta
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sales Invoice — create_draft + finalize (T-INT-4)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@invoice_router.post(
+    "",
+    response_model=SalesInvoiceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a DRAFT sales invoice",
+)
+def create_invoice(
+    body: SalesInvoiceCreateRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("sales.invoice.create"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> SalesInvoiceResponse:
+    invoice = sales_service.create_draft_invoice(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        party_id=body.party_id,
+        invoice_date=body.invoice_date,
+        lines=[
+            {
+                "item_id": line.item_id,
+                "qty": line.qty,
+                "price": line.price,
+                "gst_rate": line.gst_rate,
+                "sequence": line.sequence,
+            }
+            for line in body.lines
+        ],
+        series=body.series,
+        due_date=body.due_date,
+        ship_to_state=body.ship_to_state,
+        bill_to_address=body.bill_to_address,
+        ship_to_address=body.ship_to_address,
+        notes=body.notes,
+        created_by=current_user.user_id,
+    )
+    party_names = sales_service.party_name_map(
+        db, org_id=current_user.org_id, party_ids=[invoice.party_id]
+    )
+    item_meta = sales_service.item_meta_map(
+        db,
+        org_id=current_user.org_id,
+        item_ids=[line.item_id for line in invoice.lines],
+    )
+    return _invoice_to_response(
+        invoice,
+        party_name=party_names.get(invoice.party_id),
+        item_meta=item_meta,
+    )
+
+
+@invoice_router.post(
+    "/{sales_invoice_id}/finalize",
+    response_model=SalesInvoiceResponse,
+    summary="Advance a DRAFT invoice to FINALIZED",
+)
+def finalize_invoice(
+    sales_invoice_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("sales.invoice.finalize"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> SalesInvoiceResponse:
+    invoice = sales_service.finalize_invoice(
+        db,
+        org_id=current_user.org_id,
+        sales_invoice_id=sales_invoice_id,
+        updated_by=current_user.user_id,
+    )
+    party_names = sales_service.party_name_map(
+        db, org_id=current_user.org_id, party_ids=[invoice.party_id]
+    )
+    item_meta = sales_service.item_meta_map(
+        db,
+        org_id=current_user.org_id,
+        item_ids=[line.item_id for line in invoice.lines],
+    )
+    return _invoice_to_response(
+        invoice,
+        party_name=party_names.get(invoice.party_id),
+        item_meta=item_meta,
     )
