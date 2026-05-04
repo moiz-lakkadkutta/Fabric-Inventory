@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError, InvoiceStateError, NotFoundError
 from app.models import (
+    AuditLog,
     DCLine,
     DeliveryChallan,
     Firm,
@@ -35,10 +36,12 @@ from app.models import (
     Party,
     SalesInvoice,
     SalesOrder,
+    SiLine,
     SOLine,
 )
 from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
-from app.service import inventory_service
+from app.service import dashboard_service, gst_service, inventory_service
+from app.service.gst_service import BuyerStatus, TaxType
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -715,11 +718,266 @@ def item_meta_map(
     return {row.item_id: (row.name, row.primary_uom) for row in rows}
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Sales Invoice — create_draft + finalize (T-INT-4)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Ledger / GL voucher postings are deliberately deferred — Voucher +
+# VoucherLine aren't in the ORM yet, and posting the full DR-AR / CR-
+# Sales / CR-GST triple needs the receipts side (T-INT-5) for a
+# meaningful TB anyway. Finalize today flips lifecycle + writes audit.
+
+DEFAULT_INVOICE_SERIES = "RT/2526"
+
+
+def _allocate_si_number(
+    session: Session, *, org_id: uuid.UUID, firm_id: uuid.UUID, series: str
+) -> str:
+    """Allocate the next gapless serial for (org, firm, series).
+
+    Locks the firm row to serialize concurrent allocations. The serial
+    is `max(number) + 1` within the same series, padded to 4 digits.
+    Identical structure to `_allocate_so_number`; a future refactor can
+    fold them into one helper keyed by table.
+    """
+    session.execute(
+        select(Firm).where(Firm.firm_id == firm_id).with_for_update()
+    ).scalar_one_or_none()
+
+    last = session.execute(
+        select(func.coalesce(func.max(SalesInvoice.number), "0")).where(
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.firm_id == firm_id,
+            SalesInvoice.series == series,
+        )
+    ).scalar_one()
+    try:
+        last_int = int(last)
+    except (ValueError, TypeError):
+        last_int = 0
+    return f"{last_int + 1:04d}"
+
+
+def _classify_buyer(party: Party) -> BuyerStatus:
+    """REGISTERED if party.gstin is set, else CONSUMER."""
+    if party.gstin:
+        return BuyerStatus.REGISTERED
+    return BuyerStatus.CONSUMER
+
+
+def create_draft_invoice(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    party_id: uuid.UUID,
+    invoice_date: datetime.date,
+    lines: list[dict[str, object]],
+    series: str = DEFAULT_INVOICE_SERIES,
+    due_date: datetime.date | None = None,
+    ship_to_state: str | None = None,
+    bill_to_address: str | None = None,
+    ship_to_address: str | None = None,
+    notes: str | None = None,
+    created_by: uuid.UUID | None = None,
+) -> SalesInvoice:
+    """Create a DRAFT sales invoice with computed GST split + audit log.
+
+    `lines` is `[{item_id, qty, price, gst_rate?, sequence?}, ...]`.
+    Per-line `line_amount = qty * price`; per-line `gst_amount =
+    line_amount * gst_rate / 100`. The header's `tax_type` and
+    `place_of_supply_state` come from `gst_service.determine_place_of_supply`.
+
+    Raises `AppValidationError` for missing lines, unknown party / firm
+    / item, or a buyer who is flagged as supplier-only.
+    """
+    if not lines:
+        raise AppValidationError("Sales invoice must have at least one line")
+
+    _ensure_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+    party = _ensure_party_in_org(session, org_id=org_id, party_id=party_id)
+    _ensure_items_in_org(
+        session,
+        org_id=org_id,
+        item_ids=[line["item_id"] for line in lines],  # type: ignore[misc]
+    )
+
+    firm = session.execute(
+        select(Firm).where(Firm.firm_id == firm_id, Firm.org_id == org_id)
+    ).scalar_one()
+
+    # Compute totals first so the PoS engine sees the real invoice value
+    # (matters for the B2C ₹2.5L threshold).
+    total_subtotal = Decimal("0")
+    total_gst = Decimal("0")
+    line_records: list[dict[str, object]] = []
+    for idx, line in enumerate(lines):
+        qty = Decimal(str(line["qty"]))
+        price = Decimal(str(line["price"]))
+        gst_rate = Decimal(str(line.get("gst_rate", "0") or "0"))
+        line_amount = (qty * price).quantize(Decimal("0.01"))
+        gst_amount = (line_amount * gst_rate / Decimal("100")).quantize(Decimal("0.01"))
+        total_subtotal += line_amount
+        total_gst += gst_amount
+        line_records.append(
+            {
+                "item_id": line["item_id"],
+                "qty": qty,
+                "price": price,
+                "line_amount": line_amount,
+                "gst_rate": gst_rate,
+                "gst_amount": gst_amount,
+                "sequence": line.get("sequence", idx + 1),
+            }
+        )
+
+    invoice_total = total_subtotal + total_gst
+
+    pos_decision = gst_service.determine_place_of_supply(
+        seller_state=firm.state_code or "",
+        seller_gstin=None if firm.gstin is None else firm.gstin.hex(),
+        buyer_state=party.state_code,
+        buyer_gstin=None if party.gstin is None else party.gstin.hex(),
+        buyer_status=_classify_buyer(party),
+        ship_to_state=ship_to_state or party.state_code,
+        invoice_value=invoice_total,
+    )
+
+    number = _allocate_si_number(session, org_id=org_id, firm_id=firm_id, series=series)
+
+    invoice = SalesInvoice(
+        org_id=org_id,
+        firm_id=firm_id,
+        series=series,
+        number=number,
+        party_id=party_id,
+        invoice_date=invoice_date,
+        bill_to_address=bill_to_address,
+        ship_to_address=ship_to_address,
+        place_of_supply_state=pos_decision.pos_state,
+        invoice_amount=invoice_total,
+        gst_amount=total_gst,
+        paid_amount=Decimal("0"),
+        due_date=due_date,
+        lifecycle_status=InvoiceLifecycleStatus.DRAFT,
+        tax_type=pos_decision.tax_type.value,
+        invoice_type=pos_decision.document_type.value,
+        round_off=Decimal("0"),
+        notes=notes,
+        created_by=created_by,
+        updated_by=created_by,
+    )
+    session.add(invoice)
+    session.flush()
+
+    for record in line_records:
+        session.add(
+            SiLine(
+                org_id=org_id,
+                sales_invoice_id=invoice.sales_invoice_id,
+                item_id=record["item_id"],
+                qty=record["qty"],
+                price=record["price"],
+                line_amount=record["line_amount"],
+                gst_rate=record["gst_rate"],
+                gst_amount=record["gst_amount"],
+                sequence=record["sequence"],
+                created_by=created_by,
+                updated_by=created_by,
+            )
+        )
+
+    session.add(
+        AuditLog(
+            org_id=org_id,
+            firm_id=firm_id,
+            user_id=created_by,
+            entity_type="sales.invoice",
+            entity_id=invoice.sales_invoice_id,
+            action="create_draft",
+            changes={
+                "after": {
+                    "series": series,
+                    "number": number,
+                    "party_id": str(party_id),
+                    "invoice_amount": str(invoice_total),
+                    "gst_amount": str(total_gst),
+                    "tax_type": pos_decision.tax_type.value,
+                    "place_of_supply_state": pos_decision.pos_state,
+                    "lines": len(line_records),
+                }
+            },
+        )
+    )
+    session.flush()
+
+    dashboard_service.invalidate_firm(firm_id)
+    return invoice
+
+
+def finalize_invoice(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    sales_invoice_id: uuid.UUID,
+    updated_by: uuid.UUID | None = None,
+) -> SalesInvoice:
+    """DRAFT → FINALIZED. Writes an audit_log entry and stamps
+    `finalized_at`. Ledger postings (DR Sundry Debtors / CR Sales / CR
+    GST Payable) are deferred until the Voucher ORM lands; tracked as
+    a CRIT in the T-INT-4 hard review.
+
+    Raises `InvoiceStateError` (mapped to 409 INVOICE_ALREADY_FINALIZED
+    via the router) when the invoice has already moved past DRAFT.
+    """
+    invoice = get_sales_invoice(session, org_id=org_id, sales_invoice_id=sales_invoice_id)
+
+    if invoice.lifecycle_status != InvoiceLifecycleStatus.DRAFT:
+        raise InvoiceStateError(
+            f"Cannot finalize invoice {sales_invoice_id}: status is "
+            f"{invoice.lifecycle_status}, expected DRAFT.",
+            title="Invoice already finalized",
+        )
+
+    before_status = invoice.lifecycle_status.value
+    now = datetime.datetime.now(tz=datetime.UTC)
+    invoice.lifecycle_status = InvoiceLifecycleStatus.FINALIZED
+    invoice.finalized_at = now
+    invoice.updated_at = now
+    if updated_by is not None:
+        invoice.updated_by = updated_by
+
+    session.add(
+        AuditLog(
+            org_id=org_id,
+            firm_id=invoice.firm_id,
+            user_id=updated_by,
+            entity_type="sales.invoice",
+            entity_id=invoice.sales_invoice_id,
+            action="finalize",
+            changes={
+                "before": {"lifecycle_status": before_status},
+                "after": {
+                    "lifecycle_status": InvoiceLifecycleStatus.FINALIZED.value,
+                    "finalized_at": now.isoformat(),
+                },
+            },
+        )
+    )
+    session.flush()
+
+    dashboard_service.invalidate_firm(invoice.firm_id)
+    return invoice
+
+
 __all__ = [
+    "DEFAULT_INVOICE_SERIES",
     "cancel_so",
     "confirm_so",
     "create_dc",
+    "create_draft_invoice",
     "create_so",
+    "finalize_invoice",
     "get_dc",
     "get_sales_invoice",
     "get_so",
@@ -734,4 +992,4 @@ __all__ = [
 ]
 
 
-_unused = (and_,)  # keep import for future joins
+_unused = (and_, TaxType)  # keep imports for future joins / serialization
