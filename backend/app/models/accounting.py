@@ -1,15 +1,20 @@
-"""Accounting-domain ORM models — Voucher + VoucherLine.
+"""Accounting-domain ORM models — Voucher, VoucherLine, PaymentAllocation.
 
-Mirrors `schema/ddl.sql` lines 1568-1613 + the `voucher_type` and
+Mirrors `schema/ddl.sql` lines 1568-1613 (voucher / voucher_line) +
+2208-2226 (payment_allocation) + the `voucher_type` and
 `journal_line_type` Postgres enums (lines 32 + 34).
 
-Voucher is the GL header; VoucherLine carries the DR/CR splits. The
-DDL exempts `voucher_line` from the audit-sweep (it's an append-only
-ledger table — no updated_at, no deleted_at).
+Voucher is the GL header; VoucherLine carries the DR/CR splits.
+PaymentAllocation ties a receipt or payment voucher to the invoice(s)
+it settles, with FIFO allocation as the default mode. The DDL exempts
+`voucher_line` from the audit-sweep (append-only ledger);
+`payment_allocation` IS in the sweep, so it picks up updated_at /
+created_by / updated_by / deleted_at.
 
-Service layer (`accounting_service`) is the only writer. Never insert
-voucher rows directly from a router — vouchers must always be created
-as part of a balanced (DR == CR) bundle so the trial balance holds.
+Service layer (`accounting_service` for vouchers, `receipt_service` for
+allocations) is the only writer. Never insert voucher rows directly
+from a router — vouchers must always be created as part of a balanced
+(DR == CR) bundle so the trial balance holds.
 """
 
 from __future__ import annotations
@@ -185,8 +190,73 @@ class VoucherLine(Base):
     voucher: Mapped[Voucher] = relationship(back_populates="lines")
 
 
+class PaymentAllocation(Base):
+    """One allocation row tying a receipt/payment voucher to a specific
+    sales or purchase invoice. Exactly one of `sales_invoice_id` /
+    `purchase_invoice_id` is set per row (DDL CHECK constraint).
+
+    Audit-sweep adds updated_at / created_by / updated_by / deleted_at;
+    declared inline for drift parity.
+    """
+
+    __tablename__ = "payment_allocation"
+
+    allocation_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    firm_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("firm.firm_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    voucher_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("voucher.voucher_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sales_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("sales_invoice.sales_invoice_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    purchase_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("purchase_invoice.purchase_invoice_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    amount: Mapped[Any] = mapped_column(Numeric(18, 2), nullable=False)
+    tds_amount: Mapped[Any] = mapped_column(
+        Numeric(18, 2), server_default=text("0"), nullable=False
+    )
+    allocated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    allocated_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    allocation_mode: Mapped[str] = mapped_column(String(20), server_default="AUTO", nullable=False)
+    reversed_by_allocation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("payment_allocation.allocation_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Audit-sweep columns (payment_allocation NOT in the exempt list).
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    deleted_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 __all__ = [
     "JournalLineType",
+    "PaymentAllocation",
     "Voucher",
     "VoucherLine",
     "VoucherStatus",

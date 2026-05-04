@@ -1,13 +1,16 @@
-import { ArrowLeft, AlertCircle, Check, Printer } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Check, IndianRupee, Printer } from 'lucide-react';
 import * as React from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
+import { Field } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApiError } from '@/lib/api/client';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
+import { usePostReceipt } from '@/lib/queries/accounts';
 import { useFinalizeInvoice, useInvoice } from '@/lib/queries/invoices';
 import { formatDateShort, formatINRCompact } from '@/lib/mock';
 import type { Invoice } from '@/lib/mock/types';
@@ -25,8 +28,15 @@ export default function InvoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const invoiceQuery = useInvoice(id);
   const finalize = useFinalizeInvoice();
+  const postReceipt = usePostReceipt();
   const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
+  const receiptKey = useIdempotencyKey();
   const [staleError, setStaleError] = React.useState<string | null>(null);
+  const [recordOpen, setRecordOpen] = React.useState(false);
+  const [recordAmount, setRecordAmount] = React.useState('');
+  const [recordMode, setRecordMode] = React.useState<'CASH' | 'BANK'>('CASH');
+  const [recordRef, setRecordRef] = React.useState('');
+  const [recordError, setRecordError] = React.useState<string | null>(null);
   const print = useComingSoon({
     feature: 'Print invoice (GST-compliant PDF)',
     task: 'TASK-051 (Invoice PDF)',
@@ -81,6 +91,44 @@ export default function InvoiceDetail() {
     invoiceQuery.refetch();
   };
 
+  const outstandingPaise = Math.max(inv.total - inv.paid, 0);
+  const canRecordPayment =
+    inv.status === 'FINALIZED' || inv.status === 'PARTIALLY_PAID' || inv.status === 'OVERDUE';
+
+  const onSubmitReceipt = (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecordError(null);
+    const amountRupees = parseFloat(recordAmount);
+    if (!Number.isFinite(amountRupees) || amountRupees <= 0) {
+      setRecordError('Enter a positive amount.');
+      return;
+    }
+    postReceipt.mutate(
+      {
+        partyId: inv.party_id,
+        partyName: inv.party_name,
+        amountPaise: Math.round(amountRupees * 100),
+        receiptDate: new Date().toISOString().slice(0, 10),
+        mode: recordMode,
+        reference: recordRef || undefined,
+        idempotencyKey: receiptKey.key,
+      },
+      {
+        onSuccess: () => {
+          receiptKey.reset();
+          setRecordAmount('');
+          setRecordRef('');
+          setRecordOpen(false);
+          // useInvoice cache is invalidated by usePostReceipt's onSuccess.
+        },
+        onError: (err) => {
+          receiptKey.reset();
+          setRecordError(err instanceof Error ? err.message : 'Could not record payment.');
+        },
+      },
+    );
+  };
+
   return (
     <div className="space-y-4">
       <header className="flex items-center gap-3">
@@ -112,8 +160,90 @@ export default function InvoiceDetail() {
               Finalize
             </Button>
           )}
+          {canRecordPayment && (
+            <Button onClick={() => setRecordOpen((v) => !v)}>
+              <IndianRupee size={14} />
+              {recordOpen ? 'Cancel' : 'Record payment'}
+            </Button>
+          )}
         </div>
       </header>
+
+      {recordOpen && canRecordPayment && (
+        <form
+          onSubmit={onSubmitReceipt}
+          className="flex flex-col gap-3 p-4"
+          style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-default)',
+            borderRadius: 8,
+          }}
+        >
+          <div className="flex items-baseline gap-2">
+            <span style={{ fontSize: 14, fontWeight: 600 }}>Record payment</span>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Outstanding: {formatINRCompact(outstandingPaise)}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <div style={{ flex: '1 1 160px' }}>
+              <Field label="Amount (₹)" htmlFor="receipt-amount">
+                <Input
+                  id="receipt-amount"
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  min="0"
+                  value={recordAmount}
+                  onChange={(e) => setRecordAmount(e.target.value)}
+                  placeholder={(outstandingPaise / 100).toFixed(2)}
+                />
+              </Field>
+            </div>
+            <div style={{ flex: '0 0 140px' }}>
+              <Field label="Mode" htmlFor="receipt-mode">
+                <select
+                  id="receipt-mode"
+                  value={recordMode}
+                  onChange={(e) => setRecordMode(e.target.value as 'CASH' | 'BANK')}
+                  className="h-9 w-full rounded-md px-2"
+                  style={{
+                    border: '1px solid var(--border-default)',
+                    background: 'var(--bg-surface)',
+                    fontSize: 13,
+                  }}
+                >
+                  <option value="CASH">Cash</option>
+                  <option value="BANK">Bank</option>
+                </select>
+              </Field>
+            </div>
+            <div style={{ flex: '2 1 200px' }}>
+              <Field label="Reference (optional)" htmlFor="receipt-ref">
+                <Input
+                  id="receipt-ref"
+                  value={recordRef}
+                  onChange={(e) => setRecordRef(e.target.value)}
+                  placeholder="NEFT id, cheque #, etc."
+                />
+              </Field>
+            </div>
+          </div>
+          {recordError && (
+            <div role="alert" style={{ color: 'var(--danger-text)', fontSize: 12.5 }}>
+              {recordError}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" type="button" onClick={() => setRecordOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={postReceipt.isPending}>
+              Save receipt
+            </Button>
+          </div>
+        </form>
+      )}
 
       {staleError && (
         <div

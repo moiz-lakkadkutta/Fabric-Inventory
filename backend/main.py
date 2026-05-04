@@ -26,6 +26,7 @@ from app.routers import inventory as inventory_router
 from app.routers import items as items_router
 from app.routers import masters as masters_router
 from app.routers import procurement as procurement_router
+from app.routers import receipts as receipts_router
 from app.routers import sales as sales_router
 
 
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(sales_router.invoice_router)
     app.include_router(dashboard_router.router)
     app.include_router(dashboard_router.activity_router)
+    app.include_router(receipts_router.router)
     app.include_router(banking_router.router)
     app.include_router(accounting_router.router)
 

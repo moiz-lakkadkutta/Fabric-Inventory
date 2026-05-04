@@ -38,6 +38,7 @@ from . import (  # noqa: E402  (import after Base definition is required)
 )
 from .accounting import (  # noqa: E402
     JournalLineType,
+    PaymentAllocation,
     Voucher,
     VoucherLine,
     VoucherType,
@@ -153,6 +154,7 @@ __all__ = [
     "PartyAddress",
     "PartyBank",
     "PartyKyc",
+    "PaymentAllocation",
     "Permission",
     "PriceList",
     "PriceListLine",
