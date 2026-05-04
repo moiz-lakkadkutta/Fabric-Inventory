@@ -20,6 +20,10 @@ from sqlalchemy.orm import Session as OrmSession
 
 
 def _signup_owner(client: TestClient) -> dict[str, str]:
+    """Sign up + switch to the primary firm so the access token carries
+    `firm_id`. Receipts + dashboard refuse the no-firm-context case;
+    real users hit /auth/switch-firm immediately on first login.
+    """
     resp = client.post(
         "/auth/signup",
         json={
@@ -32,6 +36,14 @@ def _signup_owner(client: TestClient) -> dict[str, str]:
     )
     assert resp.status_code == 201, resp.text
     body: dict[str, str] = resp.json()
+
+    switch = client.post(
+        "/auth/switch-firm",
+        headers={"Authorization": f"Bearer {body['access_token']}"},
+        json={"firm_id": body["firm_id"]},
+    )
+    assert switch.status_code == 200, switch.text
+    body["access_token"] = switch.json()["access_token"]
     return body
 
 
