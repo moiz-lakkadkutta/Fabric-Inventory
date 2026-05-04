@@ -101,7 +101,7 @@ def _create_and_finalize_invoice(
         },
     )
     assert create.status_code == 201, create.text
-    invoice_id = create.json()["sales_invoice_id"]
+    invoice_id: str = create.json()["sales_invoice_id"]
     fin = http_client.post(f"/invoices/{invoice_id}/finalize", headers=_auth(me["access_token"]))
     assert fin.status_code == 200, fin.text
     return invoice_id
