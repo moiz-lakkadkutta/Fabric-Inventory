@@ -429,11 +429,10 @@ class SalesInvoice(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         ForeignKey("sales_invoice.sales_invoice_id", ondelete="SET NULL"),
         nullable=True,
     )
-    linked_mo_id: Mapped[uuid.UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("manufacturing_order.manufacturing_order_id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    # FK to manufacturing_order is declared in DDL but the table isn't
+    # yet modeled in the ORM (Phase-3). Stored as plain UUID so the
+    # drift test can build metadata without resolving the target.
+    linked_mo_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     cost_centre_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("cost_centre.cost_centre_id", ondelete="SET NULL"),
