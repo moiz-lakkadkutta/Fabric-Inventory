@@ -38,6 +38,7 @@ class ErrorCode(StrEnum):
     MFA_REQUIRED = "MFA_REQUIRED"
     MFA_INVALID = "MFA_INVALID"
     TOKEN_INVALID = "TOKEN_INVALID"  # noqa: S105 — error code, not a password
+    USER_EMAIL_TAKEN = "USER_EMAIL_TAKEN"
 
     # Authorization
     PERMISSION_DENIED = "PERMISSION_DENIED"
@@ -124,6 +125,16 @@ class AppValidationError(AppError):
     code = ErrorCode.VALIDATION_ERROR
     title = "Validation error"
     http_status = 422
+
+
+class EmailTakenError(AppError):
+    """Same email already exists in the same org. Per /grill-me Q6 the
+    multi-tenancy model is per-org email scoping, so the same email
+    can sign up under a DIFFERENT org name without collision."""
+
+    code = ErrorCode.USER_EMAIL_TAKEN
+    title = "Email already registered"
+    http_status = 409
 
 
 class InvalidCredentialsError(AppError):
