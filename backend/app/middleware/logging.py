@@ -40,7 +40,10 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        request_id = str(uuid.uuid4())
+        # request_id is owned by RequestContextMiddleware (pure ASGI, runs
+        # before this BaseHTTPMiddleware). Read it here, don't generate.
+        # Fallback exists for tests/clients that bypass the middleware stack.
+        request_id = getattr(request.state, "request_id", None) or str(uuid.uuid4())
         structlog.contextvars.bind_contextvars(request_id=request_id)
         start = time.perf_counter()
 
@@ -65,6 +68,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             status=response.status_code,
             latency_ms=latency_ms,
         )
-        response.headers["X-Request-ID"] = request_id
+        # X-Request-ID is set by RequestContextMiddleware on the response
+        # already. Don't double-stamp here.
         structlog.contextvars.clear_contextvars()
         return response

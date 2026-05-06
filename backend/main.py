@@ -14,6 +14,7 @@ from app.middleware import (
     AuthMiddleware,
     IdempotencyMiddleware,
     LoggingMiddleware,
+    RequestContextMiddleware,
     RLSMiddleware,
     configure_logging,
     register_error_handlers,
@@ -46,16 +47,18 @@ def create_app() -> FastAPI:
     # Exception handlers run after middleware; register on the app instance.
     register_error_handlers(app)
 
-    # Middleware execution order (inbound): CORS → logging → auth →
-    # idempotency → RLS → handler. Starlette runs them in REVERSE
-    # registration order, so register: RLS → idempotency → auth →
-    # logging → CORS. Idempotency sits between auth and RLS so
-    # presence-of-key is enforced after the user is identified but
-    # before any DB connection is opened for handler work.
+    # Middleware execution order (inbound): CORS → request-context →
+    # logging → auth → idempotency → RLS → handler. Starlette runs them
+    # in REVERSE registration order, so register: RLS → idempotency →
+    # auth → logging → request-context → CORS. RequestContext is OUTERMOST
+    # (after CORS) so the request_id is set on scope before any
+    # BaseHTTPMiddleware can wrap-and-strip request.state, and the same
+    # id is visible to exception handlers (P1-9 fix).
     app.add_middleware(RLSMiddleware)
     app.add_middleware(IdempotencyMiddleware)
     app.add_middleware(AuthMiddleware)
     app.add_middleware(LoggingMiddleware)
+    app.add_middleware(RequestContextMiddleware)
     # `cors_origins` is guaranteed non-empty by Settings.model_validator
     # (dev gets a localhost default; staging/prod fail fast on empty).
     app.add_middleware(
