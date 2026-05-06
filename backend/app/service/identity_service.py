@@ -35,7 +35,7 @@ from typing import Final, Literal
 import bcrypt
 import jwt
 import pyotp
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -310,6 +310,14 @@ def refresh_token(session: Session, *, refresh_token: str) -> TokenPair:
     payload = verify_jwt(refresh_token)
     if payload.token_type != "refresh":  # noqa: S105 — JWT type discriminator
         raise TokenInvalidError("Expected refresh token, got access token")
+
+    # The refresh request bypasses the JWT-driven RLS plumbing in
+    # `dependencies.get_db_sync` (no Authorization header). Seed the
+    # GUC ourselves now that the token has identified the org. Without
+    # this, the session/app_user lookups below return zero rows under
+    # `fabric_app` (NOBYPASSRLS) and refresh fails to find its own
+    # session row.
+    session.execute(text(f"SET LOCAL app.current_org_id = '{payload.org_id}'"))
 
     db_session_row = session.execute(
         select(DbSession).where(

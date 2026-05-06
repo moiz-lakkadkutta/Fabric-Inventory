@@ -142,14 +142,23 @@ def db_session(sync_engine: Engine) -> Iterator[OrmSession]:
 
 @pytest.fixture
 def fresh_org_id(db_session: OrmSession) -> uuid.UUID:
-    """Create a fresh Organization, set RLS GUC, return its org_id."""
+    """Create a fresh Organization, set RLS GUC, return its org_id.
+
+    Order matters under INT-9: when the runtime DB role is `fabric_app`
+    (NOBYPASSRLS), the WITH CHECK clause on `organization_rls` evaluates
+    `current_setting('app.current_org_id')` at INSERT time. The GUC must
+    be SET to the new org_id BEFORE the INSERT or psql raises
+    `unrecognized configuration parameter`. We pre-mint the UUID,
+    set the GUC, then insert with the same id."""
     from app.models import Organization
 
+    org_id = uuid.uuid4()
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
     org = Organization(
+        org_id=org_id,
         name=f"test-org-{uuid.uuid4().hex[:10]}",
         admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
     )
     db_session.add(org)
     db_session.flush()
-    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
-    return org.org_id
+    return org_id
