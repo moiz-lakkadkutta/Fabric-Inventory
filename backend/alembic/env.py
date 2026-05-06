@@ -25,13 +25,17 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 
-# DATABASE_URL is asyncpg-shaped per backend/.env.example. Transform for migrations.
-db_url = os.environ.get("DATABASE_URL", "")
+# Migrations run as a privileged role (table owner / superuser) so they can
+# CREATE ROLE, ALTER, GRANT, etc. The runtime app uses a less-privileged
+# role (post-INT-9). Source of truth for DDL: MIGRATION_DATABASE_URL.
+# Falls back to DATABASE_URL when only one URL is configured (current state
+# pre-INT-9).
+db_url = os.environ.get("MIGRATION_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
 if not db_url:
     raise RuntimeError(
-        "DATABASE_URL is not set. "
+        "Neither MIGRATION_DATABASE_URL nor DATABASE_URL is set. "
         "Run `make dev` first (boots Postgres + populates env), "
-        "or export DATABASE_URL=postgresql+asyncpg://user:pw@host:port/db."
+        "or export MIGRATION_DATABASE_URL=postgresql+asyncpg://user:pw@host:port/db."
     )
 if db_url.startswith("postgresql+asyncpg://"):
     db_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
