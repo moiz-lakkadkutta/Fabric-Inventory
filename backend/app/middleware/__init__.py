@@ -8,6 +8,7 @@ from .auth import AuthMiddleware
 from .errors import register_error_handlers
 from .idempotency import IdempotencyMiddleware
 from .logging import LoggingMiddleware, configure_logging
+from .request_context import RequestContextMiddleware
 from .rls import RLSMiddleware
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "IdempotencyMiddleware",
     "LoggingMiddleware",
     "RLSMiddleware",
+    "RequestContextMiddleware",
     "configure_logging",
     "register_error_handlers",
 ]
