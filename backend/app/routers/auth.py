@@ -91,6 +91,13 @@ def _resolve_org_by_name(session: SyncDBSession, org_name: str) -> Organization:
     if org is None:
         # Same generic message login uses — don't leak whether the org exists.
         raise InvalidCredentialsError("Invalid email or password")
+    # Seed the RLS GUC for the rest of this request so subsequent queries
+    # against org-scoped tables (app_user, session, etc.) can see this
+    # org's rows. Pre-INT-9 the runtime role bypassed RLS, so unset GUC
+    # was harmless; under fabric_app the policy hides every row when the
+    # GUC is unset, which would make login appear to fail with
+    # "user not found" even when credentials are correct.
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
     return org
 
 
@@ -148,7 +155,17 @@ def signup(
         # Email is new under an existing org name → still an org-name dup.
         raise AppValidationError(f"Organization {body.org_name!r} already exists")
 
-    org = Organization(name=body.org_name, admin_email=body.email)
+    # Pre-mint the org_id and SET the RLS GUC BEFORE inserting. Under INT-9
+    # the runtime role is `fabric_app` (NOBYPASSRLS); WITH CHECK clauses
+    # evaluate `current_setting('app.current_org_id')` at INSERT time and
+    # raise if the GUC isn't set. Signup is the bootstrap case — there's
+    # no current org yet — so we generate the id, declare it via SET, then
+    # insert. Every subsequent INSERT in this transaction (firm, roles,
+    # ledgers, user) inherits the GUC and passes WITH CHECK.
+    new_org_id = uuid.uuid4()
+    db.execute(text(f"SET LOCAL app.current_org_id = '{new_org_id}'"))
+
+    org = Organization(org_id=new_org_id, name=body.org_name, admin_email=body.email)
     db.add(org)
     db.flush()
 
