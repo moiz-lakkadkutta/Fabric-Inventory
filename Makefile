@@ -1,27 +1,36 @@
-.PHONY: setup dev down test test-watch lint lint-fix migrate migrate-create seed deploy backup e2e-setup help
+.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed deploy backup e2e-setup help
 
 # Prefer "docker compose" (v2 plugin); fall back to legacy "docker-compose" binary.
 COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
 
 help:
 	@echo "Fabric ERP — common targets:"
-	@echo "  make setup        Install backend (uv) + frontend (pnpm) deps; create .env if missing"
+	@echo "  make setup        Install backend (uv) + frontend (pnpm) deps; create .env files if missing"
 	@echo "  make dev          Start docker compose stack (Postgres, Redis, API, Web)"
+	@echo "  make dev-native   Bring up Postgres+Redis in compose; run uvicorn+vite natively"
+	@echo "  make doctor       Probe the running stack (exit 0 if healthy, 1 with diagnostic)"
 	@echo "  make down         Stop docker compose stack"
 	@echo "  make test         Run backend + frontend tests"
 	@echo "  make lint         Run ruff + mypy + eslint + prettier + tsc"
 	@echo "  make lint-fix     Auto-fix ruff + prettier violations"
 	@echo "  make e2e-setup    Install Playwright browsers (opt-in, ~400MB)"
-	@echo "  make migrate      Run alembic upgrade head (DATABASE_URL must be set)"
+	@echo "  make migrate      Run alembic upgrade head (MIGRATION_DATABASE_URL or DATABASE_URL must be set)"
 	@echo "  make migrate-create M=\"msg\"  Generate a new alembic revision"
 
 setup:
 	@test -f .env || cp .env.example .env
+	@test -f backend/.env || cp backend/.env.example backend/.env
 	cd backend && uv sync
 	cd frontend && pnpm install
 
 dev:
 	$(COMPOSE) up --build
+
+dev-native:
+	@bash scripts/dev-native.sh
+
+doctor:
+	@bash scripts/doctor.sh
 
 down:
 	$(COMPOSE) down

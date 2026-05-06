@@ -27,8 +27,8 @@ def _build_settings() -> object:
 
     `_env_file=None` disables `.env` loading so the test only sees the
     in-process env this test set up. Without this, a developer's local
-    `backend/.env` (created by `make setup` per INT-7) leaks values
-    into staging/prod-environment tests and hides real failures.
+    `backend/.env` (which is now created by `make setup` per INT-7) leaks
+    values into staging/prod-environment tests and hides real failures.
     """
     from app.config import Settings, reset_settings
 
