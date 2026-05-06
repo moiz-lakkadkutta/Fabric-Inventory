@@ -43,9 +43,7 @@ def _app_db_url() -> str:
     # `+driver` suffix for parsing, then put it back as `+psycopg2`.
     parsed = urlparse.urlparse(db_url.replace("postgresql+asyncpg://", "postgresql://", 1))
     new_netloc = f"fabric_app:fabric_app_dev@{parsed.hostname}:{parsed.port or 5432}"
-    return urlparse.urlunparse(
-        ("postgresql+psycopg2", new_netloc, parsed.path, "", "", "")
-    )
+    return urlparse.urlunparse(("postgresql+psycopg2", new_netloc, parsed.path, "", "", ""))
 
 
 @pytest.fixture
