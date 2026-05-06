@@ -86,7 +86,11 @@ def upgrade() -> None:
     )
 
     # ── 2. Grant CONNECT + schema usage + CRUD on every existing table ─────
-    op.execute("GRANT CONNECT ON DATABASE fabric_erp TO fabric_app;")
+    # Use the live DB name (CI uses a different name than dev/prod), so the
+    # GRANT works regardless of where the migration runs.
+    bind = op.get_bind()
+    db_name = bind.execute(text("SELECT current_database()")).scalar_one()
+    op.execute(f'GRANT CONNECT ON DATABASE "{db_name}" TO fabric_app;')
     op.execute("GRANT USAGE ON SCHEMA public TO fabric_app;")
     op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO fabric_app;")
     op.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO fabric_app;")
@@ -166,5 +170,7 @@ def downgrade() -> None:
     )
     op.execute("REVOKE USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public FROM fabric_app;")
     op.execute("REVOKE USAGE ON SCHEMA public FROM fabric_app;")
-    op.execute("REVOKE CONNECT ON DATABASE fabric_erp FROM fabric_app;")
+    bind = op.get_bind()
+    db_name = bind.execute(text("SELECT current_database()")).scalar_one()
+    op.execute(f'REVOKE CONNECT ON DATABASE "{db_name}" FROM fabric_app;')
     op.execute("DROP ROLE IF EXISTS fabric_app;")
