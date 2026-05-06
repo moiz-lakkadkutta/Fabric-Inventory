@@ -60,9 +60,24 @@ class LoginRequest(BaseModel):
     org_name: str = Field(min_length=1, max_length=255)
 
 
+class MeFirmRef(BaseModel):
+    """Slim firm reference exposed via /auth/me for the firm switcher."""
+
+    firm_id: uuid.UUID
+    code: str
+    name: str
+
+
 class LoginResponse(BaseModel):
     """Either tokens (no MFA) or `requires_mfa=True` (caller follows up
-    with /auth/mfa-verify). Never both."""
+    with /auth/mfa-verify). Never both.
+
+    Includes `org_id`, `firm_id`, and `available_firms` (mirroring
+    SignupResponse) so the FE can complete login in a single round-trip
+    instead of chasing /auth/me afterward. `firm_id` is auto-populated
+    when the user has exactly one firm; null otherwise (multi-firm
+    accounts use the firm switcher to pick).
+    """
 
     requires_mfa: bool
     user_id: uuid.UUID | None = None
@@ -70,6 +85,9 @@ class LoginResponse(BaseModel):
     refresh_token: str | None = None
     access_expires_at: datetime.datetime | None = None
     refresh_expires_at: datetime.datetime | None = None
+    org_id: uuid.UUID | None = None
+    firm_id: uuid.UUID | None = None
+    available_firms: list[MeFirmRef] = Field(default_factory=list)
 
 
 class MfaVerifyRequest(BaseModel):
@@ -103,19 +121,14 @@ class SwitchFirmResponse(TokenPairResponse):
 
 
 class LogoutRequest(BaseModel):
-    refresh_token: str
+    """Logout via cookie-only is the canonical path; body refresh_token
+    stays optional for back-compat with existing CLI/tests."""
+
+    refresh_token: str | None = None
 
 
 class LogoutResponse(BaseModel):
     revoked: bool
-
-
-class MeFirmRef(BaseModel):
-    """Slim firm reference exposed via /auth/me for the firm switcher."""
-
-    firm_id: uuid.UUID
-    code: str
-    name: str
 
 
 class MeResponse(BaseModel):

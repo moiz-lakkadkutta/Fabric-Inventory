@@ -16,12 +16,13 @@ import datetime
 import uuid
 
 from fastapi import APIRouter, Cookie, Header, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.config import get_settings
 from app.dependencies import CurrentUser, SyncDBSession
 from app.exceptions import (
     AppValidationError,
+    EmailTakenError,
     InvalidCredentialsError,
     NotFoundError,
     PermissionDeniedError,
@@ -123,9 +124,28 @@ def signup(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> SignupResponse:
 
-    # Org-name uniqueness is DB-enforced (organization.name UNIQUE). Surface
-    # a clean 422 here rather than waiting for the IntegrityError.
-    if db.execute(select(Organization).where(Organization.name == body.org_name)).first():
+    # Per /grill-me Q6: the multi-tenancy model is per-org email scoping.
+    # Same email + different org → 201 (intentional). Same email + SAME
+    # org → 409 USER_EMAIL_TAKEN (this is a real collision, not a generic
+    # validation failure). Org-name uniqueness then catches the
+    # different-email/same-org case at 422.
+    existing_org = db.execute(
+        select(Organization).where(Organization.name == body.org_name)
+    ).scalar_one_or_none()
+    if existing_org is not None:
+        # Need to check inside that org for the email; signup hasn't set
+        # the GUC yet, so seed it for the lookup.
+        db.execute(text(f"SET LOCAL app.current_org_id = '{existing_org.org_id}'"))
+        existing_user = db.execute(
+            select(AppUser).where(
+                AppUser.org_id == existing_org.org_id,
+                AppUser.email == body.email,
+                AppUser.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if existing_user is not None:
+            raise EmailTakenError(f"User with email {body.email!r} already exists in this org")
+        # Email is new under an existing org name → still an org-name dup.
         raise AppValidationError(f"Organization {body.org_name!r} already exists")
 
     org = Organization(name=body.org_name, admin_email=body.email)
@@ -215,7 +235,21 @@ def login(
 
     user.last_login_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
-    pair = identity_service.issue_tokens(db, user=user, firm_id=None)
+
+    # Available firms — mirrors /auth/me logic so login can return the
+    # same shape and the FE doesn't need a follow-up round-trip. Owners
+    # (org-wide roles) see every firm in their org; that's the typical
+    # dogfood + early-customer shape.
+    firms = list(
+        db.execute(
+            select(Firm)
+            .where(Firm.org_id == user.org_id, Firm.deleted_at.is_(None))
+            .order_by(Firm.created_at.asc())
+        ).scalars()
+    )
+    auto_firm_id = firms[0].firm_id if len(firms) == 1 else None
+
+    pair = identity_service.issue_tokens(db, user=user, firm_id=auto_firm_id)
     _set_refresh_cookie(
         response,
         pair.refresh_token,
@@ -228,6 +262,9 @@ def login(
         refresh_token=pair.refresh_token,
         access_expires_at=pair.access_expires_at,
         refresh_expires_at=pair.refresh_expires_at,
+        org_id=user.org_id,
+        firm_id=auto_firm_id,
+        available_firms=[MeFirmRef(firm_id=f.firm_id, code=f.code, name=f.name) for f in firms],
     )
 
 
@@ -300,16 +337,20 @@ def mfa_verify(
     summary="Exchange a refresh token for a new pair",
 )
 def refresh(
-    body: RefreshRequest,
     db: SyncDBSession,
     response: Response,
+    body: RefreshRequest | None = None,
     fabric_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TokenPairResponse:
 
-    # Cookie takes precedence over body — the cookie is the canonical
-    # transport per Q2; body remains accepted for the legacy path.
-    refresh_token = fabric_refresh or body.refresh_token
+    # Cookie-only refresh is the canonical path; body remains accepted for
+    # back-compat with existing CLI / tests. INT-10 makes the body itself
+    # optional so the FE silent-refresh-on-401 path doesn't need to send
+    # an empty `{}` placeholder. Idempotency-Key is also no longer required
+    # (the refresh middleware exempt list handles it) — refresh is
+    # intrinsically idempotent because tokens rotate on each call.
+    refresh_token = fabric_refresh or (body.refresh_token if body else None)
     if not refresh_token:
         raise TokenInvalidError("Missing refresh token")
 
@@ -344,9 +385,10 @@ def refresh(
     summary="Revoke the refresh token's session row",
 )
 def logout(
-    body: LogoutRequest,
     db: SyncDBSession,
     response: Response,
+    body: LogoutRequest | None = None,
+    fabric_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> LogoutResponse:
 
@@ -354,9 +396,18 @@ def logout(
     # should match the user's intent.
     _clear_refresh_cookie(response)
 
+    # Body takes precedence when explicitly provided so callers can still
+    # detect "access token mistakenly sent" (a 400 case). When body is
+    # absent, fall back to the HttpOnly cookie (the canonical path now
+    # that the FE never sees the token). When neither, no-op.
+    refresh_token = body.refresh_token if body and body.refresh_token else fabric_refresh
+    if not refresh_token:
+        # Nothing to revoke; cookie already cleared above. Idempotent no-op.
+        return LogoutResponse(revoked=False)
+
     # Verify token before lookup so we don't admit row existence on garbage input.
     try:
-        payload = identity_service.verify_jwt(body.refresh_token)
+        payload = identity_service.verify_jwt(refresh_token)
     except TokenInvalidError:
         # Idempotency: a logout call with an unknown / already-expired token
         # is a no-op success ("already logged out").
@@ -371,10 +422,14 @@ def logout(
             },
         )
 
+    # Seed RLS GUC so the session lookup works under fabric_app
+    # (NOBYPASSRLS) — pre-INT-9 the runtime role bypassed RLS.
+    db.execute(text(f"SET LOCAL app.current_org_id = '{payload.org_id}'"))
+
     db_session_row = db.execute(
         select(DbSession).where(
             DbSession.user_id == payload.user_id,
-            DbSession.refresh_token_hash == identity_service._hash_token(body.refresh_token),
+            DbSession.refresh_token_hash == identity_service._hash_token(refresh_token),
         )
     ).scalar_one_or_none()
     if db_session_row is None or db_session_row.revoked_at is not None:

@@ -39,6 +39,13 @@ logger = structlog.get_logger()
 MUTATING_METHODS = {"POST", "PATCH", "DELETE", "PUT"}
 CACHE_TTL_SECONDS = 24 * 60 * 60
 
+# Mutating endpoints that are intrinsically idempotent at the protocol
+# level (replays produce equivalent results because the underlying
+# resource rotates on each call). Exempt from the Idempotency-Key
+# requirement so the FE silent-refresh-on-401 path doesn't have to
+# generate a UUID per attempt.
+IDEMPOTENT_BY_DESIGN_PATHS = frozenset({"/auth/refresh"})
+
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
     """Strict-presence + Redis-backed dedup for mutating requests."""
@@ -57,6 +64,9 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if request.method not in MUTATING_METHODS:
+            return await call_next(request)
+        if request.url.path in IDEMPOTENT_BY_DESIGN_PATHS:
+            # Refresh is safe to replay — token rotation is the contract.
             return await call_next(request)
 
         key = request.headers.get("Idempotency-Key")
