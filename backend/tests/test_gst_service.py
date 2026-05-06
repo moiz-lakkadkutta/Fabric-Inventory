@@ -67,7 +67,9 @@ from app.service.gst_service import (
             TaxType.CGST_SGST,
             "MH",
         ),
-        # 4. Inter-state B2C unreg ≤ 2.5L → CGST+SGST (PoS flips to seller)
+        # 4. Inter-state B2C unreg ≤ 2.5L → IGST (per INT-11 P2-1 fix).
+        # The 2.5L threshold is now a GSTR-1 reporting bucket flag
+        # (B2CS), not a tax_type flip. PoS stays at the buyer state.
         (
             "S4-B2C-under",
             "MH",
@@ -75,8 +77,8 @@ from app.service.gst_service import (
             BuyerStatus.CONSUMER,
             Decimal("200000"),
             False,
-            TaxType.CGST_SGST,
-            "MH",
+            TaxType.IGST,
+            "KA",
         ),
         # 5. Inter-state B2C unreg > 2.5L → IGST
         (
@@ -185,7 +187,9 @@ def test_pos_branch_transfer_same_gstin_is_not_a_supply() -> None:
 
 
 def test_pos_b2c_threshold_at_exactly_250k() -> None:
-    """At exactly ₹2.5L the threshold rule still fires (≤ comparison)."""
+    """At exactly ₹2.5L the boundary case is IGST (per INT-11 P2-1 fix).
+    The threshold flips the GSTR-1 reporting section (B2CS at-or-below,
+    B2CL above), but tax_type is always IGST inter-state."""
     out = determine_place_of_supply(
         seller_state="MH",
         seller_gstin="27AAAAA1234A1Z5",
@@ -194,8 +198,9 @@ def test_pos_b2c_threshold_at_exactly_250k() -> None:
         buyer_status=BuyerStatus.CONSUMER,
         invoice_value=gst_service.B2C_INTER_STATE_THRESHOLD,
     )
-    assert out.tax_type == TaxType.CGST_SGST
-    assert out.pos_state == "MH"
+    assert out.tax_type == TaxType.IGST
+    assert out.pos_state == "KA"
+    assert out.gstr1_section == "B2CS"
 
 
 def test_pos_no_destination_falls_through_to_not_a_supply() -> None:
