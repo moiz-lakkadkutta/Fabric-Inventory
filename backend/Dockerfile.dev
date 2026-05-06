@@ -14,6 +14,14 @@ COPY uv.lock* ./
 
 RUN uv sync --frozen --no-install-project || uv sync --no-install-project
 
+COPY entrypoint.dev.sh /usr/local/bin/entrypoint.dev.sh
+RUN chmod +x /usr/local/bin/entrypoint.dev.sh
+
 EXPOSE 8000
 
+# Entrypoint runs `alembic upgrade head` before uvicorn so a fresh clone via
+# `make dev` produces a migrated DB. Without this, the api container boots
+# against an empty schema and every endpoint 500s on first request — that's
+# the P0-2 outage QA caught on 2026-05-06.
+ENTRYPOINT ["/usr/local/bin/entrypoint.dev.sh"]
 CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
