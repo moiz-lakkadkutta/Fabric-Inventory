@@ -64,7 +64,13 @@ class BuyerStatus(enum.StrEnum):
     EOU = "EOU"
 
 
-B2C_INTER_STATE_THRESHOLD = Decimal("250000")  # ₹2.5L per §10(1)(d)
+B2C_INTER_STATE_THRESHOLD = Decimal("250000")  # ₹2.5L per §10(1)(d) — GSTR-1 bucket only
+
+
+# CA-VALIDATED-PENDING: 2026-05-06 — confirm with CA: composition seller
+# (Bill of Supply trigger), mixed exempt+taxable lines on one invoice,
+# NIL_LUT export edge cases. P2-2/P2-3 are deferred follow-ups; this
+# module ships the inter-state-always-IGST correction (P2-1).
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,15 @@ class PlaceOfSupply:
     tax_type: TaxType
     pos_state: str | None  # state code, "SEZ", "EXPORT", "EOU", or None for non-supply
     document_type: DocumentType
+    # GSTR-1 reporting bucket. Computed alongside `tax_type` so filings
+    # can group invoices without re-deriving from buyer/value at filing
+    # time. Possible values:
+    #   "B2B"    — registered buyer (intra OR inter state); invoice-wise
+    #   "B2CL"   — inter-state B2C with invoice value > ₹2.5L; invoice-wise
+    #   "B2CS"   — B2C consolidated (intra-state, or inter-state ≤ ₹2.5L)
+    #   "EXPORT" — SEZ / EXPORT / EOU
+    #   "NIL"    — non-supply / NIL_LUT
+    gstr1_section: str = "B2B"
 
 
 def _is_special_destination(buyer_status: BuyerStatus) -> bool:
@@ -104,23 +119,33 @@ def determine_place_of_supply(
             tax_type=TaxType.NIL_NOT_A_SUPPLY,
             pos_state=None,
             document_type=DocumentType.DELIVERY_CHALLAN,
+            gstr1_section="NIL",
         )
 
     # 2) SEZ / EOU / Export — zero-rated when LUT is on file (12, 14, 16).
     if buyer_status == BuyerStatus.SEZ:
-        if lut_active:
-            return PlaceOfSupply(TaxType.NIL_LUT, "SEZ", DocumentType.TAX_INVOICE)
-        return PlaceOfSupply(TaxType.IGST, "SEZ", DocumentType.TAX_INVOICE)
+        return PlaceOfSupply(
+            tax_type=TaxType.NIL_LUT if lut_active else TaxType.IGST,
+            pos_state="SEZ",
+            document_type=DocumentType.TAX_INVOICE,
+            gstr1_section="EXPORT",
+        )
 
     if buyer_status == BuyerStatus.EXPORT:
-        if lut_active:
-            return PlaceOfSupply(TaxType.NIL_LUT, "EXPORT", DocumentType.TAX_INVOICE)
-        return PlaceOfSupply(TaxType.IGST, "EXPORT", DocumentType.TAX_INVOICE)
+        return PlaceOfSupply(
+            tax_type=TaxType.NIL_LUT if lut_active else TaxType.IGST,
+            pos_state="EXPORT",
+            document_type=DocumentType.TAX_INVOICE,
+            gstr1_section="EXPORT",
+        )
 
     if buyer_status == BuyerStatus.EOU:
-        if lut_active:
-            return PlaceOfSupply(TaxType.NIL_LUT, "EOU", DocumentType.TAX_INVOICE)
-        return PlaceOfSupply(TaxType.IGST, "EOU", DocumentType.TAX_INVOICE)
+        return PlaceOfSupply(
+            tax_type=TaxType.NIL_LUT if lut_active else TaxType.IGST,
+            pos_state="EOU",
+            document_type=DocumentType.TAX_INVOICE,
+            gstr1_section="EXPORT",
+        )
 
     # 3) Default: PoS = ship_to_state, falling back to buyer_state.
     pos = ship_to_state or buyer_state
@@ -131,32 +156,33 @@ def determine_place_of_supply(
             tax_type=TaxType.NIL_NOT_A_SUPPLY,
             pos_state=None,
             document_type=DocumentType.TAX_INVOICE,
+            gstr1_section="NIL",
         )
 
-    # 4) B2C threshold rule (§10(1)(d) CGST) — Scenarios 3, 4, 5.
-    is_b2c_unregistered = buyer_status in {
-        BuyerStatus.CONSUMER,
-        BuyerStatus.UNREGISTERED,
-    }
-    if is_b2c_unregistered and pos != seller_state and invoice_value <= B2C_INTER_STATE_THRESHOLD:
-        # Threshold flips PoS back to seller's state → CGST+SGST.
-        return PlaceOfSupply(
-            tax_type=TaxType.CGST_SGST,
-            pos_state=seller_state,
-            document_type=DocumentType.TAX_INVOICE,
-        )
+    # 4) Geography-based tax_type — Scenarios 1, 2, 4, 5, 6, 7, 21.
+    # INT-11 fix (P2-1): inter-state is ALWAYS IGST regardless of value.
+    # The ₹2.5L threshold is only a GSTR-1 reporting bucket (B2CL vs
+    # B2CS), which is computed below — NOT a tax_type flip.
+    is_b2c_unregistered = buyer_status in {BuyerStatus.CONSUMER, BuyerStatus.UNREGISTERED}
+    is_inter_state = pos != seller_state
 
-    # 5) Geography-based default — Scenarios 1, 2, 5, 6, 7, 21.
-    if pos == seller_state:
-        return PlaceOfSupply(
-            tax_type=TaxType.CGST_SGST,
-            pos_state=seller_state,
-            document_type=DocumentType.TAX_INVOICE,
-        )
+    if is_inter_state:
+        tax_type = TaxType.IGST
+        pos_state = pos
+        if is_b2c_unregistered:
+            section = "B2CL" if invoice_value > B2C_INTER_STATE_THRESHOLD else "B2CS"
+        else:
+            section = "B2B"
+    else:
+        tax_type = TaxType.CGST_SGST
+        pos_state = seller_state
+        section = "B2CS" if is_b2c_unregistered else "B2B"
+
     return PlaceOfSupply(
-        tax_type=TaxType.IGST,
-        pos_state=pos,
+        tax_type=tax_type,
+        pos_state=pos_state,
         document_type=DocumentType.TAX_INVOICE,
+        gstr1_section=section,
     )
 
 
