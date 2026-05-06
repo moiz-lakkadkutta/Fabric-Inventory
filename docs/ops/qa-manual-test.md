@@ -1,8 +1,16 @@
 # Fabric ERP — manual QA test guide
 
 **Audience**: anyone with the repo running locally (Moiz, future contractor, friendly customer's IT person).
-**Scope**: everything that's wired live as of T-INT-5 follow-ups (PR #46). Cosmetic / mock-only flows are flagged so you don't waste time on them.
+**Scope**: everything that's wired live as of TASK-INT-12 (post-stabilization sweep). Cosmetic / mock-only flows are flagged so you don't waste time on them.
 **Estimated time**: ~3–4 hours for a full pass; ~45 min for the smoke subset (sections 0–4 + 7).
+
+**Recent rewrites** (this guide was updated alongside the INT-7…INT-12 stabilization sweep):
+- API paths are unversioned (`/invoices`, `/receipts`, `/dashboard/kpis`) — no `/v1/` prefix.
+- Error envelope is canonical for ALL responses incl. validation 422s (INT-8).
+- Per-org email model: same email + different org name is intentional (INT-10).
+- Inter-state always IGST regardless of value; the ₹2.5L threshold is a `gstr1_section` flag (INT-11).
+- Dashboard KPIs: 5 cards (drop `low_stock_skus`, `supplier_ap`; add `gst_collected_mtd`) (INT-12).
+- DB role split: runtime now connects as `fabric_app` (NOBYPASSRLS); RLS is enforced for real (INT-9).
 
 Each test has a result box: `[ ] PASS`, `[ ] FAIL` (file follow-up), or `[ ] SKIP` (with reason). When something fails, screenshot the network panel + the `request_id` from the response body — every API error envelope carries one for tracing.
 
@@ -32,9 +40,14 @@ If 0.5 was wrong, fix it and **restart** `pnpm dev` (Vite reads `.env` at boot, 
 - [ ] **1.4** Top-bar shows the firm name. `/auth/me` response carries `permissions`, `flags`, `available_firms` (1 entry).
 - [ ] **1.5** Postgres check (psql): `SELECT name FROM organization;` shows the new org. `SELECT email FROM "user";` shows your email.
 
-### 1B · Signup — duplicate email
+### 1B · Signup — duplicate email (per-org email model)
 
-- [ ] **1.6** Open an incognito window; try to sign up with the same email + same org name. Expect 409 with envelope `{code:"USER_EMAIL_TAKEN", title:"…", detail:"…", status:409}`. UI shows a friendly inline error, not a generic toast.
+The multi-tenancy model is **per-org email scoping**: same email under
+DIFFERENT orgs is intentional and allowed (user can be member of org A
+personally and org B at work with the same address).
+
+- [ ] **1.6** Open an incognito window; try to sign up with the same email + same org name. Expect 409 with envelope `{code:"USER_EMAIL_TAKEN", title:"Email already registered", detail:"…", status:409}`. UI shows a friendly inline error, not a generic toast.
+- [ ] **1.6b** Try to sign up with the same email + a NEW org name. Expect 201 (intentional — per-org scoping). The new org has its own user row with the same email.
 
 ### 1C · Login
 
@@ -53,7 +66,7 @@ If 0.5 was wrong, fix it and **restart** `pnpm dev` (Vite reads `.env` at boot, 
 
 - [ ] **1.14** Hard-refresh `/dashboard`. Still authenticated (httpOnly refresh cookie did its job).
 - [ ] **1.15** Wait > 15 minutes (the access token TTL) and click any nav item. Network shows `/auth/refresh` → 200 → original request retried automatically. No flicker, no logout-and-back.
-- [ ] **1.16** In DevTools → Application → Cookies, find `fabric_refresh_token`. Confirm it's HttpOnly + (in non-dev) Secure + SameSite=Lax + path `/auth`.
+- [ ] **1.16** In DevTools → Application → Cookies, find `fabric_refresh`. Confirm it's HttpOnly + (in non-dev) Secure + SameSite=Lax + path `/auth`.
 
 ### 1F · Auto-switch corner cases
 
@@ -66,8 +79,8 @@ If 0.5 was wrong, fix it and **restart** `pnpm dev` (Vite reads `.env` at boot, 
 
 Prereq: at least one finalized invoice (do section 5 first), or empty-state.
 
-- [ ] **2.1** `/dashboard` renders without errors. Network: `/dashboard/kpis` + `/dashboard/activity` both 200.
-- [ ] **2.2** KPI cards show: outstanding receivables, overdue invoices, today's sales, GST-collected-this-month. Numbers reasonable for current data (₹0 for fresh org).
+- [ ] **2.1** `/dashboard` renders without errors. Network: `/dashboard/kpis` + `/activity` both 200.
+- [ ] **2.2** KPI cards show exactly **5 cards** (post-INT-12): `outstanding_ar`, `overdue_ar`, `sales_today`, `sales_mtd`, `gst_collected_mtd`. The pre-INT-12 cards `low_stock_skus` and `supplier_ap` were dropped — they were always 0 in live mode (inventory + purchase modules aren't wired live yet). Numbers reasonable for current data (₹0 for fresh org).
 - [ ] **2.3** Activity feed shows last 10 events (signup, finalize, receipt). Empty-state copy is human, not "No data".
 - [ ] **2.4** Hard-refresh; KPIs cached for 60s server-side (per `dashboard_service.invalidate_firm`). Post a new receipt → wait 60s → KPIs update on next refresh.
 
@@ -101,7 +114,7 @@ Save both UUIDs — you'll need them for 5A.
 
 ### 3A · Invoice list
 
-- [ ] **3.1** Visit `/sales/invoices`. Network: `GET /v1/invoices` 200. Table renders.
+- [ ] **3.1** Visit `/sales/invoices`. Network: `GET /invoices` 200. Table renders.
 - [ ] **3.2** Empty state (fresh org): friendly empty card, not a blank table.
 - [ ] **3.3** With ≥ 1 invoice: row shows series/number, party name, date, total, paid, status pill.
 - [ ] **3.4** Click a row → navigates to `/sales/invoices/{id}`.
@@ -125,7 +138,7 @@ Save both UUIDs — you'll need them for 5A.
 Using `PARTY_ID` and `ITEM_ID` from 3.0:
 
 ```bash
-curl -s -X POST localhost:8000/v1/invoices \
+curl -s -X POST localhost:8000/invoices \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: $(uuidgen)" \
@@ -163,7 +176,7 @@ Prereq: at least one DRAFT invoice (from 4A).
 
 ### 5A · Finalize happy path
 
-- [ ] **5.1** From `/sales/invoices/{id}`, click **Finalize**. Network: `POST /v1/invoices/{id}/finalize` → 200.
+- [ ] **5.1** From `/sales/invoices/{id}`, click **Finalize**. Network: `POST /invoices/{id}/finalize` → 200.
 - [ ] **5.2** Pill flips to FINALIZED. Print button still shows the coming-soon dialog.
 - [ ] **5.3** psql: `SELECT lifecycle_status FROM sales_invoice WHERE sales_invoice_id = …;` → `FINALIZED`.
 - [ ] **5.4** psql: voucher posted —
@@ -189,10 +202,12 @@ Prereq: at least one DRAFT invoice (from 4A).
 
 Repeat 4A for each:
 
-- [ ] **5.9** **Intra-state B2B** (seller MH, customer MH, GSTIN). Finalize. GL has CGST + SGST split, no IGST line. `tax_type=CGST_SGST`.
-- [ ] **5.10** **Inter-state B2C above ₹2.5L** (seller MH, customer GJ, no GSTIN, total > 2,50,000). Finalize. GL has IGST line, no CGST/SGST. `tax_type=IGST`.
-- [ ] **5.11** **Inter-state B2C below ₹2.5L** (seller MH, customer GJ, no GSTIN, total < 2,50,000). Finalize. GL stays in seller state — CGST + SGST. (B2C low-value rule.)
-- [ ] **5.12** **Bill of supply** (NIL_LUT tax type). No GST line in voucher. `doc_type=BILL_OF_SUPPLY`.
+**INT-11 fix**: inter-state supply is **always IGST** regardless of value. The ₹2.5L threshold is a GSTR-1 reporting bucket flag (`gstr1_section: B2CL` for high-value, `B2CS` for low-value), NOT a tax-type flip. Pre-INT-11 the code (and this guide) were wrong on 5.11.
+
+- [ ] **5.9** **Intra-state B2B** (seller MH, customer MH, GSTIN). Finalize. GL has CGST + SGST split, no IGST line. `tax_type=CGST_SGST`. `gstr1_section=B2B`.
+- [ ] **5.10** **Inter-state B2C above ₹2.5L** (seller MH, customer GJ, no GSTIN, total > 2,50,000). Finalize. `tax_type=IGST`, `pos_state=GJ`, `gstr1_section=B2CL` (invoice-wise filing).
+- [ ] **5.11** **Inter-state B2C below ₹2.5L** (seller MH, customer GJ, no GSTIN, total < 2,50,000). Finalize. `tax_type=IGST` (per actual GST law — pre-INT-11 was CGST_SGST, that was the bug), `pos_state=GJ`, `gstr1_section=B2CS` (consolidated filing).
+- [ ] **5.12** **Bill of supply** (NIL_LUT tax type or composition firm). No GST line in voucher. `doc_type=BILL_OF_SUPPLY`. *Note*: composition-firm trigger is **deferred to TASK-INT-14**; today, COMPOSITION firms still emit TAX_INVOICE. NIL_LUT export under LUT works.
 
 ---
 
@@ -203,7 +218,7 @@ Prereq: at least one FINALIZED invoice (from 5A) with paid_amount = 0.
 ### 6A · Post happy path (UI)
 
 - [ ] **6.1** From `/sales/invoices/{id}`, click **Record payment**. Form opens.
-- [ ] **6.2** Enter half the outstanding amount, mode **CASH**, no reference. Save. Network: `POST /v1/receipts` 201.
+- [ ] **6.2** Enter half the outstanding amount, mode **CASH**, no reference. Save. Network: `POST /receipts` 201.
 - [ ] **6.3** Invoice pill flips to **PARTIALLY_PAID**, paid increments, outstanding shrinks. Same on hard refresh.
 - [ ] **6.4** Record another receipt for the **remaining** outstanding via mode **UPI**. Pill → **PAID**, outstanding = ₹0.
 - [ ] **6.5** psql: 2 voucher rows with `voucher_type='RECEIPT'`. 2 payment_allocation rows pointing at the same invoice. AR ledger DR vs CR balanced (across both vouchers).
@@ -212,7 +227,7 @@ Prereq: at least one FINALIZED invoice (from 5A) with paid_amount = 0.
 
 - [ ] **6.6** Visit `/accounting` → Receipts tab. Both rows visible. Newest first.
 - [ ] **6.7** Each row shows: party_name (not blank), mode column ("Cash" / "Upi"), allocated invoice numbers in last column (e.g. `RT/2526/0001`).
-- [ ] **6.8** Network: single `GET /v1/receipts?limit=100`. No N+1 follow-ups for party/allocations (CRIT-1 fix).
+- [ ] **6.8** Network: single `GET /receipts?limit=100`. No N+1 follow-ups for party/allocations (CRIT-1 fix).
 
 ### 6C · FIFO across multiple invoices
 
@@ -238,22 +253,32 @@ Prereq: at least one FINALIZED invoice (from 5A) with paid_amount = 0.
 ## 7 · Cross-firm RLS isolation
 
 - [ ] **7.1** In an incognito window, sign up a **second org** (different email, different org name). Create one party + one invoice there.
-- [ ] **7.2** In the original window, hit `GET /v1/invoices?limit=100` directly. Org B's rows do **not** appear, even though tokens are valid.
-- [ ] **7.3** Try to fetch Org B's invoice by its UUID from Org A's session: `GET /v1/invoices/<org-B-id>` → 404, not 403 or 200. (RLS hides existence.)
+- [ ] **7.2** In the original window, hit `GET /invoices?limit=100` directly. Org B's rows do **not** appear, even though tokens are valid.
+- [ ] **7.3** Try to fetch Org B's invoice by its UUID from Org A's session: `GET /invoices/<org-B-id>` → 404, not 403 or 200. (RLS hides existence.)
 - [ ] **7.4** psql as a non-superuser session: `SET app.current_org_id = '<org-A-id>'; SELECT count(*) FROM sales_invoice;` — only Org A's count.
 
 ---
 
 ## 8 · Error envelopes (Q8a contract)
 
-Every error response must match `{code, title, detail, status, field_errors?, request_id}`.
+**INT-8 fix**: every error response — **including Pydantic validation
+422s** — now matches `{code, title, detail, status, field_errors,
+request_id}`. The pre-INT-8 raw-FastAPI `{detail: [...]}` shape is
+gone. `field_errors` is a flat dotted-key map: `body.lines.0.qty`,
+`path.sales_invoice_id`, `query.limit`, `header.idempotency-key`. The
+leading scope segment is preserved so the FE knows whether to surface
+the message to a form (`body.*`) or a banner (`path.*`/`query.*`).
 
-- [ ] **8.1** 401 (expired token, manually clobbered) → envelope `UNAUTHORIZED`, banner appears, refresh attempt or redirect to login.
+`request_id` appears in BOTH the response body AND the `X-Request-ID`
+header with the same value (per INT-8's `RequestContextMiddleware`).
+
+- [ ] **8.1** 401 (expired token, manually clobbered) → envelope `TOKEN_INVALID`, banner appears, refresh attempt or redirect to login.
 - [ ] **8.2** 403 (call an endpoint your role doesn't have) → envelope `PERMISSION_DENIED`. UI shows inline message, not a generic toast.
 - [ ] **8.3** 404 (random UUID) → envelope, generic "Not found" UI.
 - [ ] **8.4** 409 (state conflict — e.g. finalize twice) → envelope, stale banner.
-- [ ] **8.5** 422 / 400 (validation) → envelope `field_errors` populated; form highlights the bad fields.
-- [ ] **8.6** 500 (forced — kill Postgres mid-request) → envelope `INTERNAL_ERROR`, no stack trace leaked. After Postgres restart, retry succeeds.
+- [ ] **8.5** 422 (validation) → envelope `VALIDATION_ERROR` with `field_errors` as `{"body.lines.0.qty": ["must be > 0"], …}`; form highlights the bad fields by binding `name="lines.0.qty"` to the FE form library.
+- [ ] **8.6** 500 (forced — kill Postgres mid-request) → envelope `UNKNOWN`, no stack trace leaked. After Postgres restart, retry succeeds.
+- [ ] **8.7** Compare `body.request_id` to `X-Request-ID` response header — they must be identical (same UUID v4). Tester can copy-paste from either.
 
 ---
 
