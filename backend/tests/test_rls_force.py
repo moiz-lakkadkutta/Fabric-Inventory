@@ -27,20 +27,25 @@ from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 
 def _app_db_url() -> str:
-    """Build the fabric_app DATABASE_URL from the migration URL.
+    """Build a DATABASE_URL that connects as `fabric_app`.
 
-    The test relies on the convention that fabric_app uses password
-    `fabric_app_dev` in the dev database (set by the INT-9 migration).
-    Hardcoded here rather than parsed from env so the test fails LOUDLY
-    if someone changes the password without updating the test.
+    Takes whatever URL is in the env (CI uses `postgres:postgres@…`,
+    dev uses `fabric:fabric_dev@…`) and rewrites the user:password
+    pair to `fabric_app:fabric_app_dev`. URL parsing rather than naive
+    string replace so it works in both environments.
     """
+    import urllib.parse as urlparse
+
     db_url = os.environ.get("MIGRATION_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
     if not db_url:
         pytest.skip("DATABASE_URL not set")
-    # Sync (psycopg2) URL for raw SQL tests.
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
-    # Replace fabric:fabric_dev with fabric_app:fabric_app_dev.
-    return sync_url.replace("fabric:fabric_dev", "fabric_app:fabric_app_dev", 1)
+    # urllib.parse can't natively handle `postgresql+asyncpg://`; strip the
+    # `+driver` suffix for parsing, then put it back as `+psycopg2`.
+    parsed = urlparse.urlparse(db_url.replace("postgresql+asyncpg://", "postgresql://", 1))
+    new_netloc = f"fabric_app:fabric_app_dev@{parsed.hostname}:{parsed.port or 5432}"
+    return urlparse.urlunparse(
+        ("postgresql+psycopg2", new_netloc, parsed.path, "", "", "")
+    )
 
 
 @pytest.fixture
