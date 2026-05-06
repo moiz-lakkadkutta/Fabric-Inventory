@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import uuid
 
+from tests.conftest import IdempotentTestClient
+
 # This file uses the IdempotentTestClient + http_client fixture from conftest.
 
 _PASSWORD = "PasswordOk123"
@@ -38,7 +40,7 @@ def _signup_body(name_suffix: str = "") -> dict[str, str]:
     }
 
 
-def test_logout_accepts_cookie_only(http_client) -> None:
+def test_logout_accepts_cookie_only(http_client: IdempotentTestClient) -> None:
     """POST /auth/logout with the HttpOnly refresh cookie and NO body
     must succeed. Today (pre-INT-10) it 422s with `Field required`."""
     body = _signup_body("logout-cookie")
@@ -55,7 +57,7 @@ def test_logout_accepts_cookie_only(http_client) -> None:
     assert r.json().get("revoked") is True
 
 
-def test_refresh_accepts_cookie_only(http_client) -> None:
+def test_refresh_accepts_cookie_only(http_client: IdempotentTestClient) -> None:
     """POST /auth/refresh with cookie + no body + no Idempotency-Key
     must succeed. Refresh is intrinsically idempotent — token rotation
     is safe to replay."""
@@ -69,7 +71,9 @@ def test_refresh_accepts_cookie_only(http_client) -> None:
     assert "refresh_token" in r.json()
 
 
-def test_login_response_includes_org_firm_and_available_firms(http_client) -> None:
+def test_login_response_includes_org_firm_and_available_firms(
+    http_client: IdempotentTestClient,
+) -> None:
     """LoginResponse mirrors SignupResponse: org_id + firm_id (auto when
     user has exactly one firm) + available_firms list. Removes the FE's
     second `/auth/me` round-trip."""
@@ -97,7 +101,7 @@ def test_login_response_includes_org_firm_and_available_firms(http_client) -> No
     assert len(data["available_firms"]) == 1
 
 
-def test_signup_duplicate_email_same_org_returns_409(http_client) -> None:
+def test_signup_duplicate_email_same_org_returns_409(http_client: IdempotentTestClient) -> None:
     """Same email + same org name → 409 USER_EMAIL_TAKEN per the QA
     contract. Not 422 VALIDATION_ERROR (that's the org-name dup, which
     fires AFTER the email check)."""
@@ -112,7 +116,7 @@ def test_signup_duplicate_email_same_org_returns_409(http_client) -> None:
     assert envelope["status"] == 409
 
 
-def test_signup_same_email_different_org_succeeds(http_client) -> None:
+def test_signup_same_email_different_org_succeeds(http_client: IdempotentTestClient) -> None:
     """Per-org email model: the same email under a DIFFERENT org name
     should still work. This is the intended SaaS multi-tenancy behavior;
     the QA spec previously hid it."""
@@ -128,7 +132,7 @@ def test_signup_same_email_different_org_succeeds(http_client) -> None:
     assert other_resp.status_code == 201, other_resp.text
 
 
-def test_refresh_does_not_require_idempotency_key(http_client) -> None:
+def test_refresh_does_not_require_idempotency_key(http_client: IdempotentTestClient) -> None:
     """Refresh is intrinsically idempotent (tokens rotate). Dropping the
     `Idempotency-Key` requirement removes a UUID generation burden from
     the FE silent-refresh-on-401 path."""
