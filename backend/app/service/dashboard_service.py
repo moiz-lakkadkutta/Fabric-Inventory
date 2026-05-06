@@ -45,8 +45,7 @@ KpiKey = Literal[
     "overdue_ar",
     "sales_today",
     "sales_mtd",
-    "low_stock_skus",
-    "supplier_ap",
+    "gst_collected_mtd",
 ]
 KpiUnit = Literal["₹", "count"]
 DeltaKind = Literal["positive", "negative", "neutral"]
@@ -205,6 +204,34 @@ def _sales_in_range(
     return Decimal(total or 0)
 
 
+def _gst_collected_in_range(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    start: datetime.date,
+    end: datetime.date,
+) -> Decimal:
+    """Sum of `gst_amount` for finalized invoices in [start, end].
+
+    Why this matters: textile firms watch GST-collected MTD because it
+    foreshadows their GSTR-3B liability for the month. Without it on
+    the dashboard, Moiz had to run an ad-hoc query every time a customer
+    asked "how much GST am I sitting on?"
+    """
+    total: Decimal | None = session.execute(
+        select(func.coalesce(func.sum(SalesInvoice.gst_amount), 0)).where(
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.firm_id == firm_id,
+            SalesInvoice.deleted_at.is_(None),
+            SalesInvoice.lifecycle_status.in_(_NON_CANCELLED_LIFECYCLES),
+            SalesInvoice.invoice_date >= start,
+            SalesInvoice.invoice_date <= end,
+        )
+    ).scalar_one()
+    return Decimal(total or 0)
+
+
 def _low_stock_skus(session: Session, *, org_id: uuid.UUID, firm_id: uuid.UUID) -> int:
     """Count of items whose total on-hand across all locations is ≤ 0.
 
@@ -299,20 +326,14 @@ def get_kpis(
             delta_kind="positive",
         ),
         Kpi(
-            key="low_stock_skus",
-            label="Stocked-out SKUs",
-            value=Decimal(_low_stock_skus(session, org_id=org_id, firm_id=firm_id)),
-            unit="count",
-            delta_pct=Decimal("0"),
-            delta_kind="negative",
-        ),
-        Kpi(
-            key="supplier_ap",
-            label="Supplier payables",
-            value=_supplier_ap(session, org_id=org_id, firm_id=firm_id),
+            key="gst_collected_mtd",
+            label="GST collected · MTD",
+            value=_gst_collected_in_range(
+                session, org_id=org_id, firm_id=firm_id, start=month_start, end=today
+            ),
             unit="₹",
             delta_pct=Decimal("0"),
-            delta_kind="positive",  # Up = more credit, not necessarily bad.
+            delta_kind="neutral",  # Up = more sales (good) AND more liability (neutral).
         ),
     ]
     _kpi_cache.set(firm_id, kpis)

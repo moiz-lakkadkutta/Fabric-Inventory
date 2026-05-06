@@ -116,13 +116,14 @@ def test_get_kpis_zero_state(db_session: OrmSession) -> None:
 
     kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id)
     keys = {k.key for k in kpis}
+    # Post-INT-12: low_stock_skus + supplier_ap dropped (mock-only),
+    # gst_collected_mtd added.
     assert keys == {
         "outstanding_ar",
         "overdue_ar",
         "sales_today",
         "sales_mtd",
-        "low_stock_skus",
-        "supplier_ap",
+        "gst_collected_mtd",
     }
     for k in kpis:
         assert k.value == Decimal("0")
