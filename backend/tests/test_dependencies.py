@@ -16,7 +16,7 @@ from typing import Annotated
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
 
@@ -188,6 +188,7 @@ def test_token_permissions_are_snapshotted_at_issue_time(
     org_id = uuid.UUID(body["org_id"])
     user_id = uuid.UUID(body["user_id"])
     with OrmSession(sync_engine) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         from app.models import UserRole
 
         owner_role = session.execute(
@@ -202,6 +203,7 @@ def test_token_permissions_are_snapshotted_at_issue_time(
 
     # Confirm via service that the user has zero permissions now.
     with OrmSession(sync_engine) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         live_perms = rbac_service.get_user_permissions(session, user_id=user_id, firm_id=None)
         assert live_perms == set()
 

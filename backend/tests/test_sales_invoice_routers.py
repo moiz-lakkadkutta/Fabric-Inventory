@@ -46,7 +46,7 @@ def _seed_invoice_for(sync_engine: Engine, *, org_id: uuid.UUID, firm_id: uuid.U
     from app.models import Item, Party, SalesInvoice, SiLine
     from app.models.masters import ItemType, TrackingType, UomType
 
-    with OrmSession(sync_engine) as session:
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
 
         party = Party(
@@ -206,7 +206,10 @@ def _seed_party_and_item(
     from app.models import Firm, Item, Party
     from app.models.masters import ItemType, TrackingType, UomType
 
-    with OrmSession(sync_engine) as session:
+    # expire_on_commit=False keeps the IDs accessible after commit; under
+    # fabric_app the post-commit refresh would re-query without the GUC
+    # and surface as ObjectDeletedError.
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         firm = session.execute(select(Firm).where(Firm.firm_id == firm_id)).scalar_one()
         firm.state_code = "MH"
@@ -347,6 +350,8 @@ def test_create_invoice_writes_audit_log(http_client: TestClient, sync_engine: E
     from app.models import AuditLog
 
     with OrmSession(sync_engine) as session:
+        # Under fabric_app, the audit row only surfaces when GUC is set.
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
         rows = (
             session.execute(
                 select(AuditLog).where(
@@ -433,7 +438,9 @@ def test_list_invoices_isolated_after_switch_firm(
     # Build a sibling firm under the same org.
     from app.models import Firm
 
-    with OrmSession(sync_engine) as session:
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        # GUC required under fabric_app: WITH CHECK enforces org match.
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         firm_b = Firm(
             org_id=org_id,
             code=f"FB{uuid.uuid4().hex[:5].upper()}",

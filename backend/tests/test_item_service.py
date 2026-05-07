@@ -487,7 +487,7 @@ def test_list_hsn_returns_direct_insert(db_session: OrmSession, fresh_org_id: uu
 _RLS_TEST_ROLE = "rls_isolation_test_role"
 
 
-def test_rls_blocks_cross_org_item_reads(sync_engine: Engine) -> None:
+def test_rls_blocks_cross_org_item_reads(admin_engine: Engine) -> None:
     """Two orgs, two connections, each pinned to its own `app.current_org_id`
     GUC. The policy on `item` must filter so org A cannot see org B's row.
 
@@ -509,7 +509,7 @@ def test_rls_blocks_cross_org_item_reads(sync_engine: Engine) -> None:
 
     # Setup: ensure the non-superuser role exists, FORCE RLS on item, GRANT
     # the bare minimum perms the test needs.
-    setup_conn = sync_engine.connect()
+    setup_conn = admin_engine.connect()
     try:
         setup_conn.execute(
             text(
@@ -528,7 +528,7 @@ def test_rls_blocks_cross_org_item_reads(sync_engine: Engine) -> None:
 
     # Insert two orgs + one item each, as the superuser (no RLS scoping
     # needed for setup writes — the test is about read isolation).
-    insert_conn = sync_engine.connect()
+    insert_conn = admin_engine.connect()
     try:
         insert_session = OrmSession(bind=insert_conn)
         insert_session.add_all(
@@ -572,7 +572,7 @@ def test_rls_blocks_cross_org_item_reads(sync_engine: Engine) -> None:
 
     try:
         # Org A's view via the non-superuser role.
-        conn_a = sync_engine.connect()
+        conn_a = admin_engine.connect()
         try:
             tx_a = conn_a.begin()
             conn_a.execute(text(f"SET LOCAL ROLE {_RLS_TEST_ROLE}"))
@@ -588,7 +588,7 @@ def test_rls_blocks_cross_org_item_reads(sync_engine: Engine) -> None:
             conn_a.close()
 
         # Org B's view: mirror.
-        conn_b = sync_engine.connect()
+        conn_b = admin_engine.connect()
         try:
             tx_b = conn_b.begin()
             conn_b.execute(text(f"SET LOCAL ROLE {_RLS_TEST_ROLE}"))
@@ -606,7 +606,7 @@ def test_rls_blocks_cross_org_item_reads(sync_engine: Engine) -> None:
         # Cleanup — skus cascade from item (ON DELETE CASCADE), so
         # deleting items removes their skus automatically.
         # Then orgs. Finally revert FORCE RLS.
-        cleanup_conn = sync_engine.connect()
+        cleanup_conn = admin_engine.connect()
         try:
             cleanup_conn.execute(
                 text("DELETE FROM audit_log WHERE org_id IN (:a, :b)"),

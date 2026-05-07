@@ -67,7 +67,7 @@ def _create_location_and_add_stock(
 
     from app.service import inventory_service
 
-    with _OrmSession(sync_engine.connect()) as session:
+    with _OrmSession(sync_engine.connect(), expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         loc = inventory_service.get_or_create_default_location(
             session,

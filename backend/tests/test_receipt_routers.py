@@ -55,7 +55,7 @@ def _seed_party_and_item(sync_engine: Engine, *, org_id: uuid.UUID) -> tuple[uui
     from app.models import Item, Party
     from app.models.masters import ItemType, TrackingType, UomType
 
-    with OrmSession(sync_engine) as session:
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         party = Party(
             org_id=org_id,

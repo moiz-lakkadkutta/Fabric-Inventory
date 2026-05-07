@@ -73,7 +73,13 @@ jobs:
     env:
       # CI=true is set by GitHub Actions automatically; restated here for clarity.
       # Tests use this to fail-loud instead of skip when Postgres is unreachable.
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test
+      #
+      # Per TASK-INT-16, the runtime DATABASE_URL connects as `fabric_app`
+      # (NOBYPASSRLS) so RLS is enforced — superuser would silently bypass
+      # every policy. The role is created by the INT-9 migration; alembic
+      # itself runs under the postgres superuser via MIGRATION_DATABASE_URL.
+      DATABASE_URL: postgresql+asyncpg://fabric_app:fabric_app_dev@localhost:5432/test
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test
 
     steps:
       - uses: actions/checkout@v4

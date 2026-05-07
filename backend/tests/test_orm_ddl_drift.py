@@ -41,10 +41,15 @@ def _alembic_ini_path() -> str:
 
 @pytest.fixture
 def migrated_engine() -> Iterator[Engine]:
-    """Apply alembic upgrade head, yield a sync engine, leave schema in place."""
-    db_url = os.environ.get("DATABASE_URL", "")
+    """Apply alembic upgrade head, yield a sync engine, leave schema in place.
+
+    Uses MIGRATION_DATABASE_URL (superuser/owner) since DROP SCHEMA + alembic
+    upgrade need DDL privileges. Per TASK-INT-16 the runtime DATABASE_URL is
+    `fabric_app` (NOBYPASSRLS); falls back to DATABASE_URL for legacy setups.
+    """
+    db_url = os.environ.get("MIGRATION_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
     if not db_url:
-        pytest.skip("DATABASE_URL not set")
+        pytest.skip("MIGRATION_DATABASE_URL/DATABASE_URL not set")
     sync_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
 
     engine = create_engine(sync_url, future=True)

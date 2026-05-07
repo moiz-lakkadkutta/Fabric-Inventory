@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 import uuid
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session as OrmSession
 
 from app.models import AppUser, FeatureFlag, Firm, Organization
@@ -15,7 +16,13 @@ from app.service import feature_flag_service
 
 
 def _seed_org_firm_user(db: OrmSession) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    # Pre-mint org_id and SET GUC: under fabric_app the WITH CHECK on every
+    # tenant-scoped INSERT (firm, app_user, …) compares row.org_id against
+    # `app.current_org_id`, so the GUC must already be set when we INSERT.
+    org_id = uuid.uuid4()
+    db.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
     org = Organization(
+        org_id=org_id,
         name=f"ff-org-{uuid.uuid4().hex[:8]}",
         admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
     )

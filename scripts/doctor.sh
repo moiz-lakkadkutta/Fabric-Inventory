@@ -89,11 +89,21 @@ else
 fi
 
 # ── alembic head matches latest migration on disk ─────────────────────────────
+# Alembic reads DATABASE_URL / MIGRATION_DATABASE_URL from env; the doctor
+# script may be invoked from a shell that didn't source backend/.env (the
+# common case when run via `make doctor`). Source it inside the subshell so
+# alembic finds the URL — without leaking those vars into the doctor's own
+# shell. Pre-INT-16 this was a bug: alembic silently returned empty under
+# `make doctor` and the head-mismatch check never fired.
 if [ -d "$REPO_ROOT/backend/alembic/versions" ]; then
   newest=$(ls -1 "$REPO_ROOT/backend/alembic/versions"/*.py 2>/dev/null | grep -v __pycache__ | sort | tail -1 || true)
   if [ -n "$newest" ]; then
     rev=$(grep -E "^revision[: ]" "$newest" | head -1 | sed -E 's/.*= *"?([^" ]+)"? *.*/\1/')
-    current=$(cd "$REPO_ROOT/backend" && uv run alembic current 2>/dev/null | grep -oE '^[a-z0-9_]+' | tail -1 || true)
+    current=$(
+      cd "$REPO_ROOT/backend" && \
+      ( [ -f .env ] && set -a && . ./.env && set +a ; \
+        uv run alembic current 2>/dev/null ) | grep -oE '^[a-z0-9_]+' | tail -1 || true
+    )
     if [ -z "$current" ]; then
       yellow "alembic current returned nothing — DB unreachable or never migrated"
     elif [ "$current" = "$rev" ]; then

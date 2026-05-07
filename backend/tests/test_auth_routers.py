@@ -17,7 +17,7 @@ import uuid
 
 import pyotp
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 
 
@@ -229,14 +229,18 @@ def test_login_with_unknown_org_returns_401(http_client: TestClient) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _enable_mfa_for(client: TestClient, sync_engine: Engine, user_id: uuid.UUID) -> str:
+def _enable_mfa_for(
+    client: TestClient, sync_engine: Engine, user_id: uuid.UUID, org_id: uuid.UUID
+) -> str:
     """Use the service directly to enable MFA on a freshly-created user
     (the public 'enable MFA' router lands later)."""
     from sqlalchemy.orm import Session as OrmSession
 
     from app.service import identity_service
 
-    with OrmSession(sync_engine) as s:
+    with OrmSession(sync_engine, expire_on_commit=False) as s:
+        # GUC required under fabric_app: enable_mfa SELECTs the user row.
+        s.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         enrollment = identity_service.enable_mfa(s, user_id=user_id)
         s.commit()
     return enrollment.secret
@@ -249,7 +253,7 @@ def test_login_with_mfa_enabled_returns_requires_mfa_true(
     org_name = _unique_org_name()
     password = "strong-password-1"
     body = _signup(http_client, email=email, password=password, org_name=org_name)
-    _enable_mfa_for(http_client, sync_engine, uuid.UUID(body["user_id"]))
+    _enable_mfa_for(http_client, sync_engine, uuid.UUID(body["user_id"]), uuid.UUID(body["org_id"]))
 
     resp = http_client.post(
         "/auth/login",
@@ -269,7 +273,9 @@ def test_mfa_verify_with_valid_totp_returns_tokens(
     org_name = _unique_org_name()
     password = "strong-password-1"
     body = _signup(http_client, email=email, password=password, org_name=org_name)
-    secret = _enable_mfa_for(http_client, sync_engine, uuid.UUID(body["user_id"]))
+    secret = _enable_mfa_for(
+        http_client, sync_engine, uuid.UUID(body["user_id"]), uuid.UUID(body["org_id"])
+    )
 
     code = pyotp.TOTP(secret).now()
     resp = http_client.post(
@@ -294,7 +300,7 @@ def test_mfa_verify_with_wrong_code_returns_401(
     org_name = _unique_org_name()
     password = "strong-password-1"
     body = _signup(http_client, email=email, password=password, org_name=org_name)
-    _enable_mfa_for(http_client, sync_engine, uuid.UUID(body["user_id"]))
+    _enable_mfa_for(http_client, sync_engine, uuid.UUID(body["user_id"]), uuid.UUID(body["org_id"]))
 
     resp = http_client.post(
         "/auth/mfa-verify",
@@ -314,7 +320,9 @@ def test_mfa_verify_with_wrong_password_returns_401(
     email = _unique_email()
     org_name = _unique_org_name()
     body = _signup(http_client, email=email, password="strong-password-1", org_name=org_name)
-    secret = _enable_mfa_for(http_client, sync_engine, uuid.UUID(body["user_id"]))
+    secret = _enable_mfa_for(
+        http_client, sync_engine, uuid.UUID(body["user_id"]), uuid.UUID(body["org_id"])
+    )
     code = pyotp.TOTP(secret).now()
 
     resp = http_client.post(
@@ -412,6 +420,7 @@ def test_logout_revokes_session_and_blocks_subsequent_refresh(
     from app.service import identity_service
 
     with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{body['org_id']}'"))
         rows = (
             s.execute(
                 select(DbSession).where(
