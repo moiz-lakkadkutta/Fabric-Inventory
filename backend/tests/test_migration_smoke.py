@@ -34,15 +34,16 @@ def _alembic_ini_path() -> Path:
 
 @pytest.fixture
 def sync_postgres_engine() -> Iterator[Engine]:
-    """Yield a sync psycopg2 engine pointing at DATABASE_URL.
+    """Yield a sync psycopg2 engine pointing at MIGRATION_DATABASE_URL.
 
-    Skips the test when Postgres isn't reachable (typical local-dev case
-    when Docker isn't running). CI's services container is reachable so
-    this fixture activates the assertion path there.
+    DROP SCHEMA + alembic upgrade need owner / superuser privileges.
+    Per TASK-INT-16 the runtime DATABASE_URL is `fabric_app` (NOBYPASSRLS,
+    not table owner), so this test reads MIGRATION_DATABASE_URL with a
+    fallback to DATABASE_URL for legacy single-role setups.
     """
-    db_url = os.environ.get("DATABASE_URL", "")
+    db_url = os.environ.get("MIGRATION_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
     if not db_url:
-        pytest.skip("DATABASE_URL not set")
+        pytest.skip("MIGRATION_DATABASE_URL/DATABASE_URL not set")
     sync_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
     try:
         engine = create_engine(sync_url, future=True)

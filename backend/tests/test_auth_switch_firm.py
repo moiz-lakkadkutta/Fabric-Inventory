@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
 
@@ -36,7 +36,9 @@ def _signup(client: IdempotentTestClient) -> dict[str, str]:
 
 def _create_sibling_firm(sync_engine: Engine, org_id: uuid.UUID) -> uuid.UUID:
     """Add a second firm under the same org so the Owner can switch into it."""
-    with OrmSession(sync_engine) as session:
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        # GUC required under fabric_app: WITH CHECK enforces org match.
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         firm = Firm(
             org_id=org_id,
             code=f"SIB{uuid.uuid4().hex[:6].upper()}",
@@ -88,6 +90,7 @@ def test_switch_firm_writes_audit_log(
     ).raise_for_status()
 
     with OrmSession(sync_engine) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         entry = session.execute(
             select(AuditLog).where(
                 AuditLog.user_id == user_id,
@@ -107,10 +110,15 @@ def test_switch_firm_to_other_org_returns_404(
     body_a = _signup(http_client)
 
     # Build a separate org with its own firm.
-    with OrmSession(sync_engine) as session:
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
         from app.models import Organization
 
+        # Pre-mint org_b's id and SET the GUC so WITH CHECK passes at INSERT
+        # under fabric_app — same pattern as the signup bootstrap path.
+        org_b_id = uuid.uuid4()
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_b_id}'"))
         org_b = Organization(
+            org_id=org_b_id,
             name=f"Other Org {uuid.uuid4().hex[:8]}",
             admin_email=f"otheradmin-{uuid.uuid4().hex[:6]}@example.com",
         )

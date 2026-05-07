@@ -11,6 +11,7 @@ so a misconfigured workflow can't silently mask drift.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -138,6 +139,52 @@ def db_session(sync_engine: Engine) -> Iterator[OrmSession]:
         session.close()
         transaction.rollback()
         connection.close()
+
+
+@pytest.fixture
+def admin_engine() -> Iterator[Engine]:
+    """Sync engine connected as the migration role (BYPASSRLS / superuser).
+
+    Per TASK-INT-16, the runtime DATABASE_URL connects as `fabric_app`
+    (NOBYPASSRLS) so RLS is enforced. Tests that need to seed cross-tenant
+    fixtures, drop test data, or read system catalogs use this fixture
+    to bypass RLS deliberately. Falls back to DATABASE_URL when
+    MIGRATION_DATABASE_URL is unset (single-role local setups).
+    """
+    db_url = os.environ.get("MIGRATION_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
+    if not db_url:
+        if os.environ.get("CI") == "true":
+            pytest.fail("MIGRATION_DATABASE_URL or DATABASE_URL must be set in CI")
+        pytest.skip("MIGRATION_DATABASE_URL/DATABASE_URL not set")
+    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+    try:
+        engine = create_engine(sync_url, future=True)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        if os.environ.get("CI") == "true":
+            pytest.fail(f"Migration DB unreachable in CI: {exc}")
+        pytest.skip(f"Migration DB unreachable: {exc}")
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@contextlib.contextmanager
+def org_scoped_session(engine: Engine, org_id: uuid.UUID) -> Iterator[OrmSession]:
+    """Yield an ORM session pre-set with `app.current_org_id` = org_id.
+
+    Use this when a test needs to inspect / seed rows under fabric_app
+    (NOBYPASSRLS): without the GUC, every SELECT returns zero rows and
+    every INSERT fails the WITH CHECK clause. `expire_on_commit=False`
+    avoids the post-commit refresh that would re-issue a SELECT outside
+    the SET LOCAL scope.
+    """
+    with OrmSession(engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        yield session
+        session.commit()
 
 
 @pytest.fixture

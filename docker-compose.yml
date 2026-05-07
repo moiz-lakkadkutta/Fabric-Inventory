@@ -36,7 +36,11 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-fabric}:${POSTGRES_PASSWORD:-fabric_dev}@postgres:5432/${POSTGRES_DB:-fabric_erp}
+      # Runtime DB connection: fabric_app (NOBYPASSRLS) so RLS is enforced
+      # at runtime (per TASK-INT-16). The role is created by the INT-9
+      # migration; alembic still runs under the superuser at boot.
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-fabric_app}:${APP_DB_PASSWORD:-fabric_app_dev}@postgres:5432/${POSTGRES_DB:-fabric_erp}
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-fabric}:${POSTGRES_PASSWORD:-fabric_dev}@postgres:5432/${POSTGRES_DB:-fabric_erp}
       REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:
