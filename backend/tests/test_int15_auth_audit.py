@@ -17,6 +17,7 @@ import uuid
 
 from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session as OrmSession
 
 from app.models import AuditLog
 from tests.conftest import IdempotentTestClient
@@ -41,16 +42,16 @@ def _audit_rows(sync_engine: Engine, *, org_id: uuid.UUID, action: str) -> list[
     with sync_engine.connect() as conn:
         # Set GUC so RLS-enforced reads see the row even under fabric_app.
         conn.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
-        rows = list(
-            conn.execute(
-                select(AuditLog).where(
-                    AuditLog.org_id == org_id,
-                    AuditLog.entity_type == "auth.session",
-                    AuditLog.action == action,
-                )
+        with OrmSession(bind=conn) as session:
+            return list(
+                session.execute(
+                    select(AuditLog).where(
+                        AuditLog.org_id == org_id,
+                        AuditLog.entity_type == "auth.session",
+                        AuditLog.action == action,
+                    )
+                ).scalars()
             )
-        )
-    return rows
 
 
 def test_signup_emits_auth_session_signup(
