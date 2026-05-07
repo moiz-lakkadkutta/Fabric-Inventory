@@ -28,7 +28,6 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError, InvoiceStateError, NotFoundError
 from app.models import (
-    AuditLog,
     DCLine,
     DeliveryChallan,
     Firm,
@@ -40,7 +39,13 @@ from app.models import (
     SOLine,
 )
 from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
-from app.service import accounting_service, dashboard_service, gst_service, inventory_service
+from app.service import (
+    accounting_service,
+    audit_service,
+    dashboard_service,
+    gst_service,
+    inventory_service,
+)
 from app.service.gst_service import BuyerStatus, TaxType
 
 # ──────────────────────────────────────────────────────────────────────
@@ -887,27 +892,26 @@ def create_draft_invoice(
             )
         )
 
-    session.add(
-        AuditLog(
-            org_id=org_id,
-            firm_id=firm_id,
-            user_id=created_by,
-            entity_type="sales.invoice",
-            entity_id=invoice.sales_invoice_id,
-            action="create_draft",
-            changes={
-                "after": {
-                    "series": series,
-                    "number": number,
-                    "party_id": str(party_id),
-                    "invoice_amount": str(invoice_total),
-                    "gst_amount": str(total_gst),
-                    "tax_type": pos_decision.tax_type.value,
-                    "place_of_supply_state": pos_decision.pos_state,
-                    "lines": len(line_records),
-                }
-            },
-        )
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        user_id=created_by,
+        entity_type="sales.invoice",
+        entity_id=invoice.sales_invoice_id,
+        action="create_draft",
+        changes={
+            "after": {
+                "series": series,
+                "number": number,
+                "party_id": str(party_id),
+                "invoice_amount": str(invoice_total),
+                "gst_amount": str(total_gst),
+                "tax_type": pos_decision.tax_type.value,
+                "place_of_supply_state": pos_decision.pos_state,
+                "lines": len(line_records),
+            }
+        },
     )
     session.flush()
 
@@ -948,24 +952,23 @@ def finalize_invoice(
 
     voucher = accounting_service.post_invoice_to_gl(session, invoice=invoice, posted_by=updated_by)
 
-    session.add(
-        AuditLog(
-            org_id=org_id,
-            firm_id=invoice.firm_id,
-            user_id=updated_by,
-            entity_type="sales.invoice",
-            entity_id=invoice.sales_invoice_id,
-            action="finalize",
-            changes={
-                "before": {"lifecycle_status": before_status},
-                "after": {
-                    "lifecycle_status": InvoiceLifecycleStatus.FINALIZED.value,
-                    "finalized_at": now.isoformat(),
-                    "voucher_id": str(voucher.voucher_id),
-                    "voucher_number": f"{voucher.series}/{voucher.number}",
-                },
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=invoice.firm_id,
+        user_id=updated_by,
+        entity_type="sales.invoice",
+        entity_id=invoice.sales_invoice_id,
+        action="finalize",
+        changes={
+            "before": {"lifecycle_status": before_status},
+            "after": {
+                "lifecycle_status": InvoiceLifecycleStatus.FINALIZED.value,
+                "finalized_at": now.isoformat(),
+                "voucher_id": str(voucher.voucher_id),
+                "voucher_number": f"{voucher.series}/{voucher.number}",
             },
-        )
+        },
     )
     session.flush()
 

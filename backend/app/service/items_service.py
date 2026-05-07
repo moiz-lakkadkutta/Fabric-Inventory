@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.exceptions import AppValidationError
 from app.models import Hsn, Item, Sku, Uom
 from app.models.masters import ItemType, TrackingType, UomType
+from app.service import audit_service
 
 # HSN is 4 / 6 / 8 digits (4 for ≤ ₹5 Cr turnover, 6 / 8 for higher
 # turnover & exports). DDL caps to varchar(8). Format check only.
@@ -113,6 +114,26 @@ def create_item(
     )
     session.add(item)
     session.flush()
+
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        user_id=created_by,
+        entity_type="masters.item",
+        entity_id=item.item_id,
+        action="create",
+        changes={
+            "after": {
+                "code": code,
+                "name": name,
+                "item_type": item_type.value if hasattr(item_type, "value") else str(item_type),
+                "hsn_code": hsn_code,
+                "gst_rate": str(gst_rate) if gst_rate is not None else None,
+            }
+        },
+    )
+
     return item
 
 

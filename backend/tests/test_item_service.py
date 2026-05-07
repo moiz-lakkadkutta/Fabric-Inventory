@@ -609,6 +609,10 @@ def test_rls_blocks_cross_org_item_reads(sync_engine: Engine) -> None:
         cleanup_conn = sync_engine.connect()
         try:
             cleanup_conn.execute(
+                text("DELETE FROM audit_log WHERE org_id IN (:a, :b)"),
+                {"a": str(org_a_id), "b": str(org_b_id)},
+            )
+            cleanup_conn.execute(
                 text("DELETE FROM item WHERE org_id IN (:a, :b)"),
                 {"a": str(org_a_id), "b": str(org_b_id)},
             )

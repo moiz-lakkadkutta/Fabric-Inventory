@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.exceptions import AppValidationError
 from app.models import Party
 from app.models.masters import TaxStatus
+from app.service import audit_service
 from app.utils.crypto import encrypt_pii
 
 # Format check only — full GSTIN validation (state-code lookup, checksum
@@ -126,6 +127,27 @@ def create_party(
     )
     session.add(party)
     session.flush()
+
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        user_id=created_by,
+        entity_type="masters.party",
+        entity_id=party.party_id,
+        action="create",
+        changes={
+            "after": {
+                "code": code,
+                "name": name,
+                "is_supplier": is_supplier,
+                "is_customer": is_customer,
+                "is_karigar": is_karigar,
+                "is_transporter": is_transporter,
+            }
+        },
+    )
+
     return party
 
 

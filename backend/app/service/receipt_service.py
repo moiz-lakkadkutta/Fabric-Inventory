@@ -40,7 +40,6 @@ from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
 from app.models import (
-    AuditLog,
     Ledger,
     Party,
     PaymentAllocation,
@@ -50,7 +49,7 @@ from app.models import (
 )
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.sales import InvoiceLifecycleStatus
-from app.service import dashboard_service
+from app.service import audit_service, dashboard_service
 
 DEFAULT_RECEIPT_SERIES = "RCT/2526"
 
@@ -256,29 +255,27 @@ def post_receipt(
     )
     session.flush()
 
-    session.add(
-        AuditLog(
-            org_id=org_id,
-            firm_id=firm_id,
-            user_id=posted_by,
-            entity_type="banking.receipt",
-            entity_id=voucher.voucher_id,
-            action="post",
-            changes={
-                "after": {
-                    "voucher_id": str(voucher.voucher_id),
-                    "voucher_number": f"{series}/{voucher_number}",
-                    "amount": str(amount),
-                    "mode": mode,
-                    "party_id": str(party_id),
-                    "allocations": [
-                        {"sales_invoice_id": str(sid), "amount": str(amt)}
-                        for sid, amt in allocations
-                    ],
-                    "unallocated": str(remaining),
-                }
-            },
-        )
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        user_id=posted_by,
+        entity_type="banking.receipt",
+        entity_id=voucher.voucher_id,
+        action="post",
+        changes={
+            "after": {
+                "voucher_id": str(voucher.voucher_id),
+                "voucher_number": f"{series}/{voucher_number}",
+                "amount": str(amount),
+                "mode": mode,
+                "party_id": str(party_id),
+                "allocations": [
+                    {"sales_invoice_id": str(sid), "amount": str(amt)} for sid, amt in allocations
+                ],
+                "unallocated": str(remaining),
+            }
+        },
     )
     session.flush()
 
