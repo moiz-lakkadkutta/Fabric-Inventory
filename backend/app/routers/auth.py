@@ -28,7 +28,7 @@ from app.exceptions import (
     PermissionDeniedError,
     TokenInvalidError,
 )
-from app.models import AppUser, AuditLog, Firm, Organization, Role
+from app.models import AppUser, Firm, Organization, Role
 from app.models import Session as DbSession
 from app.schemas.auth import (
     LoginRequest,
@@ -45,7 +45,13 @@ from app.schemas.auth import (
     SwitchFirmResponse,
     TokenPairResponse,
 )
-from app.service import feature_flag_service, identity_service, rbac_service, seed_service
+from app.service import (
+    audit_service,
+    feature_flag_service,
+    identity_service,
+    rbac_service,
+    seed_service,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -203,6 +209,25 @@ def signup(
         pair.refresh_token,
         max_age_seconds=_seconds_until(pair.refresh_expires_at),
     )
+
+    audit_service.emit(
+        db,
+        org_id=org.org_id,
+        firm_id=firm.firm_id,
+        user_id=user.user_id,
+        entity_type="auth.session",
+        entity_id=user.user_id,
+        action="signup",
+        changes={
+            "after": {
+                "org_name": body.org_name,
+                "firm_name": body.firm_name,
+                "email": body.email,
+            }
+        },
+    )
+    db.flush()
+
     return SignupResponse(
         user_id=user.user_id,
         org_id=org.org_id,
@@ -272,6 +297,19 @@ def login(
         pair.refresh_token,
         max_age_seconds=_seconds_until(pair.refresh_expires_at),
     )
+
+    audit_service.emit(
+        db,
+        org_id=user.org_id,
+        firm_id=auto_firm_id,
+        user_id=user.user_id,
+        entity_type="auth.session",
+        entity_id=user.user_id,
+        action="login",
+        changes={"after": {"firm_id": str(auto_firm_id) if auto_firm_id else None}},
+    )
+    db.flush()
+
     return LoginResponse(
         requires_mfa=False,
         user_id=user.user_id,
@@ -335,6 +373,19 @@ def mfa_verify(
         pair.refresh_token,
         max_age_seconds=_seconds_until(pair.refresh_expires_at),
     )
+
+    audit_service.emit(
+        db,
+        org_id=user.org_id,
+        firm_id=None,
+        user_id=user.user_id,
+        entity_type="auth.session",
+        entity_id=user.user_id,
+        action="login",
+        changes={"after": {"mfa": True}},
+    )
+    db.flush()
+
     return TokenPairResponse(
         access_token=pair.access_token,
         refresh_token=pair.refresh_token,
@@ -454,6 +505,18 @@ def logout(
 
     db_session_row.revoked_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
+
+    audit_service.emit(
+        db,
+        org_id=payload.org_id,
+        firm_id=payload.firm_id,
+        user_id=payload.user_id,
+        entity_type="auth.session",
+        entity_id=payload.user_id,
+        action="logout",
+    )
+    db.flush()
+
     return LogoutResponse(revoked=True)
 
 
@@ -513,19 +576,18 @@ def switch_firm(
     )
 
     # Audit the switch — diff the firm context.
-    db.add(
-        AuditLog(
-            org_id=current_user.org_id,
-            firm_id=firm.firm_id,
-            user_id=current_user.user_id,
-            entity_type="auth.session",
-            entity_id=current_user.user_id,
-            action="switch_firm",
-            changes={
-                "before": {"firm_id": str(current_user.firm_id) if current_user.firm_id else None},
-                "after": {"firm_id": str(firm.firm_id)},
-            },
-        )
+    audit_service.emit(
+        db,
+        org_id=current_user.org_id,
+        firm_id=firm.firm_id,
+        user_id=current_user.user_id,
+        entity_type="auth.session",
+        entity_id=current_user.user_id,
+        action="switch_firm",
+        changes={
+            "before": {"firm_id": str(current_user.firm_id) if current_user.firm_id else None},
+            "after": {"firm_id": str(firm.firm_id)},
+        },
     )
     db.flush()
 

@@ -380,17 +380,30 @@ def get_activity(
     ]
 
 
+_ACTIVITY_TITLES: dict[tuple[str, str], str] = {
+    ("auth.session", "signup"): "Signed up",
+    ("auth.session", "login"): "Logged in",
+    ("auth.session", "logout"): "Logged out",
+    ("auth.session", "switch_firm"): "Switched active firm",
+    ("sales.invoice", "create_draft"): "Invoice drafted",
+    ("sales.invoice", "finalize"): "Invoice finalized",
+    ("banking.receipt", "post"): "Receipt posted",
+    ("masters.party", "create"): "Party added",
+    ("masters.item", "create"): "Item added",
+}
+
+
 def _compose_activity_title(row: AuditLog) -> str:
     """Render a short human label for an audit event.
 
-    Intentionally narrow — covers the common entity_type values today
-    and falls back to a generic "<entity_type> <action>" otherwise.
+    The title map covers every kind we emit today; anything unmapped
+    falls through to ``"<entity_type> · <action>"`` so unknown rows
+    still render something sensible without forcing a code change.
     """
-    entity = row.entity_type
-    action = row.action
-    if entity == "auth.session" and action == "switch_firm":
-        return "Switched active firm"
-    return f"{entity} · {action}"
+    label = _ACTIVITY_TITLES.get((row.entity_type, row.action))
+    if label is not None:
+        return label
+    return f"{row.entity_type} · {row.action}"
 
 
 __all__ = [
