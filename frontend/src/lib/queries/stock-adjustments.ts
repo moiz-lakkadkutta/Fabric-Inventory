@@ -168,3 +168,57 @@ export function useCreateStockAdjustment() {
     },
   });
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Create location (CUT-206)
+//
+// Surfaced during the wave-3 demo: the AdjustStockDialog's location
+// picker is empty for a fresh-firm user. POST /locations lets the
+// dialog's empty-state lay down the first warehouse inline so they
+// don't have to reach a future Locations admin page.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface CreateLocationBody {
+  firm_id: string;
+  code: string;
+  name: string;
+  location_type?: LocationType;
+}
+
+export interface CreateLocationInput {
+  body: CreateLocationBody;
+  idempotencyKey: string;
+}
+
+async function liveCreateLocation(input: CreateLocationInput): Promise<BackendLocation> {
+  return await api<BackendLocation>('/locations', {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body: input.body,
+  });
+}
+
+async function mockCreateLocation(input: CreateLocationInput): Promise<BackendLocation> {
+  return fakeFetch(() => ({
+    location_id: `l_mock_${Date.now()}`,
+    org_id: 'o_mock',
+    firm_id: input.body.firm_id,
+    code: input.body.code,
+    name: input.body.name,
+    location_type: input.body.location_type ?? 'WAREHOUSE',
+    is_active: true,
+  }));
+}
+
+export function useCreateLocation() {
+  const qc = useQueryClient();
+  return useMutation<BackendLocation, ApiError | Error, CreateLocationInput>({
+    mutationFn: (input) => (IS_LIVE ? liveCreateLocation(input) : mockCreateLocation(input)),
+    onSuccess: () => {
+      // After a new location lands the dialog's location dropdown must
+      // include it; invalidating the ['locations'] key triggers refetch
+      // across all firm scopes.
+      qc.invalidateQueries({ queryKey: LOCATIONS_KEY });
+    },
+  });
+}

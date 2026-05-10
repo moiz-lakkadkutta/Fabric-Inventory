@@ -21,7 +21,9 @@ from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
 from app.models import Location, StockAdjustment
+from app.models.inventory import LocationType
 from app.schemas.inventory import (
+    LocationCreateRequest,
     LocationListResponse,
     LocationResponse,
     StockAdjustmentListResponse,
@@ -146,11 +148,13 @@ def get_stock_adjustment(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Locations — read-only list (TASK-CUT-204)
+# Locations — read list + create (TASK-CUT-204 + CUT-206)
 #
-# Needed by the FE Adjust-Stock dialog (and future PO/GRN flows that
-# need a destination warehouse picker). CRUD on locations lands in a
-# future admin-panel task; here we only expose the list.
+# Needed by the FE Adjust-Stock dialog: CUT-204 added the read endpoint;
+# CUT-206 adds the create endpoint after the wave-3 demo surfaced that a
+# fresh-firm user has no FE path to lay down their first warehouse.
+# Full Locations admin CRUD (rename, deactivate, multiple types) lands
+# in a future admin-panel task.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -193,3 +197,38 @@ def list_locations(
         items=[_location_to_response(r) for r in rows],
         count=len(rows),
     )
+
+
+@locations_router.post(
+    "",
+    response_model=LocationResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a warehouse location for the current firm",
+)
+def create_location(
+    body: LocationCreateRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("inventory.adjustment.create"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> LocationResponse:
+    """Create a new active Location for `body.firm_id`.
+
+    The FE AdjustStockDialog opens with this when the firm has zero
+    locations, so the user can lay down their first warehouse without
+    bouncing to a separate masters page. Permission `inventory.adjustment.create`
+    is reused (the same user creating the adjustment is the one creating
+    the location); a finer-grained `inventory.location.create` permission
+    can be split out later if a non-Owner role needs to manage warehouses
+    without adjusting stock.
+    """
+    loc = inventory_service.create_location(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        code=body.code,
+        name=body.name,
+        location_type=LocationType(body.location_type),
+    )
+    return _location_to_response(loc)

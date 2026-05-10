@@ -593,7 +593,19 @@ export interface paths {
          */
         get: operations["list_locations_locations_get"];
         put?: never;
-        post?: never;
+        /**
+         * Create a warehouse location for the current firm
+         * @description Create a new active Location for `body.firm_id`.
+         *
+         *     The FE AdjustStockDialog opens with this when the firm has zero
+         *     locations, so the user can lay down their first warehouse without
+         *     bouncing to a separate masters page. Permission `inventory.adjustment.create`
+         *     is reused (the same user creating the adjustment is the one creating
+         *     the location); a finer-grained `inventory.location.create` permission
+         *     can be split out later if a non-Owner role needs to manage warehouses
+         *     without adjusting stock.
+         */
+        post: operations["create_location_locations_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2000,6 +2012,29 @@ export interface components {
             ledger_type?: string | null;
             /** Name */
             name?: string | null;
+        };
+        /**
+         * LocationCreateRequest
+         * @description POST /locations body — used by the FE AdjustStockDialog empty-state
+         *     so a fresh-firm user can create their first warehouse without a
+         *     separate masters page (CUT-206).
+         */
+        LocationCreateRequest: {
+            /** Code */
+            code: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * Location Type
+             * @default WAREHOUSE
+             * @enum {string}
+             */
+            location_type: "WAREHOUSE" | "GODOWN" | "SHELF" | "BIN" | "IN_TRANSIT" | "STAGING" | "SCRAP";
+            /** Name */
+            name: string;
         };
         /**
          * LocationListResponse
@@ -5248,6 +5283,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LocationListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_location_locations_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LocationCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationResponse"];
                 };
             };
             /** @description Validation Error */

@@ -2676,6 +2676,49 @@
         "title": "LedgerUpdateRequest",
         "type": "object"
       },
+      "LocationCreateRequest": {
+        "description": "POST /locations body \u2014 used by the FE AdjustStockDialog empty-state\nso a fresh-firm user can create their first warehouse without a\nseparate masters page (CUT-206).",
+        "properties": {
+          "code": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "location_type": {
+            "default": "WAREHOUSE",
+            "enum": [
+              "WAREHOUSE",
+              "GODOWN",
+              "SHELF",
+              "BIN",
+              "IN_TRANSIT",
+              "STAGING",
+              "SCRAP"
+            ],
+            "title": "Location Type",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "firm_id",
+          "code",
+          "name"
+        ],
+        "title": "LocationCreateRequest",
+        "type": "object"
+      },
       "LocationListResponse": {
         "description": "List of Location rows under the current org / optional firm.",
         "properties": {
@@ -10058,6 +10101,65 @@
           }
         },
         "summary": "List warehouse locations under the current org",
+        "tags": [
+          "inventory",
+          "location"
+        ]
+      },
+      "post": {
+        "description": "Create a new active Location for `body.firm_id`.\n\nThe FE AdjustStockDialog opens with this when the firm has zero\nlocations, so the user can lay down their first warehouse without\nbouncing to a separate masters page. Permission `inventory.adjustment.create`\nis reused (the same user creating the adjustment is the one creating\nthe location); a finer-grained `inventory.location.create` permission\ncan be split out later if a non-Owner role needs to manage warehouses\nwithout adjusting stock.",
+        "operationId": "create_location_locations_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocationCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a warehouse location for the current firm",
         "tags": [
           "inventory",
           "location"

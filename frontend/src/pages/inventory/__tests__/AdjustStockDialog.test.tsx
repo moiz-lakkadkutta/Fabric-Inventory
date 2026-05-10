@@ -204,4 +204,94 @@ describe('AdjustStockDialog (live-mode integration)', () => {
     // twice (initial render + invalidation after the mutation).
     await waitFor(() => expect(itemsCallCount).toBeGreaterThanOrEqual(2));
   });
+
+  // CUT-206: a fresh-firm user has zero locations and the dialog must
+  // surface an inline create form so they can lay down their first
+  // warehouse without leaving the dialog.
+  it('shows an inline "create your first warehouse" form when locations is empty', async () => {
+    let postLocationPayload: Record<string, unknown> | null = null;
+    let listCallCount = 0;
+    let firstListResponseSent = false;
+
+    fetchMock.mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+
+      if (u.includes('/items') && method === 'GET') {
+        return jsonResponse(200, { items: [], limit: 200, offset: 0, count: 0 });
+      }
+      if (u.includes('/locations') && method === 'GET') {
+        listCallCount += 1;
+        // First GET: empty (fresh firm). Subsequent GETs (after the
+        // create POST invalidates the cache): include the new location.
+        if (!firstListResponseSent) {
+          firstListResponseSent = true;
+          return jsonResponse(200, { items: [], count: 0 });
+        }
+        return jsonResponse(200, {
+          items: [
+            {
+              location_id: '44444444-4444-4444-4444-444444444444',
+              org_id: 'o',
+              firm_id: 'f',
+              code: 'MAIN',
+              name: 'Main Warehouse',
+              location_type: 'WAREHOUSE',
+              is_active: true,
+            },
+          ],
+          count: 1,
+        });
+      }
+      if (u.includes('/locations') && method === 'POST') {
+        postLocationPayload = JSON.parse((init?.body as string) ?? '{}');
+        return jsonResponse(201, {
+          location_id: '44444444-4444-4444-4444-444444444444',
+          org_id: 'o',
+          firm_id: 'f',
+          code: 'MAIN',
+          name: 'Main Warehouse',
+          location_type: 'WAREHOUSE',
+          is_active: true,
+        });
+      }
+      return jsonResponse(404, {});
+    });
+
+    renderInventory();
+
+    fireEvent.click(screen.getByRole('button', { name: /adjust stock/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: /adjust stock/i })).toBeInTheDocument(),
+    );
+
+    // Wait for the empty-state to render — the existing location <select>
+    // must NOT appear; the create form must.
+    await waitFor(() =>
+      expect(screen.getByText(/no warehouse locations yet/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('combobox', { name: /^location/i })).not.toBeInTheDocument();
+
+    // Fill the inline create form.
+    fireEvent.change(screen.getByLabelText(/warehouse code/i), { target: { value: 'MAIN' } });
+    fireEvent.change(screen.getByLabelText(/warehouse name/i), {
+      target: { value: 'Main Warehouse' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /create warehouse/i }));
+
+    // POST /locations is sent with the typed values.
+    await waitFor(() => expect(postLocationPayload).not.toBeNull());
+    expect(postLocationPayload).toMatchObject({
+      firm_id: 'f',
+      code: 'MAIN',
+      name: 'Main Warehouse',
+    });
+
+    // After the create succeeds the list refetches and the normal
+    // location <select> takes over (with the just-created location).
+    await waitFor(() => expect(listCallCount).toBeGreaterThanOrEqual(2));
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: /^location/i })).toBeInTheDocument(),
+    );
+  });
 });
