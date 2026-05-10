@@ -156,9 +156,7 @@ def create_location(
     if existing is not None:
         from app.exceptions import LocationCodeTakenError
 
-        raise LocationCodeTakenError(
-            f"Location code {code!r} already exists for this firm"
-        )
+        raise LocationCodeTakenError(f"Location code {code!r} already exists for this firm")
     location = Location(
         org_id=org_id,
         firm_id=firm_id,
