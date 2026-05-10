@@ -3,19 +3,32 @@ import { suppliers } from './parties';
 export type PoStatus = 'DRAFT' | 'OPEN' | 'GRN_RECEIVED' | 'INVOICED' | 'CLOSED' | 'CANCELLED';
 export type MatchStatus = 'matched' | 'mismatched' | 'pending';
 
+export interface PoLine {
+  item_id: string;
+  item_name?: string;
+  qty: number;
+  uom?: string;
+  rate: number; // paise
+  amount: number; // paise
+  gst_pct: number;
+}
+
 export interface PurchaseOrder {
   po_id: string;
   number: string;
-  date: string; // dd-Mon-YY
+  date: string; // dd-Mon-YY for legacy mock; YYYY-MM-DD for live
   supplier_id: string;
   supplier_name: string;
   total: number; // paise
   status: PoStatus;
-  // Three-way match: PO vs GRN vs PI
+  // Three-way match: PO vs GRN vs PI (mock-only — live rows render
+  // 'pending' triple until CUT-202 wires GRN/PI live).
   po_match: MatchStatus;
   grn_match: MatchStatus;
   pi_match: MatchStatus;
   expected_date: string;
+  // Optional — populated on detail rows from the live BE.
+  lines?: PoLine[];
 }
 
 const POS = [

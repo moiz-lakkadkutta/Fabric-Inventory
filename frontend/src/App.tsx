@@ -21,6 +21,8 @@ import ItemDetail from '@/pages/masters/ItemDetail';
 import ItemList from '@/pages/masters/ItemList';
 import PartyDetail from '@/pages/masters/PartyDetail';
 import PartyList from '@/pages/masters/PartyList';
+import PurchaseOrderCreate from '@/pages/purchase/PurchaseOrderCreate';
+import PurchaseOrderDetail from '@/pages/purchase/PurchaseOrderDetail';
 import PurchaseOrderList from '@/pages/purchase/PurchaseOrderList';
 import ReportsHub from '@/pages/reports/ReportsHub';
 import InvoiceCreate from '@/pages/sales/InvoiceCreate';
@@ -58,6 +60,8 @@ const router = createBrowserRouter([
         element: <Placeholder title="Credit control" task="TASK-055" />,
       },
       { path: 'purchase', element: <PurchaseOrderList /> },
+      { path: 'purchase/new', element: <PurchaseOrderCreate /> },
+      { path: 'purchase/:id', element: <PurchaseOrderDetail /> },
       { path: 'inventory', element: <InventoryList /> },
       { path: 'inventory/lots/:id', element: <LotDetail /> },
       { path: 'manufacturing', element: <ManufacturingPipeline /> },

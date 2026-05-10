@@ -139,6 +139,11 @@ async function liveListCustomers(): Promise<Party[]> {
   return data.items.map(mapBackendParty);
 }
 
+async function liveListSuppliers(): Promise<Party[]> {
+  const data = await liveListParties({ limit: 200, party_type: 'supplier' });
+  return data.items.map(mapBackendParty);
+}
+
 export function useParties() {
   return useQuery({
     queryKey: KEY,
@@ -157,6 +162,21 @@ export function useCustomers() {
             // in sync. Mock customers all have kind='customer'.
             [...mockCustomers],
           ),
+  });
+}
+
+/**
+ * Suppliers (parties with `is_supplier=true`) — used by Purchase Order
+ * forms (TASK-CUT-201) and Wave-3 GRN / PI flows. Live mode hits
+ * `/parties?party_type=supplier`; mock mode filters the seed fixtures.
+ */
+export function useSuppliers() {
+  return useQuery({
+    queryKey: [...KEY, 'suppliers'],
+    queryFn: () =>
+      IS_LIVE
+        ? liveListSuppliers()
+        : fakeFetch(() => ensureMockStore().filter((p) => p.kind === 'supplier')),
   });
 }
 
