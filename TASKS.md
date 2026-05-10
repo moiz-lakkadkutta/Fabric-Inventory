@@ -6,6 +6,147 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 
 ---
 
+## 2026-05-10 — Cutover plan v1 (audit-driven re-baseline)
+
+**Authoritative plan:** [`docs/ops/cutover-plan-2026-05-10.md`](docs/ops/cutover-plan-2026-05-10.md)
+**Audit driving it:** [`docs/ops/platform-audit-2026-05-10.md`](docs/ops/platform-audit-2026-05-10.md)
+**Sub-agent prompt template:** [`docs/ops/agent-prompt-template.md`](docs/ops/agent-prompt-template.md)
+**Wave 1 demo (gates Wave 2):** [`docs/ops/wave-1-demo.md`](docs/ops/wave-1-demo.md)
+
+The "frontend design pending" freeze from 2026-04-27 is **lifted.** Click-dummy is feature-complete on `main`. Almost every TASK marked `Deferred — frontend design pending` is re-classified per the matrix below; the new `TASK-CUT-NNN` block at the bottom of this section orchestrates the actual implementation against waves.
+
+### Re-classification matrix (read before picking a task)
+
+| TASK | Old status | New status (2026-05-10) | Reason / replacement |
+|---|---|---|---|
+| TASK-012 Login UI | Deferred | **Done** | Live wired; CUT-001 cleanup shipped (PR #59) |
+| TASK-013 MFA UI | Deferred | **Done** | Live wired (`pages/auth/Mfa.tsx`) |
+| TASK-017 Refresh token rotation | Ready | **Done** | INT-2 + post-CUT-002 cookie strip (PR #55) |
+| TASK-018 Dashboard page | Deferred | **Done** | Live wired (KPIs + Activity) |
+| TASK-019 Admin panel stub | Deferred | **Partial Done** | AdminHub mock; invites/roles → **TASK-CUT-304** |
+| TASK-020 Party list+create UI | Deferred | **Ready** → **TASK-CUT-101** | Click-dummy exists; CUT-101 wires live |
+| TASK-021 Item+SKU list+create UI | Deferred | **Ready** → **TASK-CUT-102** | Same |
+| TASK-024 Opening balance import UI | Deferred | **Done (signup wire)** + **Ready (opening balances)** | Signup wire shipped in CUT-003 (PR #58); opening-balance import is **TASK-CUT-402** |
+| TASK-025 Opening balance import service | Blocked | **Ready** → **TASK-CUT-402** | Predecessors Done |
+| TASK-026 Dashboard wiring | Deferred | **Done** | INT-12 retro |
+| TASK-030 Supplier ledger service | Blocked | **Ready** → **TASK-CUT-302** | Predecessor TASK-029 Done |
+| TASK-031 PO+GRN+PI UI | Deferred | **Ready** → **TASK-CUT-201, CUT-202** | |
+| TASK-034 Sales Invoice model+state machine | Ready | **Done** | INT-3 retro |
+| TASK-035 Invoice PDF generation | Blocked | **Ready** → **TASK-CUT-205** | CUT-005 spike picked WeasyPrint |
+| TASK-036 GST calc service | Blocked | **Done** | Audit confirmed CGST_SGST place-of-supply |
+| TASK-037 Customer ledger service | Blocked | **Ready** → **TASK-CUT-302** | |
+| TASK-038 SO+DC+Invoice UI | Deferred | **Partial Done** (Invoice live; SO+DC placeholders) → **TASK-CUT-203** | |
+| TASK-039 Non-GST sales invoice variant | Blocked | **Ready** | `tax_type` enum already covers NIL_LUT/NIL_NOT_A_SUPPLY |
+| TASK-041 Voucher model + auto-posting | Blocked | **Partial Done** | Receipts post vouchers; `GET /vouchers` missing → **TASK-CUT-103** |
+| TASK-042 Journal voucher manual GL | Blocked | **Deferred to v2** | Not on critical path |
+| TASK-043 Trial Balance report | Blocked | **Ready** → **TASK-CUT-105** | |
+| TASK-044 Sales invoice UI wiring | Deferred | **Done** | INT-3 retro |
+| TASK-045 P&L report | Blocked | **Ready** → **TASK-CUT-105** | |
+| TASK-046 Balance Sheet report | Blocked | **Deferred to v2** | TB+P&L cover most filing needs |
+| TASK-047 PoS test fixtures | Blocked | **Done** | Existing GST tests cover the 30 scenarios |
+| TASK-048 GSTR-1 prep service | Blocked | **Ready** → **TASK-CUT-302** | |
+| TASK-049 Credit note | Blocked | **Deferred to v2** | Returns are v2 |
+| TASK-050 RCM flag | Blocked | **Deferred to v2** | |
+| TASK-051 Payment voucher | Blocked | **Deferred to v2** | Receipts work; supplier-payments are v2 |
+| TASK-052 Receipt voucher + FIFO | Blocked | **Done** | Audit confirmed; timing-test follow-up at **TASK-CUT-104** |
+| TASK-054 Expense voucher | Blocked | **Deferred to v2** | |
+| TASK-055 Payment+Receipt UI | Deferred | **Partial Done** → **TASK-CUT-103** | Record-payment dialog exists; full receipt screen is CUT-103 |
+| TASK-056 Bank reconciliation | Blocked | **Deferred to v2** | |
+| TASK-057 Ledger detail report | Blocked | **Ready** → **TASK-CUT-302** | |
+| TASK-058 Ageing report | Blocked | **Ready** → **TASK-CUT-302** | |
+| TASK-059 Stock summary | Blocked | **Ready** → **TASK-CUT-105** | |
+| TASK-060 Party statement | Blocked | **Ready** → **TASK-CUT-302** | |
+| TASK-061a MigrationAdapter protocol | Blocked | **Ready** → **TASK-CUT-305** | |
+| TASK-061b Vyapar `.vyp` adapter | Blocked | **Spike done; impl Ready** → **TASK-CUT-005** spike (PR #56) recommends Excel-export adapter, not `.vyp`; impl is **TASK-CUT-402** | |
+| TASK-061c Excel template adapter (generic) | Blocked | **Deferred to v2** | Vyapar Excel-export is a different thing (CUT-402) |
+| TASK-061d Tally XML adapter | Blocked | **Deferred to v2** | |
+| TASK-062 Opening balance import + TB reconciler | Blocked | **Ready** → **TASK-CUT-402** | |
+| TASK-063 Migration sign-off workflow | Blocked | **Ready** → **TASK-CUT-402** | |
+| TASK-064 Dogfood feedback loop | Blocked | **Ready** → **Wave 6 (CUT-501/502/503)** | |
+| TASK-065 Daily backups | Ready | **Ready** → **TASK-CUT-404** | |
+| TASK-066 Sentry integration | Done | **Partial Done** | BE wired; FE wiring → **TASK-CUT-405** |
+| TASK-067 Deployment runbook | Blocked | **Ready** → **TASK-CUT-405** | |
+| TASK-068 Friendly customer trial | Blocked | **Deferred to v2** | After 7-day soak |
+| TASK-069 e-Invoice IRN | Blocked | **Deferred to v2** | |
+| TASK-070 e-Way Bill | Blocked | **Deferred to v2** | |
+| TASK-071 WhatsApp invoice | Blocked | **Deferred to v3** | |
+| TASK-072 Mobile PWA | Blocked | **Deferred to v3** | |
+| TASK-073 Manufacturing Orders | Blocked | **Deferred to v3** | |
+
+### Cutover tasks (TASK-CUT-NNN) — the work backlog
+
+Detailed acceptance criteria for each TASK-CUT-NNN: see `docs/ops/cutover-plan-2026-05-10.md` Section "Wave structure".
+
+#### Wave 1 — Stabilize the dev loop and derisk
+
+| ID | Subject | Status |
+|---|---|---|
+| **TASK-CUT-001** | CORS via Vite proxy + invoice-list error copy + login pre-fill cleanup | **Done** (PR #59) |
+| **TASK-CUT-002** | Idempotency cookie strip + auth-by-design exemption | **Done** (PR #55) |
+| **TASK-CUT-003** | Onboarding wire to /auth/signup | **Done** (PR #58) |
+| **TASK-CUT-004** | Mock identity → useMe() + RequireAuth route gate | **Done** (PR #57) |
+| **TASK-CUT-005** | Wave-1 spike combo: Vyapar / Reports BE / PDF tech | **Done** (PR #56) |
+| **TASK-CUT-006** | Hot-fix: restore frontend tests on integrated main | **Done** (PR #60) |
+
+**Wave 1 demo gate:** awaiting Moiz walk of `docs/ops/wave-1-demo.md`.
+
+#### Wave 2 — Masters live + Banking live + Reports BE foundation
+
+| ID | Subject | Layer | Status |
+|---|---|---|---|
+| **TASK-CUT-101** | Parties FE wired live | FE | Blocked by Wave 1 demo gate |
+| **TASK-CUT-102** | Items + SKUs FE wired live | FE | Blocked by Wave 1 demo gate |
+| **TASK-CUT-103** | Banking FE: bank accounts + cheques + receipt screen + vouchers list | FE+BE | Blocked by Wave 1 demo gate |
+| **TASK-CUT-104** | P1 fix bundle: receipts party_id + FIFO timing + cheques count + invoice list gst_total | BE+FE | Blocked by Wave 1 demo gate |
+| **TASK-CUT-105** | Reports BE foundation: P&L + TB + Daybook + Stock summary | BE | Blocked by Wave 1 demo gate |
+| **TASK-CUT-106** | OpenAPI codegen | tooling | Blocked by Wave 1 demo gate |
+
+#### Wave 3 — Procurement + Sales lifecycle + PDF + Stock
+
+| ID | Subject | Layer | Status |
+|---|---|---|---|
+| **TASK-CUT-201** | Purchase Order FE wired live | FE | Blocked by Wave 2 |
+| **TASK-CUT-202** | GRN FE + Purchase Invoice FE | FE | Blocked by Wave 2 |
+| **TASK-CUT-203** | Sales Order FE + Delivery Challan FE | FE+BE | Blocked by Wave 2 |
+| **TASK-CUT-204** | Stock adjustments FE | FE | Blocked by Wave 2 |
+| **TASK-CUT-205** | Invoice PDF rendering BE (WeasyPrint) + Print button wire | BE+FE | Blocked by Wave 2 |
+
+#### Wave 4 — Reports FE + remaining Reports BE + Auth completion + Job-work BE + Migration foundation
+
+| ID | Subject | Layer | Status |
+|---|---|---|---|
+| **TASK-CUT-301** | Reports FE wired live (5 tabs) | FE | Blocked by Wave 3 |
+| **TASK-CUT-302** | Remaining Reports BE: Ledger detail + Ageing + Party statement + GSTR-1 | BE | Blocked by Wave 3 |
+| **TASK-CUT-303** | Forgot-password BE+FE | BE+FE | Blocked by Wave 3 |
+| **TASK-CUT-304** | Admin/invites BE+FE | BE+FE | Blocked by Wave 3 |
+| **TASK-CUT-305** | MigrationAdapter protocol + intermediate format + Job-work BE | BE | Blocked by Wave 3 |
+
+#### Wave 5 — Job-work FE + Vyapar + Exports + Ops
+
+| ID | Subject | Layer | Status |
+|---|---|---|---|
+| **TASK-CUT-401** | Job-work FE wired live | FE | Blocked by Wave 4 |
+| **TASK-CUT-402** | Vyapar Excel adapter + opening balance import + reconciliation + sign-off | BE+FE | Blocked by Wave 4 |
+| **TASK-CUT-403** | CSV/Excel exports per list | BE+FE | Blocked by Wave 4 |
+| **TASK-CUT-404** | Backups: make backup + cron + restore-test runbook | ops | Blocked by Wave 4 |
+| **TASK-CUT-405** | HTTPS via Caddy + deployment runbook + Sentry FE wiring + email provider | ops | Blocked by Wave 4 |
+
+#### Wave 6 — Polish + dogfood acceptance
+
+| ID | Subject | Status |
+|---|---|---|
+| **TASK-CUT-501** | Closeout — wave-demo follow-ups | Blocked by Wave 5 |
+| **TASK-CUT-502** | Cutover runbook (Vyapar → Fabric, step-by-step) | Blocked by Wave 5 |
+| **TASK-CUT-503** | Acceptance e2e Playwright suite | Blocked by Wave 5 |
+
+### Picking order rules (post-cutover-plan)
+
+1. If a wave is in progress, pick from its Ready tasks only. Do not start a Wave-N+1 task until Wave N's demo passes.
+2. The "Re-classification matrix" above overrides any "Status:" line in the historical detail blocks below.
+3. New work that doesn't fit a TASK-CUT slot: file as TASK-CUT-NNN (next free integer) and add to the appropriate wave's table above.
+
+---
+
 ## Milestone 1 — Week 1: Project Bootstrap
 
 ### TASK-001: Repository scaffolding & Makefile
