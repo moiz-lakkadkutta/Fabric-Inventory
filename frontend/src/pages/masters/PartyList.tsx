@@ -4,13 +4,18 @@ import { Link } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
+import { Dialog } from '@/components/ui/dialog';
 import { EmptyState } from '@/components/ui/empty-state';
+import { Field } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
 import { Monogram } from '@/components/ui/monogram';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useParties } from '@/lib/queries/parties';
+import { useIdempotencyKey } from '@/lib/api/idempotency';
+import { ApiError } from '@/lib/api/client';
 import { formatINRCompact } from '@/lib/format';
-import type { Party, PartyKind } from '@/lib/mock/types';
+import { useCreateParty, useParties } from '@/lib/queries/parties';
+import type { Party, PartyKind, PartyRole } from '@/lib/mock/types';
 
 const KIND_PILL: Record<PartyKind, { kind: PillKind; label: string }> = {
   customer: { kind: 'finalized', label: 'Customer' },
@@ -31,13 +36,11 @@ export default function PartyList() {
   const partiesQuery = useParties();
   const [filter, setFilter] = useState<PartyKind | 'all'>('all');
   const [query, setQuery] = useState('');
+  const [newOpen, setNewOpen] = useState(false);
+  // Import is still TASK-CUT-403 (CSV/Excel exports + import is Wave 5).
   const importParties = useComingSoon({
     feature: 'Import parties (CSV / Vyapar .vyp)',
-    task: 'TASK-019 (Party import)',
-  });
-  const newParty = useComingSoon({
-    feature: 'New party',
-    task: 'TASK-020 (Party edit form)',
+    task: 'TASK-CUT-403 (Party import — Wave 5)',
   });
 
   const rows = useMemo(() => {
@@ -67,14 +70,14 @@ export default function PartyList() {
           <Button variant="outline" {...importParties.triggerProps}>
             Import
           </Button>
-          <Button {...newParty.triggerProps}>
+          <Button onClick={() => setNewOpen(true)}>
             <Plus />
             New party
           </Button>
         </div>
       </header>
       {importParties.dialog}
-      {newParty.dialog}
+      <NewPartyDialog open={newOpen} onClose={() => setNewOpen(false)} />
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1">
@@ -165,6 +168,222 @@ export default function PartyList() {
         )}
       </div>
     </div>
+  );
+}
+
+const ROLE_OPTIONS: Array<{ value: PartyRole; label: string }> = [
+  { value: 'CUSTOMER', label: 'Customer' },
+  { value: 'SUPPLIER', label: 'Supplier' },
+  { value: 'KARIGAR', label: 'Karigar' },
+  { value: 'TRANSPORTER', label: 'Transporter' },
+];
+
+interface NewPartyDialogProps {
+  open: boolean;
+  onClose: () => void;
+}
+
+function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
+  const createParty = useCreateParty();
+  const idem = useIdempotencyKey();
+
+  const [code, setCode] = useState('');
+  const [name, setName] = useState('');
+  const [role, setRole] = useState<PartyRole>('CUSTOMER');
+  const [gstin, setGstin] = useState('');
+  const [stateCode, setStateCode] = useState('');
+  const [pan, setPan] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const reset = () => {
+    setCode('');
+    setName('');
+    setRole('CUSTOMER');
+    setGstin('');
+    setStateCode('');
+    setPan('');
+    setEmail('');
+    setPhone('');
+    setError(null);
+  };
+
+  const close = () => {
+    reset();
+    onClose();
+  };
+
+  const submit = async () => {
+    setError(null);
+    if (!code.trim() || !name.trim()) {
+      setError('Code and name are required.');
+      return;
+    }
+    try {
+      await createParty.mutateAsync({
+        code: code.trim(),
+        name: name.trim(),
+        role,
+        state_code: stateCode.trim() || undefined,
+        gstin: gstin.trim() || undefined,
+        pan: pan.trim() || undefined,
+        email: email.trim() || undefined,
+        phone: phone.trim() || undefined,
+        idempotencyKey: idem.key,
+      });
+      idem.reset();
+      reset();
+      onClose();
+    } catch (e) {
+      if (e instanceof ApiError) {
+        setError(`${e.title}${e.detail ? ` — ${e.detail}` : ''}`);
+      } else if (e instanceof Error) {
+        setError(e.message);
+      } else {
+        setError('Could not create party.');
+      }
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title="New party"
+      description="Add a customer, supplier, karigar, or transporter."
+      width={520}
+      footer={
+        <>
+          <Button variant="outline" onClick={close} disabled={createParty.isPending}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={createParty.isPending}>
+            {createParty.isPending ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <Field label="Code" htmlFor="np-code" required>
+            <Input
+              id="np-code"
+              aria-label="Code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="C-0001"
+            />
+          </Field>
+          <Field label="Name" htmlFor="np-name" required>
+            <Input
+              id="np-name"
+              aria-label="Name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Anjali Saree Centre"
+            />
+          </Field>
+        </div>
+
+        <Field label="Role">
+          <div role="radiogroup" aria-label="Role" className="flex flex-wrap gap-2">
+            {ROLE_OPTIONS.map((opt) => {
+              const active = role === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setRole(opt.value)}
+                  className="inline-flex h-8 items-center rounded-full px-3"
+                  style={{
+                    fontSize: 12.5,
+                    fontWeight: active ? 600 : 500,
+                    background: active ? 'var(--accent-subtle)' : 'transparent',
+                    color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                    border: active
+                      ? '1px solid var(--accent-subtle)'
+                      : '1px solid var(--border-default)',
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <Field label="GSTIN" htmlFor="np-gstin">
+            <Input
+              id="np-gstin"
+              aria-label="GSTIN"
+              value={gstin}
+              onChange={(e) => setGstin(e.target.value.toUpperCase())}
+              maxLength={15}
+              placeholder="27AAACA1234N1Z5"
+            />
+          </Field>
+          <Field label="State code" htmlFor="np-state-code">
+            <Input
+              id="np-state-code"
+              aria-label="State code"
+              value={stateCode}
+              onChange={(e) => setStateCode(e.target.value)}
+              maxLength={2}
+              placeholder="MH"
+            />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <Field label="PAN" htmlFor="np-pan">
+            <Input
+              id="np-pan"
+              aria-label="PAN"
+              value={pan}
+              onChange={(e) => setPan(e.target.value.toUpperCase())}
+              maxLength={10}
+            />
+          </Field>
+          <Field label="Email" htmlFor="np-email">
+            <Input
+              id="np-email"
+              aria-label="Email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </Field>
+          <Field label="Phone" htmlFor="np-phone">
+            <Input
+              id="np-phone"
+              aria-label="Phone"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+            />
+          </Field>
+        </div>
+
+        {error && (
+          <div
+            role="alert"
+            style={{
+              padding: '8px 10px',
+              border: '1px solid var(--danger)',
+              borderRadius: 6,
+              background: 'rgba(181,49,30,.06)',
+              color: 'var(--danger)',
+              fontSize: 12.5,
+            }}
+          >
+            {error}
+          </div>
+        )}
+      </div>
+    </Dialog>
   );
 }
 

@@ -30,6 +30,14 @@ export interface Firm {
 
 export type PartyKind = 'customer' | 'supplier' | 'karigar' | 'transporter';
 
+/**
+ * Frontend uppercase party role — single enum, mirrors the click-dummy's
+ * "one role per party" UI assumption. Maps to the backend's four
+ * boolean flags via `mapPartyRole` / `roleToFlags` in
+ * `lib/queries/parties.ts`.
+ */
+export type PartyRole = 'CUSTOMER' | 'SUPPLIER' | 'KARIGAR' | 'TRANSPORTER';
+
 export interface Party {
   party_id: PartyId;
   code: string;
@@ -40,6 +48,16 @@ export interface Party {
   city: string;
   outstanding: number; // paise
   credit_limit?: number; // paise
+  // ──────────────────────────────────────────────────────────────────
+  // Live-mode fields (optional — mock fixtures don't set them).
+  // The four BE boolean flags are preserved on the live shape so future
+  // multi-role rendering can read them. `kind` stays the "primary"
+  // role for existing click-dummy components that filter by `kind`.
+  // ──────────────────────────────────────────────────────────────────
+  is_customer?: boolean;
+  is_supplier?: boolean;
+  is_karigar?: boolean;
+  is_transporter?: boolean;
 }
 
 export interface Item {
