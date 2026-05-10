@@ -15,6 +15,7 @@ const ROUTE_LABELS: Record<string, string[]> = {
   '/sales/quotes': ['Sales', 'Quotes'],
   '/sales/orders': ['Sales', 'Sales orders'],
   '/sales/challans': ['Sales', 'Delivery challans'],
+  '/sales/delivery-challans': ['Sales', 'Delivery challans'],
   '/sales/returns': ['Sales', 'Returns'],
   '/sales/credit-control': ['Sales', 'Credit control'],
   '/purchase': ['Purchase'],
