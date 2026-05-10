@@ -6,6 +6,7 @@ import { fakeFetch } from '@/lib/mock/api';
 import { invoices as seedInvoices } from '@/lib/mock/invoices';
 import type { Invoice, InvoiceLine, InvoiceStatus } from '@/lib/mock/types';
 import { authStore } from '@/store/auth';
+import type { components } from '@/types/api';
 
 const KEY = ['invoices'] as const;
 
@@ -29,67 +30,15 @@ export function resetInvoiceStore() {
 // Money is rupees (Decimal-as-string) on the wire, paise (integer) in
 // the click-dummy. We multiply by 100 at the boundary so existing
 // components keep their formatting code unchanged.
+//
+// Wire shapes come from the codegen output at `@/types/api`; drift is
+// caught by `pnpm check:types` in CI.
 // ──────────────────────────────────────────────────────────────────────
 
-interface BackendSiLine {
-  si_line_id: string;
-  item_id: string;
-  item_name: string | null;
-  item_uom: string | null;
-  qty: string;
-  price: string;
-  line_amount: string | null;
-  gst_rate: string | null;
-  gst_amount: string | null;
-  sequence: number | null;
-}
-
-interface BackendSalesInvoice {
-  sales_invoice_id: string;
-  org_id: string;
-  firm_id: string;
-  series: string;
-  number: string;
-  party_id: string;
-  party_name: string | null;
-  invoice_date: string;
-  due_date: string | null;
-  invoice_amount: string | null;
-  gst_amount: string | null;
-  paid_amount: string;
-  lifecycle_status: string;
-  place_of_supply_state: string | null;
-  invoice_type: string | null;
-  tax_type: string | null;
-  round_off: string;
-  notes: string | null;
-  lines: BackendSiLine[];
-  created_at: string;
-  updated_at: string;
-}
-
-interface BackendSalesInvoiceListItem {
-  sales_invoice_id: string;
-  firm_id: string;
-  series: string;
-  number: string;
-  party_id: string;
-  party_name: string | null;
-  invoice_date: string;
-  due_date: string | null;
-  invoice_amount: string | null;
-  paid_amount: string;
-  lifecycle_status: string;
-  place_of_supply_state: string | null;
-  created_at: string;
-}
-
-interface BackendInvoiceListResponse {
-  items: BackendSalesInvoiceListItem[];
-  limit: number;
-  offset: number;
-  count: number;
-}
+type BackendSiLine = components['schemas']['SiLineResponse'];
+type BackendSalesInvoice = components['schemas']['SalesInvoiceResponse'];
+type BackendSalesInvoiceListItem = components['schemas']['SalesInvoiceListItem'];
+type BackendInvoiceListResponse = components['schemas']['SalesInvoiceListResponse'];
 
 function rupeesToPaise(amount: string | null | undefined): number {
   if (!amount) return 0;
@@ -224,22 +173,7 @@ export function useInvoice(invoiceId: string | undefined) {
 // caller maps to a refresh affordance.
 // ──────────────────────────────────────────────────────────────────────
 
-interface BackendCreateLine {
-  item_id: string;
-  qty: string;
-  price: string;
-  gst_rate: string;
-  sequence: number;
-}
-
-interface BackendCreateBody {
-  firm_id: string;
-  party_id: string;
-  invoice_date: string;
-  due_date: string | null;
-  ship_to_state: string | null;
-  lines: BackendCreateLine[];
-}
+type BackendCreateBody = components['schemas']['SalesInvoiceCreateRequest'];
 
 function paiseToRupees(paise: number): string {
   return (paise / 100).toFixed(2);
@@ -255,11 +189,17 @@ function buildCreateBody(
     // api() wrapper return a confusing PERMISSION_DENIED later.
     throw new Error('No active firm in this session — switch to a firm first.');
   }
+  // Send `series` explicitly so the codegen-derived BackendCreateBody
+  // type is satisfied. The BE has a `default="RT/2526"` on this field
+  // and would auto-fill if it were omitted, but the OpenAPI schema
+  // (correctly) lists `series` as required-with-default — sending the
+  // same default here is a no-op on the wire.
   return {
     firm_id: me.firm_id,
     party_id: draft.party_id,
     invoice_date: draft.date,
     due_date: draft.due_date || null,
+    series: 'RT/2526',
     ship_to_state: draft.party_state || null,
     lines: draft.lines.map((line, idx) => ({
       item_id: line.item_id,

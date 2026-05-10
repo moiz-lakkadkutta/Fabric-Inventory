@@ -5,6 +5,7 @@ import { IS_LIVE } from '@/lib/api/mode';
 import { fakeFetch } from '@/lib/mock/api';
 import { currentUser, defaultFirm } from '@/lib/mock/identity';
 import { authStore, type MeResponse } from '@/store/auth';
+import type { components } from '@/types/api';
 
 /**
  * Auto-switch to the user's only firm when the JWT lacks a firm_id.
@@ -60,14 +61,13 @@ export interface LoginResult {
   access_token?: string;
 }
 
-interface LoginEnvelope {
-  requires_mfa: boolean;
-  user_id?: string;
-  access_token?: string;
-  refresh_token?: string;
-  access_expires_at?: string;
-  refresh_expires_at?: string;
-}
+// Codegen surface — pydantic's `Optional[X] = None` becomes
+// `string | null | undefined` (note both `null` and `undefined`),
+// stricter than the hand-written `string?` was. Read sites already
+// use `data.access_token ?? ...` so the extra `null` channel is a
+// no-op at the call sites — the codegen just makes the wire shape
+// explicit.
+type LoginEnvelope = components['schemas']['LoginResponse'];
 
 async function liveLogin(input: LoginInput): Promise<LoginResult> {
   const data = await api<LoginEnvelope>('/auth/login', {
@@ -87,8 +87,11 @@ async function liveLogin(input: LoginInput): Promise<LoginResult> {
   }
   return {
     requires_mfa: data.requires_mfa,
-    user_id: data.user_id,
-    access_token: data.access_token,
+    // Codegen models pydantic's `Optional[str]` as `string | null |
+    // undefined`; LoginResult exposes `string | undefined`. Coerce
+    // null → undefined so the public type stays narrow.
+    user_id: data.user_id ?? undefined,
+    access_token: data.access_token ?? undefined,
   };
 }
 
@@ -132,15 +135,7 @@ export interface SignupResult {
   access_token: string;
 }
 
-interface SignupEnvelope {
-  access_token: string;
-  refresh_token: string;
-  access_expires_at: string;
-  refresh_expires_at: string;
-  user_id: string;
-  org_id: string;
-  firm_id: string;
-}
+type SignupEnvelope = components['schemas']['SignupResponse'];
 
 /**
  * Live-mode signup. Mirrors `liveLogin` (token storage + /auth/me hop)
@@ -280,13 +275,7 @@ export interface SwitchFirmInput {
   idempotencyKey: string;
 }
 
-interface SwitchFirmEnvelope {
-  access_token: string;
-  refresh_token: string;
-  access_expires_at: string;
-  refresh_expires_at: string;
-  firm_id: string;
-}
+type SwitchFirmEnvelope = components['schemas']['SwitchFirmResponse'];
 
 async function liveSwitchFirm(input: SwitchFirmInput): Promise<SwitchFirmEnvelope> {
   const data = await api<SwitchFirmEnvelope>('/auth/switch-firm', {

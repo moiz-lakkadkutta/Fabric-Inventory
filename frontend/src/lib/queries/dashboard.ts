@@ -5,6 +5,7 @@ import { IS_LIVE } from '@/lib/api/mode';
 import { fakeFetch } from '@/lib/mock/api';
 import { activity as mockActivity, kpis as mockKpis } from '@/lib/mock/kpis';
 import type { ActivityItem, Kpi } from '@/lib/mock/types';
+import type { components } from '@/types/api';
 
 interface DashboardData {
   kpis: Kpi[];
@@ -13,35 +14,16 @@ interface DashboardData {
 
 // ──────────────────────────────────────────────────────────────────────
 // Live-mode mappers — backend dashboard responses → frontend shapes.
+// Schemas come from the codegen output (KpiResponse / KpiListResponse /
+// ActivityItemResponse / ActivityListResponse); drift is caught by
+// `pnpm check:types` in CI. Money fields stay as rupees-string at this
+// layer; the mappers convert to paise for the click-dummy components.
 // ──────────────────────────────────────────────────────────────────────
 
-interface BackendKpi {
-  key: string;
-  label: string;
-  value: string; // Decimal serializes as string
-  unit: '₹' | 'count';
-  delta_pct: string;
-  delta_kind: 'positive' | 'negative' | 'neutral';
-  spark: number[];
-}
-
-interface BackendKpiList {
-  items: BackendKpi[];
-}
-
-interface BackendActivity {
-  id: string;
-  ts: string;
-  kind: string;
-  title: string;
-  detail: string | null;
-  actor_user_id: string | null;
-}
-
-interface BackendActivityList {
-  items: BackendActivity[];
-  count: number;
-}
+type BackendKpi = components['schemas']['KpiResponse'];
+type BackendKpiList = components['schemas']['KpiListResponse'];
+type BackendActivity = components['schemas']['ActivityItemResponse'];
+type BackendActivityList = components['schemas']['ActivityListResponse'];
 
 function mapKpi(b: BackendKpi): Kpi {
   // Money KPIs are rupees on the wire; the dashboard renders them as

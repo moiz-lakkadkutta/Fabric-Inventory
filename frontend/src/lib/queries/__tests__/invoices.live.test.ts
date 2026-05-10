@@ -96,6 +96,11 @@ describe('invoices live-mode mappers', () => {
       tax_type: 'CGST_SGST',
       round_off: '0',
       notes: null,
+      bill_to_address: null,
+      ship_to_address: null,
+      delivery_challan_id: null,
+      finalized_at: '2026-04-29T16:30:00Z',
+      salesperson_id: null,
       lines: [
         {
           si_line_id: 'l1',
@@ -143,6 +148,11 @@ describe('invoices live-mode mappers', () => {
       tax_type: 'NIL_LUT',
       round_off: '0',
       notes: null,
+      bill_to_address: null,
+      ship_to_address: null,
+      delivery_challan_id: null,
+      finalized_at: null,
+      salesperson_id: null,
       lines: [],
       created_at: '2026-04-30T00:00:00Z',
       updated_at: '2026-04-30T00:00:00Z',
@@ -214,6 +224,10 @@ describe('buildCreateBody (T-INT-4)', () => {
     expect(body.invoice_date).toBe('2026-04-30');
     expect(body.due_date).toBe('2026-05-15');
     expect(body.ship_to_state).toBe('MH');
+    // CUT-106: series is required-with-default in the codegen schema —
+    // we now send it explicitly. BE still applies the same default
+    // when omitted, so the wire shape is unchanged.
+    expect(body.series).toBe('RT/2526');
     expect(body.lines).toHaveLength(1);
     expect(body.lines[0].qty).toBe('10');
     expect(body.lines[0].price).toBe('1000.00'); // 100000 paise → "1000.00"

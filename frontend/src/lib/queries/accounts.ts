@@ -5,14 +5,16 @@ import { IS_LIVE } from '@/lib/api/mode';
 import { fakeFetch } from '@/lib/mock/api';
 import { receipts, vouchers } from '@/lib/mock/accounts';
 import type { Receipt } from '@/lib/mock/accounts';
+import type { components } from '@/types/api';
 
 const RECEIPTS_KEY = ['accounts', 'receipts'] as const;
 
-// Mirror of backend's `mode` enum on POST /receipts. The mock fixture's
-// Receipt.mode is wider (it includes CHEQUE for legacy demo rows) — but
-// new receipts posted through the UI are constrained to what the API
-// actually accepts.
-export type ReceiptMode = 'CASH' | 'BANK' | 'UPI';
+// Reuse the backend's `mode` enum on POST /receipts directly from the
+// codegen so adding a new mode (e.g. CHEQUE) on the BE shows up here
+// as a TypeScript surface change. The mock fixture's Receipt.mode is
+// wider (it includes CHEQUE for legacy demo rows) — but new receipts
+// posted through the UI are constrained to what the API accepts.
+export type ReceiptMode = components['schemas']['ReceiptCreateRequest']['mode'];
 
 // ──────────────────────────────────────────────────────────────────────
 // Live wire shape — backend returns rupees-as-string. The list endpoint
@@ -20,31 +22,13 @@ export type ReceiptMode = 'CASH' | 'BANK' | 'UPI';
 // party_name, mode, and the allocated invoice numbers without a second
 // roundtrip. `mode` is parsed from the DR voucher line description on
 // the backend; it's nullable for legacy/manually-built receipts.
+//
+// Schemas come from the codegen output; drift is caught by `pnpm
+// check:types` in CI.
 // ──────────────────────────────────────────────────────────────────────
 
-interface BackendReceiptListAllocation {
-  invoice_number: string;
-  amount: string;
-}
-
-interface BackendReceiptListItem {
-  voucher_id: string;
-  series: string;
-  number: string;
-  voucher_date: string;
-  amount: string;
-  narration: string | null;
-  created_at: string;
-  party_id: string | null;
-  party_name: string | null;
-  mode: string | null;
-  allocations: BackendReceiptListAllocation[];
-}
-
-interface BackendReceiptList {
-  items: BackendReceiptListItem[];
-  count: number;
-}
+type BackendReceiptListItem = components['schemas']['ReceiptListItem'];
+type BackendReceiptList = components['schemas']['ReceiptListResponse'];
 
 function rupeesToPaise(amount: string | null | undefined): number {
   if (!amount) return 0;
@@ -74,7 +58,11 @@ function mapReceiptListItem(b: BackendReceiptListItem): Receipt {
     mode: normalizeMode(b.mode),
     reference: b.narration ?? '',
     status: 'POSTED',
-    allocated_to: b.allocations.map((a) => a.invoice_number),
+    // BE schema declares `allocations: list[...] = Field(default_factory=list)`,
+    // which pydantic emits as optional in OpenAPI — codegen surfaces this
+    // accurately as `Allocation[] | undefined`. Default to [] so the UI's
+    // "1 invoice / 2 invoices" pill code can iterate without a guard.
+    allocated_to: (b.allocations ?? []).map((a) => a.invoice_number),
   };
 }
 
@@ -112,19 +100,7 @@ export interface PostReceiptInput {
   idempotencyKey: string;
 }
 
-interface BackendReceiptResponse {
-  voucher_id: string;
-  series: string;
-  number: string;
-  voucher_date: string;
-  amount: string;
-  party_id: string | null;
-  mode: string | null;
-  allocations: Array<{ sales_invoice_id: string; amount: string }>;
-  unallocated: string;
-  narration: string | null;
-  created_at: string;
-}
+type BackendReceiptResponse = components['schemas']['ReceiptResponse'];
 
 async function livePostReceipt(input: PostReceiptInput): Promise<Receipt> {
   const data = await api<BackendReceiptResponse>('/receipts', {
@@ -148,7 +124,8 @@ async function livePostReceipt(input: PostReceiptInput): Promise<Receipt> {
     mode: input.mode,
     reference: input.reference ?? '',
     status: 'POSTED',
-    allocated_to: data.allocations.map((a) => a.sales_invoice_id),
+    // Same default-factory rationale as the list mapper above.
+    allocated_to: (data.allocations ?? []).map((a) => a.sales_invoice_id),
   };
 }
 
