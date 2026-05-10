@@ -23,9 +23,15 @@ import PartyDetail from '@/pages/masters/PartyDetail';
 import PartyList from '@/pages/masters/PartyList';
 import PurchaseOrderList from '@/pages/purchase/PurchaseOrderList';
 import ReportsHub from '@/pages/reports/ReportsHub';
+import DeliveryChallanCreate from '@/pages/sales/DeliveryChallanCreate';
+import DeliveryChallanDetail from '@/pages/sales/DeliveryChallanDetail';
+import DeliveryChallanList from '@/pages/sales/DeliveryChallanList';
 import InvoiceCreate from '@/pages/sales/InvoiceCreate';
 import InvoiceDetail from '@/pages/sales/InvoiceDetail';
 import InvoiceList from '@/pages/sales/InvoiceList';
+import SalesOrderCreate from '@/pages/sales/SalesOrderCreate';
+import SalesOrderDetail from '@/pages/sales/SalesOrderDetail';
+import SalesOrderList from '@/pages/sales/SalesOrderList';
 
 const router = createBrowserRouter([
   { path: '/login', element: <Login /> },
@@ -47,11 +53,16 @@ const router = createBrowserRouter([
       { path: 'sales/invoices/new', element: <InvoiceCreate /> },
       { path: 'sales/invoices/:id', element: <InvoiceDetail /> },
       { path: 'sales/quotes', element: <Placeholder title="Quotes" task="TASK-038" /> },
-      { path: 'sales/orders', element: <Placeholder title="Sales orders" task="TASK-038" /> },
-      {
-        path: 'sales/challans',
-        element: <Placeholder title="Delivery challans" task="TASK-033" />,
-      },
+      { path: 'sales/orders', element: <SalesOrderList /> },
+      { path: 'sales/orders/new', element: <SalesOrderCreate /> },
+      { path: 'sales/orders/:id', element: <SalesOrderDetail /> },
+      // Wave-2 sidebar uses /sales/challans; CUT-203 settles on
+      // /sales/delivery-challans (matches the BE route + cutover plan
+      // wording). Old path redirects so any stale tab keeps working.
+      { path: 'sales/challans', element: <Navigate to="/sales/delivery-challans" replace /> },
+      { path: 'sales/delivery-challans', element: <DeliveryChallanList /> },
+      { path: 'sales/delivery-challans/new', element: <DeliveryChallanCreate /> },
+      { path: 'sales/delivery-challans/:id', element: <DeliveryChallanDetail /> },
       { path: 'sales/returns', element: <Placeholder title="Returns" task="TASK-038" /> },
       {
         path: 'sales/credit-control',

@@ -41,7 +41,7 @@ const NAV: NavItem[] = [
       { to: '/sales/invoices', label: 'Invoices' },
       { to: '/sales/quotes', label: 'Quotes' },
       { to: '/sales/orders', label: 'Sales orders' },
-      { to: '/sales/challans', label: 'Delivery challans' },
+      { to: '/sales/delivery-challans', label: 'Delivery challans' },
       { to: '/sales/returns', label: 'Returns' },
       { to: '/sales/credit-control', label: 'Credit control' },
     ],
