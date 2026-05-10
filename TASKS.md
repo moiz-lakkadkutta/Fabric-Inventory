@@ -98,7 +98,7 @@ Detailed acceptance criteria for each TASK-CUT-NNN: see `docs/ops/cutover-plan-2
 | **TASK-CUT-102** | Items + SKUs FE wired live | FE | Blocked by Wave 1 demo gate |
 | **TASK-CUT-103** | Banking FE: bank accounts + cheques + receipt screen + vouchers list | FE+BE | Blocked by Wave 1 demo gate |
 | **TASK-CUT-104** | P1 fix bundle: receipts party_id + FIFO timing + cheques count + invoice list gst_total | BE+FE | Blocked by Wave 1 demo gate |
-| **TASK-CUT-105** | Reports BE foundation: P&L + TB + Daybook + Stock summary | BE | Blocked by Wave 1 demo gate |
+| **TASK-CUT-105** | Reports BE foundation: P&L + TB + Daybook + Stock summary | BE | **Done** |
 | **TASK-CUT-106** | OpenAPI codegen | tooling | Blocked by Wave 1 demo gate |
 
 #### Wave 3 — Procurement + Sales lifecycle + PDF + Stock
