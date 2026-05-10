@@ -2,6 +2,13 @@
 
 PII field `account_number` is exposed as plaintext on the wire; the
 service layer encrypts/decrypts via `app.utils.crypto`.
+
+The Voucher list schemas (TASK-CUT-103) live here too because the
+`GET /vouchers` endpoint is mounted on the banking router — the
+AccountingHub's Vouchers tab is just a flat read-only view of every
+balanced GL voucher (RECEIPT, PAYMENT, JOURNAL, etc.) for the firm.
+Detail vouchers + line postings stay in the receipt / accounting
+services.
 """
 
 from __future__ import annotations
@@ -12,6 +19,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
+from app.models.accounting import VoucherStatus, VoucherType
 from app.models.banking import ChequeStatus
 
 # ──────────────────────────────────────────────────────────────────────
@@ -97,6 +105,43 @@ class ChequeResponse(BaseModel):
 
 class ChequeListResponse(BaseModel):
     items: list[ChequeResponse]
+    limit: int
+    offset: int
+    count: int
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Voucher list (TASK-CUT-103)
+#
+# Read-only header view; line postings are exposed via the receipt /
+# accounting domain detail endpoints. `party_id` is intentionally NOT
+# on this list response — it lives on `voucher.party_id` after
+# TASK-CUT-104's migration; this task ships the list shape that
+# CUT-104 will fill in without a contract change. The UI sources the
+# party display from allocations today (same pattern as receipts).
+# ──────────────────────────────────────────────────────────────────────
+
+
+class VoucherListItem(BaseModel):
+    """One row on the AccountingHub Vouchers tab.
+
+    Money is rupees (Decimal-as-string) on the wire per CLAUDE.md.
+    """
+
+    voucher_id: uuid.UUID
+    voucher_type: VoucherType
+    series: str
+    number: str
+    voucher_date: datetime.date
+    narration: str | None
+    total_debit: Decimal | None
+    total_credit: Decimal | None
+    status: VoucherStatus | None
+    created_at: datetime.datetime
+
+
+class VoucherListResponse(BaseModel):
+    items: list[VoucherListItem]
     limit: int
     offset: int
     count: int

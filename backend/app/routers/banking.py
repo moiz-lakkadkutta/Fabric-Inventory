@@ -1,20 +1,29 @@
-"""Banking routers — BankAccount + Cheque endpoints (TASK-053).
+"""Banking routers — BankAccount + Cheque + Voucher list endpoints.
+
+TASK-053 shipped BankAccount + Cheque CRUD.
+TASK-CUT-103 added the read-only `GET /vouchers` list backing the
+AccountingHub's Vouchers tab.
 
 Sync handlers (FastAPI threadpool) consistent with other domain routers.
 Permission gates per the rbac_service catalog:
     banking.bank.create
     banking.bank.read
     banking.bank.update
+    accounting.voucher.read
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query, status
+from sqlalchemy import select
 
 from app.dependencies import SyncDBSession, require_permission
+from app.exceptions import PermissionDeniedError
+from app.models.accounting import Voucher, VoucherType
 from app.models.banking import BankAccount, Cheque
 from app.schemas.banking import (
     BankAccountCreateRequest,
@@ -24,6 +33,8 @@ from app.schemas.banking import (
     ChequeCreateRequest,
     ChequeListResponse,
     ChequeResponse,
+    VoucherListItem,
+    VoucherListResponse,
 )
 from app.service import banking_service
 from app.service.identity_service import TokenPayload
@@ -33,6 +44,7 @@ router = APIRouter(tags=["banking"])
 
 _bank_router = APIRouter(prefix="/bank-accounts", tags=["banking", "bank-account"])
 _cheque_router = APIRouter(prefix="/cheques", tags=["banking", "cheque"])
+_voucher_router = APIRouter(prefix="/vouchers", tags=["accounting", "voucher"])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -258,6 +270,83 @@ def list_cheques(
     )
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Voucher list endpoints (TASK-CUT-103)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _to_voucher_list_item(voucher: Voucher) -> VoucherListItem:
+    return VoucherListItem(
+        voucher_id=voucher.voucher_id,
+        voucher_type=voucher.voucher_type,
+        series=voucher.series,
+        number=voucher.number,
+        voucher_date=voucher.voucher_date,
+        narration=voucher.narration,
+        total_debit=voucher.total_debit,
+        total_credit=voucher.total_credit,
+        status=voucher.status,
+        created_at=voucher.created_at,
+    )
+
+
+@_voucher_router.get(
+    "",
+    response_model=VoucherListResponse,
+    summary="List vouchers for the current firm (newest-first)",
+)
+def list_vouchers(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("accounting.voucher.read"))],
+    voucher_type: Annotated[VoucherType | None, Query()] = None,
+    firm_id: Annotated[uuid.UUID | None, Query()] = None,
+    from_date: Annotated[dt.date | None, Query(alias="from")] = None,
+    to_date: Annotated[dt.date | None, Query(alias="to")] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> VoucherListResponse:
+    """Return all vouchers for the firm in scope, newest-first.
+
+    Read-only header view — line postings are not included. Voucher
+    posting (Journal entries) is deferred to v2.
+    """
+    if current_user.firm_id is None:
+        # Mirror the receipts router: an active-firm context is required
+        # so the listing is unambiguous about which firm's books we're
+        # reading.
+        raise PermissionDeniedError(
+            "No active firm in this session — switch to a firm first.",
+            title="No active firm",
+        )
+
+    target_firm_id = firm_id if firm_id is not None else current_user.firm_id
+
+    stmt = select(Voucher).where(
+        Voucher.org_id == current_user.org_id,
+        Voucher.firm_id == target_firm_id,
+        Voucher.deleted_at.is_(None),
+    )
+    if voucher_type is not None:
+        stmt = stmt.where(Voucher.voucher_type == voucher_type)
+    if from_date is not None:
+        stmt = stmt.where(Voucher.voucher_date >= from_date)
+    if to_date is not None:
+        stmt = stmt.where(Voucher.voucher_date <= to_date)
+    stmt = (
+        stmt.order_by(Voucher.voucher_date.desc(), Voucher.number.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = list(db.execute(stmt).scalars().all())
+    return VoucherListResponse(
+        items=[_to_voucher_list_item(v) for v in rows],
+        limit=limit,
+        offset=offset,
+        count=len(rows),
+    )
+
+
 # Mount sub-routers onto the parent router.
 router.include_router(_bank_router)
 router.include_router(_cheque_router)
+router.include_router(_voucher_router)

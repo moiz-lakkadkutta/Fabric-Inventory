@@ -1238,6 +1238,93 @@
         "title": "DCStatus",
         "type": "string"
       },
+      "DaybookResponse": {
+        "properties": {
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "vouchers": {
+            "items": {
+              "$ref": "#/components/schemas/DaybookVoucher"
+            },
+            "title": "Vouchers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "date",
+          "vouchers"
+        ],
+        "title": "DaybookResponse",
+        "type": "object"
+      },
+      "DaybookVoucher": {
+        "properties": {
+          "narration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "party_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party Name"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "total_credit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Credit",
+            "type": "string"
+          },
+          "total_debit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Debit",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          },
+          "voucher_type": {
+            "title": "Voucher Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "voucher_type",
+          "series",
+          "number",
+          "narration",
+          "total_debit",
+          "total_credit",
+          "party_name"
+        ],
+        "title": "DaybookVoucher",
+        "type": "object"
+      },
       "GRNCreateRequest": {
         "properties": {
           "firm_id": {
@@ -4339,6 +4426,118 @@
         "title": "PartyUpdateRequest",
         "type": "object"
       },
+      "PnlGroupRow": {
+        "description": "One row in the P&L by-ledger-group table.\n\n`current_period_amount` and `prior_period_amount` are signed against\nthe natural sign of the group (income/COGS/expense are all returned\nas positive numbers; net contribution to profit is computed in the\naggregate fields above). `variance_pct` is rounded to two decimals;\nthe FE re-formats for display.",
+        "properties": {
+          "current_period_amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Current Period Amount",
+            "type": "string"
+          },
+          "group_code": {
+            "title": "Group Code",
+            "type": "string"
+          },
+          "group_name": {
+            "title": "Group Name",
+            "type": "string"
+          },
+          "group_type": {
+            "title": "Group Type",
+            "type": "string"
+          },
+          "prior_period_amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Prior Period Amount",
+            "type": "string"
+          },
+          "variance_pct": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Variance Pct",
+            "type": "string"
+          }
+        },
+        "required": [
+          "group_code",
+          "group_name",
+          "group_type",
+          "current_period_amount",
+          "prior_period_amount",
+          "variance_pct"
+        ],
+        "title": "PnlGroupRow",
+        "type": "object"
+      },
+      "PnlPeriod": {
+        "properties": {
+          "from_date": {
+            "format": "date",
+            "title": "From Date",
+            "type": "string"
+          },
+          "to_date": {
+            "format": "date",
+            "title": "To Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_date",
+          "to_date"
+        ],
+        "title": "PnlPeriod",
+        "type": "object"
+      },
+      "PnlResponse": {
+        "properties": {
+          "by_ledger_group": {
+            "items": {
+              "$ref": "#/components/schemas/PnlGroupRow"
+            },
+            "title": "By Ledger Group",
+            "type": "array"
+          },
+          "cogs": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cogs",
+            "type": "string"
+          },
+          "expenses": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Expenses",
+            "type": "string"
+          },
+          "gross_profit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Gross Profit",
+            "type": "string"
+          },
+          "net_profit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Net Profit",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/PnlPeriod"
+          },
+          "total_income": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Income",
+            "type": "string"
+          }
+        },
+        "required": [
+          "period",
+          "total_income",
+          "cogs",
+          "gross_profit",
+          "expenses",
+          "net_profit",
+          "by_ledger_group"
+        ],
+        "title": "PnlResponse",
+        "type": "object"
+      },
       "PurchaseOrderStatus": {
         "enum": [
           "DRAFT",
@@ -6322,6 +6521,107 @@
         "title": "StockAdjustmentResponse",
         "type": "object"
       },
+      "StockSummaryResponse": {
+        "properties": {
+          "as_of": {
+            "format": "date",
+            "title": "As Of",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/StockSummaryRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "total_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "as_of",
+          "total_value",
+          "rows"
+        ],
+        "title": "StockSummaryResponse",
+        "type": "object"
+      },
+      "StockSummaryRow": {
+        "description": "One SKU/item row in the stock summary.\n\n`sku_id` may be NULL when the item is tracked at the item level\nonly (no per-SKU breakdown \u2014 fabric items often work this way). In\nthat case `sku_code` is also NULL and the item-level totals are\nreported on a single row.",
+        "properties": {
+          "avg_cost": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Avg Cost",
+            "type": "string"
+          },
+          "item_code": {
+            "title": "Item Code",
+            "type": "string"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "on_hand_qty": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "On Hand Qty",
+            "type": "string"
+          },
+          "sku_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sku Code"
+          },
+          "sku_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sku Id"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          },
+          "valuation": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Valuation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sku_id",
+          "item_id",
+          "item_code",
+          "item_name",
+          "sku_code",
+          "on_hand_qty",
+          "uom",
+          "avg_cost",
+          "valuation"
+        ],
+        "title": "StockSummaryRow",
+        "type": "object"
+      },
       "SwitchFirmRequest": {
         "description": "Switch the active firm in the current session \u2014 issues a new\ntoken pair carrying the new firm_id and re-rolls the refresh cookie.",
         "properties": {
@@ -6383,6 +6683,94 @@
         ],
         "title": "TaxStatus",
         "type": "string"
+      },
+      "TbResponse": {
+        "properties": {
+          "as_of": {
+            "format": "date",
+            "title": "As Of",
+            "type": "string"
+          },
+          "balanced": {
+            "title": "Balanced",
+            "type": "boolean"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/TbRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "total_credits": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Credits",
+            "type": "string"
+          },
+          "total_debits": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Debits",
+            "type": "string"
+          }
+        },
+        "required": [
+          "as_of",
+          "total_debits",
+          "total_credits",
+          "balanced",
+          "rows"
+        ],
+        "title": "TbResponse",
+        "type": "object"
+      },
+      "TbRow": {
+        "description": "One ledger row in the Trial Balance.\n\nA ledger contributes either to debit or credit \u2014 not both \u2014 based\non the net balance computed from voucher_line. Zero-balance ledgers\nare excluded by default.",
+        "properties": {
+          "credit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Credit",
+            "type": "string"
+          },
+          "debit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Debit",
+            "type": "string"
+          },
+          "group_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Code"
+          },
+          "ledger_code": {
+            "title": "Ledger Code",
+            "type": "string"
+          },
+          "ledger_id": {
+            "format": "uuid",
+            "title": "Ledger Id",
+            "type": "string"
+          },
+          "ledger_name": {
+            "title": "Ledger Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ledger_id",
+          "ledger_code",
+          "ledger_name",
+          "group_code",
+          "debit",
+          "credit"
+        ],
+        "title": "TbRow",
+        "type": "object"
       },
       "TokenPairResponse": {
         "properties": {
@@ -6529,7 +6917,128 @@
         "title": "ValidationError",
         "type": "object"
       },
-      "VoucherStatus": {
+      "VoucherListItem": {
+        "description": "One row on the AccountingHub Vouchers tab.\n\nMoney is rupees (Decimal-as-string) on the wire per CLAUDE.md.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoucherStatus-Output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total_credit": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Credit"
+          },
+          "total_debit": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Debit"
+          },
+          "voucher_date": {
+            "format": "date",
+            "title": "Voucher Date",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          },
+          "voucher_type": {
+            "$ref": "#/components/schemas/VoucherType"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "voucher_type",
+          "series",
+          "number",
+          "voucher_date",
+          "narration",
+          "total_debit",
+          "total_credit",
+          "status",
+          "created_at"
+        ],
+        "title": "VoucherListItem",
+        "type": "object"
+      },
+      "VoucherListResponse": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/VoucherListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset",
+          "count"
+        ],
+        "title": "VoucherListResponse",
+        "type": "object"
+      },
+      "VoucherStatus-Input": {
         "description": "Shared lifecycle for voucher-style documents (PI, Payment, Receipt,\nJournal). Bound to the `voucher_status` Postgres enum.",
         "enum": [
           "DRAFT",
@@ -6538,6 +7047,32 @@
           "VOIDED"
         ],
         "title": "VoucherStatus",
+        "type": "string"
+      },
+      "VoucherStatus-Output": {
+        "description": "Re-declares the `voucher_status` enum binding for accounting.\n\nSame Postgres type as `procurement.VoucherStatus` and\n`sales.VoucherStatus`; declared here to avoid cross-domain import.",
+        "enum": [
+          "DRAFT",
+          "POSTED",
+          "RECONCILED",
+          "VOIDED"
+        ],
+        "title": "VoucherStatus",
+        "type": "string"
+      },
+      "VoucherType": {
+        "enum": [
+          "SALES_INVOICE",
+          "PURCHASE_INVOICE",
+          "PAYMENT",
+          "RECEIPT",
+          "JOURNAL",
+          "CONTRA",
+          "DEBIT_NOTE",
+          "CREDIT_NOTE",
+          "OPENING_BAL"
+        ],
+        "title": "VoucherType",
         "type": "string"
       }
     }
@@ -9734,7 +10269,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "$ref": "#/components/schemas/VoucherStatus"
+                  "$ref": "#/components/schemas/VoucherStatus-Input"
                 },
                 {
                   "type": "null"
@@ -10654,6 +11189,233 @@
         ]
       }
     },
+    "/reports/daybook": {
+      "get": {
+        "operationId": "get_daybook_reports_daybook_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DaybookResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "All vouchers posted on a single day",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/reports/pnl": {
+      "get": {
+        "operationId": "get_pnl_reports_pnl_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PnlResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Profit & Loss for a date range, grouped by ledger group",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/reports/stock-summary": {
+      "get": {
+        "operationId": "get_stock_summary_reports_stock_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_zero",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Zero",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockSummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "On-hand qty + weighted-average cost per item",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/reports/tb": {
+      "get": {
+        "operationId": "get_tb_reports_tb_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TbResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Trial Balance as of a date \u2014 debits must equal credits",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
     "/sales-orders": {
       "get": {
         "operationId": "list_sos_sales_orders_get",
@@ -11535,6 +12297,132 @@
         "tags": [
           "masters",
           "uom"
+        ]
+      }
+    },
+    "/vouchers": {
+      "get": {
+        "description": "Return all vouchers for the firm in scope, newest-first.\n\nRead-only header view \u2014 line postings are not included. Voucher\nposting (Journal entries) is deferred to v2.",
+        "operationId": "list_vouchers_vouchers_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "voucher_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/VoucherType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Voucher Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "firm_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Firm Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoucherListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List vouchers for the current firm (newest-first)",
+        "tags": [
+          "banking",
+          "accounting",
+          "voucher"
         ]
       }
     }
