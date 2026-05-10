@@ -2936,6 +2936,8 @@ export interface components {
              * Format: uuid
              */
             firm_id: string;
+            /** Gst Amount */
+            gst_amount?: string | null;
             /** Invoice Amount */
             invoice_amount: string | null;
             /**

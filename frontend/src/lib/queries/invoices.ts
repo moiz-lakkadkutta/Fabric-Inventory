@@ -35,6 +35,9 @@ export function resetInvoiceStore() {
 // caught by `pnpm check:types` in CI.
 // ──────────────────────────────────────────────────────────────────────
 
+// Per CUT-106: types come from the codegen output. Drift (e.g. CUT-104's
+// gst_amount on the list item) is caught by `pnpm check:types` in CI;
+// run `pnpm gen:types` after BE schema changes to refresh the snapshot.
 type BackendSiLine = components['schemas']['SiLineResponse'];
 type BackendSalesInvoice = components['schemas']['SalesInvoiceResponse'];
 type BackendSalesInvoiceListItem = components['schemas']['SalesInvoiceListItem'];
@@ -112,6 +115,13 @@ function mapDetail(b: BackendSalesInvoice): Invoice {
 }
 
 function mapListItem(b: BackendSalesInvoiceListItem): Invoice {
+  // CUT-104 (P1-9): backend now returns gst_amount on list rows so the
+  // FE can compute subtotal = total - gst without a per-row detail
+  // fetch. Legacy backends without the field return null/undefined →
+  // gst_total falls back to 0 and subtotal == total (same shape as
+  // before this fix).
+  const total = rupeesToPaise(b.invoice_amount);
+  const gst_total = rupeesToPaise(b.gst_amount);
   return {
     invoice_id: b.sales_invoice_id,
     number: `${b.series}/${b.number}`,
@@ -121,9 +131,9 @@ function mapListItem(b: BackendSalesInvoiceListItem): Invoice {
     party_name: b.party_name ?? '',
     party_state: b.place_of_supply_state ?? '',
     status: mapStatus(b.lifecycle_status),
-    subtotal: 0,
-    gst_total: 0,
-    total: rupeesToPaise(b.invoice_amount),
+    subtotal: total - gst_total,
+    gst_total,
+    total,
     paid: rupeesToPaise(b.paid_amount),
     ageing_days: ageingDays(b.due_date),
     lines: [],

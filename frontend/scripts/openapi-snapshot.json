@@ -5371,6 +5371,18 @@
             "title": "Firm Id",
             "type": "string"
           },
+          "gst_amount": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gst Amount"
+          },
           "invoice_amount": {
             "anyOf": [
               {

@@ -439,6 +439,8 @@ def _invoice_to_list_item(invoice: SalesInvoice, *, party_name: str | None) -> S
         invoice_date=invoice.invoice_date,
         due_date=invoice.due_date,
         invoice_amount=invoice.invoice_amount,
+        # CUT-104 (P1-9): expose gst_amount on list rows.
+        gst_amount=invoice.gst_amount,
         paid_amount=invoice.paid_amount,
         lifecycle_status=invoice.lifecycle_status,
         place_of_supply_state=invoice.place_of_supply_state,

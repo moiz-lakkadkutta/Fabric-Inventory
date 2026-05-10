@@ -116,6 +116,10 @@ def test_list_invoices_returns_seeded_row(http_client: TestClient, sync_engine: 
     assert item["lifecycle_status"] == "DRAFT"
     assert item["party_name"] is not None
     assert "lines" not in item, "list rows should be trimmed (no lines)"
+    # CUT-104 (P1-9): list rows must include gst_amount so the FE can
+    # show per-row tax columns without a detail fetch per row.
+    assert "gst_amount" in item, "list rows must expose gst_amount"
+    assert Decimal(item["gst_amount"]) == Decimal("12705.00")
 
 
 def test_get_invoice_returns_full_payload_with_lines(
