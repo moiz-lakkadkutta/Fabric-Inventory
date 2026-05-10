@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Check, Mail } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Eye, Mail } from 'lucide-react';
 import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -7,45 +7,117 @@ import { Wordmark } from '@/components/ui/wordmark';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { ApiError } from '@/lib/api/errors';
+import { useIdempotencyKey } from '@/lib/api/idempotency';
+import { useSignup } from '@/lib/queries/identity';
 
 /*
   Onboarding — visual port of fabric-2/project/shell-screens.jsx ::
   OnbOrg / OnbFirm / OnbOpening. Three-step wizard with a Stepper header
-  and Back / Next / Commit & finish footer. The state machine lives in
-  the page and tests verify the behaviour through the heading + footer.
-  Real org/firm provisioning wires in TASK-007.
+  and Back / Next / Commit & finish footer.
+
+  TASK-CUT-003 (audit P0-3): the wizard now actually signs the user up.
+    - Step 1 collects org name, contact email, password.
+    - Step 2 collects firm name, tax regime, GSTIN (when GST), and the
+      2-char state code. State code auto-fills from GSTIN's first two
+      chars if GSTIN is present (user can override). When non-GST, the
+      user enters state code explicitly — backend requires it for the
+      place-of-supply engine to compute tax_type correctly per T-INT-4.
+    - Step 3 keeps the existing opening-balance choice UI, but the
+      Vyapar option is labelled "(coming soon — TASK-CUT-402)" because
+      no migration adapter exists yet. Selecting any option is a no-op
+      for now; the actual import flow lands in Wave 5. The "Commit &
+      finish" button posts to /auth/signup, hydrates authStore via
+      useSignup, then navigates to /.
 */
 type Step = 0 | 1 | 2;
 
 interface FormData {
   orgName: string;
   contactEmail: string;
+  password: string;
   phone: string;
   firmName: string;
   taxRegime: 'gst' | 'non-gst';
   gstin: string;
+  stateCode: string;
   pan: string;
   importMode: 'new' | 'vyapar' | 'manual';
 }
 
 const INITIAL: FormData = {
-  orgName: 'Rajesh Patel Holdings',
-  contactEmail: 'rajesh@rpholdings.in',
-  phone: '98250 14728',
-  firmName: 'Rajesh Textiles, Surat',
+  orgName: '',
+  contactEmail: '',
+  password: '',
+  phone: '',
+  firmName: '',
   taxRegime: 'gst',
-  gstin: '24ABCDE1234F1Z5',
-  pan: 'ABCDE1234F',
-  importMode: 'vyapar',
+  gstin: '',
+  stateCode: '',
+  pan: '',
+  importMode: 'new',
 };
 
 export default function Onboarding() {
   const [step, setStep] = React.useState<Step>(0);
   const [data, setData] = React.useState<FormData>(INITIAL);
+  const [error, setError] = React.useState<string | null>(null);
   const navigate = useNavigate();
+  const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
+  const signup = useSignup();
 
-  const update = <K extends keyof FormData>(key: K, value: FormData[K]) =>
-    setData((d) => ({ ...d, [key]: value }));
+  const update = <K extends keyof FormData>(key: K, value: FormData[K]) => {
+    setData((d) => {
+      const next = { ...d, [key]: value };
+      // Auto-derive state_code from GSTIN's first two chars when GSTIN
+      // changes, but only if the user hasn't explicitly entered one (or
+      // if the existing value was the auto-derived prefix from a prior
+      // GSTIN edit). The simplest UX rule: any 2 leading digits in the
+      // GSTIN populate state_code. The user can still edit state_code
+      // afterwards — this is auto-fill, not lock-step sync.
+      if (key === 'gstin') {
+        const gstin = String(value).trim();
+        if (gstin.length >= 2) {
+          const prefix = gstin.slice(0, 2);
+          if (/^\d{2}$/.test(prefix)) {
+            next.stateCode = prefix;
+          }
+        }
+      }
+      return next;
+    });
+  };
+
+  const onCommit = () => {
+    setError(null);
+    signup.mutate(
+      {
+        email: data.contactEmail.trim(),
+        password: data.password,
+        org_name: data.orgName.trim(),
+        firm_name: data.firmName.trim(),
+        state_code: data.stateCode.trim().toUpperCase(),
+        gstin: data.taxRegime === 'gst' && data.gstin.trim() ? data.gstin.trim() : undefined,
+        idempotencyKey,
+      },
+      {
+        onSuccess: () => {
+          resetKey();
+          navigate('/');
+        },
+        onError: (err) => {
+          resetKey();
+          if (err instanceof ApiError) {
+            // Surface the backend's title (e.g. "Email already in use").
+            // Falls back to detail when title is generic.
+            setError(err.title || err.detail || 'Sign-up failed.');
+          } else {
+            setError('Sign-up failed. Please check your network and try again.');
+          }
+        },
+      },
+    );
+  };
 
   return (
     <div
@@ -70,6 +142,24 @@ export default function Onboarding() {
           {step === 0 && <OrgStep data={data} update={update} />}
           {step === 1 && <FirmStep data={data} update={update} />}
           {step === 2 && <OpeningStep data={data} update={update} />}
+
+          {error && (
+            <div
+              role="alert"
+              className="mt-4"
+              style={{
+                background: 'var(--negative-subtle, #FEF2F2)',
+                color: 'var(--negative, #B91C1C)',
+                border: '1px solid var(--negative, #FCA5A5)',
+                borderRadius: 8,
+                padding: '10px 12px',
+                fontSize: 13,
+              }}
+            >
+              {error}
+            </div>
+          )}
+
           <div
             className="mt-6 flex justify-between border-t pt-4"
             style={{ borderColor: 'var(--border-subtle)' }}
@@ -99,7 +189,11 @@ export default function Onboarding() {
                 <ArrowRight size={14} />
               </Button>
             )}
-            {step === 2 && <Button onClick={() => navigate('/')}>Commit & finish</Button>}
+            {step === 2 && (
+              <Button onClick={onCommit} disabled={signup.isPending}>
+                {signup.isPending ? 'Creating your books…' : 'Commit & finish'}
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -197,12 +291,13 @@ function OrgStep({ data, update }: StepProps) {
             <Input
               id="contact-email"
               type="email"
+              autoComplete="email"
               value={data.contactEmail}
               onChange={(e) => update('contactEmail', e.target.value)}
               icon={<Mail size={14} />}
             />
           </Field>
-          <Field label="Phone" htmlFor="phone">
+          <Field label="Phone" htmlFor="phone" hint="Optional · UI only for now">
             <Input
               id="phone"
               prefix={<span style={{ fontSize: 13 }}>+91</span>}
@@ -211,6 +306,21 @@ function OrgStep({ data, update }: StepProps) {
             />
           </Field>
         </div>
+        <Field
+          label="Password"
+          htmlFor="onb-password"
+          required
+          hint="Minimum 8 characters · used to sign in to your books"
+        >
+          <Input
+            id="onb-password"
+            type="password"
+            autoComplete="new-password"
+            value={data.password}
+            onChange={(e) => update('password', e.target.value)}
+            suffix={<Eye size={14} />}
+          />
+        </Field>
       </div>
     </>
   );
@@ -250,7 +360,7 @@ function FirmStep({ data, update }: StepProps) {
           </div>
         </Field>
         {data.taxRegime === 'gst' && (
-          <Field label="GSTIN" htmlFor="gstin" required hint="Auto-validates on blur">
+          <Field label="GSTIN" htmlFor="gstin" required hint="State code auto-fills from GSTIN">
             <Input
               id="gstin"
               value={data.gstin}
@@ -258,6 +368,23 @@ function FirmStep({ data, update }: StepProps) {
             />
           </Field>
         )}
+        <Field
+          label="State code"
+          htmlFor="state-code"
+          required
+          hint={
+            data.taxRegime === 'gst'
+              ? '2-digit code · auto-filled from GSTIN'
+              : '2-digit Indian state code (e.g. 27 for Maharashtra)'
+          }
+        >
+          <Input
+            id="state-code"
+            value={data.stateCode}
+            maxLength={2}
+            onChange={(e) => update('stateCode', e.target.value.toUpperCase())}
+          />
+        </Field>
         <Field label="PAN" htmlFor="pan" hint="Optional · used for TDS">
           <Input
             id="pan"
@@ -271,12 +398,20 @@ function FirmStep({ data, update }: StepProps) {
 }
 
 function OpeningStep({ data, update }: StepProps) {
+  /*
+   * Vyapar import is the migration path Moiz will use to leave Vyapar
+   * (CLAUDE.md decision #5). The adapter ships in TASK-CUT-402 (Wave 5).
+   * Until then we keep the option visible but explicitly labelled as
+   * coming-soon so the wizard doesn't promise functionality that isn't
+   * there. The other two options are no-ops today and don't block
+   * signup.
+   */
   const options: Array<{ id: FormData['importMode']; label: string; sub: string }> = [
     { id: 'new', label: "I'm new to the trade", sub: 'Skip — start with empty books.' },
     {
       id: 'vyapar',
-      label: 'Import from Vyapar (.vyp)',
-      sub: 'We parse parties, ledgers, and stock balances.',
+      label: 'Import from Vyapar (.vyp) (coming soon — TASK-CUT-402)',
+      sub: 'Adapter ships in Wave 5; selection is recorded but not processed yet.',
     },
     { id: 'manual', label: 'Manual entry', sub: 'Type opening balances yourself.' },
   ];
