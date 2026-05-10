@@ -2,12 +2,11 @@ import { Building2, Check, ChevronDown, Plus } from 'lucide-react';
 import { useState } from 'react';
 
 import { Monogram } from '@/components/ui/monogram';
-import { Pill } from '@/components/ui/pill';
 import { useClickOutside } from '@/hooks/useClickOutside';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
-import { firms } from '@/lib/mock';
 import { useSwitchFirm } from '@/lib/queries/identity';
 import { cn } from '@/lib/utils';
+import { useMe, type MeFirmRef } from '@/store/auth';
 
 const FY_LABEL = 'FY 2025-26';
 
@@ -28,35 +27,76 @@ interface FirmSwitcherProps {
   Firm-switcher trigger + popover. Click toggles a 380px popover anchored
   below the trigger; click-outside or Esc closes it.
 
-  Mock mode keeps the local-state behavior (instant-switch, no backend).
-  Live mode dispatches `useSwitchFirm` which POSTs /auth/switch-firm,
-  swaps the access token, clears all cached queries, and re-fetches /me.
-  The popover's `currentId` is the optimistic UI state; the live
-  mutation is fire-and-forget for now (errors revert via onError).
+  Identity comes from `authStore.me.available_firms` (CUT-004). The
+  popover's `optimisticFirmId` tracks the user's most recent click so the
+  chip updates instantly while `useSwitchFirm` round-trips to /auth/
+  switch-firm — on success the mutation refetches /me and the optimistic
+  state collapses into the canonical store value; on failure the
+  optimistic state is reverted.
+
+  When `me` is null (status `unknown` / `unauthenticated`) the switcher
+  renders a quiet placeholder rather than leaking any mock fixtures.
 */
 export function FirmSwitcher({ compact = false }: FirmSwitcherProps) {
+  const me = useMe();
   const [open, setOpen] = useState(false);
-  const [currentId, setCurrentId] = useState(firms[0].firm_id);
+  const [optimisticFirmId, setOptimisticFirmId] = useState<string | null>(null);
   const ref = useClickOutside<HTMLDivElement>(open, () => setOpen(false));
   const switchFirm = useSwitchFirm();
   const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
 
-  const current = firms.find((f) => f.firm_id === currentId) ?? firms[0];
+  const availableFirms: MeFirmRef[] = me?.available_firms ?? [];
+  const currentId = optimisticFirmId ?? me?.firm_id ?? availableFirms[0]?.firm_id ?? null;
+  const current = availableFirms.find((f) => f.firm_id === currentId) ?? null;
+
+  // No identity yet (bootstrap pending or signed out) — render a quiet
+  // chip placeholder. Hide the popover entirely so users can't open
+  // an empty list. The route gate (<RequireAuth>) means this is rare in
+  // practice; this branch keeps the topbar layout stable mid-bootstrap.
+  if (!me || availableFirms.length === 0) {
+    return (
+      <div
+        aria-hidden="true"
+        className="inline-flex h-9 items-center gap-2 rounded-md px-2.5"
+        style={{
+          background: 'transparent',
+          border: '1px solid var(--border-default)',
+          color: 'var(--text-tertiary)',
+          maxWidth: compact ? 200 : 320,
+          minWidth: 0,
+          opacity: 0.5,
+        }}
+      >
+        <Building2 size={14} color="var(--text-secondary)" />
+        <span className="truncate" style={{ fontSize: 13 }}>
+          —
+        </span>
+      </div>
+    );
+  }
+
+  const triggerLabel = current?.name ?? '—';
 
   const onSelect = (firmId: string) => {
-    const previousId = currentId;
-    setCurrentId(firmId);
+    if (firmId === currentId) {
+      setOpen(false);
+      return;
+    }
+    const previousId = optimisticFirmId;
+    setOptimisticFirmId(firmId);
     setOpen(false);
     switchFirm.mutate(
       { firm_id: firmId, idempotencyKey },
       {
         onSuccess: () => {
           resetKey();
+          // Once the mutation refetches /me, store has the new firm_id;
+          // drop our optimistic shadow so future renders read store.
+          setOptimisticFirmId(null);
         },
         onError: () => {
           resetKey();
-          // Revert optimistic UI on failure.
-          setCurrentId(previousId);
+          setOptimisticFirmId(previousId);
         },
       },
     );
@@ -80,16 +120,8 @@ export function FirmSwitcher({ compact = false }: FirmSwitcherProps) {
       >
         <Building2 size={14} color="var(--text-secondary)" />
         <span className="truncate" style={{ fontSize: 13, fontWeight: 500 }}>
-          {current.name}
+          {triggerLabel}
         </span>
-        {!compact && current.gstin && (
-          <span
-            className="mono hidden truncate md:inline"
-            style={{ fontSize: 11, color: 'var(--text-tertiary)', maxWidth: 130 }}
-          >
-            · {current.gstin}
-          </span>
-        )}
         <ChevronDown size={14} color="var(--text-tertiary)" />
       </button>
 
@@ -124,7 +156,7 @@ export function FirmSwitcher({ compact = false }: FirmSwitcherProps) {
             </span>
           </div>
           <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
-            {firms.map((f) => {
+            {availableFirms.map((f) => {
               const isCurrent = f.firm_id === currentId;
               return (
                 <button
@@ -170,14 +202,7 @@ export function FirmSwitcher({ compact = false }: FirmSwitcherProps) {
                           maxWidth: '60%',
                         }}
                       >
-                        {f.gstin ?? '—'}
-                      </span>
-                      {!f.has_gst && <Pill kind="scrap">Non-GST</Pill>}
-                      <span
-                        className="ml-auto"
-                        style={{ fontSize: 11, color: 'var(--text-tertiary)' }}
-                      >
-                        {f.state_name}
+                        {f.code}
                       </span>
                     </div>
                   </div>

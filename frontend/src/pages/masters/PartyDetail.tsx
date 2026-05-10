@@ -6,7 +6,7 @@ import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { findParty } from '@/lib/mock/parties';
 import { invoices } from '@/lib/mock/invoices';
-import { formatINRCompact } from '@/lib/mock';
+import { formatINRCompact } from '@/lib/format';
 import { useQuery } from '@tanstack/react-query';
 
 import { fakeFetch } from '@/lib/mock/api';

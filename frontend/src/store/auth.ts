@@ -22,6 +22,7 @@ export interface MeResponse {
   user_id: string;
   org_id: string;
   firm_id: string | null;
+  email: string;
   permissions: string[];
   flags: Record<string, boolean>;
   available_firms: MeFirmRef[];

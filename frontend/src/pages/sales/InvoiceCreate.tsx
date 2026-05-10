@@ -11,7 +11,7 @@ import { useItems } from '@/lib/queries/items';
 import { useCustomers } from '@/lib/queries/parties';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { useCreateDraftInvoice, useFinalizeInvoice } from '@/lib/queries/invoices';
-import { formatINRCompact } from '@/lib/mock';
+import { formatINRCompact } from '@/lib/format';
 import type { Invoice, InvoiceLine } from '@/lib/mock/types';
 
 interface DraftLine {

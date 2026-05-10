@@ -169,6 +169,7 @@ describe('buildCreateBody (T-INT-4)', () => {
       user_id: 'u',
       org_id: 'o',
       firm_id: 'f1',
+      email: 'fixture@example.com',
       permissions: ['sales.invoice.create'],
       flags: {},
       available_firms: [{ firm_id: 'f1', code: 'RT', name: 'Rajesh Textiles' }],

@@ -9,7 +9,7 @@ import { Pill, type PillKind } from '@/components/ui/pill';
 import { QueryError } from '@/components/ui/query-error';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useInvoices } from '@/lib/queries/invoices';
-import { formatAgeing, formatDateShort, formatINRCompact } from '@/lib/mock';
+import { formatAgeing, formatDateShort, formatINRCompact } from '@/lib/format';
 import type { Invoice, InvoiceStatus } from '@/lib/mock/types';
 
 type FilterKey = 'all' | InvoiceStatus;

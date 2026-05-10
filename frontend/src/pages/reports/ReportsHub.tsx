@@ -12,7 +12,7 @@ import {
   useStockReport,
   useTrialBalance,
 } from '@/lib/queries/reports';
-import { formatINRCompact } from '@/lib/mock';
+import { formatINRCompact } from '@/lib/format';
 import type { GstrSection, PnlRow } from '@/lib/mock/reports';
 
 type Tab = 'pnl' | 'tb' | 'gstr1' | 'stock' | 'daybook';
