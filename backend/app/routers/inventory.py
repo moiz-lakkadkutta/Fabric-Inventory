@@ -1,13 +1,14 @@
-"""Inventory router — stock adjustment endpoints (TASK-023).
+"""Inventory router — stock adjustment + location endpoints.
 
 Endpoints:
-  POST /stock-adjustments        — create an adjustment
-  GET  /stock-adjustments        — list adjustments with optional filters
-  GET  /stock-adjustments/{id}   — get a single adjustment
+  POST /stock-adjustments        — create an adjustment           (TASK-023)
+  GET  /stock-adjustments        — list adjustments with filters  (TASK-023)
+  GET  /stock-adjustments/{id}   — get a single adjustment        (TASK-023)
+  GET  /locations                — list firm locations            (TASK-CUT-204)
 
 Permissions:
-  inventory.adjustment.create  — create
-  inventory.stock.read         — list + get
+  inventory.adjustment.create  — create adjustment
+  inventory.stock.read         — list + get adjustments + list locations
 """
 
 from __future__ import annotations
@@ -19,16 +20,19 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
-from app.models import StockAdjustment
+from app.models import Location, StockAdjustment
 from app.schemas.inventory import (
+    LocationListResponse,
+    LocationResponse,
     StockAdjustmentListResponse,
     StockAdjustmentRequest,
     StockAdjustmentResponse,
 )
-from app.service import stock_service
+from app.service import inventory_service, stock_service
 from app.service.identity_service import TokenPayload
 
 router = APIRouter(prefix="/stock-adjustments", tags=["inventory", "stock-adjustment"])
+locations_router = APIRouter(prefix="/locations", tags=["inventory", "location"])
 
 
 def _adj_to_response(adj: StockAdjustment) -> StockAdjustmentResponse:
@@ -139,3 +143,53 @@ def get_stock_adjustment(
     if adj is None:
         raise AppValidationError(f"Stock adjustment {adjustment_id} not found")
     return _adj_to_response(adj)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Locations — read-only list (TASK-CUT-204)
+#
+# Needed by the FE Adjust-Stock dialog (and future PO/GRN flows that
+# need a destination warehouse picker). CRUD on locations lands in a
+# future admin-panel task; here we only expose the list.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _location_to_response(loc: Location) -> LocationResponse:
+    return LocationResponse(
+        location_id=loc.location_id,
+        org_id=loc.org_id,
+        firm_id=loc.firm_id,
+        code=loc.code,
+        name=loc.name,
+        location_type=loc.location_type.value,
+        is_active=loc.is_active,
+    )
+
+
+@locations_router.get(
+    "",
+    response_model=LocationListResponse,
+    summary="List warehouse locations under the current org",
+)
+def list_locations(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("inventory.stock.read"))],
+    firm_id: Annotated[uuid.UUID | None, Query()] = None,
+    include_inactive: Annotated[bool, Query()] = False,
+) -> LocationListResponse:
+    """List firm locations.
+
+    The FE Adjust-Stock dialog calls this with `firm_id` set to the
+    current session's firm. When omitted, returns every Location in the
+    org (still RLS-scoped via current_user.org_id).
+    """
+    rows = inventory_service.list_locations(
+        db,
+        org_id=current_user.org_id,
+        firm_id=firm_id,
+        include_inactive=include_inactive,
+    )
+    return LocationListResponse(
+        items=[_location_to_response(r) for r in rows],
+        count=len(rows),
+    )

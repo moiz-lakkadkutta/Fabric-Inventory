@@ -550,6 +550,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/locations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List warehouse locations under the current org
+         * @description List firm locations.
+         *
+         *     The FE Adjust-Stock dialog calls this with `firm_id` set to the
+         *     current session's firm. When omitted, returns every Location in the
+         *     org (still RLS-scoped via current_user.org_id).
+         */
+        get: operations["list_locations_locations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/parties": {
         parameters: {
             query?: never;
@@ -1950,6 +1974,48 @@ export interface components {
             ledger_type?: string | null;
             /** Name */
             name?: string | null;
+        };
+        /**
+         * LocationListResponse
+         * @description List of Location rows under the current org / optional firm.
+         */
+        LocationListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["LocationResponse"][];
+        };
+        /**
+         * LocationResponse
+         * @description One Location row in the firm's warehouse catalog.
+         */
+        LocationResponse: {
+            /** Code */
+            code: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Is Active */
+            is_active: boolean | null;
+            /**
+             * Location Id
+             * Format: uuid
+             */
+            location_id: string;
+            /**
+             * Location Type
+             * @enum {string}
+             */
+            location_type: "WAREHOUSE" | "GODOWN" | "SHELF" | "BIN" | "IN_TRANSIT" | "STAGING" | "SCRAP";
+            /** Name */
+            name: string;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
         };
         /** LoginRequest */
         LoginRequest: {
@@ -5087,6 +5153,38 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    list_locations_locations_get: {
+        parameters: {
+            query?: {
+                firm_id?: string | null;
+                include_inactive?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
