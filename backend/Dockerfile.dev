@@ -7,6 +7,18 @@ ENV UV_LINK_MODE=copy \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# CUT-205: WeasyPrint runtime libs. Per the Wave-1 spike
+# (docs/spikes/pdf-rendering-tech.md), Pango/HarfBuzz/Cairo + Noto fonts
+# render the GST tax-invoice PDF including Devanagari/Gujarati item names.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+        libharfbuzz-subset0 \
+        libcairo2 \
+        fonts-noto \
+        fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY pyproject.toml ./

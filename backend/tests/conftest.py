@@ -30,6 +30,21 @@ os.environ.setdefault("JWT_SECRET", "test-secret-must-be-long-enough-32chars")
 os.environ.setdefault("ENVIRONMENT", "dev")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 
+# CUT-205: WeasyPrint dlopen()s pango/cairo/gobject. On macOS-arm64 those
+# libraries live in /opt/homebrew/lib. Set the fallback path for tests so
+# `uv run pytest` finds them even with a scrubbed shell env. No-op on Linux.
+import platform as _platform
+
+if _platform.system() == "Darwin":
+    for _candidate in ("/opt/homebrew/lib", "/usr/local/lib"):
+        if os.path.isdir(_candidate):
+            existing = os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+            if _candidate not in existing.split(":"):
+                os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = (
+                    f"{_candidate}:{existing}" if existing else _candidate
+                )
+            break
+
 
 @pytest.fixture
 async def client() -> AsyncIterator[AsyncClient]:

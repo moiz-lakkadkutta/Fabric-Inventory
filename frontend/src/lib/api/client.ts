@@ -136,4 +136,33 @@ async function parseBody<T>(response: Response): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+/**
+ * Fetch a binary endpoint (e.g. /invoices/{id}/pdf) with auth + 401 refresh,
+ * returning the raw `Blob` so the caller can trigger a download or open
+ * an object URL. The JSON-only `api()` wrapper above can't be reused here
+ * because PDF responses don't survive `JSON.parse`. CUT-205.
+ *
+ * Errors still come back as `ApiError` so the caller's catch path matches
+ * the rest of the FE.
+ */
+export async function apiBlob(path: string): Promise<Blob> {
+  const accessToken = authStore.get().accessToken;
+  const headers: Record<string, string> = { Accept: 'application/pdf' };
+  if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+
+  const init: RequestInit = { method: 'GET', headers, credentials: 'include' };
+  let response = await fetch(`${API_BASE}${path}`, init);
+
+  if (response.status === 401) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      const newToken = authStore.get().accessToken;
+      if (newToken) headers['Authorization'] = `Bearer ${newToken}`;
+      response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+    }
+  }
+  if (!response.ok) throw await decodeError(response);
+  return response.blob();
+}
+
 export { ApiError };
