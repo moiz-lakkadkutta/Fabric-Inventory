@@ -93,6 +93,20 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
+      - name: Install WeasyPrint runtime libs (Pango/Cairo/HarfBuzz/Noto)
+        # CUT-205 — pdf_service uses WeasyPrint, which dlopen()s these libs at
+        # render time. CI runs the integration test that hits the PDF route, so
+        # pytest must have them loadable. Mirrors backend/Dockerfile.dev.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpango-1.0-0 \
+            libpangoft2-1.0-0 \
+            libharfbuzz-subset0 \
+            libcairo2 \
+            fonts-noto \
+            fonts-noto-cjk
+
       - name: Install backend deps
         working-directory: backend
         run: uv sync --frozen
