@@ -320,9 +320,9 @@ After spawn, Claude monitors progress; agents self-merge on green CI. When all 5
 | Wave | Status | Started | Ended | Demo passed? | Follow-ups |
 |---|---|---|---|---|---|
 | 1 | **PRs landed; superseded by Wave 2** | 2026-05-10 | 2026-05-10 | rolled into the Wave 2 demo (the 8 steps cover the Wave 1 surface area + the new Wave 2 surface) | CUT-006 hot-fix shipped (post-merge regression — 17 vitest failures restored); CUT-007 filed (`make dev-restart`) |
-| 2 | **PRs landed; demo pending** | 2026-05-10 | 2026-05-10 | awaiting Moiz walk of `docs/ops/wave-2-demo.md` | (none filed yet — pending demo walk) |
-| 3 | Blocked by Wave 2 demo gate | | | | |
-| 4 | Blocked by Wave 3 | | | | |
+| 2 | **Demo passed (with hot-fixes)** | 2026-05-10 | 2026-05-10 | ✅ — after the two amber hot-fixes landed (CUT-107 firm-id-null on signup, CUT-108 InvoiceCreate empty-state), the user-reported blockers cleared and Moiz greenlit Wave 3 | CUT-107 (#70 merged), CUT-108 (#71 merged); operational reminder: `alembic upgrade head` is required when schema migrations land (a fresh DB hit `voucher.party_id does not exist` until CUT-104 migration was applied — surface in cutover runbook) |
+| 3 | **PRs landed; demo pending** | 2026-05-10 | 2026-05-10 | awaiting Moiz walk of `docs/ops/wave-3-demo.md` | (none filed yet — pending demo walk; retro-noted follow-ups listed at the bottom of the demo doc) |
+| 4 | Blocked by Wave 3 demo gate | | | | |
 | 5 | Blocked by Wave 4 | | | | |
 | 6 | Blocked by Wave 5 | | | | |
 
@@ -347,6 +347,28 @@ After spawn, Claude monitors progress; agents self-merge on green CI. When all 5
 | #66 | TASK-CUT-104 | merged | P1 fix bundle: receipts `party_id` migration + service + list mapper; cheques `count` non-null; invoice list `gst_total` mapper. Resolves audit P1-2/P1-8/P1-9 + the FIFO timing test (P1-3) |
 | #67 | TASK-CUT-103 | merged | banking FE: bank accounts CRUD + cheques list + receipt screen on `/accounting`; new `GET /vouchers` BE endpoint |
 | #68 | TASK-CUT-105 | merged | Reports BE foundation: `/reports/{pnl,tb,daybook,stock-summary}` with lazy SQL aggregates + indexes |
+| #70 | TASK-CUT-107 | merged | Wave-2 hot-fix: `liveSignup` auto-switches to single available firm so owners don't land with `firm_id=null` |
+| #71 | TASK-CUT-108 | merged | Wave-2 hot-fix: `InvoiceCreate` empty-state CTAs link to `/masters/parties` + `/masters/items` when masters are empty |
+
+### Wave 3 PRs
+
+| PR | Task | State | Notes |
+|---|---|---|---|
+| #72 | TASK-CUT-202 | merged | GRN + Purchase Invoice FE wired live (intake + post + void); new `lib/queries/{grn,purchase-invoices}.ts` |
+| #73 | TASK-CUT-201 | merged | Purchase Order FE wired live (list + create + Approve/Confirm/Cancel lifecycle); adds `useSuppliers()` to `lib/queries/parties` |
+| #74 | TASK-CUT-203 | merged | Sales Order + Delivery Challan FE wired live; replaces 2 `<Placeholder>` routes; new `lib/queries/{sales-orders,delivery-challans}.ts` |
+| #75 | TASK-CUT-204 | merged | Stock adjustments FE — `AdjustStockDialog` replaces the Coming-Soon dialog on `/inventory`; tiny BE add: `GET /locations` + `get_or_create_default_location` |
+| #76 | TASK-CUT-205 | merged | Invoice PDF rendering BE (WeasyPrint) + `GET /invoices/{id}/pdf`; FE `InvoiceDetail` Print button wired; CI workflow + Dockerfile.dev now install `libpango/libcairo/libharfbuzz/fonts-noto` |
+
+### Post-Wave-3 integration verification (already executed)
+
+After all 5 Wave 3 PRs merged to `origin/main`, the following ran clean on a fresh checkout:
+- Backend: `cd backend && uv run pytest -q` — 121 passed (553 skipped require live DB env vars)
+- Frontend: `cd frontend && pnpm exec vitest run` — 48 files / 221 tests / 0 failures
+- Frontend: `cd frontend && pnpm exec tsc --noEmit` — clean
+- Frontend: `cd frontend && pnpm exec eslint . && pnpm exec prettier --check .` — clean
+
+Wave 3 grew the FE test count from 158 (post-Wave-2 hot-fixes) → 221 (+63 tests across the five PRs). No integration regressions; per-PR CI sufficed without any post-merge hot-fix.
 
 ### Wave 2 spawn rationale (deviation from the plan)
 
