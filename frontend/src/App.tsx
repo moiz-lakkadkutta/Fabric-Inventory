@@ -17,6 +17,8 @@ import InventoryList from '@/pages/inventory/InventoryList';
 import LotDetail from '@/pages/inventory/LotDetail';
 import JobWorkOverview from '@/pages/jobwork/JobWorkOverview';
 import ManufacturingPipeline from '@/pages/manufacturing/ManufacturingPipeline';
+import ItemDetail from '@/pages/masters/ItemDetail';
+import ItemList from '@/pages/masters/ItemList';
 import PartyDetail from '@/pages/masters/PartyDetail';
 import PartyList from '@/pages/masters/PartyList';
 import PurchaseOrderList from '@/pages/purchase/PurchaseOrderList';
@@ -65,6 +67,8 @@ const router = createBrowserRouter([
       { path: 'masters', element: <Navigate to="/masters/parties" replace /> },
       { path: 'masters/parties', element: <PartyList /> },
       { path: 'masters/parties/:id', element: <PartyDetail /> },
+      { path: 'masters/items', element: <ItemList /> },
+      { path: 'masters/items/:id', element: <ItemDetail /> },
       { path: 'admin', element: <AdminHub /> },
       { path: '*', element: <NotFound /> },
     ],
