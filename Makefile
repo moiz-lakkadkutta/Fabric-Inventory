@@ -20,6 +20,7 @@ help:
 setup:
 	@test -f .env || cp .env.example .env
 	@test -f backend/.env || cp backend/.env.example backend/.env
+	@test -f frontend/.env || cp frontend/.env.example frontend/.env
 	cd backend && uv sync
 	cd frontend && pnpm install
 

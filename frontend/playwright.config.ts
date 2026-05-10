@@ -7,10 +7,6 @@ import { defineConfig, devices } from '@playwright/test';
  * for tests that stub network responses with `page.route()`.
  *
  * Set `PLAYWRIGHT_BASE_URL` to override the default. CI sets it explicitly.
- *
- * NOTE: this file is intentionally identical to the one CUT-001 lands in
- * parallel — if both PRs merge, the duplicate Write is a no-op. If they
- * merge ahead of us we keep our copy.
  */
 const PORT = Number(process.env.PLAYWRIGHT_PORT ?? 5173);
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${PORT}`;
@@ -40,5 +36,10 @@ export default defineConfig({
     timeout: 60_000,
     stdout: 'pipe',
     stderr: 'pipe',
+    env: {
+      // Force the live API branch so error-state tests can exercise the
+      // upgraded QueryError envelope. Tests stub the network themselves.
+      VITE_API_MODE: 'live',
+    },
   },
 });

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { EmptyState } from '@/components/ui/empty-state';
 import { QueryError } from '@/components/ui/query-error';
+import { ApiError } from '@/lib/api/errors';
 
 describe('EmptyState', () => {
   it('renders title, body, and CTA that fires its handler', () => {
@@ -36,5 +37,58 @@ describe('QueryError', () => {
   it('omits the Retry button when no onRetry handler is passed', () => {
     render(<QueryError />);
     expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it('never shows the legacy "mock layer" copy under any prop combination', () => {
+    const { rerender } = render(<QueryError />);
+    expect(screen.queryByText(/mock layer/i)).not.toBeInTheDocument();
+
+    rerender(<QueryError error={new Error('CORS blocked')} />);
+    expect(screen.queryByText(/mock layer/i)).not.toBeInTheDocument();
+
+    rerender(
+      <QueryError
+        error={
+          new ApiError({
+            code: 'INTERNAL_ERROR',
+            title: 'Internal server error',
+            detail: 'Database connection refused.',
+            status: 500,
+            field_errors: {},
+            request_id: '00000000-0000-4000-8000-000000000001',
+          })
+        }
+      />,
+    );
+    expect(screen.queryByText(/mock layer/i)).not.toBeInTheDocument();
+  });
+
+  it('surfaces ApiError envelope code, detail, and request_id', () => {
+    render(
+      <QueryError
+        error={
+          new ApiError({
+            code: 'INTERNAL_ERROR',
+            title: 'Internal server error',
+            detail: 'Database connection refused.',
+            status: 500,
+            field_errors: {},
+            request_id: '00000000-0000-4000-8000-000000000abc',
+          })
+        }
+      />,
+    );
+    expect(screen.getByText(/INTERNAL_ERROR/)).toBeInTheDocument();
+    expect(screen.getByText(/Database connection refused/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/request_id: 00000000-0000-4000-8000-000000000abc/),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a network-error fallback for non-envelope errors (CORS / DNS / offline)', () => {
+    render(<QueryError error={new TypeError('Failed to fetch')} />);
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.getByText(/network error/i)).toBeInTheDocument();
+    expect(screen.queryByText(/request_id:/i)).not.toBeInTheDocument();
   });
 });
