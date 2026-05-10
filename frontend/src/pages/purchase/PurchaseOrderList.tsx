@@ -1,12 +1,14 @@
 import { Plus } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatINRCompact } from '@/lib/format';
-import type { PoStatus, MatchStatus } from '@/lib/mock/purchase';
-import { usePurchaseOrders } from '@/lib/queries/purchase';
+import type { MatchStatus, PoStatus, PurchaseOrder } from '@/lib/mock/purchase';
+import { useParties } from '@/lib/queries/parties';
+import { usePurchaseOrders } from '@/lib/queries/purchase-orders';
 
 const STATUS_PILL: Record<PoStatus, { kind: PillKind; label: string }> = {
   DRAFT: { kind: 'draft', label: 'Draft' },
@@ -18,14 +20,18 @@ const STATUS_PILL: Record<PoStatus, { kind: PillKind; label: string }> = {
 };
 
 export default function PurchaseOrderList() {
+  const navigate = useNavigate();
   const poQuery = usePurchaseOrders();
+  // Resolve supplier names from the parties cache (the BE PO list doesn't
+  // include supplier_name on the wire — use party_id + the parties list
+  // to render the column).
+  const partiesQuery = useParties();
+  const supplierLookup = new Map<string, string>(
+    (partiesQuery.data ?? []).map((p) => [p.party_id, p.name]),
+  );
   const receiveGrn = useComingSoon({
     feature: 'Receive GRN against PO',
-    task: 'TASK-027 (GRN screen)',
-  });
-  const newPo = useComingSoon({
-    feature: 'New purchase order',
-    task: 'TASK-028 (PO create)',
+    task: 'TASK-CUT-202 (GRN FE wired live)',
   });
 
   return (
@@ -41,14 +47,13 @@ export default function PurchaseOrderList() {
           <Button variant="outline" {...receiveGrn.triggerProps}>
             Receive GRN
           </Button>
-          <Button {...newPo.triggerProps}>
+          <Button onClick={() => navigate('/purchase/new')}>
             <Plus />
             New PO
           </Button>
         </div>
       </header>
       {receiveGrn.dialog}
-      {newPo.dialog}
 
       <div
         className="overflow-x-auto"
@@ -74,47 +79,61 @@ export default function PurchaseOrderList() {
               </tr>
             </thead>
             <tbody>
-              {(poQuery.data ?? []).map((po) => {
-                const pill = STATUS_PILL[po.status];
-                return (
-                  <tr key={po.po_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                    <td className="px-3 py-3">
-                      <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>
-                        {po.number}
-                      </span>
-                    </td>
-                    <td
-                      className="num px-3 py-3"
-                      style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}
-                    >
-                      {po.date}
-                    </td>
-                    <td className="px-3 py-3" style={{ fontSize: 13.5, fontWeight: 500 }}>
-                      {po.supplier_name}
-                    </td>
-                    <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
-                      {formatINRCompact(po.total)}
-                    </td>
-                    <td className="px-3 py-3">
-                      <Pill kind={pill.kind}>{pill.label}</Pill>
-                    </td>
-                    <td className="px-3 py-3">
-                      <ThreeWayMatch po={po.po_match} grn={po.grn_match} pi={po.pi_match} />
-                    </td>
-                    <td
-                      className="num px-3 py-3"
-                      style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}
-                    >
-                      {po.expected_date}
-                    </td>
-                  </tr>
-                );
-              })}
+              {(poQuery.data ?? []).map((po) => (
+                <PoRow
+                  key={po.po_id}
+                  po={po}
+                  supplierName={po.supplier_name || supplierLookup.get(po.supplier_id) || '—'}
+                  onClick={() => navigate(`/purchase/${po.po_id}`)}
+                />
+              ))}
             </tbody>
           </table>
         )}
       </div>
     </div>
+  );
+}
+
+function PoRow({
+  po,
+  supplierName,
+  onClick,
+}: {
+  po: PurchaseOrder;
+  supplierName: string;
+  onClick: () => void;
+}) {
+  const pill = STATUS_PILL[po.status];
+  return (
+    <tr
+      style={{ borderTop: '1px solid var(--border-subtle)', cursor: 'pointer' }}
+      onClick={onClick}
+    >
+      <td className="px-3 py-3">
+        <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>
+          {po.number}
+        </span>
+      </td>
+      <td className="num px-3 py-3" style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+        {po.date}
+      </td>
+      <td className="px-3 py-3" style={{ fontSize: 13.5, fontWeight: 500 }}>
+        {supplierName}
+      </td>
+      <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
+        {formatINRCompact(po.total)}
+      </td>
+      <td className="px-3 py-3">
+        <Pill kind={pill.kind}>{pill.label}</Pill>
+      </td>
+      <td className="px-3 py-3">
+        <ThreeWayMatch po={po.po_match} grn={po.grn_match} pi={po.pi_match} />
+      </td>
+      <td className="num px-3 py-3" style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+        {po.expected_date}
+      </td>
+    </tr>
   );
 }
 

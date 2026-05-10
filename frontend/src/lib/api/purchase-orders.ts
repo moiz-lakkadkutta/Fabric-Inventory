@@ -1,10 +1,14 @@
 /*
- * Live-mode HTTP wrappers for Purchase Order endpoints (TASK-CUT-202).
+ * Live-mode HTTP wrappers for Purchase Order endpoints.
  *
- * Read-only here. The PO list / create / lifecycle FE wiring is the
- * CUT-201 task; we ship the read API only so the GRN form (CUT-202)
- * can pick a confirmed PO. CUT-201 will land its own wrappers and
- * extend what's here without conflict.
+ * - Read wrappers (list / get) added in TASK-CUT-202 (so the GRN form
+ *   could pick a confirmed PO).
+ * - Create + lifecycle (approve/confirm/cancel) wrappers added in
+ *   TASK-CUT-201 (Purchase Order FE wired live).
+ *
+ * Pure JSON-in/JSON-out; no React or caching here. The query module
+ * `lib/queries/purchase-orders.ts` composes these into hooks and maps
+ * BE shapes → click-dummy `PurchaseOrder` shape.
  */
 
 import { api } from '@/lib/api/client';
@@ -13,6 +17,7 @@ import type { components } from '@/types/api';
 export type BackendPo = components['schemas']['POResponse'];
 export type BackendPoLine = components['schemas']['POLineResponse'];
 export type BackendPoListResponse = components['schemas']['POListResponse'];
+export type BackendPoCreateRequest = components['schemas']['POCreateRequest'];
 export type BackendPurchaseOrderStatus = components['schemas']['PurchaseOrderStatus'];
 
 export interface ListPosParams {
@@ -40,4 +45,29 @@ export async function liveListPos(params: ListPosParams = {}): Promise<BackendPo
 
 export async function liveGetPo(poId: string): Promise<BackendPo> {
   return api<BackendPo>(`/purchase-orders/${poId}`);
+}
+
+export async function liveCreatePo(
+  body: BackendPoCreateRequest,
+  idempotencyKey: string,
+): Promise<BackendPo> {
+  return api<BackendPo>('/purchase-orders', {
+    method: 'POST',
+    idempotencyKey,
+    body,
+  });
+}
+
+export type PoLifecycleAction = 'approve' | 'confirm' | 'cancel';
+
+export async function liveLifecyclePo(
+  action: PoLifecycleAction,
+  poId: string,
+  idempotencyKey: string,
+): Promise<BackendPo> {
+  return api<BackendPo>(`/purchase-orders/${poId}/${action}`, {
+    method: 'POST',
+    idempotencyKey,
+    body: {},
+  });
 }
