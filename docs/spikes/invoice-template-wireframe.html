@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Tax Invoice — Wireframe (TASK-CUT-005)</title>
+  <style>
+    /* A4 page sizing for WeasyPrint / browser print preview. */
+    @page {
+      size: A4;
+      margin: 14mm 12mm 14mm 12mm;
+      @bottom-center {
+        content: "Page " counter(page) " of " counter(pages);
+        font-family: "Noto Sans", "Helvetica", "Arial", sans-serif;
+        font-size: 9pt;
+        color: #666;
+      }
+    }
+
+    /* Base typography — Noto Sans is the WeasyPrint default we ship,
+       Devanagari/Gujarati cascade through fontconfig. */
+    html, body {
+      font-family: "Noto Sans", "Helvetica", "Arial", sans-serif;
+      font-size: 10pt;
+      color: #111;
+      line-height: 1.4;
+      margin: 0;
+      padding: 0;
+      background: #fff;
+    }
+
+    .invoice {
+      max-width: 186mm;     /* fits inside A4 default margins */
+      margin: 0 auto;
+    }
+
+    /* Field 1 — Title */
+    .doc-title {
+      text-align: center;
+      font-size: 16pt;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      border-bottom: 2px solid #111;
+      padding-bottom: 4mm;
+      margin-bottom: 6mm;
+    }
+    .doc-title .alt {
+      display: block;
+      font-size: 9pt;
+      color: #666;
+      font-weight: 400;
+      letter-spacing: 0;
+      margin-top: 2mm;
+    }
+
+    /* Reusable section block */
+    .section { margin-bottom: 5mm; }
+    .section h3 {
+      font-size: 9pt;
+      letter-spacing: 0.7px;
+      text-transform: uppercase;
+      color: #555;
+      margin: 0 0 1.5mm 0;
+      font-weight: 600;
+    }
+
+    /* Field 2 + 3 — Seller and Buyer side-by-side */
+    .parties {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6mm;
+      margin-bottom: 6mm;
+    }
+    .party {
+      border: 1px solid #ddd;
+      padding: 4mm;
+      border-radius: 2px;
+    }
+    .party .name {
+      font-weight: 700;
+      font-size: 11pt;
+      margin-bottom: 1.5mm;
+    }
+    .party .meta {
+      font-size: 9pt;
+      color: #333;
+    }
+    .party .meta div { margin-bottom: 1mm; }
+    .party .label {
+      display: inline-block;
+      width: 28mm;
+      color: #777;
+      font-size: 8.5pt;
+    }
+
+    /* Field 4 + 5 + 6 — Invoice meta strip */
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4mm 6mm;
+      border: 1px solid #ddd;
+      padding: 3.5mm 4mm;
+      margin-bottom: 6mm;
+      border-radius: 2px;
+      background: #fafafa;
+    }
+    .meta-grid .cell .k {
+      display: block;
+      font-size: 8pt;
+      color: #777;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      margin-bottom: 0.5mm;
+    }
+    .meta-grid .cell .v {
+      font-size: 10pt;
+      font-weight: 600;
+      color: #111;
+    }
+
+    /* Field 7 — Line-item table */
+    table.lines {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 5mm;
+      font-size: 9pt;
+    }
+    table.lines thead th {
+      background: #111;
+      color: #fff;
+      font-weight: 600;
+      text-align: left;
+      padding: 2.5mm 2mm;
+      font-size: 8.5pt;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    table.lines tbody td {
+      padding: 2mm 2mm;
+      border-bottom: 1px solid #eee;
+      vertical-align: top;
+    }
+    table.lines tbody tr:nth-child(even) td { background: #fafafa; }
+    table.lines tbody tr {
+      page-break-inside: avoid;
+    }
+    table.lines td.r, table.lines th.r { text-align: right; }
+    table.lines td.c, table.lines th.c { text-align: center; }
+    table.lines td.desc { font-weight: 500; }
+    table.lines td.hsn { font-family: "Courier New", monospace; font-size: 8.5pt; }
+
+    /* Field 8 — Totals block */
+    .totals-row {
+      display: grid;
+      grid-template-columns: 1fr 70mm;
+      gap: 6mm;
+      margin-bottom: 6mm;
+    }
+    .totals-side {}
+    .totals {
+      border: 1px solid #ddd;
+      padding: 3mm 4mm;
+      font-size: 10pt;
+    }
+    .totals dl {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 1.5mm 6mm;
+      margin: 0;
+    }
+    .totals dt { color: #555; }
+    .totals dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+    .totals .grand {
+      border-top: 2px solid #111;
+      margin-top: 2mm;
+      padding-top: 2mm;
+      font-weight: 700;
+      font-size: 12pt;
+    }
+    .totals .grand dt { color: #111; }
+
+    /* Field 9 — Total in words */
+    .in-words {
+      border: 1px solid #ddd;
+      padding: 3mm 4mm;
+      border-radius: 2px;
+      font-size: 9.5pt;
+      margin-bottom: 5mm;
+    }
+    .in-words .label {
+      display: block;
+      font-size: 8pt;
+      color: #777;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      margin-bottom: 1mm;
+    }
+    .in-words .value {
+      font-style: italic;
+    }
+
+    /* Field 11 — Bank details */
+    .bank {
+      border: 1px solid #ddd;
+      padding: 3mm 4mm;
+      border-radius: 2px;
+      font-size: 9pt;
+      margin-bottom: 5mm;
+    }
+    .bank .label {
+      font-size: 8pt;
+      color: #777;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+    }
+    .bank dl {
+      display: grid;
+      grid-template-columns: 30mm 1fr 30mm 1fr;
+      gap: 1.5mm 6mm;
+      margin: 1.5mm 0 0 0;
+    }
+    .bank dt { color: #777; }
+    .bank dd { margin: 0; }
+
+    /* Field 12 — Terms */
+    .terms {
+      font-size: 8.5pt;
+      color: #444;
+      margin-bottom: 5mm;
+    }
+    .terms .label {
+      display: block;
+      font-size: 8pt;
+      color: #777;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      margin-bottom: 1mm;
+    }
+    .terms ol { margin: 0; padding-left: 5mm; }
+
+    /* Field 10 — Signature footer */
+    .footer {
+      display: grid;
+      grid-template-columns: 1fr 70mm;
+      gap: 6mm;
+      margin-top: 8mm;
+      page-break-inside: avoid;
+    }
+    .footer .qr-slot {
+      font-size: 8pt;
+      color: #888;
+    }
+    .footer .signature {
+      text-align: right;
+      font-size: 9pt;
+    }
+    .footer .signature .firm {
+      font-weight: 700;
+      margin-bottom: 14mm;     /* leaves blank space for stamp + signature */
+      color: #111;
+    }
+    .footer .signature .role {
+      color: #555;
+      font-size: 8.5pt;
+    }
+
+    /* Markers */
+    .marker {
+      display: inline-block;
+      padding: 0.5mm 2mm;
+      border-radius: 2px;
+      background: #fee;
+      color: #a11;
+      font-size: 8.5pt;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+    .marker.no { background: #efefef; color: #555; }
+  </style>
+</head>
+<body>
+
+<div class="invoice">
+
+  <!-- Field 1: Title (Tax Invoice / Bill of Supply / Cash Memo / Estimate) -->
+  <div class="doc-title">
+    Tax Invoice
+    <span class="alt">(Original for Recipient · Duplicate for Transporter · Triplicate for Supplier)</span>
+  </div>
+
+  <!-- Field 2 + 3: Seller and Buyer -->
+  <div class="parties">
+
+    <!-- Field 2: Seller -->
+    <div class="party">
+      <div class="name">Rajesh Textiles Pvt Ltd</div>
+      <div class="meta">
+        <div><span class="label">GSTIN:</span> 24AAACR5055K1Z5</div>
+        <div><span class="label">PAN:</span> AAACR5055K</div>
+        <div><span class="label">State Code:</span> 24 (Gujarat)</div>
+        <div><span class="label">Address:</span> 142, Resham Bhavan, Ring Road, Surat 395002, Gujarat, India</div>
+        <div><span class="label">Phone:</span> +91 261 2470000</div>
+        <div><span class="label">Email:</span> billing@rajeshtextiles.in</div>
+      </div>
+    </div>
+
+    <!-- Field 3: Buyer -->
+    <div class="party">
+      <div class="name">Anjali Saree Centre</div>
+      <div class="meta">
+        <div><span class="label">GSTIN:</span> 27AABCA1234C1Z9</div>
+        <div><span class="label">State Code:</span> 27 (Maharashtra)</div>
+        <div><span class="label">Address:</span> Shop 12, Mangaldas Market, Kalbadevi Road, Mumbai 400002, Maharashtra, India</div>
+        <div><span class="label">Phone:</span> +91 22 22011230</div>
+        <div><span class="label">Buyer Order No:</span> PO/2026/044</div>
+        <div><span class="label">Buyer Order Date:</span> 02 May 2026</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fields 4 + 5 + 6: Invoice meta -->
+  <div class="meta-grid">
+    <div class="cell">
+      <span class="k">Invoice Number</span>
+      <span class="v">RT/2026-27/00142</span>
+    </div>
+    <div class="cell">
+      <span class="k">Invoice Date</span>
+      <span class="v">10 May 2026</span>
+    </div>
+    <div class="cell">
+      <span class="k">Due Date</span>
+      <span class="v">09 Jun 2026 (30 days)</span>
+    </div>
+    <div class="cell">
+      <span class="k">Place of Supply</span>
+      <span class="v">27 — Maharashtra</span>
+    </div>
+    <div class="cell">
+      <span class="k">Reverse Charge</span>
+      <span class="v"><span class="marker no">No</span></span>
+    </div>
+    <div class="cell">
+      <span class="k">Tax Type</span>
+      <span class="v">IGST (Inter-State)</span>
+    </div>
+    <div class="cell">
+      <span class="k">Transport / LR No</span>
+      <span class="v">SRT-MUM-22 · LR/2026/8841</span>
+    </div>
+    <div class="cell">
+      <span class="k">E-Way Bill</span>
+      <span class="v">— (under threshold)</span>
+    </div>
+  </div>
+
+  <!-- Field 7: Line items -->
+  <table class="lines">
+    <thead>
+      <tr>
+        <th class="c" style="width:7mm;">#</th>
+        <th class="desc" style="width:60mm;">Item / Description</th>
+        <th class="hsn c" style="width:14mm;">HSN</th>
+        <th class="r" style="width:12mm;">Qty</th>
+        <th class="c" style="width:10mm;">UOM</th>
+        <th class="r" style="width:14mm;">Rate (₹)</th>
+        <th class="r" style="width:14mm;">Taxable (₹)</th>
+        <th class="c" style="width:10mm;">GST %</th>
+        <th class="r" style="width:14mm;">IGST (₹)</th>
+        <th class="r" style="width:18mm;">Line Total (₹)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="c">1</td>
+        <td class="desc">Georgette Cotton Suit Material — Floral Print 44"<br/>
+          <span style="color:#777; font-size:8pt;">Lot SRT-2026-04-A · Color: Maroon · Width: 44 inches</span>
+        </td>
+        <td class="hsn c">5208</td>
+        <td class="r">120.00</td>
+        <td class="c">MTR</td>
+        <td class="r">385.00</td>
+        <td class="r">46,200.00</td>
+        <td class="c">5.00</td>
+        <td class="r">2,310.00</td>
+        <td class="r">48,510.00</td>
+      </tr>
+      <tr>
+        <td class="c">2</td>
+        <td class="desc">Pure Silk Saree — Banarasi Weave 6.3M<br/>
+          <span style="color:#777; font-size:8pt;">Design: Mehrunnisa · Pallu: Zari · Blouse Piece included</span>
+        </td>
+        <td class="hsn c">5007</td>
+        <td class="r">8.00</td>
+        <td class="c">PCS</td>
+        <td class="r">4,500.00</td>
+        <td class="r">36,000.00</td>
+        <td class="c">5.00</td>
+        <td class="r">1,800.00</td>
+        <td class="r">37,800.00</td>
+      </tr>
+      <tr>
+        <td class="c">3</td>
+        <td class="desc">Embroidered Lace Trim — 1 inch (per metre)</td>
+        <td class="hsn c">5810</td>
+        <td class="r">200.00</td>
+        <td class="c">MTR</td>
+        <td class="r">28.00</td>
+        <td class="r">5,600.00</td>
+        <td class="c">12.00</td>
+        <td class="r">672.00</td>
+        <td class="r">6,272.00</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Fields 8 + 9: Totals + Total in words -->
+  <div class="totals-row">
+    <div class="totals-side">
+
+      <!-- Field 9: Amount in words -->
+      <div class="in-words">
+        <span class="label">Total Amount in Words</span>
+        <div class="value">Indian Rupees Ninety-Two Thousand Five Hundred Eighty-Two Only.</div>
+      </div>
+
+      <!-- Field 11: Bank details (optional) -->
+      <div class="bank">
+        <div class="label">Bank Details (for direct credit)</div>
+        <dl>
+          <dt>Bank</dt>           <dd>HDFC Bank</dd>
+          <dt>Branch</dt>         <dd>Ring Road, Surat</dd>
+          <dt>Account Name</dt>   <dd>Rajesh Textiles Pvt Ltd</dd>
+          <dt>Account No</dt>     <dd>50100123456789</dd>
+          <dt>IFSC</dt>           <dd>HDFC0000142</dd>
+          <dt>UPI ID</dt>         <dd>rajeshtextiles@hdfc</dd>
+        </dl>
+      </div>
+
+      <!-- Field 12: Terms -->
+      <div class="terms">
+        <span class="label">Terms &amp; Notes</span>
+        <ol>
+          <li>Goods once sold will not be taken back or exchanged.</li>
+          <li>Interest @ 18% p.a. will be charged on overdue invoices beyond the due date.</li>
+          <li>All disputes subject to Surat jurisdiction only.</li>
+          <li>This is a computer-generated invoice and does not require a physical signature; firm seal optional.</li>
+        </ol>
+      </div>
+
+    </div>
+
+    <!-- Field 8: Totals -->
+    <div class="totals">
+      <dl>
+        <dt>Subtotal (Taxable Value)</dt>   <dd>87,800.00</dd>
+        <dt>IGST</dt>                        <dd>4,782.00</dd>
+        <dt>CGST</dt>                        <dd>0.00</dd>
+        <dt>SGST</dt>                        <dd>0.00</dd>
+        <dt>Round-off</dt>                   <dd>0.00</dd>
+      </dl>
+      <dl class="grand">
+        <dt>Grand Total (₹)</dt>             <dd>92,582.00</dd>
+      </dl>
+    </div>
+  </div>
+
+  <!-- Field 10: Signature panel + firm footer -->
+  <div class="footer">
+    <div class="qr-slot">
+      <!-- v2: QR code with IRN payload goes here when e-invoice flag flips per CLAUDE.md decision #6 -->
+      [ IRN QR placeholder — populated when GST e-invoice flag is enabled ]
+    </div>
+    <div class="signature">
+      <div class="firm">For Rajesh Textiles Pvt Ltd</div>
+      <div class="role">Authorised Signatory</div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>
