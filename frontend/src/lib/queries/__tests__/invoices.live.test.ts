@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { _internal } from '@/lib/queries/invoices';
 import { authStore } from '@/store/auth';
@@ -12,6 +12,13 @@ const {
   paiseToRupees,
   buildCreateBody,
 } = _internal;
+
+// CUT-006: override global setupFile beforeEach so the
+// "throws when authStore has no firm_id" assertion sees an actually
+// empty authStore.
+beforeEach(() => {
+  authStore.reset();
+});
 
 afterEach(() => {
   authStore.reset();

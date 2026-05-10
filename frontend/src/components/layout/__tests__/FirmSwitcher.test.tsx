@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { FirmSwitcher } from '@/components/layout/FirmSwitcher';
 import { authStore, type MeResponse } from '@/store/auth';
@@ -26,6 +26,12 @@ const MULTI_FIRM_ME: MeResponse = {
     { firm_id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', code: 'B', name: 'Beta Co' },
   ],
 };
+
+// CUT-006: override the global setupFile beforeEach so this file's
+// empty/unknown-state assertions see what they expect.
+beforeEach(() => {
+  authStore.reset();
+});
 
 afterEach(() => {
   authStore.reset();
