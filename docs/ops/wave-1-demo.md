@@ -19,11 +19,13 @@
 ## Pre-flight (do this once before steps below)
 
 - [ ] `git pull --ff-only origin main` on your fabric checkout
-- [ ] **Restart `:8000` uvicorn** — the running dev backend was wedged per audit P0-1 and is unrelated to Wave 1, but the demo needs a working backend. From `backend/`:
+- [ ] **Restart `:8000` uvicorn** — the running dev backend was 500'ing for hours; the actual root cause (uncovered post-Wave-1, see TASK-CUT-007 in the cutover plan) is shell-leaked docker-compose env vars (`DATABASE_URL=...@postgres:5432/...`, `REDIS_URL=redis://redis:6379/...`) overriding `.env`. Restart cleanly with the leaked vars unset:
   ```bash
-  pkill -f 'uvicorn main:app' ; cd backend && uv run uvicorn main:app --reload --port 8000 &
+  # In your tty running uvicorn: Ctrl-C, then:
+  cd backend
+  env -u DATABASE_URL -u MIGRATION_DATABASE_URL -u REDIS_URL uv run uvicorn main:app --reload --port 8000
   ```
-  Confirm: `curl http://localhost:8000/healthz` returns something non-`Not Found` once startup completes (or `/ready` returns 200; both are healthy signals).
+  Confirm: `curl -s http://localhost:8000/auth/me` returns `{"code":"TOKEN_INVALID",...}` (NOT a 500). That envelope means the DB connection works.
 - [ ] **Restart Vite dev server.** It was on `:5174` per the audit; with CUT-001's `vite.config.ts` proxy change you need to restart so the new proxy block takes effect:
   ```bash
   cd frontend && pnpm dev
