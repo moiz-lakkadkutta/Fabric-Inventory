@@ -125,6 +125,32 @@ def get_or_create_default_location(
     return location
 
 
+def list_locations(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID | None = None,
+    include_inactive: bool = False,
+) -> list[Location]:
+    """List Locations under the org, optionally scoped to a firm.
+
+    Returns only `is_active=true` rows by default — soft-deleted /
+    deactivated warehouses don't make sense in the FE Adjust-Stock dropdown.
+
+    If the firm has no Locations yet, this returns an empty list. The
+    caller (typically the FE) is expected to surface an empty-state
+    message; auto-creating a default here would mutate state on a GET,
+    which we don't do.
+    """
+    stmt = select(Location).where(Location.org_id == org_id)
+    if firm_id is not None:
+        stmt = stmt.where(Location.firm_id == firm_id)
+    if not include_inactive:
+        stmt = stmt.where(Location.is_active.is_(True))
+    stmt = stmt.where(Location.deleted_at.is_(None)).order_by(Location.code)
+    return list(session.execute(stmt).scalars())
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Internal: position upsert with row-level lock
 # ──────────────────────────────────────────────────────────────────────
@@ -484,6 +510,7 @@ __all__ = [
     "add_stock",
     "get_or_create_default_location",
     "get_position",
+    "list_locations",
     "list_positions",
     "remove_stock",
     "reserve_for_so",

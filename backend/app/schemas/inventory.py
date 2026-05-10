@@ -61,3 +61,34 @@ class StockAdjustmentListResponse(BaseModel):
     count: int
     limit: int
     offset: int
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Location read endpoint (TASK-CUT-204) — needed so the FE adjust-stock
+# dialog can pick a destination warehouse. Read-only; CRUD lands in a
+# future admin-panel task.
+# ──────────────────────────────────────────────────────────────────────
+
+
+LocationTypeLiteral = Literal[
+    "WAREHOUSE", "GODOWN", "SHELF", "BIN", "IN_TRANSIT", "STAGING", "SCRAP"
+]
+
+
+class LocationResponse(BaseModel):
+    """One Location row in the firm's warehouse catalog."""
+
+    location_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    code: str
+    name: str
+    location_type: LocationTypeLiteral
+    is_active: bool | None
+
+
+class LocationListResponse(BaseModel):
+    """List of Location rows under the current org / optional firm."""
+
+    items: list[LocationResponse]
+    count: int

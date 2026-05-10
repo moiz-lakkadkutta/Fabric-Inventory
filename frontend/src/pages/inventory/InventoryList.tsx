@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useSkus } from '@/lib/queries/inventory';
 import { lots } from '@/lib/mock/inventory';
 import { PHASE_COLOR, STAGE_META, type StageId } from '@/lib/mock/stages';
+import { AdjustStockDialog } from '@/pages/inventory/AdjustStockDialog';
 
 const ALL_STAGES: StageId[] = [
   'RAW',
@@ -22,10 +23,7 @@ const ALL_STAGES: StageId[] = [
 export default function InventoryList() {
   const skusQuery = useSkus();
   const [query, setQuery] = useState('');
-  const adjust = useComingSoon({
-    feature: 'Adjust stock',
-    task: 'TASK-024 (Inventory adjustments)',
-  });
+  const [adjustOpen, setAdjustOpen] = useState(false);
   const newGrn = useComingSoon({
     feature: 'New GRN intake',
     task: 'TASK-027 (GRN screen)',
@@ -48,7 +46,7 @@ export default function InventoryList() {
             : `${rows.length} SKUs · ${rows.reduce((s, r) => s + r.lots, 0)} active lots`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" {...adjust.triggerProps}>
+          <Button variant="outline" onClick={() => setAdjustOpen(true)}>
             Adjust stock
           </Button>
           <Button {...newGrn.triggerProps}>
@@ -57,7 +55,7 @@ export default function InventoryList() {
           </Button>
         </div>
       </header>
-      {adjust.dialog}
+      <AdjustStockDialog open={adjustOpen} onClose={() => setAdjustOpen(false)} />
       {newGrn.dialog}
 
       <div
