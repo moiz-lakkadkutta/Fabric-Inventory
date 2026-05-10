@@ -188,6 +188,8 @@ export default function InvoiceCreate() {
 
       {loading ? (
         <Skeleton width="100%" height={400} radius={8} />
+      ) : customers.length === 0 || items.length === 0 ? (
+        <EmptyMastersCard hasCustomers={customers.length > 0} hasItems={items.length > 0} />
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_320px]">
           <div
@@ -427,6 +429,66 @@ function Row({ label, value, labelId, big }: RowProps) {
       >
         {value}
       </span>
+    </div>
+  );
+}
+
+interface EmptyMastersCardProps {
+  hasCustomers: boolean;
+  hasItems: boolean;
+}
+
+function EmptyMastersCard({ hasCustomers, hasItems }: EmptyMastersCardProps) {
+  // Surfaces a clear next-step when the firm has no parties or items —
+  // freshly-signed-up users can otherwise stare at empty selects with
+  // no path to /masters/parties or /masters/items. The link targets
+  // are the live screens shipped in CUT-101 / CUT-102.
+  return (
+    <div
+      className="space-y-4 p-6"
+      style={{
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--border-default)',
+        borderRadius: 8,
+      }}
+    >
+      <h2 style={{ fontSize: 16, fontWeight: 600 }}>
+        {!hasCustomers && !hasItems ? 'Set up your masters' : 'One more master to add'}
+      </h2>
+      {!hasCustomers && (
+        <div className="space-y-1">
+          <p style={{ fontSize: 13.5, color: 'var(--text-secondary)' }}>
+            No customers yet. Add at least one customer to bill on this invoice.
+          </p>
+          <Link
+            to="/masters/parties"
+            style={{
+              fontSize: 13.5,
+              color: 'var(--accent-primary)',
+              textDecoration: 'underline',
+            }}
+          >
+            Add a customer →
+          </Link>
+        </div>
+      )}
+      {!hasItems && (
+        <div className="space-y-1">
+          <p style={{ fontSize: 13.5, color: 'var(--text-secondary)' }}>
+            No items yet. Add at least one item to put on a line.
+          </p>
+          <Link
+            to="/masters/items"
+            style={{
+              fontSize: 13.5,
+              color: 'var(--accent-primary)',
+              textDecoration: 'underline',
+            }}
+          >
+            Add an item →
+          </Link>
+        </div>
+      )}
     </div>
   );
 }
