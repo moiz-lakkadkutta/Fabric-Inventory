@@ -1,12 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { api, ApiError } from '@/lib/api/client';
+import { ApiError } from '@/lib/api/client';
 import { IS_LIVE } from '@/lib/api/mode';
+import {
+  liveCreatePo as livePostCreatePo,
+  liveGetPo as liveGetBackendPo,
+  liveLifecyclePo,
+  liveListPos as liveGetBackendPos,
+  type BackendPo,
+  type BackendPoCreateRequest,
+  type BackendPoLine,
+  type PoLifecycleAction,
+} from '@/lib/api/purchase-orders';
 import { fakeFetch } from '@/lib/mock/api';
 import { findPurchaseOrder, purchaseOrders as seedPos } from '@/lib/mock/purchase';
 import type { MatchStatus, PoLine, PoStatus, PurchaseOrder } from '@/lib/mock/purchase';
 import { authStore } from '@/store/auth';
-import type { components } from '@/types/api';
 
 /*
  * Purchase-Order queries — TASK-CUT-201.
@@ -60,11 +69,6 @@ export function resetPurchaseOrderStore() {
 // the click-dummy. We multiply by 100 at the boundary so existing
 // components keep their formatting code unchanged.
 // ──────────────────────────────────────────────────────────────────────
-
-type BackendPo = components['schemas']['POResponse'];
-type BackendPoLine = components['schemas']['POLineResponse'];
-type BackendPoListResponse = components['schemas']['POListResponse'];
-type BackendPoCreateRequest = components['schemas']['POCreateRequest'];
 
 function rupeesToPaise(amount: string | null | undefined): number {
   if (!amount) return 0;
@@ -140,12 +144,12 @@ function mapPoListItem(b: BackendPo): PurchaseOrder {
 // ──────────────────────────────────────────────────────────────────────
 
 async function liveListPos(): Promise<PurchaseOrder[]> {
-  const data = await api<BackendPoListResponse>('/purchase-orders?limit=200');
+  const data = await liveGetBackendPos({ limit: 200 });
   return data.items.map(mapPoListItem);
 }
 
 async function liveGetPo(poId: string): Promise<PurchaseOrder | null> {
-  const data = await api<BackendPo>(`/purchase-orders/${poId}`);
+  const data = await liveGetBackendPo(poId);
   return mapPo(data);
 }
 
@@ -215,11 +219,7 @@ export interface CreatePoInput {
 
 async function liveCreatePo(input: CreatePoInput): Promise<PurchaseOrder> {
   const body = buildCreateBody(input.draft, input.series ?? DEFAULT_SERIES);
-  const data = await api<BackendPo>('/purchase-orders', {
-    method: 'POST',
-    idempotencyKey: input.idempotencyKey,
-    body,
-  });
+  const data = await livePostCreatePo(body, input.idempotencyKey);
   return mapPo(data);
 }
 
@@ -273,26 +273,20 @@ export function useCreatePo() {
 // the same outcome (BE's idempotency cache handles it).
 // ──────────────────────────────────────────────────────────────────────
 
-type LifecycleAction = 'approve' | 'confirm' | 'cancel';
-
 export interface LifecycleInput {
   poId: string;
   idempotencyKey: string;
 }
 
 async function liveLifecycle(
-  action: LifecycleAction,
+  action: PoLifecycleAction,
   input: LifecycleInput,
 ): Promise<PurchaseOrder> {
-  const data = await api<BackendPo>(`/purchase-orders/${input.poId}/${action}`, {
-    method: 'POST',
-    idempotencyKey: input.idempotencyKey,
-    body: {},
-  });
+  const data = await liveLifecyclePo(action, input.poId, input.idempotencyKey);
   return mapPo(data);
 }
 
-function mockLifecycle(action: LifecycleAction, input: LifecycleInput): Promise<PurchaseOrder> {
+function mockLifecycle(action: PoLifecycleAction, input: LifecycleInput): Promise<PurchaseOrder> {
   return fakeFetch(() => {
     const list = ensureMockStore();
     const idx = list.findIndex((p) => p.po_id === input.poId);
@@ -305,7 +299,7 @@ function mockLifecycle(action: LifecycleAction, input: LifecycleInput): Promise<
   });
 }
 
-function buildLifecycleHook(action: LifecycleAction) {
+function buildLifecycleHook(action: PoLifecycleAction) {
   return function useLifecycle() {
     const qc = useQueryClient();
     return useMutation<PurchaseOrder, ApiError | Error, LifecycleInput>({

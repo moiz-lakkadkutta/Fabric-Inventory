@@ -21,6 +21,12 @@ import ItemDetail from '@/pages/masters/ItemDetail';
 import ItemList from '@/pages/masters/ItemList';
 import PartyDetail from '@/pages/masters/PartyDetail';
 import PartyList from '@/pages/masters/PartyList';
+import GrnCreate from '@/pages/purchase/GrnCreate';
+import GrnDetail from '@/pages/purchase/GrnDetail';
+import GrnList from '@/pages/purchase/GrnList';
+import PurchaseInvoiceCreate from '@/pages/purchase/PurchaseInvoiceCreate';
+import PurchaseInvoiceDetail from '@/pages/purchase/PurchaseInvoiceDetail';
+import PurchaseInvoiceList from '@/pages/purchase/PurchaseInvoiceList';
 import PurchaseOrderCreate from '@/pages/purchase/PurchaseOrderCreate';
 import PurchaseOrderDetail from '@/pages/purchase/PurchaseOrderDetail';
 import PurchaseOrderList from '@/pages/purchase/PurchaseOrderList';
@@ -61,6 +67,15 @@ const router = createBrowserRouter([
       },
       { path: 'purchase', element: <PurchaseOrderList /> },
       { path: 'purchase/new', element: <PurchaseOrderCreate /> },
+      { path: 'purchase/grns', element: <GrnList /> },
+      { path: 'purchase/grns/new', element: <GrnCreate /> },
+      { path: 'purchase/grns/:id', element: <GrnDetail /> },
+      { path: 'purchase/invoices', element: <PurchaseInvoiceList /> },
+      { path: 'purchase/invoices/new', element: <PurchaseInvoiceCreate /> },
+      { path: 'purchase/invoices/:id', element: <PurchaseInvoiceDetail /> },
+      // PO detail uses :id last so the more-specific /grns and /invoices
+      // routes match first (React Router v7 matches in declaration order
+      // for non-nested patterns of the same depth).
       { path: 'purchase/:id', element: <PurchaseOrderDetail /> },
       { path: 'inventory', element: <InventoryList /> },
       { path: 'inventory/lots/:id', element: <LotDetail /> },
