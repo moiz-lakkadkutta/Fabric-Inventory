@@ -21,6 +21,12 @@ import ItemDetail from '@/pages/masters/ItemDetail';
 import ItemList from '@/pages/masters/ItemList';
 import PartyDetail from '@/pages/masters/PartyDetail';
 import PartyList from '@/pages/masters/PartyList';
+import GrnCreate from '@/pages/purchase/GrnCreate';
+import GrnDetail from '@/pages/purchase/GrnDetail';
+import GrnList from '@/pages/purchase/GrnList';
+import PurchaseInvoiceCreate from '@/pages/purchase/PurchaseInvoiceCreate';
+import PurchaseInvoiceDetail from '@/pages/purchase/PurchaseInvoiceDetail';
+import PurchaseInvoiceList from '@/pages/purchase/PurchaseInvoiceList';
 import PurchaseOrderList from '@/pages/purchase/PurchaseOrderList';
 import ReportsHub from '@/pages/reports/ReportsHub';
 import InvoiceCreate from '@/pages/sales/InvoiceCreate';
@@ -58,6 +64,12 @@ const router = createBrowserRouter([
         element: <Placeholder title="Credit control" task="TASK-055" />,
       },
       { path: 'purchase', element: <PurchaseOrderList /> },
+      { path: 'purchase/grns', element: <GrnList /> },
+      { path: 'purchase/grns/new', element: <GrnCreate /> },
+      { path: 'purchase/grns/:id', element: <GrnDetail /> },
+      { path: 'purchase/invoices', element: <PurchaseInvoiceList /> },
+      { path: 'purchase/invoices/new', element: <PurchaseInvoiceCreate /> },
+      { path: 'purchase/invoices/:id', element: <PurchaseInvoiceDetail /> },
       { path: 'inventory', element: <InventoryList /> },
       { path: 'inventory/lots/:id', element: <LotDetail /> },
       { path: 'manufacturing', element: <ManufacturingPipeline /> },
