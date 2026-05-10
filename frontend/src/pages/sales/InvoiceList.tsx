@@ -130,7 +130,7 @@ export default function InvoiceList() {
         }}
       >
         {invoicesQuery.isError ? (
-          <QueryError onRetry={() => invoicesQuery.refetch()} />
+          <QueryError error={invoicesQuery.error} onRetry={() => invoicesQuery.refetch()} />
         ) : invoicesQuery.isPending ? (
           <ListSkeleton rows={10} />
         ) : rows.length === 0 ? (

@@ -20,18 +20,38 @@ import { authStore } from '@/store/auth';
       mutation's onSuccess routes based on `requires_mfa`.
 
   Org name is a real form field (CRIT-3 fix) — every tenant has a
-  different org so we can't hardcode. Defaults to 'Rajesh Textiles'
-  for click-dummy continuity; required input in live mode.
+  different org so we can't hardcode. Required input in live mode.
+
+  Pre-fill: gated behind `import.meta.env.DEV` so production builds
+  surface a clean form. The window kill-switch
+  `__FABRIC_TEST_NO_PREFILL__` lets Playwright assert the
+  prod-equivalent shape without a separate `vite build` step.
 
   When `requires_mfa=true`, we stash {email, password, org_name} on
   authStore.pendingMfa so the /mfa page can re-present them to the
   backend's mfa-verify endpoint without persisting the password.
 */
 
+const DEV_DEFAULTS = {
+  email: 'moiz@rajeshtextiles.in',
+  password: '••••••••••••',
+  orgName: 'Rajesh Textiles',
+};
+
+function shouldPrefill(): boolean {
+  if (!import.meta.env.DEV) return false;
+  if (typeof window !== 'undefined') {
+    const w = window as unknown as { __FABRIC_TEST_NO_PREFILL__?: boolean };
+    if (w.__FABRIC_TEST_NO_PREFILL__) return false;
+  }
+  return true;
+}
+
 export default function Login() {
-  const [email, setEmail] = React.useState('moiz@rajeshtextiles.in');
-  const [password, setPassword] = React.useState('••••••••••••');
-  const [orgName, setOrgName] = React.useState('Rajesh Textiles');
+  const prefill = shouldPrefill();
+  const [email, setEmail] = React.useState(prefill ? DEV_DEFAULTS.email : '');
+  const [password, setPassword] = React.useState(prefill ? DEV_DEFAULTS.password : '');
+  const [orgName, setOrgName] = React.useState(prefill ? DEV_DEFAULTS.orgName : '');
   const [remember, setRemember] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const navigate = useNavigate();
