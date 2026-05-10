@@ -52,12 +52,25 @@ echo "▸ running alembic upgrade head…"
 # uvicorn needs, then source backend/.env on top so DATABASE_URL etc. come
 # from disk, not from a polluted shell.
 echo "▸ launching uvicorn (scrubbed env)…"
+# CUT-205: WeasyPrint dlopen()s libpango/libcairo/libgobject; on macOS those
+# live in /opt/homebrew/lib (Apple Silicon) or /usr/local/lib (Intel).
+# Forward DYLD_FALLBACK_LIBRARY_PATH so the scrubbed-env uvicorn can find
+# them. Linux deploys do not need this — the libs sit in standard ld paths.
+DYLD_FALLBACK_PATH=""
+if [ "$(uname -s)" = "Darwin" ]; then
+  if [ -d "/opt/homebrew/lib" ]; then
+    DYLD_FALLBACK_PATH="/opt/homebrew/lib"
+  elif [ -d "/usr/local/lib" ]; then
+    DYLD_FALLBACK_PATH="/usr/local/lib"
+  fi
+fi
 (
   cd backend
   env -i \
     HOME="$HOME" \
     PATH="$REPO_ROOT/backend/.venv/bin:/usr/local/bin:/usr/bin:/bin" \
     TERM="${TERM:-xterm}" \
+    DYLD_FALLBACK_LIBRARY_PATH="$DYLD_FALLBACK_PATH" \
     bash -c 'set -a; . "$0/.env"; set +a; exec .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --reload' "$REPO_ROOT/backend"
 ) &
 UVICORN_PID=$!

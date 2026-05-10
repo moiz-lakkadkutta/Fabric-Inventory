@@ -20,6 +20,12 @@ dependencies = [
   "redis>=5.0",
   "structlog>=24.1",
   "sentry-sdk[fastapi]>=2.0",
+  # CUT-205: WeasyPrint renders the GST tax-invoice PDF from a Jinja
+  # template. Per docs/spikes/pdf-rendering-tech.md (Wave 1 spike) this
+  # requires Pango/HarfBuzz/Cairo at runtime — already on the dev
+  # machines via brew; the prod image needs the apt block from the spike.
+  "weasyprint>=63.0",
+  "jinja2>=3.1",
 ]
 
 [dependency-groups]

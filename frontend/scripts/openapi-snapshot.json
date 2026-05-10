@@ -9263,6 +9263,56 @@
         ]
       }
     },
+    "/invoices/{sales_invoice_id}/pdf": {
+      "get": {
+        "description": "Stream the rendered invoice PDF.\n\nReads the invoice + lines + firm + party, hands them to\n`pdf_service.render_invoice_pdf`, returns the bytes with\n`application/pdf`. Permission check matches the read-detail\nendpoint \u2014 anyone who can view the invoice JSON can also download\nits PDF. RLS makes cross-org reads return 404 from the service.",
+        "operationId": "get_invoice_pdf_invoices__sales_invoice_id__pdf_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sales_invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Sales Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/pdf": {}
+            },
+            "description": "PDF stream of the rendered tax invoice."
+          },
+          "404": {
+            "description": "Invoice not found in the caller's org."
+          },
+          "409": {
+            "description": "Invoice has not been finalized; PDF is unavailable."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Render a finalized sales invoice as a GST tax-invoice PDF",
+        "tags": [
+          "sales",
+          "invoices"
+        ]
+      }
+    },
     "/items": {
       "get": {
         "operationId": "list_items_items_get",

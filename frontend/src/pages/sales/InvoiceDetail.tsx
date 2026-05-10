@@ -3,13 +3,13 @@ import * as React from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
-import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ApiError } from '@/lib/api/client';
+import { ApiError, apiBlob } from '@/lib/api/client';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
+import { IS_LIVE } from '@/lib/api/mode';
 import { usePostReceipt, type ReceiptMode } from '@/lib/queries/accounts';
 import { useFinalizeInvoice, useInvoice } from '@/lib/queries/invoices';
 import { formatDateShort, formatINRCompact } from '@/lib/format';
@@ -37,10 +37,8 @@ export default function InvoiceDetail() {
   const [recordMode, setRecordMode] = React.useState<ReceiptMode>('CASH');
   const [recordRef, setRecordRef] = React.useState('');
   const [recordError, setRecordError] = React.useState<string | null>(null);
-  const print = useComingSoon({
-    feature: 'Print invoice (GST-compliant PDF)',
-    task: 'TASK-051 (Invoice PDF)',
-  });
+  const [printError, setPrintError] = React.useState<string | null>(null);
+  const [printPending, setPrintPending] = React.useState(false);
 
   if (invoiceQuery.isPending) {
     return (
@@ -89,6 +87,45 @@ export default function InvoiceDetail() {
   const onRefresh = () => {
     setStaleError(null);
     invoiceQuery.refetch();
+  };
+
+  // CUT-205: hit GET /invoices/:id/pdf, turn the Blob into an object URL,
+  // and trigger a download via a synthetic anchor click. Authorization
+  // headers don't carry on plain `<a href>` so apiBlob() does the auth
+  // dance and hands us bytes. Click-dummy mode falls back to the disabled
+  // path with a clear message — there's no PDF without a backend.
+  const onPrint = async () => {
+    setPrintError(null);
+    if (!IS_LIVE) {
+      setPrintError('Live mode required to download a GST-compliant PDF.');
+      return;
+    }
+    setPrintPending(true);
+    try {
+      const blob = await apiBlob(`/invoices/${inv.invoice_id}/pdf`);
+      const url = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${inv.number.replace(/\//g, '_')}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } finally {
+        // Defer revoke so Safari has a tick to start the download.
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? `${err.code}: ${err.detail || err.title}`
+          : err instanceof Error
+            ? err.message
+            : 'Could not download the PDF.';
+      setPrintError(msg);
+    } finally {
+      setPrintPending(false);
+    }
   };
 
   const outstandingPaise = Math.max(inv.total - inv.paid, 0);
@@ -149,11 +186,17 @@ export default function InvoiceDetail() {
         </h1>
         <Pill kind={pill.kind}>{pill.label}</Pill>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" {...print.triggerProps}>
+          <Button
+            variant="outline"
+            onClick={onPrint}
+            disabled={printPending || inv.status === 'DRAFT'}
+            title={
+              inv.status === 'DRAFT' ? 'Finalize the invoice before printing the PDF.' : undefined
+            }
+          >
             <Printer size={14} />
-            Print
+            {printPending ? 'Preparing…' : 'Print'}
           </Button>
-          {print.dialog}
           {inv.status === 'DRAFT' && (
             <Button onClick={onFinalize} disabled={finalize.isPending}>
               <Check size={14} />
@@ -263,6 +306,23 @@ export default function InvoiceDetail() {
           <Button variant="outline" onClick={onRefresh}>
             Refresh
           </Button>
+        </div>
+      )}
+
+      {printError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2"
+          style={{
+            padding: '10px 12px',
+            background: 'var(--danger-subtle)',
+            color: 'var(--danger-text)',
+            borderRadius: 6,
+            fontSize: 12.5,
+          }}
+        >
+          <AlertCircle size={14} color="var(--danger)" />
+          <span style={{ flex: 1 }}>{printError}</span>
         </div>
       )}
 

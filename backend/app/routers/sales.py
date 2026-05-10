@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 
 from app.dependencies import SyncDBSession, require_permission
 from app.models import DCLine, DeliveryChallan, SalesInvoice, SalesOrder, SiLine, SOLine
@@ -34,7 +34,7 @@ from app.schemas.sales import (
     SOListResponse,
     SOResponse,
 )
-from app.service import sales_service
+from app.service import pdf_service, sales_service
 from app.service.identity_service import TokenPayload
 
 router = APIRouter(prefix="/sales-orders", tags=["sales", "so"])
@@ -588,6 +588,45 @@ def create_invoice(
         invoice,
         party_name=party_names.get(invoice.party_id),
         item_meta=item_meta,
+    )
+
+
+@invoice_router.get(
+    "/{sales_invoice_id}/pdf",
+    summary="Render a finalized sales invoice as a GST tax-invoice PDF",
+    responses={
+        200: {
+            "content": {"application/pdf": {}},
+            "description": "PDF stream of the rendered tax invoice.",
+        },
+        404: {"description": "Invoice not found in the caller's org."},
+        409: {"description": "Invoice has not been finalized; PDF is unavailable."},
+    },
+)
+def get_invoice_pdf(
+    sales_invoice_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("sales.invoice.read"))],
+) -> Response:
+    """Stream the rendered invoice PDF.
+
+    Reads the invoice + lines + firm + party, hands them to
+    `pdf_service.render_invoice_pdf`, returns the bytes with
+    `application/pdf`. Permission check matches the read-detail
+    endpoint — anyone who can view the invoice JSON can also download
+    its PDF. RLS makes cross-org reads return 404 from the service.
+    """
+    pdf_bytes = pdf_service.render_invoice_pdf(
+        db, invoice_id=sales_invoice_id, org_id=current_user.org_id
+    )
+    invoice = sales_service.get_sales_invoice(
+        db, org_id=current_user.org_id, sales_invoice_id=sales_invoice_id
+    )
+    filename = pdf_service.filename_for(invoice)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
