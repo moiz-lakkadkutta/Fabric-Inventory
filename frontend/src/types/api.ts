@@ -787,6 +787,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/reports/daybook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** All vouchers posted on a single day */
+        get: operations["get_daybook_reports_daybook_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/pnl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Profit & Loss for a date range, grouped by ledger group */
+        get: operations["get_pnl_reports_pnl_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/stock-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** On-hand qty + weighted-average cost per item */
+        get: operations["get_stock_summary_reports_stock_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/tb": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Trial Balance as of a date — debits must equal credits */
+        get: operations["get_tb_reports_tb_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sales-orders": {
         parameters: {
             query?: never;
@@ -950,6 +1018,29 @@ export interface paths {
         };
         /** List UOMs in the catalog */
         get: operations["list_uoms_uoms_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vouchers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List vouchers for the current firm (newest-first)
+         * @description Return all vouchers for the firm in scope, newest-first.
+         *
+         *     Read-only header view — line postings are not included. Voucher
+         *     posting (Journal entries) is deferred to v2.
+         */
+        get: operations["list_vouchers_vouchers_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1390,6 +1481,38 @@ export interface components {
          * @enum {string}
          */
         DCStatus: "DRAFT" | "ISSUED" | "ACKNOWLEDGED" | "IN_PROCESS" | "RETURNED" | "CLOSED";
+        /** DaybookResponse */
+        DaybookResponse: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Vouchers */
+            vouchers: components["schemas"]["DaybookVoucher"][];
+        };
+        /** DaybookVoucher */
+        DaybookVoucher: {
+            /** Narration */
+            narration: string | null;
+            /** Number */
+            number: string;
+            /** Party Name */
+            party_name: string | null;
+            /** Series */
+            series: string;
+            /** Total Credit */
+            total_credit: string;
+            /** Total Debit */
+            total_debit: string;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
+            /** Voucher Type */
+            voucher_type: string;
+        };
         /** GRNCreateRequest */
         GRNCreateRequest: {
             /**
@@ -2420,6 +2543,59 @@ export interface components {
             tax_status?: components["schemas"]["TaxStatus"] | null;
         };
         /**
+         * PnlGroupRow
+         * @description One row in the P&L by-ledger-group table.
+         *
+         *     `current_period_amount` and `prior_period_amount` are signed against
+         *     the natural sign of the group (income/COGS/expense are all returned
+         *     as positive numbers; net contribution to profit is computed in the
+         *     aggregate fields above). `variance_pct` is rounded to two decimals;
+         *     the FE re-formats for display.
+         */
+        PnlGroupRow: {
+            /** Current Period Amount */
+            current_period_amount: string;
+            /** Group Code */
+            group_code: string;
+            /** Group Name */
+            group_name: string;
+            /** Group Type */
+            group_type: string;
+            /** Prior Period Amount */
+            prior_period_amount: string;
+            /** Variance Pct */
+            variance_pct: string;
+        };
+        /** PnlPeriod */
+        PnlPeriod: {
+            /**
+             * From Date
+             * Format: date
+             */
+            from_date: string;
+            /**
+             * To Date
+             * Format: date
+             */
+            to_date: string;
+        };
+        /** PnlResponse */
+        PnlResponse: {
+            /** By Ledger Group */
+            by_ledger_group: components["schemas"]["PnlGroupRow"][];
+            /** Cogs */
+            cogs: string;
+            /** Expenses */
+            expenses: string;
+            /** Gross Profit */
+            gross_profit: string;
+            /** Net Profit */
+            net_profit: string;
+            period: components["schemas"]["PnlPeriod"];
+            /** Total Income */
+            total_income: string;
+        };
+        /**
          * PurchaseOrderStatus
          * @enum {string}
          */
@@ -3169,6 +3345,50 @@ export interface components {
              */
             stock_adjustment_id: string;
         };
+        /** StockSummaryResponse */
+        StockSummaryResponse: {
+            /**
+             * As Of
+             * Format: date
+             */
+            as_of: string;
+            /** Rows */
+            rows: components["schemas"]["StockSummaryRow"][];
+            /** Total Value */
+            total_value: string;
+        };
+        /**
+         * StockSummaryRow
+         * @description One SKU/item row in the stock summary.
+         *
+         *     `sku_id` may be NULL when the item is tracked at the item level
+         *     only (no per-SKU breakdown — fabric items often work this way). In
+         *     that case `sku_code` is also NULL and the item-level totals are
+         *     reported on a single row.
+         */
+        StockSummaryRow: {
+            /** Avg Cost */
+            avg_cost: string;
+            /** Item Code */
+            item_code: string;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Item Name */
+            item_name: string;
+            /** On Hand Qty */
+            on_hand_qty: string;
+            /** Sku Code */
+            sku_code: string | null;
+            /** Sku Id */
+            sku_id: string | null;
+            /** Uom */
+            uom: string;
+            /** Valuation */
+            valuation: string;
+        };
         /**
          * SwitchFirmRequest
          * @description Switch the active firm in the current session — issues a new
@@ -3208,6 +3428,47 @@ export interface components {
          * @enum {string}
          */
         TaxStatus: "REGULAR" | "COMPOSITION" | "UNREGISTERED" | "CONSUMER" | "OVERSEAS";
+        /** TbResponse */
+        TbResponse: {
+            /**
+             * As Of
+             * Format: date
+             */
+            as_of: string;
+            /** Balanced */
+            balanced: boolean;
+            /** Rows */
+            rows: components["schemas"]["TbRow"][];
+            /** Total Credits */
+            total_credits: string;
+            /** Total Debits */
+            total_debits: string;
+        };
+        /**
+         * TbRow
+         * @description One ledger row in the Trial Balance.
+         *
+         *     A ledger contributes either to debit or credit — not both — based
+         *     on the net balance computed from voucher_line. Zero-balance ledgers
+         *     are excluded by default.
+         */
+        TbRow: {
+            /** Credit */
+            credit: string;
+            /** Debit */
+            debit: string;
+            /** Group Code */
+            group_code: string | null;
+            /** Ledger Code */
+            ledger_code: string;
+            /**
+             * Ledger Id
+             * Format: uuid
+             */
+            ledger_id: string;
+            /** Ledger Name */
+            ledger_name: string;
+        };
         /** TokenPairResponse */
         TokenPairResponse: {
             /**
@@ -3269,12 +3530,72 @@ export interface components {
             type: string;
         };
         /**
+         * VoucherListItem
+         * @description One row on the AccountingHub Vouchers tab.
+         *
+         *     Money is rupees (Decimal-as-string) on the wire per CLAUDE.md.
+         */
+        VoucherListItem: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Narration */
+            narration: string | null;
+            /** Number */
+            number: string;
+            /** Series */
+            series: string;
+            status: components["schemas"]["VoucherStatus-Output"] | null;
+            /** Total Credit */
+            total_credit: string | null;
+            /** Total Debit */
+            total_debit: string | null;
+            /**
+             * Voucher Date
+             * Format: date
+             */
+            voucher_date: string;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
+            voucher_type: components["schemas"]["VoucherType"];
+        };
+        /** VoucherListResponse */
+        VoucherListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["VoucherListItem"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /**
          * VoucherStatus
          * @description Shared lifecycle for voucher-style documents (PI, Payment, Receipt,
          *     Journal). Bound to the `voucher_status` Postgres enum.
          * @enum {string}
          */
-        VoucherStatus: "DRAFT" | "POSTED" | "RECONCILED" | "VOIDED";
+        "VoucherStatus-Input": "DRAFT" | "POSTED" | "RECONCILED" | "VOIDED";
+        /**
+         * VoucherStatus
+         * @description Re-declares the `voucher_status` enum binding for accounting.
+         *
+         *     Same Postgres type as `procurement.VoucherStatus` and
+         *     `sales.VoucherStatus`; declared here to avoid cross-domain import.
+         * @enum {string}
+         */
+        "VoucherStatus-Output": "DRAFT" | "POSTED" | "RECONCILED" | "VOIDED";
+        /**
+         * VoucherType
+         * @enum {string}
+         */
+        VoucherType: "SALES_INVOICE" | "PURCHASE_INVOICE" | "PAYMENT" | "RECEIPT" | "JOURNAL" | "CONTRA" | "DEBIT_NOTE" | "CREDIT_NOTE" | "OPENING_BAL";
     };
     responses: never;
     parameters: never;
@@ -4944,7 +5265,7 @@ export interface operations {
                 firm_id?: string | null;
                 party_id?: string | null;
                 grn_id?: string | null;
-                status?: components["schemas"]["VoucherStatus"] | null;
+                status?: components["schemas"]["VoucherStatus-Input"] | null;
                 limit?: number;
                 offset?: number;
             };
@@ -5457,6 +5778,132 @@ export interface operations {
             };
         };
     };
+    get_daybook_reports_daybook_get: {
+        parameters: {
+            query?: {
+                date?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DaybookResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_pnl_reports_pnl_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PnlResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_stock_summary_reports_stock_summary_get: {
+        parameters: {
+            query?: {
+                as_of?: string | null;
+                include_zero?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StockSummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_tb_reports_tb_get: {
+        parameters: {
+            query?: {
+                as_of?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TbResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_sos_sales_orders_get: {
         parameters: {
             query?: {
@@ -5911,6 +6358,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UomListResponse"];
+                };
+            };
+        };
+    };
+    list_vouchers_vouchers_get: {
+        parameters: {
+            query?: {
+                voucher_type?: components["schemas"]["VoucherType"] | null;
+                firm_id?: string | null;
+                from?: string | null;
+                to?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoucherListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

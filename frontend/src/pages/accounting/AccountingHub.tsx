@@ -5,11 +5,28 @@ import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useReceipts, useVouchers } from '@/lib/queries/accounts';
+import {
+  type BankAccountView,
+  type ChequeView,
+  useBankAccounts,
+  useCheques,
+  useReceipts,
+  useVouchers,
+} from '@/lib/queries/accounts';
 import { formatINRCompact } from '@/lib/format';
-import type { Receipt, ReceiptStatus, Voucher, VoucherKind } from '@/lib/mock/accounts';
+import type {
+  Receipt,
+  ReceiptStatus,
+  Voucher,
+  VoucherKind,
+  VoucherTypeRaw,
+} from '@/lib/mock/accounts';
 
-type Tab = 'receipts' | 'vouchers';
+import { NewBankAccountDialog } from './NewBankAccountDialog';
+import { NewChequeDialog } from './NewChequeDialog';
+import { NewReceiptDialog } from './NewReceiptDialog';
+
+type Tab = 'receipts' | 'vouchers' | 'bank-accounts' | 'cheques';
 
 const RECEIPT_PILL: Record<ReceiptStatus, { kind: PillKind; label: string }> = {
   POSTED: { kind: 'paid', label: 'Posted' },
@@ -24,18 +41,78 @@ const VOUCHER_KIND_PILL: Record<VoucherKind, { kind: PillKind; label: string }> 
   EXPENSE: { kind: 'overdue', label: 'Expense' },
 };
 
+// Display label per backend voucher_type — keeps the live Vouchers tab
+// honest about whether a row is a RECEIPT vs PAYMENT etc., even though
+// they collapse to the same `kind` palette today.
+const VOUCHER_TYPE_LABEL: Record<VoucherTypeRaw, string> = {
+  SALES_INVOICE: 'Sales invoice',
+  PURCHASE_INVOICE: 'Purchase invoice',
+  PAYMENT: 'Payment',
+  RECEIPT: 'Receipt',
+  JOURNAL: 'Journal',
+  CONTRA: 'Contra',
+  DEBIT_NOTE: 'Debit note',
+  CREDIT_NOTE: 'Credit note',
+  OPENING_BAL: 'Opening balance',
+};
+
 export default function AccountingHub() {
   const [tab, setTab] = useState<Tab>('receipts');
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const [bankAccountOpen, setBankAccountOpen] = useState(false);
+  const [chequeOpen, setChequeOpen] = useState(false);
+  const [selectedBankAccountId, setSelectedBankAccountId] = useState<string | null>(null);
+
   const receipts = useReceipts();
   const vouchers = useVouchers();
+  const bankAccounts = useBankAccounts();
+  // Cheques is keyed on the selected bank account; first account selected
+  // by default once the list resolves.
+  const effectiveBankAccountId =
+    selectedBankAccountId ?? bankAccounts.data?.[0]?.bank_account_id ?? null;
+  const cheques = useCheques(effectiveBankAccountId);
+
   const reconcile = useComingSoon({
     feature: 'Bank reconciliation',
-    task: 'TASK-045 (Bank statement match)',
+    task: 'TASK-CUT-v2 (Bank statement match)',
   });
-  const newEntry = useComingSoon({
-    feature: tab === 'receipts' ? 'New receipt' : 'New voucher',
-    task: tab === 'receipts' ? 'TASK-042 (Receipt screen)' : 'TASK-044 (Voucher post)',
+  // "+ New voucher" stays a coming-soon. Voucher posting (journal entries)
+  // is deferred to v2 — we ship the read-only Vouchers tab in v1.
+  const newVoucher = useComingSoon({
+    feature: 'New journal voucher',
+    task: 'v2 — journal vouchers',
   });
+
+  let cta: React.ReactNode = null;
+  if (tab === 'receipts') {
+    cta = (
+      <Button onClick={() => setReceiptOpen(true)}>
+        <Plus />
+        New receipt
+      </Button>
+    );
+  } else if (tab === 'vouchers') {
+    cta = (
+      <Button {...newVoucher.triggerProps}>
+        <Plus />
+        New voucher
+      </Button>
+    );
+  } else if (tab === 'bank-accounts') {
+    cta = (
+      <Button onClick={() => setBankAccountOpen(true)}>
+        <Plus />
+        New bank account
+      </Button>
+    );
+  } else if (tab === 'cheques') {
+    cta = (
+      <Button onClick={() => setChequeOpen(true)} disabled={!effectiveBankAccountId}>
+        <Plus />
+        New cheque
+      </Button>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -44,20 +121,27 @@ export default function AccountingHub() {
         <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
           {receipts.isPending
             ? '—'
-            : `${receipts.data?.length ?? 0} receipts · ${vouchers.data?.length ?? 0} vouchers`}
+            : `${receipts.data?.length ?? 0} receipts · ${vouchers.data?.length ?? 0} vouchers · ${
+                bankAccounts.data?.length ?? 0
+              } bank accounts`}
         </span>
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" {...reconcile.triggerProps}>
             Reconcile bank
           </Button>
-          <Button {...newEntry.triggerProps}>
-            <Plus />
-            New {tab === 'receipts' ? 'receipt' : 'voucher'}
-          </Button>
+          {cta}
         </div>
       </header>
       {reconcile.dialog}
-      {newEntry.dialog}
+      {newVoucher.dialog}
+
+      <NewReceiptDialog open={receiptOpen} onClose={() => setReceiptOpen(false)} />
+      <NewBankAccountDialog open={bankAccountOpen} onClose={() => setBankAccountOpen(false)} />
+      <NewChequeDialog
+        open={chequeOpen}
+        onClose={() => setChequeOpen(false)}
+        bankAccountId={effectiveBankAccountId}
+      />
 
       <div
         className="inline-flex items-center rounded-md p-1"
@@ -70,6 +154,12 @@ export default function AccountingHub() {
         <TabButton active={tab === 'vouchers'} onClick={() => setTab('vouchers')}>
           Vouchers
         </TabButton>
+        <TabButton active={tab === 'bank-accounts'} onClick={() => setTab('bank-accounts')}>
+          Bank accounts
+        </TabButton>
+        <TabButton active={tab === 'cheques'} onClick={() => setTab('cheques')}>
+          Cheques
+        </TabButton>
       </div>
 
       <div
@@ -80,16 +170,34 @@ export default function AccountingHub() {
           borderRadius: 8,
         }}
       >
-        {tab === 'receipts' ? (
-          receipts.isPending ? (
+        {tab === 'receipts' &&
+          (receipts.isPending ? (
             <ListSkeleton rows={8} label="Loading receipts" />
           ) : (
             <ReceiptTable rows={receipts.data ?? []} />
-          )
-        ) : vouchers.isPending ? (
-          <ListSkeleton rows={6} label="Loading vouchers" />
-        ) : (
-          <VoucherTable rows={vouchers.data ?? []} />
+          ))}
+        {tab === 'vouchers' &&
+          (vouchers.isPending ? (
+            <ListSkeleton rows={6} label="Loading vouchers" />
+          ) : (
+            <VoucherTable rows={vouchers.data ?? []} />
+          ))}
+        {tab === 'bank-accounts' &&
+          (bankAccounts.isPending ? (
+            <ListSkeleton rows={4} label="Loading bank accounts" />
+          ) : (
+            <BankAccountTable rows={bankAccounts.data ?? []} />
+          ))}
+        {tab === 'cheques' && (
+          <ChequePanel
+            bankAccounts={bankAccounts.data ?? []}
+            selectedBankAccountId={effectiveBankAccountId}
+            onSelectBankAccount={setSelectedBankAccountId}
+            cheques={cheques.data ?? []}
+            isPending={
+              bankAccounts.isPending || (Boolean(effectiveBankAccountId) && cheques.isPending)
+            }
+          />
         )}
       </div>
     </div>
@@ -126,6 +234,9 @@ function TabButton({
 }
 
 function ReceiptTable({ rows }: { rows: Receipt[] }) {
+  if (rows.length === 0) {
+    return <EmptyTable label="No receipts yet. Click + New receipt to record one." />;
+  }
   return (
     <table className="w-full text-left" style={{ minWidth: 980 }}>
       <thead style={{ background: 'var(--bg-sunken)' }}>
@@ -186,13 +297,18 @@ function ReceiptTable({ rows }: { rows: Receipt[] }) {
 }
 
 function VoucherTable({ rows }: { rows: Voucher[] }) {
+  if (rows.length === 0) {
+    return (
+      <EmptyTable label="No vouchers posted yet — receipts and other postings will appear here." />
+    );
+  }
   return (
     <table className="w-full text-left" style={{ minWidth: 980 }}>
       <thead style={{ background: 'var(--bg-sunken)' }}>
         <tr style={{ color: 'var(--text-tertiary)' }}>
           <Th>Voucher #</Th>
           <Th>Date</Th>
-          <Th>Kind</Th>
+          <Th>Type</Th>
           <Th>Narration</Th>
           <Th align="right">Debit</Th>
           <Th align="right">Credit</Th>
@@ -202,6 +318,7 @@ function VoucherTable({ rows }: { rows: Voucher[] }) {
       <tbody>
         {rows.map((v) => {
           const pill = VOUCHER_KIND_PILL[v.kind];
+          const typeLabel = v.voucher_type ? VOUCHER_TYPE_LABEL[v.voucher_type] : pill.label;
           return (
             <tr key={v.voucher_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
               <td className="px-3 py-3">
@@ -216,7 +333,7 @@ function VoucherTable({ rows }: { rows: Voucher[] }) {
                 {v.date}
               </td>
               <td className="px-3 py-3">
-                <Pill kind={pill.kind}>{pill.label}</Pill>
+                <Pill kind={pill.kind}>{typeLabel}</Pill>
               </td>
               <td className="px-3 py-3" style={{ fontSize: 13 }}>
                 {v.narration}
@@ -230,7 +347,7 @@ function VoucherTable({ rows }: { rows: Voucher[] }) {
               <td className="px-3 py-3">
                 {v.balanced ? (
                   <span style={{ color: 'var(--success-text)', fontSize: 12.5, fontWeight: 500 }}>
-                    ✓ Balanced
+                    Balanced
                   </span>
                 ) : (
                   <span style={{ color: 'var(--danger)', fontSize: 12.5, fontWeight: 500 }}>
@@ -244,6 +361,174 @@ function VoucherTable({ rows }: { rows: Voucher[] }) {
       </tbody>
     </table>
   );
+}
+
+function BankAccountTable({ rows }: { rows: BankAccountView[] }) {
+  if (rows.length === 0) {
+    return <EmptyTable label="No bank accounts. Click + New bank account to add your first." />;
+  }
+  return (
+    <table className="w-full text-left" style={{ minWidth: 920 }}>
+      <thead style={{ background: 'var(--bg-sunken)' }}>
+        <tr style={{ color: 'var(--text-tertiary)' }}>
+          <Th>Bank</Th>
+          <Th>Account #</Th>
+          <Th>IFSC</Th>
+          <Th>Type</Th>
+          <Th align="right">Balance</Th>
+          <Th>Last reconciled</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((a) => (
+          <tr key={a.bank_account_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+            <td className="px-3 py-3" style={{ fontSize: 13.5, fontWeight: 500 }}>
+              {a.bank_name || '—'}
+            </td>
+            <td
+              className="mono px-3 py-3"
+              style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}
+            >
+              {a.account_number || '—'}
+            </td>
+            <td
+              className="mono px-3 py-3"
+              style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}
+            >
+              {a.ifsc_code || '—'}
+            </td>
+            <td className="px-3 py-3" style={{ fontSize: 12.5 }}>
+              {a.account_type || '—'}
+            </td>
+            <td className="num px-3 py-3" style={{ textAlign: 'right', fontWeight: 500 }}>
+              {formatINRCompact(a.balance_paise)}
+            </td>
+            <td className="num px-3 py-3" style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+              {a.last_reconciled_date || '—'}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function ChequePanel({
+  bankAccounts,
+  selectedBankAccountId,
+  onSelectBankAccount,
+  cheques,
+  isPending,
+}: {
+  bankAccounts: BankAccountView[];
+  selectedBankAccountId: string | null;
+  onSelectBankAccount: (id: string) => void;
+  cheques: ChequeView[];
+  isPending: boolean;
+}) {
+  if (bankAccounts.length === 0) {
+    return <EmptyTable label="Add a bank account first — cheques are tracked per account." />;
+  }
+  return (
+    <div className="flex flex-col">
+      <div
+        className="flex items-center gap-2 border-b px-3 py-2"
+        style={{ borderColor: 'var(--border-subtle)' }}
+      >
+        <label
+          htmlFor="cheque-bank-account"
+          style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}
+        >
+          Bank account
+        </label>
+        <select
+          id="cheque-bank-account"
+          value={selectedBankAccountId ?? ''}
+          onChange={(e) => onSelectBankAccount(e.target.value)}
+          className="h-8 rounded-md px-2"
+          style={{
+            border: '1px solid var(--border-default)',
+            background: 'var(--bg-surface)',
+            fontSize: 13,
+          }}
+        >
+          {bankAccounts.map((a) => (
+            <option key={a.bank_account_id} value={a.bank_account_id}>
+              {a.bank_name || a.account_number || a.bank_account_id.slice(0, 8)}
+            </option>
+          ))}
+        </select>
+      </div>
+      {isPending ? (
+        <ListSkeleton rows={4} label="Loading cheques" />
+      ) : cheques.length === 0 ? (
+        <EmptyTable label="No cheques on this account yet." />
+      ) : (
+        <table className="w-full text-left" style={{ minWidth: 920 }}>
+          <thead style={{ background: 'var(--bg-sunken)' }}>
+            <tr style={{ color: 'var(--text-tertiary)' }}>
+              <Th>Cheque #</Th>
+              <Th>Date</Th>
+              <Th>Payee</Th>
+              <Th align="right">Amount</Th>
+              <Th>Status</Th>
+              <Th>Cleared</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {cheques.map((c) => (
+              <tr key={c.cheque_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                <td className="px-3 py-3">
+                  <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>
+                    {c.cheque_number}
+                  </span>
+                </td>
+                <td
+                  className="num px-3 py-3"
+                  style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}
+                >
+                  {c.cheque_date}
+                </td>
+                <td className="px-3 py-3" style={{ fontSize: 13.5, fontWeight: 500 }}>
+                  {c.payee_name || '—'}
+                </td>
+                <td className="num px-3 py-3" style={{ textAlign: 'right', fontWeight: 500 }}>
+                  {formatINRCompact(c.amount_paise)}
+                </td>
+                <td className="px-3 py-3">
+                  <Pill kind={chequePillKind(c.status)}>{prettyChequeStatus(c.status)}</Pill>
+                </td>
+                <td
+                  className="num px-3 py-3"
+                  style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}
+                >
+                  {c.clearing_date || '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function chequePillKind(status: string): PillKind {
+  switch (status) {
+    case 'CLEARED':
+      return 'paid';
+    case 'BOUNCED':
+      return 'overdue';
+    case 'CANCELLED':
+      return 'scrap';
+    case 'ISSUED':
+    default:
+      return 'draft';
+  }
+}
+
+function prettyChequeStatus(status: string): string {
+  return status.charAt(0) + status.slice(1).toLowerCase();
 }
 
 function Th({ children, align = 'left' }: { children: React.ReactNode; align?: 'left' | 'right' }) {
@@ -275,6 +560,18 @@ function ListSkeleton({ rows, label }: { rows: number; label: string }) {
           <Skeleton width={100} height={14} />
         </div>
       ))}
+    </div>
+  );
+}
+
+function EmptyTable({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      className="px-4 py-12 text-center"
+      style={{ fontSize: 13, color: 'var(--text-tertiary)' }}
+    >
+      {label}
     </div>
   );
 }

@@ -127,11 +127,27 @@ export const receipts: Receipt[] = R.map((row, i) => {
 
 export type VoucherKind = 'JOURNAL' | 'PAYMENT' | 'CONTRA' | 'EXPENSE';
 
+// Mirror of `voucher_type` ENUM in the backend (CUT-103). The mock
+// rows below stay on the legacy 4-kind palette; live data uses the
+// full enum.
+export type VoucherTypeRaw =
+  | 'SALES_INVOICE'
+  | 'PURCHASE_INVOICE'
+  | 'PAYMENT'
+  | 'RECEIPT'
+  | 'JOURNAL'
+  | 'CONTRA'
+  | 'DEBIT_NOTE'
+  | 'CREDIT_NOTE'
+  | 'OPENING_BAL';
+
 export interface Voucher {
   voucher_id: string;
   number: string;
   date: string;
   kind: VoucherKind;
+  /** Raw backend voucher_type enum for live data; optional on mock rows. */
+  voucher_type?: VoucherTypeRaw;
   narration: string;
   debit_total: number; // paise
   credit_total: number; // paise
