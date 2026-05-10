@@ -1,16 +1,20 @@
 import { ArrowLeft } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
+import { Button } from '@/components/ui/button';
+import { Dialog } from '@/components/ui/dialog';
+import { Field } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
 import { Monogram } from '@/components/ui/monogram';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
-import { findParty } from '@/lib/mock/parties';
-import { invoices } from '@/lib/mock/invoices';
+import { ApiError } from '@/lib/api/client';
+import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { formatINRCompact } from '@/lib/format';
-import { useQuery } from '@tanstack/react-query';
-
-import { fakeFetch } from '@/lib/mock/api';
-import type { PartyKind } from '@/lib/mock/types';
+import { invoices } from '@/lib/mock/invoices';
+import { useParty, usePatchParty } from '@/lib/queries/parties';
+import type { Party, PartyKind, PartyRole } from '@/lib/mock/types';
 
 const KIND_PILL: Record<PartyKind, { kind: PillKind; label: string }> = {
   customer: { kind: 'finalized', label: 'Customer' },
@@ -19,17 +23,23 @@ const KIND_PILL: Record<PartyKind, { kind: PillKind; label: string }> = {
   transporter: { kind: 'scrap', label: 'Transporter' },
 };
 
-function useParty(id: string | undefined) {
-  return useQuery({
-    queryKey: ['parties', id],
-    enabled: id !== undefined,
-    queryFn: () => fakeFetch(() => (id ? (findParty(id) ?? null) : null)),
-  });
+function kindToRole(kind: PartyKind): PartyRole {
+  switch (kind) {
+    case 'customer':
+      return 'CUSTOMER';
+    case 'supplier':
+      return 'SUPPLIER';
+    case 'karigar':
+      return 'KARIGAR';
+    case 'transporter':
+      return 'TRANSPORTER';
+  }
 }
 
 export default function PartyDetail() {
   const { id } = useParams<{ id: string }>();
   const partyQuery = useParty(id);
+  const [editOpen, setEditOpen] = useState(false);
 
   if (partyQuery.isPending) {
     return (
@@ -58,6 +68,10 @@ export default function PartyDetail() {
   const pill = KIND_PILL[p.kind];
 
   // Khata KPIs from invoices.
+  // NOTE: in live mode, the click-dummy `invoices` fixture won't include
+  // anything for this party. The detail still renders cleanly (zeros).
+  // CUT-104 / CUT-302 wires `/reports/party-statement` to compute these
+  // from real invoices.
   const partyInvoices = invoices.filter((i) => i.party_id === p.party_id);
   const total = partyInvoices.reduce((s, i) => s + i.total, 0);
   const paid = partyInvoices.reduce((s, i) => s + i.paid, 0);
@@ -91,8 +105,12 @@ export default function PartyDetail() {
             style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}
           >
             <span>{p.code}</span>
-            <span>·</span>
-            <span>{p.city}</span>
+            {p.city && (
+              <>
+                <span>·</span>
+                <span>{p.city}</span>
+              </>
+            )}
             {p.gstin && (
               <>
                 <span>·</span>
@@ -101,10 +119,14 @@ export default function PartyDetail() {
             )}
           </div>
         </div>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
           <Pill kind={pill.kind}>{pill.label}</Pill>
+          <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+            Edit
+          </Button>
         </div>
       </header>
+      <EditPartyDialog open={editOpen} onClose={() => setEditOpen(false)} party={p} />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <KhataKPI label="Total billed" value={formatINRCompact(total)} />
@@ -204,6 +226,173 @@ export default function PartyDetail() {
         </table>
       </section>
     </div>
+  );
+}
+
+const ROLE_OPTIONS: Array<{ value: PartyRole; label: string }> = [
+  { value: 'CUSTOMER', label: 'Customer' },
+  { value: 'SUPPLIER', label: 'Supplier' },
+  { value: 'KARIGAR', label: 'Karigar' },
+  { value: 'TRANSPORTER', label: 'Transporter' },
+];
+
+interface EditPartyDialogProps {
+  open: boolean;
+  onClose: () => void;
+  party: Party;
+}
+
+function EditPartyDialog({ open, onClose, party }: EditPartyDialogProps) {
+  const patchParty = usePatchParty();
+  const idem = useIdempotencyKey();
+
+  const [name, setName] = useState(party.name);
+  const [role, setRole] = useState<PartyRole>(kindToRole(party.kind));
+  const [gstin, setGstin] = useState(party.gstin ?? '');
+  const [stateCode, setStateCode] = useState(party.state_code);
+  const [error, setError] = useState<string | null>(null);
+
+  // Keep local form state in sync if the party prop changes (e.g.,
+  // after a query refetch following Save).
+  useEffect(() => {
+    if (open) {
+      setName(party.name);
+      setRole(kindToRole(party.kind));
+      setGstin(party.gstin ?? '');
+      setStateCode(party.state_code);
+      setError(null);
+    }
+  }, [open, party]);
+
+  const close = () => {
+    setError(null);
+    onClose();
+  };
+
+  const submit = async () => {
+    setError(null);
+    if (!name.trim()) {
+      setError('Name is required.');
+      return;
+    }
+    try {
+      await patchParty.mutateAsync({
+        partyId: party.party_id,
+        patch: {
+          name: name.trim(),
+          role,
+          gstin: gstin.trim() || undefined,
+          state_code: stateCode.trim() || undefined,
+        },
+        idempotencyKey: idem.key,
+      });
+      idem.reset();
+      onClose();
+    } catch (e) {
+      if (e instanceof ApiError) {
+        setError(`${e.title}${e.detail ? ` — ${e.detail}` : ''}`);
+      } else if (e instanceof Error) {
+        setError(e.message);
+      } else {
+        setError('Could not save party.');
+      }
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onClose={close}
+      title={`Edit ${party.name}`}
+      width={520}
+      footer={
+        <>
+          <Button variant="outline" onClick={close} disabled={patchParty.isPending}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={patchParty.isPending}>
+            {patchParty.isPending ? 'Saving…' : 'Save'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <Field label="Name" htmlFor="ep-name" required>
+          <Input
+            id="ep-name"
+            aria-label="Name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </Field>
+
+        <Field label="Role">
+          <div role="radiogroup" aria-label="Role" className="flex flex-wrap gap-2">
+            {ROLE_OPTIONS.map((opt) => {
+              const active = role === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setRole(opt.value)}
+                  className="inline-flex h-8 items-center rounded-full px-3"
+                  style={{
+                    fontSize: 12.5,
+                    fontWeight: active ? 600 : 500,
+                    background: active ? 'var(--accent-subtle)' : 'transparent',
+                    color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                    border: active
+                      ? '1px solid var(--accent-subtle)'
+                      : '1px solid var(--border-default)',
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <Field label="GSTIN" htmlFor="ep-gstin">
+            <Input
+              id="ep-gstin"
+              aria-label="GSTIN"
+              value={gstin}
+              onChange={(e) => setGstin(e.target.value.toUpperCase())}
+              maxLength={15}
+            />
+          </Field>
+          <Field label="State code" htmlFor="ep-state-code">
+            <Input
+              id="ep-state-code"
+              aria-label="State code"
+              value={stateCode}
+              onChange={(e) => setStateCode(e.target.value)}
+              maxLength={2}
+            />
+          </Field>
+        </div>
+
+        {error && (
+          <div
+            role="alert"
+            style={{
+              padding: '8px 10px',
+              border: '1px solid var(--danger)',
+              borderRadius: 6,
+              background: 'rgba(181,49,30,.06)',
+              color: 'var(--danger)',
+              fontSize: 12.5,
+            }}
+          >
+            {error}
+          </div>
+        )}
+      </div>
+    </Dialog>
   );
 }
 
