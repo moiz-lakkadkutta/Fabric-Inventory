@@ -440,6 +440,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/invoices/{sales_invoice_id}/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Render a finalized sales invoice as a GST tax-invoice PDF
+         * @description Stream the rendered invoice PDF.
+         *
+         *     Reads the invoice + lines + firm + party, hands them to
+         *     `pdf_service.render_invoice_pdf`, returns the bytes with
+         *     `application/pdf`. Permission check matches the read-detail
+         *     endpoint — anyone who can view the invoice JSON can also download
+         *     its PDF. RLS makes cross-org reads return 404 from the service.
+         */
+        get: operations["get_invoice_pdf_invoices__sales_invoice_id__pdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/items": {
         parameters: {
             query?: never;
@@ -4718,6 +4744,52 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SalesInvoiceResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_invoice_pdf_invoices__sales_invoice_id__pdf_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sales_invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description PDF stream of the rendered tax invoice. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/pdf": unknown;
+                };
+            };
+            /** @description Invoice not found in the caller's org. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invoice has not been finalized; PDF is unavailable. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
