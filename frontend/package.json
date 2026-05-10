@@ -17,8 +17,9 @@
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
     "e2e": "playwright test",
-    "openapi:gen": "openapi-typescript ../specs/api-phase1.yaml -o src/types/api.generated.ts",
-    "openapi:check": "openapi-typescript ../specs/api-phase1.yaml -o /tmp/api.generated.tmp.ts && diff -q src/types/api.generated.ts /tmp/api.generated.tmp.ts"
+    "gen:types": "openapi-typescript scripts/openapi-snapshot.json -o src/types/api.ts",
+    "gen:types:live": "openapi-typescript http://localhost:8000/openapi.json -o src/types/api.ts",
+    "check:types": "openapi-typescript scripts/openapi-snapshot.json -o /tmp/api.codegen.tmp.ts && diff -q src/types/api.ts /tmp/api.codegen.tmp.ts || (echo 'API types drift; run pnpm gen:types' && exit 1)"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.1.0",

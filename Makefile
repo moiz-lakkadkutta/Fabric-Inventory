@@ -1,4 +1,4 @@
-.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed deploy backup e2e-setup help
+.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed deploy backup e2e-setup openapi-snapshot help
 
 # Prefer "docker compose" (v2 plugin); fall back to legacy "docker-compose" binary.
 COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
@@ -16,6 +16,7 @@ help:
 	@echo "  make e2e-setup    Install Playwright browsers (opt-in, ~400MB)"
 	@echo "  make migrate      Run alembic upgrade head (MIGRATION_DATABASE_URL or DATABASE_URL must be set)"
 	@echo "  make migrate-create M=\"msg\"  Generate a new alembic revision"
+	@echo "  make openapi-snapshot  Re-dump openapi snapshot + regen FE types (CUT-106)"
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -73,3 +74,12 @@ backup:
 
 e2e-setup:
 	cd frontend && pnpm exec playwright install --with-deps
+
+# Refresh frontend/scripts/openapi-snapshot.json from the in-process
+# FastAPI app, then regenerate frontend/src/types/api.ts. Run after
+# any BE schema change (new endpoint, new pydantic field, etc.) and
+# commit both files. CI's `openapi-drift` job blocks PRs that skip
+# this step.
+openapi-snapshot:
+	cd backend && uv run python ../frontend/scripts/dump-openapi.py
+	cd frontend && pnpm gen:types

@@ -191,3 +191,77 @@ jobs:
         # NOT gated here — slow + browser download. Add a separate workflow
         # (e.g. `e2e.yml`) when we want it on CI.
         run: pnpm test
+
+  openapi-drift:
+    name: OpenAPI codegen drift (BE schema ↔ FE types)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    # Two layers of drift detection (see CUT-106):
+    #
+    #   1. BE → snapshot drift: re-dump the FastAPI app's openapi schema,
+    #      diff against the committed `frontend/scripts/openapi-snapshot.json`.
+    #      Fails when someone added/changed a BE schema and forgot to run
+    #      `make openapi-snapshot` (or equivalent) to refresh the snapshot.
+    #
+    #   2. snapshot → codegen drift: regenerate `frontend/src/types/api.ts`
+    #      from the snapshot, diff against the committed file. Fails when
+    #      someone refreshed the snapshot but forgot to re-run
+    #      `pnpm gen:types`.
+    #
+    # No live backend, no DB, no Redis — the dump script imports the
+    # FastAPI app in-process and only needs Settings env vars.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "backend/uv.lock"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install backend deps (for the dump script)
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Re-dump openapi snapshot from FastAPI app
+        # The dump script runs from any CWD (it walks up to find the repo
+        # root). We invoke it via uv from the backend dir so deps resolve.
+        working-directory: backend
+        run: uv run python ../frontend/scripts/dump-openapi.py --out /tmp/openapi-fresh.json
+
+      - name: Diff snapshot against committed file
+        run: |
+          if ! diff -q frontend/scripts/openapi-snapshot.json /tmp/openapi-fresh.json; then
+            echo "::error::Backend OpenAPI schema has drifted from frontend/scripts/openapi-snapshot.json."
+            echo "::error::Run 'cd backend && uv run python ../frontend/scripts/dump-openapi.py' to refresh, then 'cd frontend && pnpm gen:types', and commit both."
+            diff frontend/scripts/openapi-snapshot.json /tmp/openapi-fresh.json | head -80 || true
+            exit 1
+          fi
+          echo "OK: snapshot matches BE in-process schema."
+
+      - name: Diff codegen output against committed api.ts
+        working-directory: frontend
+        # `pnpm check:types` regenerates from the snapshot to /tmp and
+        # diffs vs the committed src/types/api.ts. Fails if developer
+        # refreshed the snapshot but forgot `pnpm gen:types`.
+        run: pnpm check:types
