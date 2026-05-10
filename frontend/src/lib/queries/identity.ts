@@ -109,6 +109,91 @@ export function useLogin() {
   });
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Signup (TASK-CUT-003) — wires the Onboarding wizard to /auth/signup
+// ──────────────────────────────────────────────────────────────────────
+
+export interface SignupInput {
+  email: string;
+  password: string;
+  org_name: string;
+  firm_name: string;
+  /** 2-character Indian state code (e.g. "MH"). Required by backend. */
+  state_code: string;
+  /** Optional. Backend infers tax_status from presence/absence. */
+  gstin?: string;
+  idempotencyKey: string;
+}
+
+export interface SignupResult {
+  user_id: string;
+  org_id: string;
+  firm_id: string;
+  access_token: string;
+}
+
+interface SignupEnvelope {
+  access_token: string;
+  refresh_token: string;
+  access_expires_at: string;
+  refresh_expires_at: string;
+  user_id: string;
+  org_id: string;
+  firm_id: string;
+}
+
+/**
+ * Live-mode signup. Mirrors `liveLogin` (token storage + /auth/me hop)
+ * with one wrinkle: signup always returns tokens (no MFA branch), so
+ * we always fetch /auth/me on success.
+ *
+ * Exported for unit testing. Routine callers go through `useSignup`.
+ */
+export async function liveSignup(input: SignupInput): Promise<SignupResult> {
+  const body: Record<string, string> = {
+    email: input.email,
+    password: input.password,
+    org_name: input.org_name,
+    firm_name: input.firm_name,
+    state_code: input.state_code,
+  };
+  if (input.gstin) body.gstin = input.gstin;
+
+  const data = await api<SignupEnvelope>('/auth/signup', {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body,
+  });
+  authStore.setAccessToken(data.access_token);
+  const me = await api<MeResponse>('/auth/me');
+  authStore.setMe(me);
+  return {
+    user_id: data.user_id,
+    org_id: data.org_id,
+    firm_id: data.firm_id,
+    access_token: data.access_token,
+  };
+}
+
+async function mockSignup(input: SignupInput): Promise<SignupResult> {
+  // Stub — the click-dummy doesn't sign anyone up; live mode is the
+  // exclusive code path. We echo a slug of the requested org name so
+  // any caller inspecting the result sees something reasonable.
+  await fakeFetch(undefined);
+  return {
+    user_id: currentUser.user_id,
+    org_id: `mock-org-${input.org_name.toLowerCase().replace(/\s+/g, '-')}`,
+    firm_id: 'mock-firm',
+    access_token: 'mock-access-token',
+  };
+}
+
+export function useSignup() {
+  return useMutation({
+    mutationFn: (input: SignupInput) => (IS_LIVE ? liveSignup(input) : mockSignup(input)),
+  });
+}
+
 export interface MfaVerifyInput {
   email: string;
   password: string;

@@ -17,5 +17,9 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test-setup.ts'],
+    // Playwright e2e tests live under __tests__/e2e and are run by
+    // `pnpm run e2e`, not vitest. Excluding them here so a stray
+    // glob doesn't pull a `.spec.ts` into the unit-test runner.
+    exclude: ['**/node_modules/**', '**/dist/**', '**/__tests__/e2e/**'],
   },
 });
