@@ -175,6 +175,83 @@ describe('liveSignup', () => {
     expect(authStore.get().status).toBe('authenticated');
   });
 
+  // CUT-107: Owner signup → /auth/me returns firm_id=null + a single
+  // available firm. liveSignup must auto-switch (POST /auth/switch-firm)
+  // and re-fetch /auth/me so the JWT carries the firm context. Without
+  // this, every firm-scoped POST (invoices, receipts, vouchers) throws
+  // "No active firm in this session — switch to a firm first."
+  it('on signup: auto-switches to the only available firm when /auth/me returns firm_id=null', async () => {
+    let switchCalls = 0;
+    let meHits = 0;
+    fetchMock.mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith('/auth/signup')) {
+        return jsonResponse(201, {
+          access_token: 'tok-pre-switch',
+          refresh_token: 'r',
+          access_expires_at: '2099-01-01T00:00:00Z',
+          refresh_expires_at: '2099-01-01T00:00:00Z',
+          user_id: 'u1',
+          org_id: 'o1',
+          firm_id: 'f1',
+        });
+      }
+      if (u.endsWith('/auth/me')) {
+        meHits += 1;
+        // First /me hit: org-wide JWT, no firm. Second hit (after
+        // switch-firm): the firm is now active.
+        if (meHits === 1) {
+          return jsonResponse(200, {
+            user_id: 'u1',
+            org_id: 'o1',
+            firm_id: null,
+            permissions: ['org.admin'],
+            flags: {},
+            available_firms: [{ firm_id: 'f1', code: 'ACME', name: 'Acme HQ' }],
+            token_expires_at: '2099-01-01T00:00:00Z',
+          });
+        }
+        return jsonResponse(200, {
+          user_id: 'u1',
+          org_id: 'o1',
+          firm_id: 'f1',
+          permissions: ['org.admin'],
+          flags: {},
+          available_firms: [{ firm_id: 'f1', code: 'ACME', name: 'Acme HQ' }],
+          token_expires_at: '2099-01-01T00:00:00Z',
+        });
+      }
+      if (u.endsWith('/auth/switch-firm')) {
+        switchCalls += 1;
+        const body = JSON.parse(String(init!.body));
+        expect(body).toEqual({ firm_id: 'f1' });
+        return jsonResponse(200, {
+          access_token: 'tok-post-switch',
+          refresh_token: 'r2',
+          access_expires_at: '2099-01-01T00:00:00Z',
+          refresh_expires_at: '2099-01-01T00:00:00Z',
+          firm_id: 'f1',
+        });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+
+    await liveSignup({
+      email: 'owner@example.test',
+      password: 'strong-password-1',
+      org_name: 'Acme',
+      firm_name: 'Acme HQ',
+      state_code: 'MH',
+      idempotencyKey: '55555555-5555-4555-8555-555555555555',
+    });
+
+    expect(switchCalls).toBe(1);
+    expect(meHits).toBe(2);
+    // After auto-switch, the store carries the firm-scoped token + me.
+    expect(authStore.get().accessToken).toBe('tok-post-switch');
+    expect(authStore.get().me?.firm_id).toBe('f1');
+  });
+
   it('propagates the 409 USER_EMAIL_TAKEN as an ApiError', async () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse(409, {
