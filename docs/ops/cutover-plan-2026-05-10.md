@@ -319,9 +319,9 @@ After spawn, Claude monitors progress; agents self-merge on green CI. When all 5
 
 | Wave | Status | Started | Ended | Demo passed? | Follow-ups |
 |---|---|---|---|---|---|
-| 1 | **PRs landed; demo pending** | 2026-05-10 | 2026-05-10 | awaiting Moiz walk of `docs/ops/wave-1-demo.md` | CUT-006 hot-fix shipped (post-merge regression — 17 vitest failures restored); see retro for process improvement |
-| 2 | Blocked by Wave 1 demo gate | | | | |
-| 3 | Blocked by Wave 2 | | | | |
+| 1 | **PRs landed; superseded by Wave 2** | 2026-05-10 | 2026-05-10 | rolled into the Wave 2 demo (the 8 steps cover the Wave 1 surface area + the new Wave 2 surface) | CUT-006 hot-fix shipped (post-merge regression — 17 vitest failures restored); CUT-007 filed (`make dev-restart`) |
+| 2 | **PRs landed; demo pending** | 2026-05-10 | 2026-05-10 | awaiting Moiz walk of `docs/ops/wave-2-demo.md` | (none filed yet — pending demo walk) |
+| 3 | Blocked by Wave 2 demo gate | | | | |
 | 4 | Blocked by Wave 3 | | | | |
 | 5 | Blocked by Wave 4 | | | | |
 | 6 | Blocked by Wave 5 | | | | |
@@ -336,6 +336,34 @@ After spawn, Claude monitors progress; agents self-merge on green CI. When all 5
 | #58 | TASK-CUT-003 | merged | Onboarding wizard wires to /auth/signup |
 | #59 | TASK-CUT-001 | merged | CORS via Vite proxy + error copy + login pre-fill |
 | #60 | TASK-CUT-006 | merged | hot-fix: restore frontend tests on integrated main |
+
+### Wave 2 PRs
+
+| PR | Task | State | Notes |
+|---|---|---|---|
+| #63 | TASK-CUT-101 | merged | parties FE wired live (drops `fakeFetch`; unblocks InvoiceCreate customer dropdown) |
+| #64 | TASK-CUT-102 | merged | items + SKUs FE wired live; new `/masters/items` master page; UOM/HSN dropdowns |
+| #65 | TASK-CUT-106 | merged | OpenAPI codegen — `pnpm gen:types` writes `frontend/src/types/api.ts`; CI drift guard via `check:types` |
+| #66 | TASK-CUT-104 | merged | P1 fix bundle: receipts `party_id` migration + service + list mapper; cheques `count` non-null; invoice list `gst_total` mapper. Resolves audit P1-2/P1-8/P1-9 + the FIFO timing test (P1-3) |
+| #67 | TASK-CUT-103 | merged | banking FE: bank accounts CRUD + cheques list + receipt screen on `/accounting`; new `GET /vouchers` BE endpoint |
+| #68 | TASK-CUT-105 | merged | Reports BE foundation: `/reports/{pnl,tb,daybook,stock-summary}` with lazy SQL aggregates + indexes |
+
+### Wave 2 spawn rationale (deviation from the plan)
+
+The plan said "Wave 2 blocks on Wave 1 demo." Reality: while Wave 1 PRs were landing, Moiz hit `IDEMPOTENCY_KEY_PAYLOAD_MISMATCH` on `POST /invoices` because `InvoiceCreate.tsx` was still passing mock party/item IDs (`p_001`, `i_001`) to the live backend. That blocker traces directly to the Wave 2 scope (parties/items FE wired live), so we spawned Wave 2 without the formal Wave 1 demo gate. The Wave 2 demo doc covers both wave's surface area as a single 15-min walk and is the one Moiz actually runs.
+
+Acceptable deviation for this case (single-engineer, dogfood-blocking bug). For future waves: keep the gate unless the next-wave scope is the only path out of a P0 the user is currently hitting.
+
+### Post-Wave-2 integration verification (already executed)
+
+After all 6 Wave 2 PRs merged to `origin/main`, the following ran clean on a fresh checkout:
+- Backend: `cd backend && uv run pytest -q` — green
+- Backend: `cd backend && uv run ruff check .` — clean
+- Frontend: `cd frontend && pnpm exec vitest run` — 36 files / 157 tests / 0 failures
+- Frontend: `cd frontend && pnpm tsc --noEmit` — clean
+- Frontend: `cd frontend && pnpm exec eslint . && pnpm exec prettier --check .` — clean
+
+The user's original blocker (`p_001`/`i_001` going to live `POST /invoices`) is verified fixed: `pages/sales/InvoiceCreate.tsx` now imports `useCustomers` and `useItems` from the new live query hooks, both of which return real UUIDs from the backend in `IS_LIVE` mode.
 
 ### Process improvement adopted from Wave 1 retro
 
