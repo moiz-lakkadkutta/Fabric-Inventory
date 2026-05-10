@@ -125,6 +125,53 @@ def get_or_create_default_location(
     return location
 
 
+def create_location(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    code: str,
+    name: str,
+    location_type: LocationType = LocationType.WAREHOUSE,
+) -> Location:
+    """Insert a new active Location for the firm.
+
+    The CUT-204 retro flagged that a fresh-signup firm has zero locations
+    and no FE path to create one (`get_or_create_default_location` is
+    only called by the GET-doesn't-mutate-state-friendly `add_stock`).
+    CUT-206 adds this explicit-create path so the FE Adjust-Stock
+    dialog's empty-state can lay down a warehouse without reaching
+    into a future Locations CRUD page.
+
+    Raises `AppValidationError` (→ surfaces as 409 envelope) if a
+    Location with the same `code` already exists for `(org_id, firm_id)`.
+    """
+    existing = session.execute(
+        select(Location).where(
+            Location.org_id == org_id,
+            Location.firm_id == firm_id,
+            Location.code == code,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        from app.exceptions import LocationCodeTakenError
+
+        raise LocationCodeTakenError(
+            f"Location code {code!r} already exists for this firm"
+        )
+    location = Location(
+        org_id=org_id,
+        firm_id=firm_id,
+        code=code,
+        name=name,
+        location_type=location_type,
+        is_active=True,
+    )
+    session.add(location)
+    session.flush()
+    return location
+
+
 def list_locations(
     session: Session,
     *,
@@ -508,6 +555,7 @@ def unreserve_for_so(
 
 __all__ = [
     "add_stock",
+    "create_location",
     "get_or_create_default_location",
     "get_position",
     "list_locations",

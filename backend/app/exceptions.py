@@ -56,6 +56,9 @@ class ErrorCode(StrEnum):
     STOCK_INSUFFICIENT = "STOCK_INSUFFICIENT"
     GST_PLACE_OF_SUPPLY_AMBIGUOUS = "GST_PLACE_OF_SUPPLY_AMBIGUOUS"
 
+    # Inventory
+    LOCATION_CODE_TAKEN = "LOCATION_CODE_TAKEN"
+
     # Generic
     NOT_FOUND = "NOT_FOUND"
     UNKNOWN = "UNKNOWN"
@@ -163,6 +166,14 @@ class MfaError(AppError):
     code = ErrorCode.MFA_INVALID
     title = "MFA verification failed"
     http_status = 401
+
+
+class LocationCodeTakenError(AppError):
+    """Two locations under the same firm cannot share a code (CUT-206)."""
+
+    code = ErrorCode.LOCATION_CODE_TAKEN
+    title = "Location code already in use"
+    http_status = 409
 
 
 class NotFoundError(AppError):

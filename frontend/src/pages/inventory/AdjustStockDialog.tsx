@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { useItems } from '@/lib/queries/items';
 import {
+  useCreateLocation,
   useCreateStockAdjustment,
   useLocations,
   type StockAdjustmentDirection,
@@ -130,6 +131,13 @@ export function AdjustStockDialog({ open, onClose, defaultItemId }: AdjustStockD
   const itemOptions = items.data ?? [];
   const locationOptions = locations.data ?? [];
 
+  // CUT-206: zero locations → render an inline create form so the user
+  // can lay down their first warehouse without leaving the dialog.
+  // Treat undefined `locations.data` as "still loading" (don't flash
+  // the empty-state before the GET resolves).
+  const showLocationEmptyState =
+    !locations.isPending && locations.data !== undefined && locationOptions.length === 0;
+
   return (
     <Dialog
       open={open}
@@ -142,12 +150,17 @@ export function AdjustStockDialog({ open, onClose, defaultItemId }: AdjustStockD
           <Button variant="outline" type="button" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" form="adjust-stock-form" disabled={create.isPending}>
+          <Button
+            type="submit"
+            form="adjust-stock-form"
+            disabled={create.isPending || showLocationEmptyState}
+          >
             Save adjustment
           </Button>
         </>
       }
     >
+      {showLocationEmptyState ? <CreateFirstLocationForm firmId={me?.firm_id ?? null} /> : null}
       <form id="adjust-stock-form" onSubmit={onSubmit} className="flex flex-col gap-3">
         <Field label="Item" htmlFor="adj-item" required>
           <select
@@ -169,26 +182,28 @@ export function AdjustStockDialog({ open, onClose, defaultItemId }: AdjustStockD
             ))}
           </select>
         </Field>
-        <Field label="Location" htmlFor="adj-location" required>
-          <select
-            id="adj-location"
-            value={locationId}
-            onChange={(e) => setLocationId(e.target.value)}
-            className="h-10 w-full rounded-md px-2"
-            style={{
-              border: '1px solid var(--border-default)',
-              background: 'var(--bg-surface)',
-              fontSize: 13,
-            }}
-          >
-            <option value="">— Select —</option>
-            {locationOptions.map((loc) => (
-              <option key={loc.location_id} value={loc.location_id}>
-                {loc.name} ({loc.code})
-              </option>
-            ))}
-          </select>
-        </Field>
+        {!showLocationEmptyState && (
+          <Field label="Location" htmlFor="adj-location" required>
+            <select
+              id="adj-location"
+              value={locationId}
+              onChange={(e) => setLocationId(e.target.value)}
+              className="h-10 w-full rounded-md px-2"
+              style={{
+                border: '1px solid var(--border-default)',
+                background: 'var(--bg-surface)',
+                fontSize: 13,
+              }}
+            >
+              <option value="">— Select —</option>
+              {locationOptions.map((loc) => (
+                <option key={loc.location_id} value={loc.location_id}>
+                  {loc.name} ({loc.code})
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Field label="Direction" htmlFor="adj-direction" required>
             <select
@@ -238,5 +253,95 @@ export function AdjustStockDialog({ open, onClose, defaultItemId }: AdjustStockD
         )}
       </form>
     </Dialog>
+  );
+}
+
+interface CreateFirstLocationFormProps {
+  firmId: string | null;
+}
+
+// CUT-206: Inline create form rendered inside the AdjustStockDialog when
+// the firm has zero locations. Posts to /locations and lets the parent
+// dialog's `useLocations` query refetch so the location <select> appears
+// with the just-created warehouse pre-selected.
+function CreateFirstLocationForm({ firmId }: CreateFirstLocationFormProps) {
+  const create = useCreateLocation();
+  const idem = useIdempotencyKey();
+  const [code, setCode] = React.useState('MAIN');
+  const [name, setName] = React.useState('Main Warehouse');
+  const [error, setError] = React.useState<string | null>(null);
+
+  const onCreate = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (!firmId) {
+      setError('No active firm in this session.');
+      return;
+    }
+    if (!code.trim() || !name.trim()) {
+      setError('Code and name are required.');
+      return;
+    }
+    create.mutate(
+      {
+        body: { firm_id: firmId, code: code.trim(), name: name.trim() },
+        idempotencyKey: idem.key,
+      },
+      {
+        onSuccess: () => idem.reset(),
+        onError: (err) => {
+          idem.reset();
+          setError(err instanceof Error ? err.message : 'Could not create location.');
+        },
+      },
+    );
+  };
+
+  return (
+    <div
+      className="mb-4 flex flex-col gap-3 rounded-md p-3"
+      style={{
+        background: 'var(--bg-subtle)',
+        border: '1px dashed var(--border-default)',
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 500 }}>No warehouse locations yet</div>
+      <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+        Create one to start adjusting stock. You can rename or add more later.
+      </div>
+      <Field label="Warehouse code" htmlFor="loc-code" required>
+        <Input
+          id="loc-code"
+          aria-label="Warehouse code"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="MAIN"
+        />
+      </Field>
+      <Field label="Warehouse name" htmlFor="loc-name" required>
+        <Input
+          id="loc-name"
+          aria-label="Warehouse name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Main Warehouse"
+        />
+      </Field>
+      {error && (
+        <div role="alert" style={{ color: 'var(--danger-text)', fontSize: 12.5 }}>
+          {error}
+        </div>
+      )}
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          onClick={onCreate}
+          disabled={create.isPending}
+          aria-label="Create warehouse"
+        >
+          {create.isPending ? 'Creating…' : 'Create warehouse'}
+        </Button>
+      </div>
+    </div>
   );
 }

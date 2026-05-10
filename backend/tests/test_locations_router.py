@@ -116,3 +116,104 @@ def test_list_locations_firm_filter_excludes_other_firms(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["count"] == 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CUT-206: POST /locations
+#
+# Surfaced during the wave-3 demo: the AdjustStockDialog's location
+# picker is empty for fresh firms because GET /locations explicitly
+# refuses to auto-create on read. Without an inline create path the
+# user is stuck. This adds POST /locations + a Wave-3 follow-up FE
+# form that lets the user create their first warehouse from the
+# adjust-stock dialog.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_location_returns_201_with_full_row(http_client: TestClient) -> None:
+    me = _signup_owner(http_client)
+    resp = http_client.post(
+        "/locations",
+        headers={
+            **_auth(me["access_token"]),
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
+        json={
+            "firm_id": me["firm_id"],
+            "code": "MAIN",
+            "name": "Main Warehouse",
+            "location_type": "WAREHOUSE",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["code"] == "MAIN"
+    assert body["name"] == "Main Warehouse"
+    assert body["location_type"] == "WAREHOUSE"
+    assert body["firm_id"] == me["firm_id"]
+    assert body["is_active"] is True
+
+    # And it appears in the subsequent list.
+    list_resp = http_client.get(
+        "/locations",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"]},
+    )
+    assert list_resp.status_code == 200
+    items = list_resp.json()["items"]
+    assert any(r["location_id"] == body["location_id"] for r in items)
+
+
+def test_create_location_default_type_is_warehouse(http_client: TestClient) -> None:
+    """`location_type` is optional; default is WAREHOUSE — matches the
+    in-service `get_or_create_default_location` helper."""
+    me = _signup_owner(http_client)
+    resp = http_client.post(
+        "/locations",
+        headers={
+            **_auth(me["access_token"]),
+            "Idempotency-Key": str(uuid.uuid4()),
+        },
+        json={
+            "firm_id": me["firm_id"],
+            "code": "GODOWN-A",
+            "name": "Mumbai Godown",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["location_type"] == "WAREHOUSE"
+
+
+def test_create_location_duplicate_code_returns_envelope_error(
+    http_client: TestClient,
+) -> None:
+    """Two locations with the same code under the same firm must not collide.
+    (Service enforces; we surface a clean 409.)"""
+    me = _signup_owner(http_client)
+    headers = {
+        **_auth(me["access_token"]),
+        "Idempotency-Key": str(uuid.uuid4()),
+    }
+    body = {"firm_id": me["firm_id"], "code": "MAIN", "name": "Main Warehouse"}
+    first = http_client.post("/locations", headers=headers, json=body)
+    assert first.status_code == 201, first.text
+
+    # Same code, fresh idempotency key — must NOT be a 201 silently
+    # creating a duplicate.
+    second_headers = {
+        **_auth(me["access_token"]),
+        "Idempotency-Key": str(uuid.uuid4()),
+    }
+    second = http_client.post("/locations", headers=second_headers, json=body)
+    assert second.status_code == 409, second.text
+    assert "code" in second.json()
+    assert "MAIN" in second.text
+
+
+def test_create_location_without_auth_returns_401(http_client: TestClient) -> None:
+    resp = http_client.post(
+        "/locations",
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+        json={"firm_id": str(uuid.uuid4()), "code": "X", "name": "X"},
+    )
+    assert resp.status_code == 401

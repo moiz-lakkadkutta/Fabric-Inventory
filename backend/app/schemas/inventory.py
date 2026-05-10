@@ -92,3 +92,14 @@ class LocationListResponse(BaseModel):
 
     items: list[LocationResponse]
     count: int
+
+
+class LocationCreateRequest(BaseModel):
+    """POST /locations body — used by the FE AdjustStockDialog empty-state
+    so a fresh-firm user can create their first warehouse without a
+    separate masters page (CUT-206)."""
+
+    firm_id: uuid.UUID
+    code: Annotated[str, Field(min_length=1, max_length=32)]
+    name: Annotated[str, Field(min_length=1, max_length=128)]
+    location_type: LocationTypeLiteral = "WAREHOUSE"
