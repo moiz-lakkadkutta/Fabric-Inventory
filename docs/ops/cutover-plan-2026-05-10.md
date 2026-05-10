@@ -341,6 +341,19 @@ After spawn, Claude monitors progress; agents self-merge on green CI. When all 5
 
 After every wave's last merge, the parent (Claude or executor) MUST run `make test` + `make lint` against `main` HEAD before declaring the wave gate-ready. Per-PR CI is necessary but not sufficient — integration regressions (like CUT-006's `<RequireAuth>` × pre-existing tests interaction) only surface post-merge. If a regression appears, file a hot-fix TASK-CUT-NNN BEFORE writing the wave-demo doc.
 
+### TASK-CUT-007 (filed during Wave 1 wave-demo prep) — `make dev-restart` cleans shell-leaked env
+
+**Status:** Ready (do in Wave 5 alongside CUT-404/405 ops hardening, OR as a small inline fix in Wave 2 — your call)
+
+**What's broken:** Running `uv run uvicorn main:app --reload --port 8000` from a shell that previously sourced `docker-compose.yml`-style env (e.g. via direnv, `source .env` from a docker-compose context, or copying CI runner snippets) leaks `DATABASE_URL=...@postgres:5432/...` and `REDIS_URL=redis://redis:6379/...` into the process env. Pydantic-settings prioritizes process env over the `.env` file, so the leaked hostnames win — every DB call fails with `psycopg2.OperationalError: could not translate host name "postgres" to address`. This is the actual root cause behind audit P0-1 (NOT "uvicorn wedged on stale code" as the audit guessed).
+
+**Fix:** add a `make dev-restart` target in the root `Makefile` that:
+1. `pkill -f 'uvicorn main:app'` (best-effort; ignore exit code)
+2. `env -u DATABASE_URL -u MIGRATION_DATABASE_URL -u REDIS_URL uv run uvicorn main:app --reload --port 8000` (run from `backend/`)
+3. Wait until `curl -s http://localhost:8000/healthz` returns 200, then return success
+
+Plus update `docs/ops/cutover-runbook.md` (Wave 6 / TASK-CUT-502) with a "shell hygiene" section flagging direnv / sourced docker env files as a known foot-gun.
+
 ---
 
 ## Open questions reserved for the next grilling session (do not answer now)
