@@ -52,7 +52,16 @@ const NAV: NavItem[] = [
   { to: '/jobwork', label: 'Job work', icon: Wrench },
   { to: '/accounting', label: 'Accounts', icon: Wallet },
   { to: '/reports', label: 'Reports', icon: BarChart3 },
-  { to: '/masters', label: 'Masters', icon: Database },
+  {
+    to: '/masters/parties',
+    label: 'Masters',
+    icon: Database,
+    prefix: '/masters',
+    sub: [
+      { to: '/masters/parties', label: 'Parties' },
+      { to: '/masters/items', label: 'Items' },
+    ],
+  },
   { to: '/admin', label: 'Admin', icon: ShieldCheck },
 ];
 

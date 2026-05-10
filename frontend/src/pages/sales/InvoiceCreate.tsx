@@ -59,7 +59,9 @@ export default function InvoiceCreate() {
       if (ls.some((l) => l.item_id !== null)) return ls;
       const first = items[0];
       return ls.map((l, i) =>
-        i === 0 && l.item_id === null ? { ...l, item_id: first.item_id, rate: first.rate } : l,
+        i === 0 && l.item_id === null
+          ? { ...l, item_id: first.item_id, gst_pct: first.gst_rate || 5 }
+          : l,
       );
     });
   }, [items]);
@@ -71,7 +73,10 @@ export default function InvoiceCreate() {
   const onItemPick = (id: string, itemId: string) => {
     const item = items.find((i) => i.item_id === itemId);
     if (!item) return;
-    updateLine(id, { item_id: itemId, rate: item.rate });
+    // ItemDetail has no rate (live BE doesn't store a default sell price);
+    // user enters the rate per line. We do prefill gst_pct from the item's
+    // gst_rate so common GST percentages flow through automatically.
+    updateLine(id, { item_id: itemId, gst_pct: item.gst_rate || 5 });
   };
 
   const addLine = () =>
@@ -103,7 +108,7 @@ export default function InvoiceCreate() {
           item_id: l.item_id ?? '',
           item_name: item?.name ?? '—',
           qty: l.qty,
-          uom: item?.uom ?? 'PIECE',
+          uom: item?.primary_uom ?? 'PIECE',
           rate: l.rate,
           amount,
           gst_pct: l.gst_pct,
