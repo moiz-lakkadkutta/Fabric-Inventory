@@ -44,7 +44,32 @@ CACHE_TTL_SECONDS = 24 * 60 * 60
 # resource rotates on each call). Exempt from the Idempotency-Key
 # requirement so the FE silent-refresh-on-401 path doesn't have to
 # generate a UUID per attempt.
-IDEMPOTENT_BY_DESIGN_PATHS = frozenset({"/auth/refresh"})
+#
+# /auth/login and /auth/signup are also exempt: their security contract
+# requires a freshly-rotated token pair on every call. Caching the 200/201
+# response and replaying it for 24 h would re-issue the original tokens
+# (and the original Set-Cookie header) for any caller with the same
+# Idempotency-Key — see `docs/ops/platform-audit-2026-05-10.md` P0-4.
+IDEMPOTENT_BY_DESIGN_PATHS = frozenset({"/auth/login", "/auth/refresh", "/auth/signup"})
+
+# Response headers that MUST NOT be persisted in the idempotency cache.
+# `set-cookie` is the audit's exact attack vector — the refresh-token
+# cookie was being cached verbatim and replayed across callers.
+# `authorization` covers the future case of a router echoing a Bearer
+# token back in the response. Lower-cased here because we filter on the
+# lowercased header key.
+_SENSITIVE_RESPONSE_HEADERS = frozenset({"set-cookie", "authorization"})
+
+
+def _strip_sensitive_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Drop response headers that may carry credentials before caching.
+
+    Case-insensitive: `dict(starlette_response.headers)` collapses
+    multi-value headers (rare but possible for `Set-Cookie`) into a
+    single entry, but we filter on the lowercased key so handlers that
+    emit `Set-Cookie` / `set-cookie` / `SET-COOKIE` are all covered.
+    """
+    return {k: v for k, v in headers.items() if k.lower() not in _SENSITIVE_RESPONSE_HEADERS}
 
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
@@ -66,7 +91,8 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         if request.method not in MUTATING_METHODS:
             return await call_next(request)
         if request.url.path in IDEMPOTENT_BY_DESIGN_PATHS:
-            # Refresh is safe to replay — token rotation is the contract.
+            # Auth endpoints rotate tokens on every call; replaying a
+            # cached response would re-issue stale credentials.
             return await call_next(request)
 
         key = request.headers.get("Idempotency-Key")
@@ -124,6 +150,12 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             async for chunk in response.body_iterator:  # type: ignore[attr-defined]
                 response_body += chunk
 
+            # Strip credential-carrying headers BEFORE persisting so a
+            # replay (or `redis-cli get idem:...`) cannot leak them. The
+            # response that goes back to the FIRST caller still carries
+            # them — only the cached copy is sanitized.
+            cached_headers = _strip_sensitive_headers(dict(response.headers))
+
             await redis_client.setex(
                 cache_key,
                 CACHE_TTL_SECONDS,
@@ -131,7 +163,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                     {
                         "payload_hash": payload_hash,
                         "status": response.status_code,
-                        "headers": dict(response.headers),
+                        "headers": cached_headers,
                         "body": response_body.decode(errors="replace"),
                         "media_type": response.media_type,
                     }

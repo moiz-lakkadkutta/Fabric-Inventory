@@ -153,8 +153,17 @@ def test_signup_with_idempotency_key_succeeds(http_client: TestClient) -> None:
     assert resp.status_code == 201
 
 
-def test_signup_with_malformed_idempotency_key_rejected(http_client: TestClient) -> None:
-    """Malformed key now caught by IdempotencyMiddleware → 400 (was 422 pre-T-INT-1)."""
+def test_signup_ignores_idempotency_key_per_auth_by_design_exemption(
+    http_client: TestClient,
+) -> None:
+    """Per TASK-CUT-002, /auth/signup is in ``IDEMPOTENT_BY_DESIGN_PATHS``
+    so the middleware skips key validation and cache lookup entirely —
+    signup always re-executes and issues fresh tokens. A malformed (or
+    even missing) key is therefore accepted at the middleware layer.
+
+    Generic key-validation coverage lives in
+    ``tests/test_middleware_idempotency.py`` against a synthetic route.
+    """
     resp = http_client.post(
         "/auth/signup",
         headers={"Idempotency-Key": "not-a-uuid"},
@@ -166,8 +175,7 @@ def test_signup_with_malformed_idempotency_key_rejected(http_client: TestClient)
             "state_code": "MH",
         },
     )
-    assert resp.status_code == 400
-    assert resp.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+    assert resp.status_code == 201, resp.text
 
 
 # ──────────────────────────────────────────────────────────────────────
