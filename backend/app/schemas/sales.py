@@ -165,6 +165,9 @@ class SalesInvoiceListItem(BaseModel):
     invoice_date: datetime.date
     due_date: datetime.date | None
     invoice_amount: Decimal | None
+    # CUT-104 (P1-9): gst_amount on list rows lets the FE compute
+    # subtotal = total - gst without fetching each row's detail.
+    gst_amount: Decimal | None = None
     paid_amount: Decimal
     lifecycle_status: InvoiceLifecycleStatus
     place_of_supply_state: str | None

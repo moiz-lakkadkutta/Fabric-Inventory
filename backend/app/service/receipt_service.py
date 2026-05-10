@@ -179,6 +179,10 @@ def post_receipt(
         number=voucher_number,
         voucher_date=receipt_date,
         reference_type="receipt",
+        # CUT-104 (P1-2): pin the party_id on the voucher header so the
+        # receipts listing can recover the party even when there are no
+        # allocations (direct credit / advance / pre-invoice).
+        party_id=party_id,
         narration=f"Receipt from party {party_id}" + (f" · ref {reference}" if reference else ""),
         status=VoucherStatus.POSTED,
         total_debit=amount,
@@ -362,7 +366,10 @@ def list_receipts_with_details(
         if m:
             mode_by_voucher[line.voucher_id] = m.group(1)
 
-    # Allocations + invoice number/series + party for each voucher.
+    # CUT-104 (P1-2): party derivation prefers `voucher.party_id` on the
+    # voucher header (populated since this migration). Allocation-join
+    # is the fallback for legacy rows that pre-date the column. Allocation
+    # rows are still used for the per-receipt invoice list (number+series).
     rows = session.execute(
         select(
             PaymentAllocation.voucher_id,
@@ -379,24 +386,58 @@ def list_receipts_with_details(
     ).all()
 
     allocations_by_voucher: dict[uuid.UUID, list[tuple[str, str, Decimal]]] = {}
-    party_by_voucher: dict[uuid.UUID, tuple[uuid.UUID, str]] = {}
-    for voucher_id, amount, _si_id, si_series, si_number, party_id, party_name in rows:
+    legacy_party_by_voucher: dict[uuid.UUID, tuple[uuid.UUID, str]] = {}
+    for voucher_id, amount, _si_id, si_series, si_number, party_id_legacy, party_name in rows:
         allocations_by_voucher.setdefault(voucher_id, []).append(
             (si_number, si_series, Decimal(amount))
         )
         # First-seen party wins (FIFO across this voucher's invoices —
         # all rows are for the same party by construction in post_receipt,
         # but we don't enforce it at the schema layer).
-        party_by_voucher.setdefault(voucher_id, (party_id, party_name))
+        legacy_party_by_voucher.setdefault(voucher_id, (party_id_legacy, party_name))
+
+    # Fetch names for vouchers that have a header `party_id` set. Only
+    # query for those that are not already covered by the allocation join
+    # (the allocation join already returns `Party.name`, no point re-
+    # fetching). One bulk query keeps this O(1) DB round-trip per list.
+    header_party_ids: set[uuid.UUID] = {
+        v.party_id
+        for v in vouchers
+        if v.party_id is not None and v.voucher_id not in legacy_party_by_voucher
+    }
+    header_party_names: dict[uuid.UUID, str] = {}
+    if header_party_ids:
+        header_party_names = {
+            pid: name
+            for pid, name in session.execute(
+                select(Party.party_id, Party.name).where(Party.party_id.in_(header_party_ids))
+            ).all()
+        }
 
     out: list[ReceiptListEntry] = []
     for v in vouchers:
-        party = party_by_voucher.get(v.voucher_id)
+        # Prefer voucher.party_id (new path); fall back to allocation
+        # join for legacy rows (pre-CUT-104) where the column was NULL
+        # because the voucher was posted before this migration landed.
+        if v.party_id is not None:
+            resolved_party_id: uuid.UUID | None = v.party_id
+            resolved_party_name = header_party_names.get(v.party_id)
+            # If the voucher has allocations, the join may have a name
+            # already — use it to save a round-trip on the common path.
+            if resolved_party_name is None:
+                legacy = legacy_party_by_voucher.get(v.voucher_id)
+                if legacy is not None and legacy[0] == v.party_id:
+                    resolved_party_name = legacy[1]
+        else:
+            legacy = legacy_party_by_voucher.get(v.voucher_id)
+            resolved_party_id = legacy[0] if legacy else None
+            resolved_party_name = legacy[1] if legacy else None
+
         out.append(
             ReceiptListEntry(
                 voucher=v,
-                party_id=party[0] if party else None,
-                party_name=party[1] if party else None,
+                party_id=resolved_party_id,
+                party_name=resolved_party_name,
                 mode=mode_by_voucher.get(v.voucher_id),
                 allocations=allocations_by_voucher.get(v.voucher_id, []),
             )

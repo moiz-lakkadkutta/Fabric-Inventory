@@ -51,7 +51,7 @@ describe('invoices live-mode mappers', () => {
     expect(ageingDays(null, today)).toBe(0);
   });
 
-  it('mapListItem populates totals + status without lines', () => {
+  it('mapListItem populates totals + gst + subtotal + status without lines', () => {
     const out = mapListItem({
       sales_invoice_id: 'si_1',
       firm_id: 'f_1',
@@ -62,6 +62,8 @@ describe('invoices live-mode mappers', () => {
       invoice_date: '2026-04-30',
       due_date: '2026-05-15',
       invoice_amount: '254100.00',
+      // CUT-104 (P1-9): backend now returns gst_amount on list rows.
+      gst_amount: '12705.00',
       paid_amount: '0.00',
       lifecycle_status: 'FINALIZED',
       place_of_supply_state: '24',
@@ -70,10 +72,38 @@ describe('invoices live-mode mappers', () => {
     expect(out.invoice_id).toBe('si_1');
     expect(out.number).toBe('RT/2526/0042');
     expect(out.total).toBe(25410000);
+    // CUT-104: gst_total + subtotal must reflect the backend gst_amount.
+    expect(out.gst_total).toBe(1270500);
+    expect(out.gst_total).toBeGreaterThan(0);
+    expect(out.subtotal).toBe(25410000 - 1270500);
     expect(out.paid).toBe(0);
     expect(out.status).toBe('FINALIZED');
     expect(out.party_name).toBe('Anjali Saree Centre');
     expect(out.lines).toEqual([]);
+  });
+
+  it('mapListItem falls back to gst_total=0 when backend omits gst_amount', () => {
+    // Legacy-backend safety: if a deployment hasn't shipped CUT-104 yet,
+    // the FE should still render the row (subtotal == total) instead of
+    // crashing on a missing field.
+    const out = mapListItem({
+      sales_invoice_id: 'si_legacy',
+      firm_id: 'f_1',
+      series: 'RT/2526',
+      number: '0001',
+      party_id: 'p_1',
+      party_name: 'Legacy Co',
+      invoice_date: '2026-04-30',
+      due_date: null,
+      invoice_amount: '100.00',
+      gst_amount: null,
+      paid_amount: '0.00',
+      lifecycle_status: 'DRAFT',
+      place_of_supply_state: null,
+      created_at: '2026-04-30T11:42:00Z',
+    });
+    expect(out.gst_total).toBe(0);
+    expect(out.subtotal).toBe(out.total);
   });
 
   it('mapDetail maps lines + computes subtotal as total minus gst', () => {

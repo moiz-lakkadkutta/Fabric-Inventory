@@ -129,6 +129,15 @@ class Voucher(Base, SoftDeleteMixin):
         ForeignKey("cost_centre.cost_centre_id", ondelete="SET NULL"),
         nullable=True,
     )
+    # CUT-104 (P1-2): voucher carries its party-of-record so receipts
+    # with no allocations (and direct payments, advances, etc.) don't
+    # lose the party link in list views. NULL for vouchers without a
+    # single party (JOURNAL, CONTRA).
+    party_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("party.party_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     total_debit: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
     total_credit: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(

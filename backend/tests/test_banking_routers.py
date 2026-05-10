@@ -457,5 +457,66 @@ def test_list_vouchers_without_auth_returns_401(http_client: TestClient) -> None
     assert resp.status_code == 401
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Cheques count (TASK-CUT-104, P1-8)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_list_cheques_count_is_int_matching_items_length(
+    http_client: TestClient, owner_with_ledger: dict[str, str]
+) -> None:
+    """CUT-104 (P1-8): cheques list `count` must be int, never null.
+
+    Audit-2026-05-10 § P1-8 reported the listing returns `count: null`.
+    Verify `count` is always an integer that matches `len(items)`,
+    both for empty and populated lists.
+    """
+    me = owner_with_ledger
+    acc_resp = http_client.post(
+        "/bank-accounts",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "ledger_id": me["ledger_id"],
+            "bank_name": "Yes Bank",
+        },
+    )
+    bank_account_id = acc_resp.json()["bank_account_id"]
+
+    # Empty case — count must be 0, not null.
+    empty_resp = http_client.get(
+        f"/cheques?bank_account_id={bank_account_id}",
+        headers=_auth(me["access_token"]),
+    )
+    assert empty_resp.status_code == 200, empty_resp.text
+    empty = empty_resp.json()
+    assert empty["count"] is not None, "count must be an int, never null"
+    assert isinstance(empty["count"], int)
+    assert empty["count"] == 0
+    assert empty["count"] == len(empty["items"])
+
+    # Populate two cheques and assert count = 2.
+    for cn in ("CNT001", "CNT002"):
+        http_client.post(
+            f"/cheques?firm_id={me['firm_id']}",
+            headers=_auth(me["access_token"]),
+            json={
+                "bank_account_id": bank_account_id,
+                "cheque_number": cn,
+                "cheque_date": "2026-04-27",
+            },
+        )
+
+    populated_resp = http_client.get(
+        f"/cheques?bank_account_id={bank_account_id}",
+        headers=_auth(me["access_token"]),
+    )
+    assert populated_resp.status_code == 200, populated_resp.text
+    populated = populated_resp.json()
+    assert isinstance(populated["count"], int)
+    assert populated["count"] == 2
+    assert populated["count"] == len(populated["items"])
+
+
 # Ensure pytest doesn't choke on the unused fixture import.
 _ = pytest
