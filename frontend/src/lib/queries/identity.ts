@@ -161,7 +161,12 @@ export async function liveSignup(input: SignupInput): Promise<SignupResult> {
   });
   authStore.setAccessToken(data.access_token);
   const me = await api<MeResponse>('/auth/me');
-  authStore.setMe(me);
+  // Owner-of-new-org JWTs are org-scoped (firm_id=null) — auto-switch
+  // to the only firm so subsequent firm-scoped POSTs (invoices, etc.)
+  // don't trip the "No active firm in this session" guard. Mirrors
+  // liveLogin's behaviour.
+  const settled = await maybeAutoSwitchSingleFirm(me);
+  authStore.setMe(settled);
   return {
     user_id: data.user_id,
     org_id: data.org_id,
