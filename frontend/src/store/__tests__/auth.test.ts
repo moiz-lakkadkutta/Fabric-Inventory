@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { authStore } from '@/store/auth';
 
@@ -12,6 +12,12 @@ const FAKE_ME = {
   available_firms: [{ firm_id: 'f1', code: 'RT', name: 'Rajesh Textiles' }],
   token_expires_at: '2099-01-01T00:00:00Z',
 };
+
+// CUT-006: override the global setupFile beforeEach so authStore-state
+// tests see actually-unknown initial state.
+beforeEach(() => {
+  authStore.reset();
+});
 
 afterEach(() => {
   authStore.reset();

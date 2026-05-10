@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { RequireAuth } from '@/components/auth/RequireAuth';
 import { authStore, type MeResponse } from '@/store/auth';
@@ -15,6 +15,12 @@ const FAKE_ME: MeResponse = {
   available_firms: [],
   token_expires_at: '2099-01-01T00:00:00Z',
 };
+
+// CUT-006: override the global setupFile beforeEach so the 'unknown'
+// branch tests see actually-unknown auth state.
+beforeEach(() => {
+  authStore.reset();
+});
 
 afterEach(() => {
   authStore.reset();

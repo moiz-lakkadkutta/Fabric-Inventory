@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 
 import { UserMenu } from '@/components/layout/UserMenu';
@@ -17,6 +17,13 @@ const FAKE_ME: MeResponse = {
   token_expires_at: '2099-01-01T00:00:00Z',
   email: 'audit@audit.example',
 };
+
+// CUT-006: override the global setupFile beforeEach (which pre-populates
+// authStore with mock identity) so this file's empty/unknown-state tests
+// see what they expect. Reset BEFORE each test, not after.
+beforeEach(() => {
+  authStore.reset();
+});
 
 afterEach(() => {
   authStore.reset();
