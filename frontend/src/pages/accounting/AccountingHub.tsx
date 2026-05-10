@@ -6,7 +6,7 @@ import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useReceipts, useVouchers } from '@/lib/queries/accounts';
-import { formatINRCompact } from '@/lib/mock';
+import { formatINRCompact } from '@/lib/format';
 import type { Receipt, ReceiptStatus, Voucher, VoucherKind } from '@/lib/mock/accounts';
 
 type Tab = 'receipts' | 'vouchers';

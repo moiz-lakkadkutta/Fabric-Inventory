@@ -1,5 +1,6 @@
 import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom';
 
+import { RequireAuth } from '@/components/auth/RequireAuth';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuthBootstrap } from '@/hooks/useAuth';
 import Forgot from '@/pages/auth/Forgot';
@@ -32,7 +33,11 @@ const router = createBrowserRouter([
   { path: '/onboarding', element: <Onboarding /> },
   {
     path: '/',
-    element: <AppLayout />,
+    element: (
+      <RequireAuth>
+        <AppLayout />
+      </RequireAuth>
+    ),
     children: [
       { index: true, element: <Dashboard /> },
       { path: 'sales', element: <Navigate to="/sales/invoices" replace /> },

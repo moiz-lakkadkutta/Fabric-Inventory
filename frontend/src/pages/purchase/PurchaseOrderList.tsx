@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
-import { formatINRCompact } from '@/lib/mock';
+import { formatINRCompact } from '@/lib/format';
 import type { PoStatus, MatchStatus } from '@/lib/mock/purchase';
 import { usePurchaseOrders } from '@/lib/queries/purchase';
 

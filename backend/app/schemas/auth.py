@@ -142,11 +142,16 @@ class MeResponse(BaseModel):
     in their org; that's how dogfood signups behave today. Frontend
     auto-switches when this list has exactly one entry — saves the
     second click on day-one.
+
+    `email` is included so the FE topbar / user menu can render
+    identity without a second round-trip to a `/users/{id}` endpoint
+    (per CUT-004 / audit P0-5 — purges mock identity from chrome).
     """
 
     user_id: uuid.UUID
     org_id: uuid.UUID
     firm_id: uuid.UUID | None = None
+    email: EmailStr
     permissions: list[str]
     flags: dict[str, bool] = Field(default_factory=dict)
     available_firms: list[MeFirmRef] = Field(default_factory=list)

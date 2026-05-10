@@ -4,10 +4,11 @@ import { Link } from 'react-router-dom';
 import { KPICard } from '@/components/ui/kpi-card';
 import { Pill } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
+import { formatAgeing, formatINRCompact, formatRelative } from '@/lib/format';
 import { useDashboard } from '@/lib/queries/dashboard';
 import { useInvoices } from '@/lib/queries/invoices';
-import { formatAgeing, formatINRCompact, formatRelative } from '@/lib/mock';
 import type { Invoice } from '@/lib/mock/types';
+import { useMe } from '@/store/auth';
 
 const STATUS_PILL: Record<
   Invoice['status'],
@@ -24,18 +25,34 @@ const STATUS_PILL: Record<
 export default function Dashboard() {
   const dashboard = useDashboard();
   const invoicesQuery = useInvoices();
+  const me = useMe();
 
   const recent = (invoicesQuery.data ?? [])
     .slice()
     .sort((a, b) => (b.date > a.date ? 1 : -1))
     .slice(0, 8);
 
+  // Subtitle: today (in IST) + active firm name. Pulled from authStore
+  // rather than hard-coded fixtures (CUT-004 / audit P0-5). Falls back
+  // to a neutral label when the firm name isn't yet resolved.
+  const today = new Date().toLocaleDateString('en-IN', {
+    weekday: 'long',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
+  });
+  const activeFirmName =
+    me?.available_firms.find((f) => f.firm_id === me.firm_id)?.name ??
+    me?.available_firms[0]?.name ??
+    null;
+
   return (
     <div className="space-y-6">
       <header>
         <h1 style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.015em' }}>Daybook</h1>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>
-          Wednesday, 30 Apr 2026 · all numbers in ₹ for Rajesh Textiles, Surat
+          {today} · all numbers in ₹{activeFirmName ? ` for ${activeFirmName}` : ''}
         </p>
       </header>
 

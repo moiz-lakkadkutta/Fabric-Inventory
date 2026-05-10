@@ -637,11 +637,17 @@ def me(current_user: CurrentUser, db: SyncDBSession) -> MeResponse:
             .order_by(Firm.created_at.asc())
         ).scalars()
     )
+    # Email lookup — CUT-004: the FE topbar / user menu reads identity
+    # from /auth/me. JWT carries user_id only; email lives in app_user.
+    user_row = db.execute(
+        select(AppUser).where(AppUser.user_id == current_user.user_id)
+    ).scalar_one()
 
     return MeResponse(
         user_id=current_user.user_id,
         org_id=current_user.org_id,
         firm_id=current_user.firm_id,
+        email=user_row.email,
         permissions=list(current_user.permissions),
         flags=flags,
         available_firms=[MeFirmRef(firm_id=f.firm_id, code=f.code, name=f.name) for f in firms],

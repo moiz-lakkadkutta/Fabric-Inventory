@@ -1,5 +1,11 @@
 import type { Firm, User } from './types';
 
+/**
+ * @deprecated Test fixture only. Live UI reads identity from
+ * `authStore.me` via `useMe()` (per CUT-004 / audit P0-5). Importing
+ * this from production code paths leaks mock identity into the live
+ * topbar / user menu.
+ */
 export const currentUser: User = {
   user_id: 'usr_moiz',
   email: 'moiz@rajeshtextiles.in',
@@ -8,6 +14,12 @@ export const currentUser: User = {
   role: 'Owner',
 };
 
+/**
+ * @deprecated Test fixture only. Live UI reads available firms from
+ * `authStore.me.available_firms` via `useMe()` (per CUT-004 / audit
+ * P0-5). The fakeFetch mock branch in `lib/queries/identity.ts` still
+ * returns these for click-dummy mode.
+ */
 export const firms: Firm[] = [
   {
     firm_id: 'frm_rt',
@@ -33,4 +45,8 @@ export const firms: Firm[] = [
   },
 ];
 
+/**
+ * @deprecated Test fixture only. Use `me.firm_id` cross-referenced
+ * against `me.available_firms` in live mode.
+ */
 export const defaultFirm = firms[0];

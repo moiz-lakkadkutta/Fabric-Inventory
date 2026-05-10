@@ -4,23 +4,38 @@ import { useNavigate } from 'react-router-dom';
 
 import { Monogram } from '@/components/ui/monogram';
 import { useClickOutside } from '@/hooks/useClickOutside';
-import { currentUser } from '@/lib/mock';
+import { getInitialsFromEmail } from '@/lib/format';
+import { useAuthStatus, useMe } from '@/store/auth';
 
 /*
   Avatar trigger + dropdown. Click toggles a 240px popover anchored to the
   right edge of the trigger. ThemeToggle is a stub: a row that flips an
   icon on click but does nothing else (Phase 1 is light-only).
+
+  Identity is read from `authStore.me` via `useMe()` (CUT-004). When the
+  bootstrap hasn't resolved yet (`status === 'unknown'`) we render the
+  trigger with a neutral placeholder monogram to keep layout stable but
+  hide PII; the popover, if forced open, also withholds identity rather
+  than leaking the mock fixture.
 */
 export function UserMenu() {
   const [open, setOpen] = useState(false);
   const [themeIsDark, setThemeIsDark] = useState(false);
   const navigate = useNavigate();
   const ref = useClickOutside<HTMLDivElement>(open, () => setOpen(false));
+  const me = useMe();
+  const status = useAuthStatus();
 
   const onItem = (handler: () => void) => () => {
     setOpen(false);
     handler();
   };
+
+  const initials = me?.email ? getInitialsFromEmail(me.email) : '?';
+  const email = me?.email ?? '';
+  // We don't have legal_name on /auth/me yet; use the email local-part as a
+  // human-readable label. CUT-004 deliberately avoids hard-coding "Owner".
+  const displayName = me?.email ? me.email.split('@')[0] : '';
 
   return (
     <div ref={ref} className="relative">
@@ -39,7 +54,7 @@ export function UserMenu() {
           border: '1px solid var(--border-default)',
         }}
       >
-        <Monogram initials={currentUser.initials} size={28} tone="info" />
+        <Monogram initials={initials} size={28} tone="info" />
       </button>
 
       {open && (
@@ -56,12 +71,18 @@ export function UserMenu() {
           }}
         >
           <div className="px-3.5 pb-2 pt-3">
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-              {currentUser.legal_name}
-            </div>
-            <div className="truncate" style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-              {currentUser.email} · {currentUser.role}
-            </div>
+            {status === 'authenticated' && me ? (
+              <>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                  {displayName}
+                </div>
+                <div className="truncate" style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+                  {email}
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>Loading…</div>
+            )}
           </div>
           <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
             <MenuItem icon={<UserIcon size={14} />} onClick={onItem(() => navigate('/admin'))}>

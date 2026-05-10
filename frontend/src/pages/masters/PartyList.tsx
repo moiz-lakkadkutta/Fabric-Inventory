@@ -9,7 +9,7 @@ import { Monogram } from '@/components/ui/monogram';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useParties } from '@/lib/queries/parties';
-import { formatINRCompact } from '@/lib/mock';
+import { formatINRCompact } from '@/lib/format';
 import type { Party, PartyKind } from '@/lib/mock/types';
 
 const KIND_PILL: Record<PartyKind, { kind: PillKind; label: string }> = {

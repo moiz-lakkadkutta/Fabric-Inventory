@@ -1,5 +1,13 @@
-// Formatting helpers — paise → display string, dates → Asia/Kolkata.
-// All money in this app is integer paise; never float.
+/**
+ * Pure formatting helpers — paise → display string, dates → Asia/Kolkata.
+ *
+ * Lives outside `@/lib/mock` (CUT-004) so production code paths can format
+ * money / dates without importing the mock layer. The mock layer's
+ * fixtures + fakeFetch helpers stay isolated; if/when the mock layer is
+ * deleted entirely, these helpers stay where every page expects them.
+ *
+ * All money in this app is integer paise; never float.
+ */
 
 const lakh = 1_00_000_00; // ₹1,00,000 in paise
 const crore = 1_00_00_000_00; // ₹1,00,00,000 in paise
@@ -79,4 +87,28 @@ export function formatAgeing(days: number, status?: string): string {
   if (days === 0) return 'Due today';
   if (days < 0) return `Due in ${Math.abs(days)}d`;
   return `${days}d overdue`;
+}
+
+/**
+ * Derive 1-2-letter avatar initials from an email address.
+ *
+ *   "audit@audit.example" → "AU"
+ *   "moiz.p@example.com"  → "MP"
+ *   "x@y.z"               → "X"
+ *
+ * Used by the topbar / user menu when /auth/me returns an email but no
+ * `legal_name`. Pure helper — no DOM, no React.
+ */
+export function getInitialsFromEmail(email: string | null | undefined): string {
+  if (!email) return '?';
+  const local = email.split('@')[0] ?? '';
+  // Split on common separators.
+  const parts = local.split(/[._\-+]/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) {
+    const word = parts[0];
+    if (word.length >= 2) return word.slice(0, 2).toUpperCase();
+    return word[0].toUpperCase();
+  }
+  return (parts[0][0] + parts[1][0]).toUpperCase();
 }

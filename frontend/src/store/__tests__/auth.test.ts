@@ -6,6 +6,7 @@ const FAKE_ME = {
   user_id: 'u1',
   org_id: 'o1',
   firm_id: 'f1',
+  email: 'fixture@example.com',
   permissions: ['sales.invoice.create'],
   flags: { 'gst.einvoice.enabled': false },
   available_firms: [{ firm_id: 'f1', code: 'RT', name: 'Rajesh Textiles' }],

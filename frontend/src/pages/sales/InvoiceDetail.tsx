@@ -12,7 +12,7 @@ import { ApiError } from '@/lib/api/client';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { usePostReceipt, type ReceiptMode } from '@/lib/queries/accounts';
 import { useFinalizeInvoice, useInvoice } from '@/lib/queries/invoices';
-import { formatDateShort, formatINRCompact } from '@/lib/mock';
+import { formatDateShort, formatINRCompact } from '@/lib/format';
 import type { Invoice } from '@/lib/mock/types';
 
 const STATUS_PILL: Record<Invoice['status'], { kind: PillKind; label: string }> = {
