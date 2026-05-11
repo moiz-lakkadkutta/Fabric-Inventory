@@ -78,7 +78,7 @@ def _jwo_to_response(
         series=jwo.series,
         number=jwo.number,
         challan_date=jwo.challan_date,
-        status=jwo.status.value,  # type: ignore[arg-type]
+        status=jwo.status.value,
         operation=jwo.operation,
         expected_return_date=jwo.expected_return_date,
         notes=jwo.notes,
@@ -112,7 +112,7 @@ def _receipt_to_response(
         firm_id=receipt.firm_id,
         job_work_order_id=receipt.job_work_order_id,
         receipt_date=receipt.receipt_date,
-        status=receipt.status.value,  # type: ignore[arg-type]
+        status=receipt.status.value,
         notes=receipt.notes,
         created_at=receipt.created_at,
         updated_at=receipt.updated_at,
@@ -347,11 +347,11 @@ def get_itc04(
     )
     return ITC04Report(
         period=str(data["period"]),
-        firm_id=data["firm_id"],  # type: ignore[arg-type]
-        from_date=data["from_date"],  # type: ignore[arg-type]
-        to_date=data["to_date"],  # type: ignore[arg-type]
-        send_outs=[ITC04SendOutRow(**row) for row in data["send_outs"]],  # type: ignore[arg-type]
-        receipts=[ITC04ReceiveRow(**row) for row in data["receipts"]],  # type: ignore[arg-type]
-        total_send_outs=int(data["total_send_outs"]),  # type: ignore[arg-type]
-        total_receipts=int(data["total_receipts"]),  # type: ignore[arg-type]
+        firm_id=data["firm_id"],
+        from_date=data["from_date"],
+        to_date=data["to_date"],
+        send_outs=[ITC04SendOutRow(**row) for row in data["send_outs"]],
+        receipts=[ITC04ReceiveRow(**row) for row in data["receipts"]],
+        total_send_outs=int(data["total_send_outs"]),
+        total_receipts=int(data["total_receipts"]),
     )

@@ -32,6 +32,7 @@ import datetime
 import re
 import uuid
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -193,7 +194,7 @@ def create_send_out(
     firm_id: uuid.UUID,
     karigar_party_id: uuid.UUID,
     challan_date: datetime.date,
-    lines: list[dict[str, object]],
+    lines: list[dict[str, Any]],
     operation: str | None = None,
     expected_return_date: datetime.date | None = None,
     notes: str | None = None,
@@ -218,8 +219,8 @@ def create_send_out(
 
     firm = _ensure_firm_in_org(session, org_id=org_id, firm_id=firm_id)
     _ensure_karigar(session, org_id=org_id, party_id=karigar_party_id)
-    item_ids = [line["item_id"] for line in lines]  # type: ignore[misc]
-    _ensure_items_in_org(session, org_id=org_id, item_ids=item_ids)  # type: ignore[arg-type]
+    item_ids = [line["item_id"] for line in lines]
+    _ensure_items_in_org(session, org_id=org_id, item_ids=item_ids)
 
     from_loc = inventory_service.get_or_create_default_location(
         session, org_id=org_id, firm_id=firm_id
@@ -270,7 +271,7 @@ def create_send_out(
             uom=uom,
             qty_received=_ZERO,
             qty_wastage=_ZERO,
-            notes=line_dict.get("notes"),  # type: ignore[arg-type]
+            notes=line_dict.get("notes"),
         )
         session.add(jwo_line)
         session.flush()
@@ -407,7 +408,7 @@ def receive_back(
     firm_id: uuid.UUID,
     jwo_id: uuid.UUID,
     receipt_date: datetime.date,
-    lines: list[dict[str, object]],
+    lines: list[dict[str, Any]],
     notes: str | None = None,
     created_by: uuid.UUID | None = None,
 ) -> JobWorkReceipt:
@@ -524,7 +525,7 @@ def receive_back(
             qty_received=qty_rcv,
             qty_wastage=qty_wst,
             uom=jwo_line.uom,
-            notes=line_dict.get("notes"),  # type: ignore[arg-type]
+            notes=line_dict.get("notes"),
         )
         session.add(rcv_line)
 
@@ -668,7 +669,7 @@ def prepare_itc04_data(
     org_id: uuid.UUID,
     firm_id: uuid.UUID,
     period: str,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Return a dict envelope shaped for the ITC04Report Pydantic model.
 
     Pulls all send-outs whose challan_date falls in the window, plus all
@@ -710,7 +711,7 @@ def prepare_itc04_data(
         ).all()
     )
 
-    send_outs: list[dict[str, object]] = []
+    send_outs: list[dict[str, Any]] = []
     for jwo, line, party, item in send_rows:
         send_outs.append(
             {
@@ -768,7 +769,7 @@ def prepare_itc04_data(
         ).all()
     )
 
-    receipts: list[dict[str, object]] = []
+    receipts: list[dict[str, Any]] = []
     for recv, line, jwo, party, item in recv_rows:
         receipts.append(
             {
