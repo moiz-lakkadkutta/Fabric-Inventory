@@ -97,6 +97,8 @@ def _request_validation_to_field_errors(
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
+        # CUT-501a: errors that need to surface response headers (e.g.
+        # `Retry-After` on 429) declare them on `exc.extra_headers`.
         return JSONResponse(
             status_code=exc.http_status,
             content=_envelope(
@@ -107,6 +109,7 @@ def register_error_handlers(app: FastAPI) -> None:
                 field_errors=exc.field_errors,
                 request_id=_request_id_for(request),
             ),
+            headers=exc.extra_headers or None,
         )
 
     @app.exception_handler(RequestValidationError)

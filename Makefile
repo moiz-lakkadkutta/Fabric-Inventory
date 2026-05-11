@@ -1,4 +1,4 @@
-.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed deploy backup restore restore-test e2e-setup openapi-snapshot help
+.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed deploy backup restore restore-test e2e-setup openapi-snapshot cleanup help
 
 # Prefer "docker compose" (v2 plugin); fall back to legacy "docker-compose" binary.
 COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
@@ -20,6 +20,7 @@ help:
 	@echo "  make backup       Dump Postgres → gzip → gpg → S3-compatible bucket (CUT-404)"
 	@echo "  make restore date=YYYY-MM-DD [target_db=NAME] [dry_run=1]  Restore from a backup (CUT-404)"
 	@echo "  make restore-test  Round-trip test: backup → restore → assert sentinel row (CUT-404)"
+	@echo "  make cleanup      Prune used/expired password_reset_token rows (CUT-501a; cron daily)"
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -104,3 +105,9 @@ e2e-setup:
 openapi-snapshot:
 	cd backend && uv run python ../frontend/scripts/dump-openapi.py
 	cd frontend && pnpm gen:types
+
+# Prune used/expired password_reset_token rows (CUT-501a). Wire to cron
+# in prod (see docs/ops/deployment-runbook.md § Scheduled jobs); calling
+# this in dev is a safe no-op.
+cleanup:
+	cd backend && uv run python -m app.cli.cleanup_tokens

@@ -227,6 +227,33 @@ Two cases.
 
 ---
 
+## 9a. Scheduled jobs (cron)
+
+The MVP runs sync FastAPI only — no Celery, no scheduler daemon. The
+single recurring chore is `make cleanup`, which prunes
+`password_reset_token` rows (`used > 7d` or `expires < now - 1d`) so
+the table doesn't grow unbounded. CUT-501a.
+
+Install on the box as a system crontab line for the deploying user:
+
+```cron
+# m h dom mon dow  command
+30 4 * * * cd /opt/fabric && make cleanup >> /var/log/fabric-cleanup.log 2>&1
+```
+
+Runs at 04:30 IST (off-peak). Idempotent — re-running deletes nothing
+on the second invocation. The log line carries the deleted-row count
+so a `tail -n 20 /var/log/fabric-cleanup.log` shows the trend at a
+glance.
+
+To add a job here later (e.g. an e-way bill cancellation reaper when
+that feature lands): add a new `make <thing>` target + a crontab line
++ a doc entry in this section. Resist adding Celery until the first
+job has fan-out / retry needs the Makefile can't model — see CLAUDE.md
+"Manufacturing / mobile / WhatsApp" deferral note.
+
+---
+
 ## 10. P0 escalation
 
 **P0 = Moiz can't bill a customer right now.** Anything else can wait.

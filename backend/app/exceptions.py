@@ -64,6 +64,9 @@ class ErrorCode(StrEnum):
     # Inventory
     LOCATION_CODE_TAKEN = "LOCATION_CODE_TAKEN"
 
+    # Rate limit (CUT-501a)
+    RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
+
     # Generic
     NOT_FOUND = "NOT_FOUND"
     UNKNOWN = "UNKNOWN"
@@ -87,12 +90,17 @@ class AppError(Exception):
         *,
         title: str | None = None,
         field_errors: dict[str, list[str]] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message or self.title
         if title is not None:
             self.title = title
         self.field_errors: dict[str, list[str]] = field_errors or {}
+        # CUT-501a: 429 RateLimitedError carries `Retry-After`; future codes
+        # that need to surface response headers (e.g. `WWW-Authenticate` on
+        # 401) can use the same hook without forking the error handler.
+        self.extra_headers: dict[str, str] = extra_headers or {}
 
 
 class InvoiceStateError(AppError):
@@ -202,3 +210,23 @@ class NotFoundError(AppError):
     code = ErrorCode.NOT_FOUND
     title = "Not found"
     http_status = 404
+
+
+class RateLimitedError(AppError):
+    """CUT-501a: too many requests within the sliding window.
+
+    Carries a ``Retry-After`` header (seconds) so polite clients back
+    off without re-probing. Used today only by ``/auth/forgot``; the
+    middleware helper is generic enough to gate any endpoint when the
+    follow-up broader rate-limit story lands.
+    """
+
+    code = ErrorCode.RATE_LIMIT_EXCEEDED
+    title = "Too many requests"
+    http_status = 429
+
+    def __init__(self, message: str = "", *, retry_after_seconds: int) -> None:
+        super().__init__(
+            message,
+            extra_headers={"Retry-After": str(max(int(retry_after_seconds), 1))},
+        )
