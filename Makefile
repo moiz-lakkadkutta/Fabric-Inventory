@@ -1,4 +1,4 @@
-.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed deploy backup e2e-setup openapi-snapshot help
+.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed deploy backup restore restore-test e2e-setup openapi-snapshot help
 
 # Prefer "docker compose" (v2 plugin); fall back to legacy "docker-compose" binary.
 COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
@@ -17,6 +17,9 @@ help:
 	@echo "  make migrate      Run alembic upgrade head (MIGRATION_DATABASE_URL or DATABASE_URL must be set)"
 	@echo "  make migrate-create M=\"msg\"  Generate a new alembic revision"
 	@echo "  make openapi-snapshot  Re-dump openapi snapshot + regen FE types (CUT-106)"
+	@echo "  make backup       Dump Postgres → gzip → gpg → S3-compatible bucket (CUT-404)"
+	@echo "  make restore date=YYYY-MM-DD [target_db=NAME] [dry_run=1]  Restore from a backup (CUT-404)"
+	@echo "  make restore-test  Round-trip test: backup → restore → assert sentinel row (CUT-404)"
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -70,7 +73,25 @@ deploy:
 	@echo "Implement in TASK-005 (GitHub Actions deploy workflow)."
 
 backup:
-	@echo "Implement post-deploy (pg_dump + S3 upload)."
+	@bash ops/backup.sh
+
+# `make restore` shells out to ops/restore.sh. Two ways to pass arguments:
+#   make restore date=2026-05-11 dry_run=1
+#   make restore date=2026-05-11 target_db=fabric_erp_restore_test
+#   make restore file=ops/backups/fabric_fabric_erp_2026-05-11_*.sql.gz.gpg
+# Variables map to the script flags via the Makefile's lazy expansion.
+restore:
+	@bash ops/restore.sh \
+		$(if $(date),--date=$(date),) \
+		$(if $(file),--file=$(file),) \
+		$(if $(target_db),--target-db=$(target_db),) \
+		$(if $(dry_run),--dry-run,)
+
+# Convenience alias for the round-trip test (TASK-CUT-404).
+# Requires the docker-compose Postgres to be reachable + the same env
+# tests/test_backup.sh expects (see header of that file).
+restore-test:
+	@bash tests/test_backup.sh
 
 e2e-setup:
 	cd frontend && pnpm exec playwright install --with-deps
