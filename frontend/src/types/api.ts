@@ -21,6 +21,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/invites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Invite a user by email to this organization
+         * @description Owner-initiated invite. Persists a single-use, 7-day token and
+         *     prints the FE URL to stdout (the dev console-log adapter). When
+         *     CUT-303's EmailAdapter ships, this swaps to a single
+         *     `email_adapter.send_invite(...)` call.
+         */
+        post: operations["create_invite_admin_invites_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/invites/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Consume an invite token: create the user and assign their role
+         * @description Public endpoint. Validates token, creates app_user + user_role,
+         *     stamps the invite as used. Returns user identity + org name so the
+         *     FE can redirect to /login with the org name pre-filled.
+         *
+         *     Decision: we do NOT issue a session here. The user redirects to
+         *     /login and types their freshly-set password. That keeps the
+         *     "newly-bcrypted password actually unlocks the account" check in the
+         *     happy path and exercises MFA enrollment when the org later
+         *     requires it. Trade-off recorded in docs/retros/task-CUT-304.md.
+         */
+        post: operations["accept_invite_admin_invites_accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List roles available for assignment in this org
+         * @description Returns `{ items: [{ role_id, code, name, description, is_system_role }, ...] }`.
+         *
+         *     Untyped envelope (dict) keeps the spec simple for the MVP admin
+         *     surface; codegen still picks up the path. Switch to a Pydantic
+         *     response model when this surfaces in OpenAPI consumers other than
+         *     AdminHub.
+         */
+        get: operations["list_roles_admin_roles_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List users in this organization with their role + status
+         * @description Return every non-deleted user in the current org with the role
+         *     that surfaces in the Admin UI.
+         *
+         *     For MVP each user carries exactly one role (the role-change endpoint
+         *     enforces that). If somehow multiple rows exist for a user, we pick
+         *     the first by role name alphabetically so the table is stable.
+         */
+        get: operations["list_users_admin_users_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/users/{user_id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Replace a user's role assignment(s) with the given role
+         * @description Swap a user's role. Last-Owner-demotion blocked at the service
+         *     layer with 422 VALIDATION_ERROR.
+         */
+        patch: operations["update_user_role_admin_users__user_id__role_patch"];
+        trace?: never;
+    };
     "/auth/forgot": {
         parameters: {
             query?: never;
@@ -1339,6 +1461,47 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AcceptInviteRequest
+         * @description The invitee posts this from `/invite/:token`.
+         */
+        AcceptInviteRequest: {
+            /** Name */
+            name: string;
+            /** Password */
+            password: string;
+            /** Token */
+            token: string;
+        };
+        /**
+         * AcceptInviteResponse
+         * @description 201 on success. Issues no tokens — the FE redirects to /login so
+         *     the new user enters their freshly-set password and the standard login
+         *     flow exercises bcrypt + MFA-enrollment paths. Decision recorded in
+         *     `docs/retros/task-CUT-304.md`.
+         *
+         *     `org_name` is echoed back so the login form can pre-fill the org
+         *     field (the recipient is unlikely to know the exact org name).
+         */
+        AcceptInviteResponse: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /** Org Name */
+            org_name: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
         /** ActivityItemResponse */
         ActivityItemResponse: {
             /** Actor User Id */
@@ -1366,6 +1529,47 @@ export interface components {
             count: number;
             /** Items */
             items: components["schemas"]["ActivityItemResponse"][];
+        };
+        /** AdminUserListResponse */
+        AdminUserListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["AdminUserResponse"][];
+        };
+        /**
+         * AdminUserResponse
+         * @description One row in the admin users list — slim shape the FE table renders.
+         */
+        AdminUserResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Last Login At */
+            last_login_at?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Role */
+            role: string;
+            /**
+             * Role Id
+             * Format: uuid
+             */
+            role_id: string;
+            /** Status */
+            status: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
         };
         /** AgeingResponse */
         AgeingResponse: {
@@ -2320,6 +2524,45 @@ export interface components {
             qty_sent: string;
             /** Uom */
             uom: string;
+        };
+        /**
+         * InviteCreateRequest
+         * @description Owner-initiated invite. `firm_id` is optional — omit for org-wide
+         *     (Owner) invites; populate for per-firm roles like Salesperson.
+         */
+        InviteCreateRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Firm Id */
+            firm_id?: string | null;
+            /**
+             * Role Id
+             * Format: uuid
+             */
+            role_id: string;
+        };
+        /** InviteCreateResponse */
+        InviteCreateResponse: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Invite Id
+             * Format: uuid
+             */
+            invite_id: string;
+            /** Invite Link */
+            invite_link: string;
         };
         /**
          * InvoiceLifecycleStatus
@@ -4685,6 +4928,14 @@ export interface components {
          * @enum {string}
          */
         UomType: "METER" | "PIECE" | "KG" | "LITER" | "SET" | "GROSS" | "DOZEN" | "ROLL" | "BUNDLE" | "OTHER";
+        /** UpdateUserRoleRequest */
+        UpdateUserRoleRequest: {
+            /**
+             * Role Id
+             * Format: uuid
+             */
+            role_id: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -4793,6 +5044,153 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ActivityListResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_invite_admin_invites_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InviteCreateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    accept_invite_admin_invites_accept_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptInviteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcceptInviteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_roles_admin_roles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: {
+                            [key: string]: unknown;
+                        }[];
+                    };
+                };
+            };
+        };
+    };
+    list_users_admin_users_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserListResponse"];
+                };
+            };
+        };
+    };
+    update_user_role_admin_users__user_id__role_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateUserRoleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
