@@ -77,6 +77,90 @@
         "title": "ActivityListResponse",
         "type": "object"
       },
+      "AgeingResponse": {
+        "properties": {
+          "as_of": {
+            "format": "date",
+            "title": "As Of",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/AgeingRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "total_outstanding": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Outstanding",
+            "type": "string"
+          }
+        },
+        "required": [
+          "as_of",
+          "total_outstanding",
+          "rows"
+        ],
+        "title": "AgeingResponse",
+        "type": "object"
+      },
+      "AgeingRow": {
+        "description": "One party row in the AR ageing report.\n\nBuckets are computed from each open invoice's ``invoice_date`` to\n``as_of`` (days), then summed per party. ``outstanding`` is the\nsum of ``invoice_amount - paid_amount`` for the party's\nnon-cancelled invoices as of the report date. The five buckets\nmust sum exactly to ``outstanding``.",
+        "properties": {
+          "bucket_1_30": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Bucket 1 30",
+            "type": "string"
+          },
+          "bucket_31_60": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Bucket 31 60",
+            "type": "string"
+          },
+          "bucket_61_90": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Bucket 61 90",
+            "type": "string"
+          },
+          "bucket_over_90": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Bucket Over 90",
+            "type": "string"
+          },
+          "current": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Current",
+            "type": "string"
+          },
+          "outstanding": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Outstanding",
+            "type": "string"
+          },
+          "party_id": {
+            "format": "uuid",
+            "title": "Party Id",
+            "type": "string"
+          },
+          "party_name": {
+            "title": "Party Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "party_id",
+          "party_name",
+          "outstanding",
+          "current",
+          "bucket_1_30",
+          "bucket_31_60",
+          "bucket_61_90",
+          "bucket_over_90"
+        ],
+        "title": "AgeingRow",
+        "type": "object"
+      },
       "BankAccountCreateRequest": {
         "properties": {
           "account_number": {
@@ -1718,6 +1802,297 @@
         "title": "GRNStatus",
         "type": "string"
       },
+      "Gstr1B2csRow": {
+        "description": "One aggregated row in the B2C-Small bucket \u2014 group key is\n``(place_of_supply_state, gst_rate)`` per the Indian GSTR-1 schema.\nMultiple invoices roll up into one row.",
+        "properties": {
+          "cgst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cgst",
+            "type": "string"
+          },
+          "gst_rate": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Gst Rate",
+            "type": "string"
+          },
+          "igst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Igst",
+            "type": "string"
+          },
+          "invoice_count": {
+            "title": "Invoice Count",
+            "type": "integer"
+          },
+          "place_of_supply_state": {
+            "title": "Place Of Supply State",
+            "type": "string"
+          },
+          "sgst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Sgst",
+            "type": "string"
+          },
+          "taxable_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Taxable Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "place_of_supply_state",
+          "gst_rate",
+          "taxable_value",
+          "cgst",
+          "sgst",
+          "igst",
+          "invoice_count"
+        ],
+        "title": "Gstr1B2csRow",
+        "type": "object"
+      },
+      "Gstr1HsnRow": {
+        "description": "One HSN summary row. The GSTR-1 HSN section aggregates all\ninvoice lines by HSN code (with UQC/UOM and rate alongside). Items\nwithout an HSN set surface as empty-string ``hsn_code``; the FE\nflags them as data-quality issues.",
+        "properties": {
+          "cgst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cgst",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "hsn_code": {
+            "title": "Hsn Code",
+            "type": "string"
+          },
+          "igst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Igst",
+            "type": "string"
+          },
+          "sgst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Sgst",
+            "type": "string"
+          },
+          "taxable_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Taxable Value",
+            "type": "string"
+          },
+          "total_qty": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Qty",
+            "type": "string"
+          },
+          "total_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Value",
+            "type": "string"
+          },
+          "uom": {
+            "title": "Uom",
+            "type": "string"
+          }
+        },
+        "required": [
+          "hsn_code",
+          "description",
+          "uom",
+          "total_qty",
+          "taxable_value",
+          "cgst",
+          "sgst",
+          "igst",
+          "total_value"
+        ],
+        "title": "Gstr1HsnRow",
+        "type": "object"
+      },
+      "Gstr1InvoiceRow": {
+        "description": "One invoice row in the B2B / B2CL / EXPORT buckets. Tax split\nmatches CGST/SGST/IGST per the invoice's tax_type. ``gstin`` is\nmasked-but-printable (hex of the encrypted blob is opaque; the FE\ncan render \"GSTIN on file\" without the value). Future Wave-5\nrefinement will decrypt for filing-XML generation.",
+        "properties": {
+          "cgst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cgst",
+            "type": "string"
+          },
+          "gst_rate": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gst Rate"
+          },
+          "gstin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gstin"
+          },
+          "igst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Igst",
+            "type": "string"
+          },
+          "invoice_date": {
+            "format": "date",
+            "title": "Invoice Date",
+            "type": "string"
+          },
+          "invoice_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Invoice Value",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "party_id": {
+            "format": "uuid",
+            "title": "Party Id",
+            "type": "string"
+          },
+          "party_name": {
+            "title": "Party Name",
+            "type": "string"
+          },
+          "place_of_supply_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Of Supply State"
+          },
+          "sales_invoice_id": {
+            "format": "uuid",
+            "title": "Sales Invoice Id",
+            "type": "string"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "sgst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Sgst",
+            "type": "string"
+          },
+          "taxable_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Taxable Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sales_invoice_id",
+          "invoice_date",
+          "series",
+          "number",
+          "party_id",
+          "party_name",
+          "gstin",
+          "place_of_supply_state",
+          "invoice_value",
+          "taxable_value",
+          "gst_rate",
+          "cgst",
+          "sgst",
+          "igst"
+        ],
+        "title": "Gstr1InvoiceRow",
+        "type": "object"
+      },
+      "Gstr1Response": {
+        "description": "GSTR-1 envelope for ``period`` = YYYY-MM. Buckets:\nb2b:    Registered (GSTIN-present) sales (intra + inter state).\nb2cl:   Inter-state B2C invoices > \u20b92.5L, invoice-wise.\nb2cs:   Aggregated B2C below threshold or intra-state, by\n        (state, rate).\nexport: Zero-rated overseas / SEZ / EOU sales (party.is_export\n        / party.is_sez set; or place_of_supply is one of\n        'SEZ', 'EXPORT', 'EOU', or no Indian state code).\nhsn:    Per-HSN aggregation across every taxable line.",
+        "properties": {
+          "b2b": {
+            "items": {
+              "$ref": "#/components/schemas/Gstr1InvoiceRow"
+            },
+            "title": "B2B",
+            "type": "array"
+          },
+          "b2cl": {
+            "items": {
+              "$ref": "#/components/schemas/Gstr1InvoiceRow"
+            },
+            "title": "B2Cl",
+            "type": "array"
+          },
+          "b2cs": {
+            "items": {
+              "$ref": "#/components/schemas/Gstr1B2csRow"
+            },
+            "title": "B2Cs",
+            "type": "array"
+          },
+          "export": {
+            "items": {
+              "$ref": "#/components/schemas/Gstr1InvoiceRow"
+            },
+            "title": "Export",
+            "type": "array"
+          },
+          "from_date": {
+            "format": "date",
+            "title": "From Date",
+            "type": "string"
+          },
+          "hsn": {
+            "items": {
+              "$ref": "#/components/schemas/Gstr1HsnRow"
+            },
+            "title": "Hsn",
+            "type": "array"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "to_date": {
+            "format": "date",
+            "title": "To Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "period",
+          "from_date",
+          "to_date",
+          "b2b",
+          "b2cl",
+          "b2cs",
+          "export",
+          "hsn"
+        ],
+        "title": "Gstr1Response",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2631,6 +3006,165 @@
           "deleted_at"
         ],
         "title": "LedgerResponse",
+        "type": "object"
+      },
+      "LedgerStatementResponse": {
+        "description": "Ledger statement envelope. ``opening_balance`` is the net signed\nbalance immediately before ``from_date`` (sum of opening_balance +\nall DR/CR up to that day). ``closing_balance`` is the cumulative\nbalance after the last row inside the window. ``total_debits`` and\n``total_credits`` aggregate only the rows inside the window.",
+        "properties": {
+          "closing_balance": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Closing Balance",
+            "type": "string"
+          },
+          "from_date": {
+            "format": "date",
+            "title": "From Date",
+            "type": "string"
+          },
+          "group_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Code"
+          },
+          "ledger_code": {
+            "title": "Ledger Code",
+            "type": "string"
+          },
+          "ledger_id": {
+            "format": "uuid",
+            "title": "Ledger Id",
+            "type": "string"
+          },
+          "ledger_name": {
+            "title": "Ledger Name",
+            "type": "string"
+          },
+          "opening_balance": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Opening Balance",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerStatementRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "to_date": {
+            "format": "date",
+            "title": "To Date",
+            "type": "string"
+          },
+          "total_credits": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Credits",
+            "type": "string"
+          },
+          "total_debits": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Debits",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ledger_id",
+          "ledger_code",
+          "ledger_name",
+          "group_code",
+          "from_date",
+          "to_date",
+          "opening_balance",
+          "closing_balance",
+          "total_debits",
+          "total_credits",
+          "rows"
+        ],
+        "title": "LedgerStatementResponse",
+        "type": "object"
+      },
+      "LedgerStatementRow": {
+        "description": "One journal-line row in a ledger statement.\n\nWalking-balance order: rows sorted by ``voucher_date`` (ascending),\nthen ``voucher.number`` for stable intra-day ordering. ``balance``\nis the cumulative ledger balance immediately after this row's\nmovement (DR-positive convention).",
+        "properties": {
+          "balance": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Balance",
+            "type": "string"
+          },
+          "credit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Credit",
+            "type": "string"
+          },
+          "debit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Debit",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "voucher_date": {
+            "format": "date",
+            "title": "Voucher Date",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          },
+          "voucher_type": {
+            "title": "Voucher Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "voucher_type",
+          "voucher_date",
+          "series",
+          "number",
+          "narration",
+          "description",
+          "debit",
+          "credit",
+          "balance"
+        ],
+        "title": "LedgerStatementRow",
         "type": "object"
       },
       "LedgerUpdateRequest": {
@@ -4357,6 +4891,167 @@
           "deleted_at"
         ],
         "title": "PartyResponse",
+        "type": "object"
+      },
+      "PartyStatementResponse": {
+        "description": "Party statement envelope. ``opening_balance`` is the cumulative\nparty balance immediately before ``from_date``; ``closing_balance``\nis the cumulative balance at end of window. ``total_debits`` /\n``total_credits`` sum only rows inside the window. ``period_change``\n= total_debits - total_credits (positive = party owes more).",
+        "properties": {
+          "closing_balance": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Closing Balance",
+            "type": "string"
+          },
+          "from_date": {
+            "format": "date",
+            "title": "From Date",
+            "type": "string"
+          },
+          "opening_balance": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Opening Balance",
+            "type": "string"
+          },
+          "party_id": {
+            "format": "uuid",
+            "title": "Party Id",
+            "type": "string"
+          },
+          "party_name": {
+            "title": "Party Name",
+            "type": "string"
+          },
+          "period_change": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Period Change",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/PartyStatementRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "to_date": {
+            "format": "date",
+            "title": "To Date",
+            "type": "string"
+          },
+          "total_credits": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Credits",
+            "type": "string"
+          },
+          "total_debits": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Debits",
+            "type": "string"
+          }
+        },
+        "required": [
+          "party_id",
+          "party_name",
+          "from_date",
+          "to_date",
+          "opening_balance",
+          "closing_balance",
+          "total_debits",
+          "total_credits",
+          "period_change",
+          "rows"
+        ],
+        "title": "PartyStatementResponse",
+        "type": "object"
+      },
+      "PartyStatementRow": {
+        "description": "One voucher row in a party statement. Order: ``voucher_date`` ASC\nthen voucher.number for stable ordering. ``balance`` is the running\nparty-balance after this voucher (DR-positive: positive = customer owes\nmoney to us).",
+        "properties": {
+          "balance": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Balance",
+            "type": "string"
+          },
+          "credit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Credit",
+            "type": "string"
+          },
+          "debit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Debit",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "reference_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Id"
+          },
+          "reference_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Type"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "voucher_date": {
+            "format": "date",
+            "title": "Voucher Date",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          },
+          "voucher_type": {
+            "title": "Voucher Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "voucher_type",
+          "voucher_date",
+          "series",
+          "number",
+          "narration",
+          "reference_type",
+          "reference_id",
+          "debit",
+          "credit",
+          "balance"
+        ],
+        "title": "PartyStatementRow",
         "type": "object"
       },
       "PartyUpdateRequest": {
@@ -11500,6 +12195,56 @@
         ]
       }
     },
+    "/reports/ageing": {
+      "get": {
+        "operationId": "get_ageing_reports_ageing_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgeingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "AR ageing buckets per party (current, 1-30, 31-60, 61-90, >90)",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
     "/reports/daybook": {
       "get": {
         "operationId": "get_daybook_reports_daybook_get",
@@ -11545,6 +12290,204 @@
           }
         },
         "summary": "All vouchers posted on a single day",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/reports/gstr1": {
+      "get": {
+        "operationId": "get_gstr1_reports_gstr1_get",
+        "parameters": [
+          {
+            "description": "Period as YYYY-MM (Indian fiscal month).",
+            "in": "query",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "description": "Period as YYYY-MM (Indian fiscal month).",
+              "title": "Period",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Gstr1Response"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/reports/ledger/{ledger_id}": {
+      "get": {
+        "operationId": "get_ledger_statement_reports_ledger__ledger_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ledger_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Ledger Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerStatementResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Per-ledger statement for a date range with running balance",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/reports/party-statement/{party_id}": {
+      "get": {
+        "operationId": "get_party_statement_reports_party_statement__party_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Party Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartyStatementResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Per-party voucher list + running balance",
         "tags": [
           "reports"
         ]
