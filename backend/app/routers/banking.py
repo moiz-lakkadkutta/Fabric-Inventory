@@ -18,7 +18,7 @@ import datetime as dt
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 from sqlalchemy import select
 
 from app.dependencies import SyncDBSession, require_permission
@@ -37,6 +37,15 @@ from app.schemas.banking import (
     VoucherListResponse,
 )
 from app.service import banking_service
+from app.service.export_builders import VOUCHER_COLUMNS, filename_for, voucher_export_rows
+from app.service.export_service import (
+    CSV_MEDIA_TYPE,
+    XLSX_MEDIA_TYPE,
+    Sheet,
+    content_disposition,
+    to_csv,
+    to_xlsx,
+)
 from app.service.identity_service import TokenPayload
 from app.utils.crypto import decrypt_pii
 
@@ -304,7 +313,15 @@ def list_vouchers(
     to_date: Annotated[dt.date | None, Query(alias="to")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> VoucherListResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description="`csv` or `xlsx` returns a download instead of JSON.",
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> VoucherListResponse | Response:
     """Return all vouchers for the firm in scope, newest-first.
 
     Read-only header view — line postings are not included. Voucher
@@ -321,6 +338,7 @@ def list_vouchers(
 
     target_firm_id = firm_id if firm_id is not None else current_user.firm_id
 
+    effective_limit = 10_000 if export_format else limit
     stmt = select(Voucher).where(
         Voucher.org_id == current_user.org_id,
         Voucher.firm_id == target_firm_id,
@@ -334,10 +352,27 @@ def list_vouchers(
         stmt = stmt.where(Voucher.voucher_date <= to_date)
     stmt = (
         stmt.order_by(Voucher.voucher_date.desc(), Voucher.number.desc())
-        .limit(limit)
+        .limit(effective_limit)
         .offset(offset)
     )
     rows = list(db.execute(stmt).scalars().all())
+    if export_format is not None:
+        export_rows = voucher_export_rows(rows)
+        if export_format == "csv":
+            return Response(
+                content=to_csv(export_rows, VOUCHER_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(filename_for("vouchers", "csv")),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="Vouchers", columns=VOUCHER_COLUMNS, rows=export_rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(filename_for("vouchers", "xlsx")),
+            },
+        )
     return VoucherListResponse(
         items=[_to_voucher_list_item(v) for v in rows],
         limit=limit,

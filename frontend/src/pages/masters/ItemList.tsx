@@ -9,7 +9,9 @@ import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
+import { downloadExport } from '@/lib/api/download';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
+import { IS_LIVE } from '@/lib/api/mode';
 import type {
   BackendItemType,
   BackendUomType,
@@ -45,6 +47,31 @@ export default function ItemList() {
   const itemsQuery = useItems();
   const [query, setQuery] = React.useState('');
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [isExporting, setIsExporting] = React.useState(false);
+  const [exportError, setExportError] = React.useState<string | null>(null);
+
+  const handleExport = async (format: 'csv' | 'xlsx') => {
+    if (!IS_LIVE) {
+      setExportError('Export is wired to the live backend (set VITE_API_MODE=live).');
+      return;
+    }
+    setExportError(null);
+    setIsExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (query) params.set('search', query);
+      const path = params.toString() ? `/items?${params.toString()}` : '/items';
+      await downloadExport({
+        path,
+        format,
+        fallbackFilename: `items-${new Date().toISOString().slice(0, 10)}.${format}`,
+      });
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Could not export items.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const rows = React.useMemo(() => {
     const all = itemsQuery.data ?? [];
@@ -66,12 +93,43 @@ export default function ItemList() {
           {itemsQuery.isPending ? '—' : `${rows.length} of ${itemsQuery.data?.length ?? 0}`}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => handleExport('csv')}
+            disabled={isExporting}
+            aria-label="Export items to CSV"
+          >
+            {isExporting ? 'Exporting…' : 'Export CSV'}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => handleExport('xlsx')}
+            disabled={isExporting}
+            aria-label="Export items to Excel"
+          >
+            Export Excel
+          </Button>
           <Button onClick={() => setCreateOpen(true)} aria-label="New item">
             <Plus />
             New item
           </Button>
         </div>
       </header>
+      {exportError && (
+        <div
+          role="alert"
+          style={{
+            padding: '8px 10px',
+            border: '1px solid var(--danger)',
+            borderRadius: 6,
+            background: 'rgba(181,49,30,.06)',
+            color: 'var(--danger)',
+            fontSize: 12.5,
+          }}
+        >
+          {exportError}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <div

@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
+import { downloadExport } from '@/lib/api/download';
+import { IS_LIVE } from '@/lib/api/mode';
 import {
   type BankAccountView,
   type ChequeView,
@@ -62,6 +64,36 @@ export default function AccountingHub() {
   const [bankAccountOpen, setBankAccountOpen] = useState(false);
   const [chequeOpen, setChequeOpen] = useState(false);
   const [selectedBankAccountId, setSelectedBankAccountId] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const handleExport = async (format: 'csv' | 'xlsx') => {
+    if (!IS_LIVE) {
+      setExportError('Export is wired to the live backend (set VITE_API_MODE=live).');
+      return;
+    }
+    // Map current tab → BE endpoint. Bank accounts + cheques don't
+    // have export-ready BE list endpoints yet (filed follow-up); they
+    // share the screen but are excluded from this Wave 5 task.
+    const endpoint = tab === 'receipts' ? '/receipts' : tab === 'vouchers' ? '/vouchers' : null;
+    if (!endpoint) {
+      setExportError('This tab is not exportable yet.');
+      return;
+    }
+    setExportError(null);
+    setIsExporting(true);
+    try {
+      await downloadExport({
+        path: endpoint,
+        format,
+        fallbackFilename: `${tab}-${new Date().toISOString().slice(0, 10)}.${format}`,
+      });
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Could not export.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const receipts = useReceipts();
   const vouchers = useVouchers();
@@ -129,11 +161,46 @@ export default function AccountingHub() {
           <Button variant="outline" {...reconcile.triggerProps}>
             Reconcile bank
           </Button>
+          {(tab === 'receipts' || tab === 'vouchers') && (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => handleExport('csv')}
+                disabled={isExporting}
+                aria-label={`Export ${tab} to CSV`}
+              >
+                {isExporting ? 'Exporting…' : 'Export CSV'}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => handleExport('xlsx')}
+                disabled={isExporting}
+                aria-label={`Export ${tab} to Excel`}
+              >
+                Export Excel
+              </Button>
+            </>
+          )}
           {cta}
         </div>
       </header>
       {reconcile.dialog}
       {newVoucher.dialog}
+      {exportError && (
+        <div
+          role="alert"
+          style={{
+            padding: '8px 10px',
+            border: '1px solid var(--danger)',
+            borderRadius: 6,
+            background: 'rgba(181,49,30,.06)',
+            color: 'var(--danger)',
+            fontSize: 12.5,
+          }}
+        >
+          {exportError}
+        </div>
+      )}
 
       <NewReceiptDialog open={receiptOpen} onClose={() => setReceiptOpen(false)} />
       <NewBankAccountDialog open={bankAccountOpen} onClose={() => setBankAccountOpen(false)} />

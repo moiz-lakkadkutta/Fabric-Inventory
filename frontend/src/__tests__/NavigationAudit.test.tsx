@@ -27,11 +27,18 @@ function wrap(node: React.ReactNode) {
   code level by useComingSoon(); these tests are tracer assertions.
 */
 describe('Navigation audit (T7)', () => {
-  it('opens the ComingSoon dialog when InvoiceList Export CSV is clicked', async () => {
+  it('wires the InvoiceList Export CSV button to the live download flow (TASK-CUT-403)', async () => {
+    // The old click-dummy ComingSoon dialog was replaced by a real
+    // export under TASK-CUT-403. In test (mock-mode) the page short-
+    // circuits to a "set VITE_API_MODE=live" notice instead of fetching
+    // a CSV; the button is still wired live.
     wrap(<InvoiceList />);
     await waitFor(() => expect(screen.getByText(/RT\/2526\/0001/)).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
-    expect(screen.getByRole('dialog', { name: /export invoices to csv/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /export invoices to csv/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/live backend/i);
+    });
+    expect(screen.queryByText(/click-dummy/i)).not.toBeInTheDocument();
   });
 
   it('opens the Notifications popover from the TopBar bell', () => {

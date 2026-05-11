@@ -14,7 +14,7 @@ import uuid
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 
 from app.dependencies import SyncDBSession, require_permission
 from app.models import Hsn, Item, Sku, Uom
@@ -33,6 +33,15 @@ from app.schemas.masters import (
     UomResponse,
 )
 from app.service import items_service
+from app.service.export_builders import ITEM_COLUMNS, filename_for, item_export_rows
+from app.service.export_service import (
+    CSV_MEDIA_TYPE,
+    XLSX_MEDIA_TYPE,
+    Sheet,
+    content_disposition,
+    to_csv,
+    to_xlsx,
+)
 from app.service.identity_service import TokenPayload
 
 # Each resource gets its own router so OpenAPI groups them cleanly.
@@ -133,7 +142,15 @@ def list_items(
     search: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> ItemListResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description="`csv` or `xlsx` returns a download instead of JSON.",
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> ItemListResponse | Response:
     from app.exceptions import AppValidationError
     from app.models.masters import ItemType
 
@@ -147,6 +164,7 @@ def list_items(
                 f"{sorted(t.value for t in ItemType)}"
             ) from exc
 
+    effective_limit = 10_000 if export_format else limit
     items = items_service.list_items(
         db,
         org_id=current_user.org_id,
@@ -154,9 +172,26 @@ def list_items(
         item_type=parsed_type,
         is_active=is_active,
         search=search,
-        limit=limit,
+        limit=effective_limit,
         offset=offset,
     )
+    if export_format is not None:
+        rows = item_export_rows(items)
+        if export_format == "csv":
+            return Response(
+                content=to_csv(rows, ITEM_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(filename_for("items", "csv")),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="Items", columns=ITEM_COLUMNS, rows=rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(filename_for("items", "xlsx")),
+            },
+        )
     return ItemListResponse(
         items=[_item_to_response(i) for i in items],
         limit=limit,

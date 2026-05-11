@@ -11,8 +11,10 @@ import { Input } from '@/components/ui/input';
 import { Monogram } from '@/components/ui/monogram';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { ApiError } from '@/lib/api/client';
+import { downloadExport } from '@/lib/api/download';
+import { useIdempotencyKey } from '@/lib/api/idempotency';
+import { IS_LIVE } from '@/lib/api/mode';
 import { formatINRCompact } from '@/lib/format';
 import { useCreateParty, useParties } from '@/lib/queries/parties';
 import type { Party, PartyKind, PartyRole } from '@/lib/mock/types';
@@ -37,11 +39,38 @@ export default function PartyList() {
   const [filter, setFilter] = useState<PartyKind | 'all'>('all');
   const [query, setQuery] = useState('');
   const [newOpen, setNewOpen] = useState(false);
-  // Import is still TASK-CUT-403 (CSV/Excel exports + import is Wave 5).
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  // Import (Vyapar .vyp / CSV upload) is still a coming-soon — Wave 5
+  // migration tooling. The Export side ships in TASK-CUT-403.
   const importParties = useComingSoon({
     feature: 'Import parties (CSV / Vyapar .vyp)',
-    task: 'TASK-CUT-403 (Party import — Wave 5)',
+    task: 'TASK-CUT-502 (Cutover runbook)',
   });
+
+  const handleExport = async (format: 'csv' | 'xlsx') => {
+    if (!IS_LIVE) {
+      setExportError('Export is wired to the live backend (set VITE_API_MODE=live).');
+      return;
+    }
+    setExportError(null);
+    setIsExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (filter !== 'all') params.set('party_type', filter);
+      if (query) params.set('search', query);
+      const path = params.toString() ? `/parties?${params.toString()}` : '/parties';
+      await downloadExport({
+        path,
+        format,
+        fallbackFilename: `parties-${new Date().toISOString().slice(0, 10)}.${format}`,
+      });
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Could not export parties.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const rows = useMemo(() => {
     const all = partiesQuery.data ?? [];
@@ -70,6 +99,22 @@ export default function PartyList() {
           <Button variant="outline" {...importParties.triggerProps}>
             Import
           </Button>
+          <Button
+            variant="outline"
+            onClick={() => handleExport('csv')}
+            disabled={isExporting}
+            aria-label="Export parties to CSV"
+          >
+            {isExporting ? 'Exporting…' : 'Export CSV'}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => handleExport('xlsx')}
+            disabled={isExporting}
+            aria-label="Export parties to Excel"
+          >
+            Export Excel
+          </Button>
           <Button onClick={() => setNewOpen(true)}>
             <Plus />
             New party
@@ -78,6 +123,21 @@ export default function PartyList() {
       </header>
       {importParties.dialog}
       <NewPartyDialog open={newOpen} onClose={() => setNewOpen(false)} />
+      {exportError && (
+        <div
+          role="alert"
+          style={{
+            padding: '8px 10px',
+            border: '1px solid var(--danger)',
+            borderRadius: 6,
+            background: 'rgba(181,49,30,.06)',
+            color: 'var(--danger)',
+            fontSize: 12.5,
+          }}
+        >
+          {exportError}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1">

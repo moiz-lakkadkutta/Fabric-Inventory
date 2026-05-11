@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 
 from app.dependencies import SyncDBSession, require_permission
 from app.models import Party
@@ -21,6 +21,15 @@ from app.schemas.masters import (
     PartyUpdateRequest,
 )
 from app.service import masters_service
+from app.service.export_builders import PARTY_COLUMNS, filename_for, party_export_rows
+from app.service.export_service import (
+    CSV_MEDIA_TYPE,
+    XLSX_MEDIA_TYPE,
+    Sheet,
+    content_disposition,
+    to_csv,
+    to_xlsx,
+)
 from app.service.identity_service import TokenPayload
 from app.utils.crypto import decrypt_pii
 
@@ -109,8 +118,17 @@ def list_parties(
     search: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> PartyListResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description="`csv` or `xlsx` returns a download instead of JSON.",
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> PartyListResponse | Response:
     _ = current_user  # JWT auth + permission already enforced by the dep
+    effective_limit = 10_000 if export_format else limit
     items = masters_service.list_parties(
         db,
         org_id=current_user.org_id,
@@ -118,11 +136,32 @@ def list_parties(
         party_type=party_type,
         is_active=is_active,
         search=search,
-        limit=limit,
+        limit=effective_limit,
         offset=offset,
     )
+    # _to_response decrypts the GSTIN / PAN / phone PII columns; the
+    # export must use the decrypted payload (anything else exfiltrates
+    # cipher-text into a user-visible spreadsheet).
+    responses = [_to_response(p) for p in items]
+    if export_format is not None:
+        rows = party_export_rows(responses)
+        if export_format == "csv":
+            return Response(
+                content=to_csv(rows, PARTY_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(filename_for("parties", "csv")),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="Parties", columns=PARTY_COLUMNS, rows=rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(filename_for("parties", "xlsx")),
+            },
+        )
     return PartyListResponse(
-        items=[_to_response(p) for p in items],
+        items=responses,
         limit=limit,
         offset=offset,
         count=len(items),
