@@ -32,6 +32,8 @@ from app.routers import procurement as procurement_router
 from app.routers import receipts as receipts_router
 from app.routers import reports as reports_router
 from app.routers import sales as sales_router
+from app.service import email_adapter as email_adapter_module
+from app.service.email_adapter import MailgunEmailAdapter
 
 
 @asynccontextmanager
@@ -39,6 +41,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(level=settings.log_level)
     init_sentry(settings.sentry_dsn, settings.environment)
+    # CUT-405: if all three Mailgun env vars are present, swap the
+    # email adapter at app boot. Partial config (e.g. just the API key
+    # set) keeps the ConsoleEmailAdapter — partial config almost
+    # always means a half-applied secret rotation, and silently failing
+    # to deliver in prod is worse than printing to stdout.
+    if settings.mailgun_api_key and settings.mailgun_domain and settings.mailgun_sender:
+        email_adapter_module.set_email_adapter(
+            MailgunEmailAdapter(
+                api_key=settings.mailgun_api_key,
+                domain=settings.mailgun_domain,
+                sender=settings.mailgun_sender,
+            )
+        )
     yield
     await dispose_engine()
 

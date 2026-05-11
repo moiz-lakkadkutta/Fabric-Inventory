@@ -1,0 +1,143 @@
+# Production stack — runs on the Hetzner CX22 box behind Caddy at
+# {$CADDY_DOMAIN} (default: app.taana.in). CUT-405.
+#
+# Heritage: derived from docker-compose.staging.yml parked on
+# task/int-0-staging-bootstrap (commit 6611421). Differences:
+#   - Image namespace fixed to ghcr.io/${GHCR_OWNER:-moiz-lakkadkutta}
+#     (matches the real GitHub repo owner; the staging file had a
+#     placeholder).
+#   - Image tags default to ${IMAGE_TAG:-latest}; the deploy workflow
+#     pins this to the git tag (e.g. v0.1.0) for reproducible rollback.
+#   - Caddy mounts ops/Caddyfile (not ops/staging/Caddyfile).
+#   - alembic runs as a one-shot `migrate` service the deploy workflow
+#     can `docker compose run --rm migrate` to wait on the migration
+#     before flipping fastapi.
+#   - All env reads come from /opt/fabric/.env.production on the box.
+#
+# Bring up on the box (handled by .github/workflows/deploy.yml):
+#   docker compose -f docker-compose.prod.yml \
+#     --env-file /opt/fabric/.env.production up -d
+#
+# Provisioning order on a fresh box is in docs/ops/deployment-runbook.md.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./ops/pg-backups:/backups
+    # No host port published — only fastapi reaches it on the docker network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  fastapi:
+    image: ghcr.io/${GHCR_OWNER:-moiz-lakkadkutta}/fabric-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file:
+      # Path to the on-box env file. The deploy workflow passes
+      # `--env-file /opt/fabric/.env.production` to docker compose,
+      # which both injects vars into substitution AND tells the
+      # service to load the same file as env_file. Use ${ENV_FILE:-}
+      # so local `docker compose config` validation works with an
+      # empty default (compose silently skips missing env_file entries
+      # only when the variable is empty, not when the path is missing).
+      - ${ENV_FILE:-./ops/.env.production.example}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Hit /live (the fastapi process is up, no external deps) rather
+      # than /ready (which 503's during a slow DB recovery) so a single
+      # blip doesn't restart the container.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/live', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # No host port; Caddy reverse-proxies on the docker network.
+
+  # One-shot migration runner. The deploy workflow does
+  #   docker compose -f docker-compose.prod.yml run --rm migrate
+  # AFTER pulling the new image and BEFORE flipping fastapi to it. That
+  # ordering guarantees `alembic upgrade head` runs against the OLD
+  # connection-pool surface — which is fine because all our migrations
+  # are backward-compatible (CLAUDE.md: "Migrations are
+  # backward-compatible").
+  migrate:
+    image: ghcr.io/${GHCR_OWNER:-moiz-lakkadkutta}/fabric-api:${IMAGE_TAG:-latest}
+    env_file:
+      # Path to the on-box env file. The deploy workflow passes
+      # `--env-file /opt/fabric/.env.production` to docker compose,
+      # which both injects vars into substitution AND tells the
+      # service to load the same file as env_file. Use ${ENV_FILE:-}
+      # so local `docker compose config` validation works with an
+      # empty default (compose silently skips missing env_file entries
+      # only when the variable is empty, not when the path is missing).
+      - ${ENV_FILE:-./ops/.env.production.example}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      ENVIRONMENT: prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["migrate"]  # Don't start with `up -d`; only via `run --rm`.
+    command: ["uv", "run", "alembic", "upgrade", "head"]
+
+  web:
+    image: ghcr.io/${GHCR_OWNER:-moiz-lakkadkutta}/fabric-web:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    # The web image is a tiny nginx:alpine that serves the built Vite
+    # bundle from /usr/share/nginx/html. Caddy proxies /* here.
+    # No host port; Caddy fronts it.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Caddy reads these from the host env; the deploy workflow writes
+      # them into /opt/fabric/.env.production.
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-app.taana.in}
+      CADDY_EMAIL: ${CADDY_EMAIL:-ops@taana.in}
+    volumes:
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    depends_on:
+      - fastapi
+      - web
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
