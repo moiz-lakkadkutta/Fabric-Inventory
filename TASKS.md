@@ -64,8 +64,8 @@ The "frontend design pending" freeze from 2026-04-27 is **lifted.** Click-dummy 
 | TASK-063 Migration sign-off workflow | Blocked | **Ready** → **TASK-CUT-402** | |
 | TASK-064 Dogfood feedback loop | Blocked | **Ready** → **Wave 6 (CUT-501/502/503)** | |
 | TASK-065 Daily backups | Ready | **Ready** → **TASK-CUT-404** | |
-| TASK-066 Sentry integration | Done | **Partial Done** | BE wired; FE wiring → **TASK-CUT-405** |
-| TASK-067 Deployment runbook | Blocked | **Ready** → **TASK-CUT-405** | |
+| TASK-066 Sentry integration | Done | **Done** | BE wired; FE wired in CUT-405 (PR #87) |
+| TASK-067 Deployment runbook | Blocked | **Done** | Shipped as CUT-405 (PR #87): `docs/ops/deployment-runbook.md` |
 | TASK-068 Friendly customer trial | Blocked | **Deferred to v2** | After 7-day soak |
 | TASK-069 e-Invoice IRN | Blocked | **Deferred to v2** | |
 | TASK-070 e-Way Bill | Blocked | **Deferred to v2** | |
@@ -129,7 +129,7 @@ Detailed acceptance criteria for each TASK-CUT-NNN: see `docs/ops/cutover-plan-2
 | **TASK-CUT-402** | Vyapar Excel adapter + opening balance import + reconciliation + sign-off | BE+FE | Blocked by Wave 4 |
 | **TASK-CUT-403** | CSV/Excel exports per list | BE+FE | Blocked by Wave 4 |
 | **TASK-CUT-404** | Backups: make backup + cron + restore-test runbook | ops | Blocked by Wave 4 |
-| **TASK-CUT-405** | HTTPS via Caddy + deployment runbook + Sentry FE wiring + email provider | ops | Blocked by Wave 4 |
+| **TASK-CUT-405** | HTTPS via Caddy + deployment runbook + Sentry FE wiring + email provider | ops | **Done** (PR #87) |
 
 #### Wave 6 — Polish + dogfood acceptance
 
