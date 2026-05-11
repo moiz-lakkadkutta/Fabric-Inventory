@@ -35,7 +35,22 @@ from app.schemas.sales import (
     SOResponse,
 )
 from app.service import pdf_service, sales_service
+from app.service.export_builders import INVOICE_COLUMNS, filename_for, invoice_export_rows
+from app.service.export_service import (
+    CSV_MEDIA_TYPE,
+    XLSX_MEDIA_TYPE,
+    Sheet,
+    content_disposition,
+    to_csv,
+    to_xlsx,
+)
 from app.service.identity_service import TokenPayload
+
+# TASK-CUT-403: list endpoints accept `?format=csv|xlsx` to stream
+# the current view's data as a download. Permission gates inherit
+# from the underlying list (sales.invoice.read here); RLS still
+# scopes rows by org_id.
+ExportFormat = str  # "csv" | "xlsx" — validated in-handler.
 
 router = APIRouter(prefix="/sales-orders", tags=["sales", "so"])
 dc_router = APIRouter(prefix="/delivery-challans", tags=["sales", "dc"])
@@ -450,8 +465,16 @@ def _invoice_to_list_item(invoice: SalesInvoice, *, party_name: str | None) -> S
 
 @invoice_router.get(
     "",
-    response_model=SalesInvoiceListResponse,
+    response_model=None,
     summary="List sales invoices for the current firm (defaults from JWT)",
+    responses={
+        200: {
+            "description": (
+                "Default JSON list response, or a CSV/XLSX attachment when "
+                "`format=csv|xlsx` is set."
+            ),
+        },
+    },
 )
 def list_invoices(
     db: SyncDBSession,
@@ -481,11 +504,29 @@ def list_invoices(
     ] = False,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> SalesInvoiceListResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description=(
+                "Optional export format. `csv` returns text/csv (UTF-8 BOM); "
+                "`xlsx` returns an Excel workbook. Permission is the same "
+                "as the JSON list."
+            ),
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> SalesInvoiceListResponse | Response:
     # T-INT-4 CRIT-3: default to the JWT's firm so a B-token user
     # can't list A's invoices by omitting the filter. Cross-firm-same-
     # org views require an explicit `?firm_id=` (gated by RBAC later).
     effective_firm_id = firm_id if firm_id is not None else current_user.firm_id
+
+    # When exporting, bump the page size so the CSV/XLSX matches "all
+    # the data behind the current filter" rather than the 50-row page.
+    # 10k is the soft cap (see CLAUDE.md / task notes — streaming kicks
+    # in above this).
+    effective_limit = 10_000 if export_format else limit
 
     invoices = sales_service.list_sales_invoices(
         db,
@@ -495,12 +536,31 @@ def list_invoices(
         lifecycle_status=lifecycle_status,
         q=q,
         recent=recent,
-        limit=limit,
+        limit=effective_limit,
         offset=offset,
     )
     party_names = sales_service.party_name_map(
         db, org_id=current_user.org_id, party_ids=[i.party_id for i in invoices]
     )
+
+    if export_format is not None:
+        rows = invoice_export_rows(invoices, party_names)
+        if export_format == "csv":
+            return Response(
+                content=to_csv(rows, INVOICE_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(filename_for("invoices", "csv")),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="Invoices", columns=INVOICE_COLUMNS, rows=rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(filename_for("invoices", "xlsx")),
+            },
+        )
+
     return SalesInvoiceListResponse(
         items=[
             _invoice_to_list_item(inv, party_name=party_names.get(inv.party_id)) for inv in invoices

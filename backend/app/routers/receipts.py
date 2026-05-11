@@ -6,7 +6,7 @@ import uuid
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 from sqlalchemy import select
 
 from app.dependencies import SyncDBSession, require_permission
@@ -20,6 +20,15 @@ from app.schemas.receipts import (
     ReceiptResponse,
 )
 from app.service import receipt_service
+from app.service.export_builders import RECEIPT_COLUMNS, filename_for, receipt_export_rows
+from app.service.export_service import (
+    CSV_MEDIA_TYPE,
+    XLSX_MEDIA_TYPE,
+    Sheet,
+    content_disposition,
+    to_csv,
+    to_xlsx,
+)
 from app.service.identity_service import TokenPayload
 
 router = APIRouter(prefix="/receipts", tags=["banking", "receipts"])
@@ -110,7 +119,7 @@ def post_receipt(
 
 @router.get(
     "",
-    response_model=ReceiptListResponse,
+    response_model=None,
     summary="List receipts for the current firm (newest-first)",
 )
 def list_receipts(
@@ -118,7 +127,15 @@ def list_receipts(
     current_user: Annotated[TokenPayload, Depends(require_permission("banking.bank.read"))],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> ReceiptListResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description="`csv` or `xlsx` returns a download instead of JSON.",
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> ReceiptListResponse | Response:
     if current_user.firm_id is None:
         from app.exceptions import PermissionDeniedError
 
@@ -127,13 +144,31 @@ def list_receipts(
             title="No active firm",
         )
 
+    effective_limit = 10_000 if export_format else limit
     entries = receipt_service.list_receipts_with_details(
         db,
         org_id=current_user.org_id,
         firm_id=current_user.firm_id,
-        limit=limit,
+        limit=effective_limit,
         offset=offset,
     )
+    if export_format is not None:
+        rows = receipt_export_rows(entries)
+        if export_format == "csv":
+            return Response(
+                content=to_csv(rows, RECEIPT_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(filename_for("receipts", "csv")),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="Receipts", columns=RECEIPT_COLUMNS, rows=rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(filename_for("receipts", "xlsx")),
+            },
+        )
     return ReceiptListResponse(
         items=[
             ReceiptListItem(

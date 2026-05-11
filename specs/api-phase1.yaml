@@ -118,6 +118,20 @@ components:
         maxLength: 100
         pattern: "^[A-Za-z0-9_-]{8,100}$"
 
+    ExportFormat:
+      name: format
+      in: query
+      required: false
+      description: |
+        TASK-CUT-403: when set, the endpoint returns a downloadable file
+        instead of JSON. `csv` returns `text/csv` (UTF-8 with BOM,
+        Excel-friendly); `xlsx` returns an Excel workbook. Permissions
+        inherit from the JSON list — anyone who can list can export.
+        GSTR-1's xlsx export is multi-sheet (B2B / B2CL / B2CS / Export / HSN).
+      schema:
+        type: string
+        enum: [csv, xlsx]
+
   responses:
     BadRequest:
       description: Bad request
@@ -1764,9 +1778,10 @@ paths:
         - $ref: '#/components/parameters/Filter'
         - $ref: '#/components/parameters/Sort'
         - $ref: '#/components/parameters/Include'
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: Paginated party list
+          description: Paginated party list (or CSV/XLSX attachment when `format` is set)
           content:
             application/json:
               schema:
@@ -1893,9 +1908,10 @@ paths:
         - $ref: '#/components/parameters/Filter'
         - $ref: '#/components/parameters/Sort'
         - $ref: '#/components/parameters/Include'
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: Paginated item list
+          description: Paginated item list (or CSV/XLSX attachment when `format` is set)
           content:
             application/json:
               schema:
@@ -3697,9 +3713,10 @@ paths:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Filter'
         - $ref: '#/components/parameters/Include'
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: Paginated invoice list
+          description: Paginated invoice list (or CSV/XLSX attachment when `format` is set)
           content:
             application/json:
               schema:
@@ -3940,9 +3957,10 @@ paths:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Filter'
         - $ref: '#/components/parameters/Include'
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: Paginated voucher list
+          description: Paginated voucher list (or CSV/XLSX attachment when `format` is set)
           content:
             application/json:
               schema:
@@ -4330,9 +4348,10 @@ paths:
           schema:
             type: string
             format: date
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: Day-book report
+          description: Day-book report (or CSV/XLSX attachment when `format` is set)
           content:
             application/json:
               schema:
@@ -4356,9 +4375,10 @@ paths:
           schema:
             type: string
             format: date
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: Trial balance report
+          description: Trial balance report (or CSV/XLSX attachment when `format` is set)
           content:
             application/json:
               schema:
@@ -4388,9 +4408,10 @@ paths:
           schema:
             type: string
             format: date
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: P&L report
+          description: P&L report (or CSV/XLSX attachment when `format` is set)
           content:
             application/json:
               schema:
@@ -4516,9 +4537,10 @@ paths:
           schema:
             type: string
             format: date
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: Stock summary report
+          description: Stock summary report (or CSV/XLSX attachment when `format` is set)
           content:
             application/json:
               schema:
@@ -4569,9 +4591,14 @@ paths:
           schema:
             type: string
             pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: GSTR-1 envelope — five buckets keyed by category.
+          description: |
+            GSTR-1 envelope — five buckets keyed by category. With
+            `format=xlsx` returns a multi-sheet workbook (B2B / B2CL /
+            B2CS / Export / HSN as separate sheets). With `format=csv`
+            flattens the B2B bucket only (use xlsx for the full filing).
           content:
             application/json:
               schema:

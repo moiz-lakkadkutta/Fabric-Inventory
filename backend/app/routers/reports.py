@@ -18,7 +18,7 @@ import datetime
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Response
 
 from app.dependencies import SyncDBSession, require_permission
 from app.exceptions import NotFoundError, PermissionDeniedError
@@ -44,6 +44,26 @@ from app.schemas.reports import (
     TbRow,
 )
 from app.service import reports_service
+from app.service.export_builders import (
+    DAYBOOK_COLUMNS,
+    PNL_COLUMNS,
+    STOCK_COLUMNS,
+    TB_COLUMNS,
+    daybook_export_rows,
+    filename_for,
+    gstr1_sheets,
+    pnl_export_rows,
+    stock_export_rows,
+    tb_export_rows,
+)
+from app.service.export_service import (
+    CSV_MEDIA_TYPE,
+    XLSX_MEDIA_TYPE,
+    Sheet,
+    content_disposition,
+    to_csv,
+    to_xlsx,
+)
 from app.service.identity_service import TokenPayload
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -65,7 +85,7 @@ def _require_active_firm(current_user: TokenPayload) -> None:
 
 @router.get(
     "/pnl",
-    response_model=PnlResponse,
+    response_model=None,
     summary="Profit & Loss for a date range, grouped by ledger group",
 )
 def get_pnl(
@@ -73,7 +93,15 @@ def get_pnl(
     current_user: Annotated[TokenPayload, Depends(require_permission("accounting.report.view"))],
     from_date: Annotated[datetime.date | None, Query(alias="from")] = None,
     to_date: Annotated[datetime.date | None, Query(alias="to")] = None,
-) -> PnlResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description="`csv` or `xlsx` returns a download instead of JSON.",
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> PnlResponse | Response:
     _require_active_firm(current_user)
     assert current_user.firm_id is not None  # narrowed
     (
@@ -92,6 +120,28 @@ def get_pnl(
         from_date=from_date,
         to_date=to_date,
     )
+    if export_format is not None:
+        rows = pnl_export_rows(buckets)
+        period_label = f"{resolved_from}_to_{resolved_to}"
+        if export_format == "csv":
+            return Response(
+                content=to_csv(rows, PNL_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(
+                        filename_for("pnl", "csv", period=period_label)
+                    ),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="P&L", columns=PNL_COLUMNS, rows=rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(
+                    filename_for("pnl", "xlsx", period=period_label)
+                ),
+            },
+        )
     return PnlResponse(
         period=PnlPeriod(from_date=resolved_from, to_date=resolved_to),
         total_income=total_income,
@@ -115,14 +165,22 @@ def get_pnl(
 
 @router.get(
     "/tb",
-    response_model=TbResponse,
+    response_model=None,
     summary="Trial Balance as of a date — debits must equal credits",
 )
 def get_tb(
     db: SyncDBSession,
     current_user: Annotated[TokenPayload, Depends(require_permission("accounting.report.view"))],
     as_of: Annotated[datetime.date | None, Query()] = None,
-) -> TbResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description="`csv` or `xlsx` returns a download instead of JSON.",
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> TbResponse | Response:
     _require_active_firm(current_user)
     assert current_user.firm_id is not None
     resolved_as_of, total_debits, total_credits, rows = reports_service.compute_tb(
@@ -131,6 +189,28 @@ def get_tb(
         firm_id=current_user.firm_id,
         as_of=as_of,
     )
+    if export_format is not None:
+        export_rows = tb_export_rows(rows)
+        period_label = str(resolved_as_of)
+        if export_format == "csv":
+            return Response(
+                content=to_csv(export_rows, TB_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(
+                        filename_for("tb", "csv", period=period_label)
+                    ),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="Trial Balance", columns=TB_COLUMNS, rows=export_rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(
+                    filename_for("tb", "xlsx", period=period_label)
+                ),
+            },
+        )
     return TbResponse(
         as_of=resolved_as_of,
         total_debits=total_debits,
@@ -152,14 +232,22 @@ def get_tb(
 
 @router.get(
     "/daybook",
-    response_model=DaybookResponse,
+    response_model=None,
     summary="All vouchers posted on a single day",
 )
 def get_daybook(
     db: SyncDBSession,
     current_user: Annotated[TokenPayload, Depends(require_permission("accounting.report.view"))],
     on_date: Annotated[datetime.date | None, Query(alias="date")] = None,
-) -> DaybookResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description="`csv` or `xlsx` returns a download instead of JSON.",
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> DaybookResponse | Response:
     _require_active_firm(current_user)
     assert current_user.firm_id is not None
     resolved_date, vouchers = reports_service.compute_daybook(
@@ -168,6 +256,28 @@ def get_daybook(
         firm_id=current_user.firm_id,
         on_date=on_date,
     )
+    if export_format is not None:
+        export_rows = daybook_export_rows(vouchers)
+        period_label = str(resolved_date)
+        if export_format == "csv":
+            return Response(
+                content=to_csv(export_rows, DAYBOOK_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(
+                        filename_for("daybook", "csv", period=period_label)
+                    ),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="Daybook", columns=DAYBOOK_COLUMNS, rows=export_rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(
+                    filename_for("daybook", "xlsx", period=period_label)
+                ),
+            },
+        )
     return DaybookResponse(
         date=resolved_date,
         vouchers=[
@@ -188,7 +298,7 @@ def get_daybook(
 
 @router.get(
     "/stock-summary",
-    response_model=StockSummaryResponse,
+    response_model=None,
     summary="On-hand qty + weighted-average cost per item",
 )
 def get_stock_summary(
@@ -196,7 +306,15 @@ def get_stock_summary(
     current_user: Annotated[TokenPayload, Depends(require_permission("accounting.report.view"))],
     as_of: Annotated[datetime.date | None, Query()] = None,
     include_zero: Annotated[bool, Query()] = False,
-) -> StockSummaryResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description="`csv` or `xlsx` returns a download instead of JSON.",
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> StockSummaryResponse | Response:
     _require_active_firm(current_user)
     assert current_user.firm_id is not None
     resolved_as_of, total_value, rows = reports_service.compute_stock_summary(
@@ -206,6 +324,28 @@ def get_stock_summary(
         as_of=as_of,
         include_zero=include_zero,
     )
+    if export_format is not None:
+        export_rows = stock_export_rows(rows)
+        period_label = str(resolved_as_of)
+        if export_format == "csv":
+            return Response(
+                content=to_csv(export_rows, STOCK_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(
+                        filename_for("stock-summary", "csv", period=period_label)
+                    ),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="Stock summary", columns=STOCK_COLUMNS, rows=export_rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(
+                    filename_for("stock-summary", "xlsx", period=period_label)
+                ),
+            },
+        )
     return StockSummaryResponse(
         as_of=resolved_as_of,
         total_value=total_value,
@@ -376,14 +516,26 @@ def get_party_statement(
 
 @router.get(
     "/gstr1",
-    response_model=Gstr1Response,
+    response_model=None,
     summary="GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period",
 )
 def get_gstr1(
     db: SyncDBSession,
     current_user: Annotated[TokenPayload, Depends(require_permission("accounting.report.view"))],
     period: Annotated[str, Query(description="Period as YYYY-MM (Indian fiscal month).")],
-) -> Gstr1Response:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description=(
+                "`xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / "
+                "Export / HSN); `csv` flattens the B2B sheet (use xlsx for "
+                "the full filing)."
+            ),
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> Gstr1Response | Response:
     _require_active_firm(current_user)
     assert current_user.firm_id is not None
     result = reports_service.compute_gstr1(
@@ -392,6 +544,31 @@ def get_gstr1(
         firm_id=current_user.firm_id,
         period=period,
     )
+    if export_format is not None:
+        sheets = gstr1_sheets(result)
+        if export_format == "xlsx":
+            return Response(
+                content=to_xlsx(sheets),
+                media_type=XLSX_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(
+                        filename_for("gstr1", "xlsx", period=period)
+                    ),
+                },
+            )
+        # CSV branch flattens the B2B bucket only — the full filing is
+        # multi-sheet, so we keep XLSX as the canonical export. Docs
+        # call this out in the FE label.
+        b2b_sheet = sheets[0]
+        return Response(
+            content=to_csv(b2b_sheet.rows, b2b_sheet.columns),
+            media_type=CSV_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(
+                    filename_for("gstr1-b2b", "csv", period=period)
+                ),
+            },
+        )
     return Gstr1Response(
         period=result.period,
         from_date=result.from_date,

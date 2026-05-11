@@ -127,7 +127,7 @@ Detailed acceptance criteria for each TASK-CUT-NNN: see `docs/ops/cutover-plan-2
 |---|---|---|---|
 | **TASK-CUT-401** | Job-work FE wired live | FE | Blocked by Wave 4 |
 | **TASK-CUT-402** | Vyapar Excel adapter + opening balance import + reconciliation + sign-off | BE+FE | Blocked by Wave 4 |
-| **TASK-CUT-403** | CSV/Excel exports per list | BE+FE | Blocked by Wave 4 |
+| **TASK-CUT-403** | CSV/Excel exports per list | BE+FE | Done — see `docs/retros/task-CUT-403.md` |
 | **TASK-CUT-404** | Backups: make backup + cron + restore-test runbook | ops | Blocked by Wave 4 |
 | **TASK-CUT-405** | HTTPS via Caddy + deployment runbook + Sentry FE wiring + email provider | ops | **Done** (PR #87) |
 

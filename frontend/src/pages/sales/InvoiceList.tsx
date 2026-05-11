@@ -3,11 +3,12 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
-import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { QueryError } from '@/components/ui/query-error';
 import { Skeleton } from '@/components/ui/skeleton';
+import { downloadExport } from '@/lib/api/download';
+import { IS_LIVE } from '@/lib/api/mode';
 import { useInvoices } from '@/lib/queries/invoices';
 import { formatAgeing, formatDateShort, formatINRCompact } from '@/lib/format';
 import type { Invoice, InvoiceStatus } from '@/lib/mock/types';
@@ -35,12 +36,37 @@ const STATUS_PILL: Record<Invoice['status'], { kind: PillKind; label: string }> 
 export default function InvoiceList() {
   const [filter, setFilter] = useState<FilterKey>('all');
   const [query, setQuery] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const navigate = useNavigate();
   const invoicesQuery = useInvoices();
-  const exportCsv = useComingSoon({
-    feature: 'Export invoices to CSV',
-    task: 'TASK-046 (Reports → CSV/PDF)',
-  });
+
+  const handleExportCsv = async () => {
+    if (!IS_LIVE) {
+      // Mock mode has no real backend behind it — surface a clear note
+      // rather than try to fetch nothing. Live mode does the real
+      // streaming download via the api wrapper.
+      setExportError('Export is wired to the live backend. Switch VITE_API_MODE=live to download.');
+      return;
+    }
+    setExportError(null);
+    setIsExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (filter !== 'all') params.set('status', filter);
+      if (query) params.set('q', query);
+      const path = params.toString() ? `/invoices?${params.toString()}` : '/invoices';
+      await downloadExport({
+        path,
+        format: 'csv',
+        fallbackFilename: `invoices-${new Date().toISOString().slice(0, 10)}.csv`,
+      });
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Could not export invoices.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const allRows = useMemo(() => invoicesQuery.data ?? [], [invoicesQuery.data]);
 
@@ -63,8 +89,14 @@ export default function InvoiceList() {
           {invoicesQuery.isPending ? '—' : `${rows.length} of ${allRows.length}`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" size="default" {...exportCsv.triggerProps}>
-            Export CSV
+          <Button
+            variant="outline"
+            size="default"
+            onClick={handleExportCsv}
+            disabled={isExporting}
+            aria-label="Export invoices to CSV"
+          >
+            {isExporting ? 'Exporting…' : 'Export CSV'}
           </Button>
           <Button size="default" onClick={() => navigate('/sales/invoices/new')}>
             <Plus />
@@ -72,7 +104,21 @@ export default function InvoiceList() {
           </Button>
         </div>
       </header>
-      {exportCsv.dialog}
+      {exportError && (
+        <div
+          role="alert"
+          style={{
+            padding: '8px 10px',
+            border: '1px solid var(--danger)',
+            borderRadius: 6,
+            background: 'rgba(181,49,30,.06)',
+            color: 'var(--danger)',
+            fontSize: 12.5,
+          }}
+        >
+          {exportError}
+        </div>
+      )}
 
       {/* Filters + search */}
       <div className="flex flex-wrap items-center gap-2">

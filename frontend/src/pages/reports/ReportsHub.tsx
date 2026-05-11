@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
+import { downloadExport, type ExportFormat } from '@/lib/api/download';
 import { IS_LIVE } from '@/lib/api/mode';
 import {
   useDaybook,
@@ -29,16 +30,63 @@ const TABS: Array<{ id: Tab; label: string }> = [
 const PERIOD = 'Apr 2026 · FY 2025-26';
 const COMPARE = 'vs Mar 2026';
 
+function reportExportEndpoint(tab: Tab): { path: string; stem: string; xlsxOnly?: boolean } {
+  // Reports are firm-scoped on the backend; the BE pulls org_id/firm_id
+  // off the JWT, so we don't pass them as query params. Period defaults
+  // (FY current month) are resolved server-side too.
+  switch (tab) {
+    case 'pnl':
+      return { path: '/reports/pnl', stem: 'pnl' };
+    case 'tb':
+      return { path: '/reports/tb', stem: 'tb' };
+    case 'gstr1':
+      // GSTR-1 needs a period; default to current month. The XLSX path
+      // is the canonical filing format (5 sheets); CSV flattens to B2B.
+      return {
+        path: `/reports/gstr1?period=${new Date().toISOString().slice(0, 7)}`,
+        stem: 'gstr1',
+        xlsxOnly: true,
+      };
+    case 'stock':
+      return { path: '/reports/stock-summary', stem: 'stock-summary' };
+    case 'daybook':
+      return { path: '/reports/daybook', stem: 'daybook' };
+  }
+}
+
 export default function ReportsHub() {
   const [tab, setTab] = useState<Tab>('pnl');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const print = useComingSoon({
     feature: 'Print report (PDF)',
     task: 'TASK-046 (Reports → CSV/PDF)',
   });
-  const exportR = useComingSoon({
-    feature: 'Export report (CSV / Excel)',
-    task: 'TASK-046 (Reports → CSV/PDF)',
-  });
+
+  const runExport = async (format: ExportFormat) => {
+    if (!IS_LIVE) {
+      setExportError('Export is wired to the live backend (set VITE_API_MODE=live).');
+      return;
+    }
+    const endpoint = reportExportEndpoint(tab);
+    if (format === 'csv' && endpoint.xlsxOnly) {
+      setExportError('GSTR-1 must be exported as XLSX (multi-sheet filing).');
+      return;
+    }
+    setExportError(null);
+    setIsExporting(true);
+    try {
+      await downloadExport({
+        path: endpoint.path,
+        format,
+        fallbackFilename: `${endpoint.stem}-${new Date().toISOString().slice(0, 10)}.${format}`,
+      });
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Could not export report.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -52,14 +100,42 @@ export default function ReportsHub() {
             <Printer size={14} />
             Print
           </Button>
-          <Button variant="outline" {...exportR.triggerProps}>
+          <Button
+            variant="outline"
+            onClick={() => runExport('csv')}
+            disabled={isExporting || tab === 'gstr1'}
+            aria-label="Export report as CSV"
+          >
             <Download size={14} />
-            Export
+            {isExporting ? 'Exporting…' : 'Export CSV'}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => runExport('xlsx')}
+            disabled={isExporting}
+            aria-label="Export report as Excel"
+          >
+            <Download size={14} />
+            Export Excel
           </Button>
         </div>
       </header>
       {print.dialog}
-      {exportR.dialog}
+      {exportError && (
+        <div
+          role="alert"
+          style={{
+            padding: '8px 10px',
+            border: '1px solid var(--danger)',
+            borderRadius: 6,
+            background: 'rgba(181,49,30,.06)',
+            color: 'var(--danger)',
+            fontSize: 12.5,
+          }}
+        >
+          {exportError}
+        </div>
+      )}
 
       <nav
         role="tablist"
