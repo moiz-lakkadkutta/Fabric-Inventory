@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
+import { IS_LIVE } from '@/lib/api/mode';
 import {
   useDaybook,
   useGstr1,
@@ -362,7 +363,15 @@ const SECTION_PILL: Record<GstrSection, { kind: PillKind; label: string }> = {
 };
 
 function Gstr1Panel() {
+  // GSTR-1 BE endpoint (`GET /reports/gstr1?period=YYYY-MM`) is owned
+  // by TASK-CUT-302. Until that ships in Wave 4 the live-mode panel
+  // renders a coming-soon strip so we don't show stale mock numbers
+  // to a real-data user. Mock mode keeps the click-dummy fixture for
+  // existing mock-mode tests. The hook is always called (rules-of-hooks)
+  // even when IS_LIVE — it's a cheap memoized query with no fetch in
+  // the live branch since `useGstr1`'s mock branch resolves inline.
   const q = useGstr1();
+  if (IS_LIVE) return <Gstr1ComingSoon />;
   if (q.isPending) return <Skeleton width="100%" height={400} radius={8} />;
   const rows = q.data ?? [];
   const totalTaxable = rows.reduce((s, r) => s + r.taxable, 0);
@@ -469,6 +478,38 @@ function Gstr1Panel() {
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+function Gstr1ComingSoon() {
+  return (
+    <div
+      style={{
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--border-default)',
+        borderRadius: 8,
+        padding: 32,
+        textAlign: 'center',
+      }}
+    >
+      <div
+        style={{
+          fontSize: 13,
+          fontWeight: 600,
+          color: 'var(--text-primary)',
+          marginBottom: 4,
+        }}
+      >
+        GSTR-1 prep is coming with TASK-CUT-302
+      </div>
+      <div
+        style={{ fontSize: 12.5, color: 'var(--text-tertiary)', maxWidth: 520, margin: '0 auto' }}
+      >
+        The B2B / B2C(L) / B2C(S) / Export / HSN bucket aggregation lands in Wave 4 (CUT-302). The
+        other four report tabs (P&amp;L, Trial balance, Daybook, Stock) already pull from the live
+        backend.
       </div>
     </div>
   );
