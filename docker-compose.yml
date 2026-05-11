@@ -31,6 +31,13 @@ services:
       dockerfile: Dockerfile.dev
     volumes:
       - ./backend:/app
+      # TASK-004's baseline migration loads `schema/ddl.sql` by walking
+      # up to `Path(__file__).parents[3]`, which resolves to `/schema/`
+      # inside the container. Without this mount, `alembic upgrade head`
+      # blows up on the very first migration. The hosted runtime (CI
+      # docker-compose + any future prod-compose target) needs the mount
+      # because TASK-005 deferred bundling the SQL into the image.
+      - ./schema:/schema:ro
     ports:
       - "8000:8000"
     env_file:
