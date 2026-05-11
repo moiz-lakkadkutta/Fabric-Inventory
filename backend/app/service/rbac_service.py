@@ -108,6 +108,10 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("accounting.coa", "update", "Create and update custom COA groups and ledgers"),
     # Dashboard (T-INT-2) — KPI bundle + activity feed.
     ("dashboard", "read", "View dashboard KPIs and activity"),
+    # Job-work (TASK-CUT-305) — send-out / receive-back / ITC-04.
+    ("jobwork.order", "create", "Create job-work send-out orders"),
+    ("jobwork.order", "read", "View job-work orders and receipts"),
+    ("jobwork.report", "read", "View ITC-04 and other job-work reports"),
 )
 
 
@@ -148,6 +152,8 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "admin.audit.read",
                 "sales.order.read",
                 "dashboard.read",
+                "jobwork.order.read",
+                "jobwork.report.read",
             }
         ),
     ),
@@ -178,7 +184,7 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
     (
         "WAREHOUSE",
         "Warehouse",
-        "GRN, stock movements, delivery challans.",
+        "GRN, stock movements, delivery challans, job-work send-out/receive.",
         frozenset(
             {
                 "masters.item.read",
@@ -194,19 +200,24 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "sales.dc.create",
                 "sales.dc.read",
                 "sales.dc.approve",
+                "jobwork.order.create",
+                "jobwork.order.read",
             }
         ),
     ),
     (
         "PRODUCTION_MANAGER",
         "Production Manager",
-        "MOs, dispatch, receive, QC. Phase-3 surface — minimal MVP perms.",
+        "MOs, dispatch, receive, QC, job-work tracking.",
         frozenset(
             {
                 "masters.item.read",
                 "masters.party.read",
                 "inventory.stock.read",
                 "inventory.lot.read",
+                "jobwork.order.create",
+                "jobwork.order.read",
+                "jobwork.report.read",
             }
         ),
     ),

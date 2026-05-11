@@ -25,6 +25,7 @@ from app.routers import banking as banking_router
 from app.routers import dashboard as dashboard_router
 from app.routers import inventory as inventory_router
 from app.routers import items as items_router
+from app.routers import jobwork as jobwork_router
 from app.routers import masters as masters_router
 from app.routers import procurement as procurement_router
 from app.routers import receipts as receipts_router
@@ -91,6 +92,8 @@ def create_app() -> FastAPI:
     app.include_router(banking_router.router)
     app.include_router(accounting_router.router)
     app.include_router(reports_router.router)
+    app.include_router(jobwork_router.router)
+    app.include_router(jobwork_router.itc04_router)
 
     @app.get("/live")
     async def live() -> dict[str, str]:

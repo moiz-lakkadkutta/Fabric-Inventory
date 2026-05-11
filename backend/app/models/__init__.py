@@ -32,6 +32,7 @@ from . import (  # noqa: E402  (import after Base definition is required)
     feature_flag,
     identity,
     inventory,
+    jobwork,
     masters,
     procurement,
     sales,
@@ -71,6 +72,14 @@ from .inventory import (  # noqa: E402
     StockLedger,
     StockPosition,
     StockStage,
+)
+from .jobwork import (  # noqa: E402
+    JobWorkOrder,
+    JobWorkOrderLine,
+    JobWorkOrderStatus,
+    JobWorkReceipt,
+    JobWorkReceiptLine,
+    JobWorkReceiptStatus,
 )
 from .masters import (  # noqa: E402
     CoaGroup,
@@ -143,6 +152,12 @@ __all__ = [
     "Item",
     "ItemType",
     "ItemUomAlt",
+    "JobWorkOrder",
+    "JobWorkOrderLine",
+    "JobWorkOrderStatus",
+    "JobWorkReceipt",
+    "JobWorkReceiptLine",
+    "JobWorkReceiptStatus",
     "JournalLineType",
     "Ledger",
     "Location",
@@ -195,6 +210,7 @@ __all__ = [
     "feature_flag",
     "identity",
     "inventory",
+    "jobwork",
     "masters",
     "procurement",
     "sales",
