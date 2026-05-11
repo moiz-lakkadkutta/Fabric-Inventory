@@ -136,4 +136,74 @@ note "STEP 5: retention prune leaves today's artefact alone"
   || fail "today's artefact got pruned (retention should be 7 days by default)"
 green "  step 5 ok: fresh artefact survives retention prune"
 
-green "ALL CUT-404 BACKUP TESTS PASSED"
+# ── Step 6: CUT-501c hard-fail path (BACKUP_FAIL_PLAINTEXT=1 + no passphrase) ─
+note "STEP 6: BACKUP_FAIL_PLAINTEXT=1 must exit 1 when passphrase is empty"
+fail_log="$(mktemp)"
+fail_dir="$(mktemp -d)/fail-backups"
+mkdir -p "$fail_dir"
+
+# Run backup.sh in a fresh env: no passphrase, but the prod policy flag is on.
+set +e
+env -i PATH="$PATH" HOME="$HOME" \
+  POSTGRES_HOST="$POSTGRES_HOST" \
+  POSTGRES_PORT="$POSTGRES_PORT" \
+  POSTGRES_USER="$POSTGRES_USER" \
+  POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+  POSTGRES_DB="$SRC_DB" \
+  BACKUP_DIR="$fail_dir" \
+  BACKUP_FAIL_PLAINTEXT=1 \
+  bash "$REPO_ROOT/ops/backup.sh" >"$fail_log" 2>&1
+fail_rc=$?
+set -e
+
+if [ "$fail_rc" -eq 0 ]; then
+  cat "$fail_log"
+  fail "backup.sh exited 0 with BACKUP_FAIL_PLAINTEXT=1 and no passphrase — expected non-zero"
+fi
+grep -qE "BACKUP_FAIL_PLAINTEXT|refusing to produce an unencrypted" "$fail_log" \
+  || { cat "$fail_log"; fail "expected hard-fail error message naming BACKUP_FAIL_PLAINTEXT"; }
+
+# And the script must NOT leave a plaintext .sql.gz lying around in $fail_dir.
+leaked="$(ls -1 "$fail_dir"/fabric_*.sql.gz 2>/dev/null | head -n1 || true)"
+[ -z "$leaked" ] \
+  || fail "hard-fail path leaked a plaintext artefact: $leaked"
+
+rm -f "$fail_log"
+rm -rf "$(dirname "$fail_dir")"
+green "  step 6 ok: BACKUP_FAIL_PLAINTEXT=1 hard-fails and leaves no plaintext"
+
+# ── Step 7: warn-and-continue path stays the default (no flag set) ───────────
+note "STEP 7: unset BACKUP_FAIL_PLAINTEXT + no passphrase → warn + plaintext"
+warn_log="$(mktemp)"
+warn_dir="$(mktemp -d)/warn-backups"
+mkdir -p "$warn_dir"
+
+set +e
+env -i PATH="$PATH" HOME="$HOME" \
+  POSTGRES_HOST="$POSTGRES_HOST" \
+  POSTGRES_PORT="$POSTGRES_PORT" \
+  POSTGRES_USER="$POSTGRES_USER" \
+  POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+  POSTGRES_DB="$SRC_DB" \
+  BACKUP_DIR="$warn_dir" \
+  bash "$REPO_ROOT/ops/backup.sh" >"$warn_log" 2>&1
+warn_rc=$?
+set -e
+
+if [ "$warn_rc" -ne 0 ]; then
+  cat "$warn_log"
+  fail "backup.sh exited $warn_rc with no flag set — expected 0 (warn-and-continue)"
+fi
+grep -qE "BACKUP_GPG_PASSPHRASE not set" "$warn_log" \
+  || { cat "$warn_log"; fail "expected warning about missing passphrase"; }
+
+warn_artefact="$(ls -1 "$warn_dir"/fabric_*.sql.gz 2>/dev/null | head -n1 || true)"
+[ -n "$warn_artefact" ] \
+  || { cat "$warn_log"; fail "expected a plaintext .sql.gz under $warn_dir"; }
+[ -s "$warn_artefact" ] || fail "warn-path artefact is zero-size: $warn_artefact"
+
+rm -f "$warn_log"
+rm -rf "$(dirname "$warn_dir")"
+green "  step 7 ok: warn-and-continue still works without the flag"
+
+green "ALL CUT-404 + CUT-501c BACKUP TESTS PASSED"
