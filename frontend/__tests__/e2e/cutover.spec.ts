@@ -253,7 +253,11 @@ test.describe('CUT-503 acceptance: Wave 1-5 cutover scenario', () => {
           firm_id: ctx.firmId,
           code: KARIGAR_CODE,
           name: KARIGAR_NAME,
-          is_supplier: true, // karigars are modelled as supplier-type parties for job-work
+          // jobwork_service._ensure_karigar() enforces is_karigar=true
+          // before accepting a JWO; the party model carries both flags
+          // independently so a karigar can also be a supplier (common
+          // when the karigar buys raw fabric back).
+          is_karigar: true,
           state_code: STATE_CODE,
           tax_status: 'UNREGISTERED',
         },
