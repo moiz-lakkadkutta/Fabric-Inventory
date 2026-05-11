@@ -110,7 +110,8 @@ def _create_bank_account(
         },
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()["bank_account_id"]
+    bank_account_id: str = resp.json()["bank_account_id"]
+    return bank_account_id
 
 
 CSV_MEDIA = "text/csv"
