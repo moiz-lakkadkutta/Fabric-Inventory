@@ -88,56 +88,68 @@ Detailed acceptance criteria for each TASK-CUT-NNN: see `docs/ops/cutover-plan-2
 | **TASK-CUT-005** | Wave-1 spike combo: Vyapar / Reports BE / PDF tech | **Done** (PR #56) |
 | **TASK-CUT-006** | Hot-fix: restore frontend tests on integrated main | **Done** (PR #60) |
 
-**Wave 1 demo gate:** awaiting Moiz walk of `docs/ops/wave-1-demo.md`.
+**Wave 1 demo gate:** superseded by Wave 2 demo (Wave 2 covers all Wave 1 surface area + Wave 2 surface — see cutover plan status board). Moiz signed off Wave 2 demo; Wave 1 is closed.
 
 #### Wave 2 — Masters live + Banking live + Reports BE foundation
 
 | ID | Subject | Layer | Status |
 |---|---|---|---|
-| **TASK-CUT-101** | Parties FE wired live | FE | Blocked by Wave 1 demo gate |
-| **TASK-CUT-102** | Items + SKUs FE wired live | FE | Blocked by Wave 1 demo gate |
-| **TASK-CUT-103** | Banking FE: bank accounts + cheques + receipt screen + vouchers list | FE+BE | Blocked by Wave 1 demo gate |
-| **TASK-CUT-104** | P1 fix bundle: receipts party_id + FIFO timing + cheques count + invoice list gst_total | BE+FE | Blocked by Wave 1 demo gate |
-| **TASK-CUT-105** | Reports BE foundation: P&L + TB + Daybook + Stock summary | BE | **Done** |
-| **TASK-CUT-106** | OpenAPI codegen | tooling | Blocked by Wave 1 demo gate |
+| **TASK-CUT-101** | Parties FE wired live | FE | **Done** (PR #63) |
+| **TASK-CUT-102** | Items + SKUs FE wired live | FE | **Done** (PR #64) |
+| **TASK-CUT-103** | Banking FE: bank accounts + cheques + receipt screen + vouchers list | FE+BE | **Done** (PR #67) |
+| **TASK-CUT-104** | P1 fix bundle: receipts party_id + FIFO timing + cheques count + invoice list gst_total | BE+FE | **Done** (PR #66) |
+| **TASK-CUT-105** | Reports BE foundation: P&L + TB + Daybook + Stock summary | BE | **Done** (PR #68) |
+| **TASK-CUT-106** | OpenAPI codegen | tooling | **Done** (PR #65) |
+| **TASK-CUT-107** | Hot-fix: liveSignup auto-switch to single available firm | FE | **Done** (PR #70) |
+| **TASK-CUT-108** | Hot-fix: InvoiceCreate empty-state CTAs | FE | **Done** (PR #71) |
+
+**Wave 2 demo gate:** Demo passed 2026-05-10 — Moiz greenlit Wave 3.
 
 #### Wave 3 — Procurement + Sales lifecycle + PDF + Stock
 
 | ID | Subject | Layer | Status |
 |---|---|---|---|
-| **TASK-CUT-201** | Purchase Order FE wired live | FE | Blocked by Wave 2 |
-| **TASK-CUT-202** | GRN FE + Purchase Invoice FE | FE | Blocked by Wave 2 |
-| **TASK-CUT-203** | Sales Order FE + Delivery Challan FE | FE+BE | Blocked by Wave 2 |
-| **TASK-CUT-204** | Stock adjustments FE | FE | Blocked by Wave 2 |
-| **TASK-CUT-205** | Invoice PDF rendering BE (WeasyPrint) + Print button wire | BE+FE | Blocked by Wave 2 |
+| **TASK-CUT-201** | Purchase Order FE wired live | FE | **Done** (PR #73) |
+| **TASK-CUT-202** | GRN FE + Purchase Invoice FE | FE | **Done** (PR #72) |
+| **TASK-CUT-203** | Sales Order FE + Delivery Challan FE | FE+BE | **Done** (PR #74) |
+| **TASK-CUT-204** | Stock adjustments FE | FE | **Done** (PR #75) |
+| **TASK-CUT-205** | Invoice PDF rendering BE (WeasyPrint) + Print button wire | BE+FE | **Done** (PR #76) |
+| **TASK-CUT-206** | Hot-fix: locations create endpoint + AdjustStockDialog empty-state | BE+FE | **Done** (PR #78) |
+
+**Wave 3 demo gate:** Demo passed 2026-05-10 — Moiz greenlit Wave 4.
 
 #### Wave 4 — Reports FE + remaining Reports BE + Auth completion + Job-work BE + Migration foundation
 
 | ID | Subject | Layer | Status |
 |---|---|---|---|
-| **TASK-CUT-301** | Reports FE wired live (5 tabs) | FE | Blocked by Wave 3 |
-| **TASK-CUT-302** | Remaining Reports BE: Ledger detail + Ageing + Party statement + GSTR-1 | BE | Blocked by Wave 3 |
-| **TASK-CUT-303** | Forgot-password BE+FE | BE+FE | Blocked by Wave 3 |
-| **TASK-CUT-304** | Admin/invites BE+FE | BE+FE | Blocked by Wave 3 |
-| **TASK-CUT-305** | MigrationAdapter protocol + intermediate format + Job-work BE | BE | Blocked by Wave 3 |
+| **TASK-CUT-301** | Reports FE wired live (5 tabs) | FE | **Done** (PR #79) |
+| **TASK-CUT-302** | Remaining Reports BE: Ledger detail + Ageing + Party statement + GSTR-1 | BE | **Done** (PR #80) |
+| **TASK-CUT-303** | Forgot-password BE+FE | BE+FE | **Done** (PR #83) |
+| **TASK-CUT-304** | Admin/invites BE+FE | BE+FE | **Done** (PR #82) |
+| **TASK-CUT-305** | MigrationAdapter protocol + intermediate format + Job-work BE | BE | **Done** (PR #81) |
+
+**Wave 4 demo gate:** Demo passed 2026-05-11 — Moiz greenlit Wave 5.
 
 #### Wave 5 — Job-work FE + Vyapar + Exports + Ops
 
 | ID | Subject | Layer | Status |
 |---|---|---|---|
-| **TASK-CUT-401** | Job-work FE wired live | FE | Blocked by Wave 4 |
-| **TASK-CUT-402** | Vyapar Excel adapter + opening balance import + reconciliation + sign-off | BE+FE | Blocked by Wave 4 |
-| **TASK-CUT-403** | CSV/Excel exports per list | BE+FE | Done — see `docs/retros/task-CUT-403.md` |
-| **TASK-CUT-404** | Backups: make backup + cron + restore-test runbook | ops | Blocked by Wave 4 |
+| **TASK-CUT-401** | Job-work FE wired live | FE | **Done** (PR #85) |
+| **TASK-CUT-402** | Vyapar Excel adapter + opening balance import + reconciliation + sign-off | BE+FE | **Done** (PR #89) |
+| **TASK-CUT-403** | CSV/Excel exports per list | BE+FE | **Done** (PR #88) |
+| **TASK-CUT-404** | Backups: make backup + cron + restore-test runbook | ops | **Done** (PR #86) |
 | **TASK-CUT-405** | HTTPS via Caddy + deployment runbook + Sentry FE wiring + email provider | ops | **Done** (PR #87) |
+
+**Wave 5 demo gate:** PRs landed 2026-05-11; demo walk pending Moiz — see `docs/ops/wave-5-demo.md`.
 
 #### Wave 6 — Polish + dogfood acceptance
 
 | ID | Subject | Status |
 |---|---|---|
-| **TASK-CUT-501** | Closeout — wave-demo follow-ups | Blocked by Wave 5 |
-| **TASK-CUT-502** | Cutover runbook (Vyapar → Fabric, step-by-step) | Blocked by Wave 5 |
-| **TASK-CUT-503** | Acceptance e2e Playwright suite | Blocked by Wave 5 |
+| **TASK-CUT-501c** | Ops + docs hygiene closeout (Sentry deps + prod-Docker CI smoke + backup hard-fail + TASKS sync + agent-prompt memos) | **Ready** |
+| **TASK-CUT-501** | Closeout — wave-demo follow-ups | Blocked by Wave 5 demo |
+| **TASK-CUT-502** | Cutover runbook (Vyapar → Fabric, step-by-step) | Blocked by Wave 5 demo |
+| **TASK-CUT-503** | Acceptance e2e Playwright suite | Blocked by Wave 5 demo |
 
 ### Picking order rules (post-cutover-plan)
 

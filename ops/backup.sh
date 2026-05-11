@@ -21,7 +21,16 @@
 #   POSTGRES_PORT        (default: 5432)
 #   BACKUP_DIR           (default: ./ops/backups)
 #   BACKUP_RETENTION_DAYS (default: 7)
-#   BACKUP_GPG_PASSPHRASE  (if absent → encryption skipped + warning)
+#   BACKUP_GPG_PASSPHRASE  (if absent → encryption skipped + warning,
+#                           unless BACKUP_FAIL_PLAINTEXT=1 is set in
+#                           which case the script exits 1 — CUT-501c
+#                           hardening for prod, default in
+#                           ops/.env.production.example)
+#   BACKUP_FAIL_PLAINTEXT  (if 1 and BACKUP_GPG_PASSPHRASE is empty,
+#                           refuse to produce an unencrypted artefact
+#                           and exit 1. Prod sets this; dev/CI leave it
+#                           unset so the warn-and-continue path is the
+#                           default for the test scaffolding.)
 #   B2_BUCKET, B2_ACCESS_KEY_ID, B2_SECRET_KEY, B2_ENDPOINT_URL
 #                          (if any absent → upload skipped + warning,
 #                           local artefact still produced — CI runs this way)
@@ -91,7 +100,16 @@ fi
 size_h="$(du -h "$dump_path" | cut -f1)"
 log "dump complete: $dump_path ($size_h)"
 
-# ── Step 2: encrypt (optional but warned-on-skip) ────────────────────────────
+# ── Step 2: encrypt (optional but warned-on-skip; hard-fail on prod) ────────
+# CUT-501c: when BACKUP_FAIL_PLAINTEXT=1 (default for prod, see
+# ops/.env.production.example), refuse to produce an unencrypted artefact
+# and exit 1. Dev/CI keep the warn-and-continue path because the test
+# scaffolding doesn't have a passphrase wired through universally.
+if [ -z "${BACKUP_GPG_PASSPHRASE:-}" ] && [ "${BACKUP_FAIL_PLAINTEXT:-}" = "1" ]; then
+  rm -f "$dump_path"
+  fail "BACKUP_GPG_PASSPHRASE is not set and BACKUP_FAIL_PLAINTEXT=1 — refusing to produce an unencrypted artefact. Set BACKUP_GPG_PASSPHRASE in ops/.env.backup before running again."
+fi
+
 if [ -n "${BACKUP_GPG_PASSPHRASE:-}" ]; then
   encrypted_path="${dump_path}.gpg"
   log "encrypting → $encrypted_path"
