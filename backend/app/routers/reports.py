@@ -15,15 +15,26 @@ has no active firm they get a 403 to mirror the dashboard pattern.
 from __future__ import annotations
 
 import datetime
+import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 
 from app.dependencies import SyncDBSession, require_permission
-from app.exceptions import PermissionDeniedError
+from app.exceptions import NotFoundError, PermissionDeniedError
 from app.schemas.reports import (
+    AgeingResponse,
+    AgeingRow,
     DaybookResponse,
     DaybookVoucher,
+    Gstr1B2csRow,
+    Gstr1HsnRow,
+    Gstr1InvoiceRow,
+    Gstr1Response,
+    LedgerStatementResponse,
+    LedgerStatementRow,
+    PartyStatementResponse,
+    PartyStatementRow,
     PnlGroupRow,
     PnlPeriod,
     PnlResponse,
@@ -212,4 +223,182 @@ def get_stock_summary(
             )
             for r in rows
         ],
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CUT-302 — ledger / ageing / party-statement / gstr1
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/ledger/{ledger_id}",
+    response_model=LedgerStatementResponse,
+    summary="Per-ledger statement for a date range with running balance",
+)
+def get_ledger_statement(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("accounting.report.view"))],
+    ledger_id: Annotated[uuid.UUID, Path()],
+    from_date: Annotated[datetime.date | None, Query(alias="from")] = None,
+    to_date: Annotated[datetime.date | None, Query(alias="to")] = None,
+) -> LedgerStatementResponse:
+    _require_active_firm(current_user)
+    assert current_user.firm_id is not None
+    result = reports_service.compute_ledger_statement(
+        db,
+        org_id=current_user.org_id,
+        firm_id=current_user.firm_id,
+        ledger_id=ledger_id,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    if result is None:
+        raise NotFoundError(f"Ledger {ledger_id} not found.", title="Ledger not found")
+    return LedgerStatementResponse(
+        ledger_id=result.header.ledger_id,
+        ledger_code=result.header.ledger_code,
+        ledger_name=result.header.ledger_name,
+        group_code=result.header.group_code,
+        from_date=result.from_date,
+        to_date=result.to_date,
+        opening_balance=result.opening_balance,
+        closing_balance=result.closing_balance,
+        total_debits=result.total_debits,
+        total_credits=result.total_credits,
+        rows=[
+            LedgerStatementRow(
+                voucher_id=r.voucher_id,
+                voucher_type=r.voucher_type,
+                voucher_date=r.voucher_date,
+                series=r.series,
+                number=r.number,
+                narration=r.narration,
+                description=r.description,
+                debit=r.debit,
+                credit=r.credit,
+                balance=r.balance,
+            )
+            for r in result.rows
+        ],
+    )
+
+
+@router.get(
+    "/ageing",
+    response_model=AgeingResponse,
+    summary="AR ageing buckets per party (current, 1-30, 31-60, 61-90, >90)",
+)
+def get_ageing(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("accounting.report.view"))],
+    as_of: Annotated[datetime.date | None, Query()] = None,
+) -> AgeingResponse:
+    _require_active_firm(current_user)
+    assert current_user.firm_id is not None
+    resolved_as_of, total_outstanding, rows = reports_service.compute_ageing(
+        db,
+        org_id=current_user.org_id,
+        firm_id=current_user.firm_id,
+        as_of=as_of,
+    )
+    return AgeingResponse(
+        as_of=resolved_as_of,
+        total_outstanding=total_outstanding,
+        rows=[
+            AgeingRow(
+                party_id=r.party_id,
+                party_name=r.party_name,
+                outstanding=r.outstanding,
+                current=r.current,
+                bucket_1_30=r.bucket_1_30,
+                bucket_31_60=r.bucket_31_60,
+                bucket_61_90=r.bucket_61_90,
+                bucket_over_90=r.bucket_over_90,
+            )
+            for r in rows
+        ],
+    )
+
+
+@router.get(
+    "/party-statement/{party_id}",
+    response_model=PartyStatementResponse,
+    summary="Per-party voucher list + running balance",
+)
+def get_party_statement(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("accounting.report.view"))],
+    party_id: Annotated[uuid.UUID, Path()],
+    from_date: Annotated[datetime.date | None, Query(alias="from")] = None,
+    to_date: Annotated[datetime.date | None, Query(alias="to")] = None,
+) -> PartyStatementResponse:
+    _require_active_firm(current_user)
+    assert current_user.firm_id is not None
+    result = reports_service.compute_party_statement(
+        db,
+        org_id=current_user.org_id,
+        firm_id=current_user.firm_id,
+        party_id=party_id,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    if result is None:
+        raise NotFoundError(f"Party {party_id} not found.", title="Party not found")
+    return PartyStatementResponse(
+        party_id=result.party_id,
+        party_name=result.party_name,
+        from_date=result.from_date,
+        to_date=result.to_date,
+        opening_balance=result.opening_balance,
+        closing_balance=result.closing_balance,
+        total_debits=result.total_debits,
+        total_credits=result.total_credits,
+        period_change=result.period_change,
+        rows=[
+            PartyStatementRow(
+                voucher_id=r.voucher_id,
+                voucher_type=r.voucher_type,
+                voucher_date=r.voucher_date,
+                series=r.series,
+                number=r.number,
+                narration=r.narration,
+                reference_type=r.reference_type,
+                reference_id=r.reference_id,
+                debit=r.debit,
+                credit=r.credit,
+                balance=r.balance,
+            )
+            for r in result.rows
+        ],
+    )
+
+
+@router.get(
+    "/gstr1",
+    response_model=Gstr1Response,
+    summary="GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period",
+)
+def get_gstr1(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("accounting.report.view"))],
+    period: Annotated[str, Query(description="Period as YYYY-MM (Indian fiscal month).")],
+) -> Gstr1Response:
+    _require_active_firm(current_user)
+    assert current_user.firm_id is not None
+    result = reports_service.compute_gstr1(
+        db,
+        org_id=current_user.org_id,
+        firm_id=current_user.firm_id,
+        period=period,
+    )
+    return Gstr1Response(
+        period=result.period,
+        from_date=result.from_date,
+        to_date=result.to_date,
+        b2b=[Gstr1InvoiceRow(**inv.__dict__) for inv in result.b2b],
+        b2cl=[Gstr1InvoiceRow(**inv.__dict__) for inv in result.b2cl],
+        b2cs=[Gstr1B2csRow(**row.__dict__) for row in result.b2cs],
+        export=[Gstr1InvoiceRow(**inv.__dict__) for inv in result.export],
+        hsn=[Gstr1HsnRow(**row.__dict__) for row in result.hsn],
     )

@@ -4468,6 +4468,33 @@ paths:
           $ref: '#/components/responses/Unauthorized'
       x-permission: reports.ageing.read
 
+  /reports/gstr1:
+    get:
+      summary: Get GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period
+      operationId: getGstr1
+      tags:
+        - reports
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: period
+          in: query
+          required: true
+          description: Period as YYYY-MM (Indian fiscal month).
+          schema:
+            type: string
+            pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$'
+      responses:
+        '200':
+          description: GSTR-1 envelope — five buckets keyed by category.
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      x-permission: accounting.report.view
+
   /reports/item-profit:
     get:
       summary: Get item-wise profit report

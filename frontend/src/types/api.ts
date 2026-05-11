@@ -849,6 +849,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/reports/ageing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** AR ageing buckets per party (current, 1-30, 31-60, 61-90, >90) */
+        get: operations["get_ageing_reports_ageing_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/reports/daybook": {
         parameters: {
             query?: never;
@@ -858,6 +875,57 @@ export interface paths {
         };
         /** All vouchers posted on a single day */
         get: operations["get_daybook_reports_daybook_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/gstr1": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period */
+        get: operations["get_gstr1_reports_gstr1_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/ledger/{ledger_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Per-ledger statement for a date range with running balance */
+        get: operations["get_ledger_statement_reports_ledger__ledger_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/party-statement/{party_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Per-party voucher list + running balance */
+        get: operations["get_party_statement_reports_party_statement__party_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1142,6 +1210,49 @@ export interface components {
             count: number;
             /** Items */
             items: components["schemas"]["ActivityItemResponse"][];
+        };
+        /** AgeingResponse */
+        AgeingResponse: {
+            /**
+             * As Of
+             * Format: date
+             */
+            as_of: string;
+            /** Rows */
+            rows: components["schemas"]["AgeingRow"][];
+            /** Total Outstanding */
+            total_outstanding: string;
+        };
+        /**
+         * AgeingRow
+         * @description One party row in the AR ageing report.
+         *
+         *     Buckets are computed from each open invoice's ``invoice_date`` to
+         *     ``as_of`` (days), then summed per party. ``outstanding`` is the
+         *     sum of ``invoice_amount - paid_amount`` for the party's
+         *     non-cancelled invoices as of the report date. The five buckets
+         *     must sum exactly to ``outstanding``.
+         */
+        AgeingRow: {
+            /** Bucket 1 30 */
+            bucket_1_30: string;
+            /** Bucket 31 60 */
+            bucket_31_60: string;
+            /** Bucket 61 90 */
+            bucket_61_90: string;
+            /** Bucket Over 90 */
+            bucket_over_90: string;
+            /** Current */
+            current: string;
+            /** Outstanding */
+            outstanding: string;
+            /**
+             * Party Id
+             * Format: uuid
+             */
+            party_id: string;
+            /** Party Name */
+            party_name: string;
         };
         /** BankAccountCreateRequest */
         BankAccountCreateRequest: {
@@ -1723,6 +1834,138 @@ export interface components {
          * @enum {string}
          */
         GRNStatus: "DRAFT" | "ACKNOWLEDGED" | "IN_PROCESS" | "RETURNED" | "CLOSED";
+        /**
+         * Gstr1B2csRow
+         * @description One aggregated row in the B2C-Small bucket — group key is
+         *     ``(place_of_supply_state, gst_rate)`` per the Indian GSTR-1 schema.
+         *     Multiple invoices roll up into one row.
+         */
+        Gstr1B2csRow: {
+            /** Cgst */
+            cgst: string;
+            /** Gst Rate */
+            gst_rate: string;
+            /** Igst */
+            igst: string;
+            /** Invoice Count */
+            invoice_count: number;
+            /** Place Of Supply State */
+            place_of_supply_state: string;
+            /** Sgst */
+            sgst: string;
+            /** Taxable Value */
+            taxable_value: string;
+        };
+        /**
+         * Gstr1HsnRow
+         * @description One HSN summary row. The GSTR-1 HSN section aggregates all
+         *     invoice lines by HSN code (with UQC/UOM and rate alongside). Items
+         *     without an HSN set surface as empty-string ``hsn_code``; the FE
+         *     flags them as data-quality issues.
+         */
+        Gstr1HsnRow: {
+            /** Cgst */
+            cgst: string;
+            /** Description */
+            description: string | null;
+            /** Hsn Code */
+            hsn_code: string;
+            /** Igst */
+            igst: string;
+            /** Sgst */
+            sgst: string;
+            /** Taxable Value */
+            taxable_value: string;
+            /** Total Qty */
+            total_qty: string;
+            /** Total Value */
+            total_value: string;
+            /** Uom */
+            uom: string;
+        };
+        /**
+         * Gstr1InvoiceRow
+         * @description One invoice row in the B2B / B2CL / EXPORT buckets. Tax split
+         *     matches CGST/SGST/IGST per the invoice's tax_type. ``gstin`` is
+         *     masked-but-printable (hex of the encrypted blob is opaque; the FE
+         *     can render "GSTIN on file" without the value). Future Wave-5
+         *     refinement will decrypt for filing-XML generation.
+         */
+        Gstr1InvoiceRow: {
+            /** Cgst */
+            cgst: string;
+            /** Gst Rate */
+            gst_rate: string | null;
+            /** Gstin */
+            gstin: string | null;
+            /** Igst */
+            igst: string;
+            /**
+             * Invoice Date
+             * Format: date
+             */
+            invoice_date: string;
+            /** Invoice Value */
+            invoice_value: string;
+            /** Number */
+            number: string;
+            /**
+             * Party Id
+             * Format: uuid
+             */
+            party_id: string;
+            /** Party Name */
+            party_name: string;
+            /** Place Of Supply State */
+            place_of_supply_state: string | null;
+            /**
+             * Sales Invoice Id
+             * Format: uuid
+             */
+            sales_invoice_id: string;
+            /** Series */
+            series: string;
+            /** Sgst */
+            sgst: string;
+            /** Taxable Value */
+            taxable_value: string;
+        };
+        /**
+         * Gstr1Response
+         * @description GSTR-1 envelope for ``period`` = YYYY-MM. Buckets:
+         *     b2b:    Registered (GSTIN-present) sales (intra + inter state).
+         *     b2cl:   Inter-state B2C invoices > ₹2.5L, invoice-wise.
+         *     b2cs:   Aggregated B2C below threshold or intra-state, by
+         *             (state, rate).
+         *     export: Zero-rated overseas / SEZ / EOU sales (party.is_export
+         *             / party.is_sez set; or place_of_supply is one of
+         *             'SEZ', 'EXPORT', 'EOU', or no Indian state code).
+         *     hsn:    Per-HSN aggregation across every taxable line.
+         */
+        Gstr1Response: {
+            /** B2B */
+            b2b: components["schemas"]["Gstr1InvoiceRow"][];
+            /** B2Cl */
+            b2cl: components["schemas"]["Gstr1InvoiceRow"][];
+            /** B2Cs */
+            b2cs: components["schemas"]["Gstr1B2csRow"][];
+            /** Export */
+            export: components["schemas"]["Gstr1InvoiceRow"][];
+            /**
+             * From Date
+             * Format: date
+             */
+            from_date: string;
+            /** Hsn */
+            hsn: components["schemas"]["Gstr1HsnRow"][];
+            /** Period */
+            period: string;
+            /**
+             * To Date
+             * Format: date
+             */
+            to_date: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1998,6 +2241,84 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * LedgerStatementResponse
+         * @description Ledger statement envelope. ``opening_balance`` is the net signed
+         *     balance immediately before ``from_date`` (sum of opening_balance +
+         *     all DR/CR up to that day). ``closing_balance`` is the cumulative
+         *     balance after the last row inside the window. ``total_debits`` and
+         *     ``total_credits`` aggregate only the rows inside the window.
+         */
+        LedgerStatementResponse: {
+            /** Closing Balance */
+            closing_balance: string;
+            /**
+             * From Date
+             * Format: date
+             */
+            from_date: string;
+            /** Group Code */
+            group_code: string | null;
+            /** Ledger Code */
+            ledger_code: string;
+            /**
+             * Ledger Id
+             * Format: uuid
+             */
+            ledger_id: string;
+            /** Ledger Name */
+            ledger_name: string;
+            /** Opening Balance */
+            opening_balance: string;
+            /** Rows */
+            rows: components["schemas"]["LedgerStatementRow"][];
+            /**
+             * To Date
+             * Format: date
+             */
+            to_date: string;
+            /** Total Credits */
+            total_credits: string;
+            /** Total Debits */
+            total_debits: string;
+        };
+        /**
+         * LedgerStatementRow
+         * @description One journal-line row in a ledger statement.
+         *
+         *     Walking-balance order: rows sorted by ``voucher_date`` (ascending),
+         *     then ``voucher.number`` for stable intra-day ordering. ``balance``
+         *     is the cumulative ledger balance immediately after this row's
+         *     movement (DR-positive convention).
+         */
+        LedgerStatementRow: {
+            /** Balance */
+            balance: string;
+            /** Credit */
+            credit: string;
+            /** Debit */
+            debit: string;
+            /** Description */
+            description: string | null;
+            /** Narration */
+            narration: string | null;
+            /** Number */
+            number: string;
+            /** Series */
+            series: string;
+            /**
+             * Voucher Date
+             * Format: date
+             */
+            voucher_date: string;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
+            /** Voucher Type */
+            voucher_type: string;
         };
         /**
          * LedgerUpdateRequest
@@ -2631,6 +2952,82 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * PartyStatementResponse
+         * @description Party statement envelope. ``opening_balance`` is the cumulative
+         *     party balance immediately before ``from_date``; ``closing_balance``
+         *     is the cumulative balance at end of window. ``total_debits`` /
+         *     ``total_credits`` sum only rows inside the window. ``period_change``
+         *     = total_debits - total_credits (positive = party owes more).
+         */
+        PartyStatementResponse: {
+            /** Closing Balance */
+            closing_balance: string;
+            /**
+             * From Date
+             * Format: date
+             */
+            from_date: string;
+            /** Opening Balance */
+            opening_balance: string;
+            /**
+             * Party Id
+             * Format: uuid
+             */
+            party_id: string;
+            /** Party Name */
+            party_name: string;
+            /** Period Change */
+            period_change: string;
+            /** Rows */
+            rows: components["schemas"]["PartyStatementRow"][];
+            /**
+             * To Date
+             * Format: date
+             */
+            to_date: string;
+            /** Total Credits */
+            total_credits: string;
+            /** Total Debits */
+            total_debits: string;
+        };
+        /**
+         * PartyStatementRow
+         * @description One voucher row in a party statement. Order: ``voucher_date`` ASC
+         *     then voucher.number for stable ordering. ``balance`` is the running
+         *     party-balance after this voucher (DR-positive: positive = customer owes
+         *     money to us).
+         */
+        PartyStatementRow: {
+            /** Balance */
+            balance: string;
+            /** Credit */
+            credit: string;
+            /** Debit */
+            debit: string;
+            /** Narration */
+            narration: string | null;
+            /** Number */
+            number: string;
+            /** Reference Id */
+            reference_id: string | null;
+            /** Reference Type */
+            reference_type: string | null;
+            /** Series */
+            series: string;
+            /**
+             * Voucher Date
+             * Format: date
+             */
+            voucher_date: string;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
+            /** Voucher Type */
+            voucher_type: string;
         };
         /**
          * PartyUpdateRequest
@@ -6020,6 +6417,37 @@ export interface operations {
             };
         };
     };
+    get_ageing_reports_ageing_get: {
+        parameters: {
+            query?: {
+                as_of?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgeingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_daybook_reports_daybook_get: {
         parameters: {
             query?: {
@@ -6038,6 +6466,106 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DaybookResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_gstr1_reports_gstr1_get: {
+        parameters: {
+            query: {
+                /** @description Period as YYYY-MM (Indian fiscal month). */
+                period: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Gstr1Response"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_ledger_statement_reports_ledger__ledger_id__get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path: {
+                ledger_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerStatementResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_party_statement_reports_party_statement__party_id__get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path: {
+                party_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartyStatementResponse"];
                 };
             };
             /** @description Validation Error */

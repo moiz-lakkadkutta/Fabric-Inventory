@@ -47,6 +47,9 @@ from app.models import (
     VoucherLine,
 )
 from app.models.accounting import JournalLineType, VoucherStatus
+from app.models.sales import InvoiceLifecycleStatus, SiLine
+from app.service import gst_service
+from app.service.gst_service import TaxType
 
 # Indian fiscal year starts April 1.
 _FY_START_MONTH = 4
@@ -611,8 +614,939 @@ def compute_stock_summary(
     return as_of, total_value, rows
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Ledger Detail (CUT-302)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _LedgerHeader:
+    ledger_id: uuid.UUID
+    ledger_code: str
+    ledger_name: str
+    group_code: str | None
+    opening_balance_seed: Decimal
+
+
+@dataclass(frozen=True)
+class _LedgerStatementRow:
+    voucher_id: uuid.UUID
+    voucher_type: str
+    voucher_date: datetime.date
+    series: str
+    number: str
+    narration: str | None
+    description: str | None
+    debit: Decimal
+    credit: Decimal
+    balance: Decimal
+
+
+@dataclass(frozen=True)
+class _LedgerStatementResult:
+    header: _LedgerHeader
+    from_date: datetime.date
+    to_date: datetime.date
+    opening_balance: Decimal
+    closing_balance: Decimal
+    total_debits: Decimal
+    total_credits: Decimal
+    rows: list[_LedgerStatementRow]
+
+
+def _resolve_ledger_header(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    ledger_id: uuid.UUID,
+) -> _LedgerHeader | None:
+    """Look up a ledger by id, filtered by org + firm-or-system (firm_id IS NULL).
+
+    Returns None when the ledger is unknown / belongs to a different
+    firm — the router translates that to 404 (RLS-style: do not leak
+    cross-tenant existence)."""
+    row = session.execute(
+        select(
+            Ledger.ledger_id,
+            Ledger.code,
+            Ledger.name,
+            CoaGroup.code.label("group_code"),
+            func.coalesce(Ledger.opening_balance, 0).label("opening_balance"),
+        )
+        .join(CoaGroup, CoaGroup.coa_group_id == Ledger.coa_group_id)
+        .where(
+            Ledger.ledger_id == ledger_id,
+            Ledger.org_id == org_id,
+            Ledger.deleted_at.is_(None),
+            (Ledger.firm_id.is_(None)) | (Ledger.firm_id == firm_id),
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    return _LedgerHeader(
+        ledger_id=row.ledger_id,
+        ledger_code=row.code,
+        ledger_name=row.name,
+        group_code=row.group_code,
+        opening_balance_seed=Decimal(row.opening_balance or 0),
+    )
+
+
+def compute_ledger_statement(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    ledger_id: uuid.UUID,
+    from_date: datetime.date | None = None,
+    to_date: datetime.date | None = None,
+    today: datetime.date | None = None,
+) -> _LedgerStatementResult | None:
+    """Per-ledger statement: opening balance + journal lines in window +
+    walking balance. Returns ``None`` when the ledger doesn't exist (or
+    is not visible to this tenant); router renders that as 404.
+
+    Defaults: ``to_date=today``, ``from_date=fiscal_year_start(to_date)``.
+    """
+    if today is None:
+        today = datetime.datetime.now(tz=datetime.UTC).date()
+    if to_date is None:
+        to_date = today
+    if from_date is None:
+        from_date = fiscal_year_start(to_date)
+    if from_date > to_date:
+        raise AppValidationError(f"Invalid period: from_date ({from_date}) > to_date ({to_date}).")
+
+    header = _resolve_ledger_header(session, org_id=org_id, firm_id=firm_id, ledger_id=ledger_id)
+    if header is None:
+        return None
+
+    # Opening: seed + all DR/CR before from_date.
+    opening_movement_stmt = (
+        select(func.coalesce(func.sum(_net_voucher_amount()), 0))
+        .select_from(VoucherLine)
+        .join(Voucher, Voucher.voucher_id == VoucherLine.voucher_id)
+        .where(
+            VoucherLine.ledger_id == ledger_id,
+            Voucher.org_id == org_id,
+            Voucher.firm_id == firm_id,
+            Voucher.deleted_at.is_(None),
+            Voucher.status == VoucherStatus.POSTED,
+            Voucher.voucher_date < from_date,
+        )
+    )
+    opening_movement = Decimal(session.execute(opening_movement_stmt).scalar_one() or 0)
+    opening_balance = header.opening_balance_seed + opening_movement
+
+    # In-window rows. Order: voucher_date ASC then voucher.number for
+    # stable intra-day ordering. Multi-line vouchers may have more than
+    # one row hitting this ledger; each is returned separately.
+    rows_stmt = (
+        select(
+            Voucher.voucher_id,
+            Voucher.voucher_type,
+            Voucher.voucher_date,
+            Voucher.series,
+            Voucher.number,
+            Voucher.narration,
+            VoucherLine.description,
+            VoucherLine.line_type,
+            VoucherLine.amount,
+            VoucherLine.sequence,
+        )
+        .select_from(VoucherLine)
+        .join(Voucher, Voucher.voucher_id == VoucherLine.voucher_id)
+        .where(
+            VoucherLine.ledger_id == ledger_id,
+            Voucher.org_id == org_id,
+            Voucher.firm_id == firm_id,
+            Voucher.deleted_at.is_(None),
+            Voucher.status == VoucherStatus.POSTED,
+            Voucher.voucher_date >= from_date,
+            Voucher.voucher_date <= to_date,
+        )
+        .order_by(Voucher.voucher_date.asc(), Voucher.number.asc(), VoucherLine.sequence.asc())
+    )
+
+    running = opening_balance
+    total_debits = Decimal(0)
+    total_credits = Decimal(0)
+    out: list[_LedgerStatementRow] = []
+    for r in session.execute(rows_stmt):
+        amount = Decimal(r.amount or 0)
+        if r.line_type == JournalLineType.DR:
+            debit, credit = amount, Decimal(0)
+            running += amount
+            total_debits += amount
+        else:
+            debit, credit = Decimal(0), amount
+            running -= amount
+            total_credits += amount
+        vt = r.voucher_type
+        type_str = vt.value if hasattr(vt, "value") else str(vt)
+        out.append(
+            _LedgerStatementRow(
+                voucher_id=r.voucher_id,
+                voucher_type=type_str,
+                voucher_date=r.voucher_date,
+                series=r.series,
+                number=r.number,
+                narration=r.narration,
+                description=r.description,
+                debit=debit,
+                credit=credit,
+                balance=running,
+            )
+        )
+
+    return _LedgerStatementResult(
+        header=header,
+        from_date=from_date,
+        to_date=to_date,
+        opening_balance=opening_balance,
+        closing_balance=running,
+        total_debits=total_debits,
+        total_credits=total_credits,
+        rows=out,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# AR Ageing (CUT-302)
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Lifecycle states that count as "open AR": invoice is binding on the
+# customer (finalized into the ledger) and not voided. DRAFT/CONFIRMED
+# never hit the GL; CANCELLED/DISCARDED were never billed or reversed.
+_AGEING_OPEN_LIFECYCLE = (
+    "FINALIZED",
+    "POSTED",
+    "PARTIALLY_PAID",
+    "OVERDUE",
+)
+
+
+@dataclass(frozen=True)
+class _AgeingRow:
+    party_id: uuid.UUID
+    party_name: str
+    outstanding: Decimal
+    current: Decimal
+    bucket_1_30: Decimal
+    bucket_31_60: Decimal
+    bucket_61_90: Decimal
+    bucket_over_90: Decimal
+
+
+def _ageing_bucket(days_old: int) -> str:
+    """Pick the bucket name for an invoice ``days_old`` from as_of.
+
+    Convention: ``current`` covers days_old <= 0 (issued today or
+    future-dated — defensive). 1-30 covers 1..30, 31-60 covers 31..60,
+    61-90 covers 61..90, anything older lands in over_90.
+    """
+    if days_old <= 0:
+        return "current"
+    if days_old <= 30:
+        return "bucket_1_30"
+    if days_old <= 60:
+        return "bucket_31_60"
+    if days_old <= 90:
+        return "bucket_61_90"
+    return "bucket_over_90"
+
+
+def compute_ageing(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    as_of: datetime.date | None = None,
+    today: datetime.date | None = None,
+) -> tuple[datetime.date, Decimal, list[_AgeingRow]]:
+    """AR ageing per party as of ``as_of``.
+
+    For each non-cancelled, non-discarded, non-draft sales invoice
+    whose ``paid_amount < invoice_amount``, bucket the unpaid balance
+    by the age of the invoice (``as_of - invoice_date``, days). Parties
+    with zero outstanding are excluded.
+    """
+    if today is None:
+        today = datetime.datetime.now(tz=datetime.UTC).date()
+    if as_of is None:
+        as_of = today
+
+    stmt = (
+        select(
+            Party.party_id,
+            Party.name,
+            SalesInvoice.invoice_date,
+            (
+                func.coalesce(SalesInvoice.invoice_amount, 0)
+                - func.coalesce(SalesInvoice.paid_amount, 0)
+            ).label("balance"),
+        )
+        .select_from(SalesInvoice)
+        .join(Party, Party.party_id == SalesInvoice.party_id)
+        .where(
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.firm_id == firm_id,
+            SalesInvoice.deleted_at.is_(None),
+            SalesInvoice.invoice_date <= as_of,
+            SalesInvoice.lifecycle_status.in_(_AGEING_OPEN_LIFECYCLE),
+            (
+                func.coalesce(SalesInvoice.invoice_amount, 0)
+                - func.coalesce(SalesInvoice.paid_amount, 0)
+            )
+            > 0,
+        )
+    )
+
+    agg: dict[uuid.UUID, dict[str, Any]] = {}
+    for r in session.execute(stmt):
+        balance = Decimal(r.balance or 0)
+        if balance <= 0:
+            continue
+        days_old = (as_of - r.invoice_date).days
+        bucket = _ageing_bucket(days_old)
+        row = agg.setdefault(
+            r.party_id,
+            {
+                "party_id": r.party_id,
+                "party_name": r.name,
+                "outstanding": Decimal("0"),
+                "current": Decimal("0"),
+                "bucket_1_30": Decimal("0"),
+                "bucket_31_60": Decimal("0"),
+                "bucket_61_90": Decimal("0"),
+                "bucket_over_90": Decimal("0"),
+            },
+        )
+        row["outstanding"] += balance
+        row[bucket] += balance
+
+    rows = [
+        _AgeingRow(
+            party_id=r["party_id"],
+            party_name=r["party_name"],
+            outstanding=r["outstanding"],
+            current=r["current"],
+            bucket_1_30=r["bucket_1_30"],
+            bucket_31_60=r["bucket_31_60"],
+            bucket_61_90=r["bucket_61_90"],
+            bucket_over_90=r["bucket_over_90"],
+        )
+        for r in sorted(agg.values(), key=lambda r: r["party_name"])
+    ]
+    total_outstanding = sum((r.outstanding for r in rows), Decimal(0))
+    return as_of, total_outstanding, rows
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Party Statement (CUT-302)
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Voucher types that increase the party balance (party owes us more):
+# sales invoices, debit notes raised against a customer.
+_PARTY_DEBIT_VTYPES = ("SALES_INVOICE", "DEBIT_NOTE")
+# Voucher types that decrease the party balance: receipts (payment from
+# customer) and credit notes (we credit the customer).
+_PARTY_CREDIT_VTYPES = ("RECEIPT", "CREDIT_NOTE")
+
+
+@dataclass(frozen=True)
+class _PartyStatementRow:
+    voucher_id: uuid.UUID
+    voucher_type: str
+    voucher_date: datetime.date
+    series: str
+    number: str
+    narration: str | None
+    reference_type: str | None
+    reference_id: uuid.UUID | None
+    debit: Decimal
+    credit: Decimal
+    balance: Decimal
+
+
+@dataclass(frozen=True)
+class _PartyStatementResult:
+    party_id: uuid.UUID
+    party_name: str
+    from_date: datetime.date
+    to_date: datetime.date
+    opening_balance: Decimal
+    closing_balance: Decimal
+    total_debits: Decimal
+    total_credits: Decimal
+    period_change: Decimal
+    rows: list[_PartyStatementRow]
+
+
+def _party_voucher_query(
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    party_id: uuid.UUID,
+) -> Any:
+    """Build the base SQLAlchemy stmt for vouchers tied to ``party_id``.
+
+    A voucher is "tied" via either:
+      - voucher.party_id set directly (CUT-104; receipts mostly), or
+      - voucher.reference_type='sales_invoice' AND the referenced
+        sales_invoice.party_id == party_id (covers SALES_INVOICE).
+    """
+    si_party = (
+        select(SalesInvoice.sales_invoice_id)
+        .where(
+            SalesInvoice.party_id == party_id,
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.deleted_at.is_(None),
+        )
+        .scalar_subquery()
+    )
+    return select(
+        Voucher.voucher_id,
+        Voucher.voucher_type,
+        Voucher.voucher_date,
+        Voucher.series,
+        Voucher.number,
+        Voucher.narration,
+        Voucher.reference_type,
+        Voucher.reference_id,
+        Voucher.total_debit,
+        Voucher.total_credit,
+        Voucher.created_at,
+    ).where(
+        Voucher.org_id == org_id,
+        Voucher.firm_id == firm_id,
+        Voucher.deleted_at.is_(None),
+        Voucher.status == VoucherStatus.POSTED,
+        (Voucher.party_id == party_id)
+        | ((Voucher.reference_type == "sales_invoice") & (Voucher.reference_id.in_(si_party))),
+    )
+
+
+def _row_dr_cr(
+    voucher_type: str, total_debit: Decimal, total_credit: Decimal
+) -> tuple[Decimal, Decimal]:
+    """Classify a voucher row's contribution to the party balance.
+
+    For sales-side vouchers (SALES_INVOICE, DEBIT_NOTE) we use the
+    voucher's total_debit as the party DR (party owes us more).
+    For settlement vouchers (RECEIPT, CREDIT_NOTE) we use the total
+    as a party CR. Other voucher types (JOURNAL/CONTRA/OPENING_BAL)
+    fall through to a zero-net row so the statement still lists them.
+    """
+    total = Decimal(total_debit or total_credit or 0)
+    if voucher_type in _PARTY_DEBIT_VTYPES:
+        return total, Decimal(0)
+    if voucher_type in _PARTY_CREDIT_VTYPES:
+        return Decimal(0), total
+    return Decimal(0), Decimal(0)
+
+
+def compute_party_statement(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    party_id: uuid.UUID,
+    from_date: datetime.date | None = None,
+    to_date: datetime.date | None = None,
+    today: datetime.date | None = None,
+) -> _PartyStatementResult | None:
+    """Per-party voucher list + running balance. Returns ``None`` when
+    the party doesn't exist (RLS-default 404 in the router).
+
+    DR-positive convention: positive ``balance`` = party owes us money.
+    """
+    if today is None:
+        today = datetime.datetime.now(tz=datetime.UTC).date()
+    if to_date is None:
+        to_date = today
+    if from_date is None:
+        from_date = fiscal_year_start(to_date)
+    if from_date > to_date:
+        raise AppValidationError(f"Invalid period: from_date ({from_date}) > to_date ({to_date}).")
+
+    party_row = session.execute(
+        select(Party.party_id, Party.name).where(
+            Party.party_id == party_id,
+            Party.org_id == org_id,
+            Party.deleted_at.is_(None),
+        )
+    ).one_or_none()
+    if party_row is None:
+        return None
+
+    # Opening: tied vouchers strictly before from_date.
+    opening_balance = Decimal(0)
+    opening_stmt = _party_voucher_query(org_id=org_id, firm_id=firm_id, party_id=party_id).where(
+        Voucher.voucher_date < from_date
+    )
+    for r in session.execute(opening_stmt):
+        vt = r.voucher_type
+        type_str = vt.value if hasattr(vt, "value") else str(vt)
+        debit, credit = _row_dr_cr(
+            type_str, Decimal(r.total_debit or 0), Decimal(r.total_credit or 0)
+        )
+        opening_balance += debit - credit
+
+    # In-window rows, ordered by voucher_date then voucher.number then created_at.
+    rows_stmt = (
+        _party_voucher_query(org_id=org_id, firm_id=firm_id, party_id=party_id)
+        .where(Voucher.voucher_date >= from_date, Voucher.voucher_date <= to_date)
+        .order_by(Voucher.voucher_date.asc(), Voucher.number.asc(), Voucher.created_at.asc())
+    )
+    running = opening_balance
+    total_debits = Decimal(0)
+    total_credits = Decimal(0)
+    out: list[_PartyStatementRow] = []
+    for r in session.execute(rows_stmt):
+        vt = r.voucher_type
+        type_str = vt.value if hasattr(vt, "value") else str(vt)
+        debit, credit = _row_dr_cr(
+            type_str, Decimal(r.total_debit or 0), Decimal(r.total_credit or 0)
+        )
+        running += debit - credit
+        total_debits += debit
+        total_credits += credit
+        out.append(
+            _PartyStatementRow(
+                voucher_id=r.voucher_id,
+                voucher_type=type_str,
+                voucher_date=r.voucher_date,
+                series=r.series,
+                number=r.number,
+                narration=r.narration,
+                reference_type=r.reference_type,
+                reference_id=r.reference_id,
+                debit=debit,
+                credit=credit,
+                balance=running,
+            )
+        )
+
+    return _PartyStatementResult(
+        party_id=party_row.party_id,
+        party_name=party_row.name,
+        from_date=from_date,
+        to_date=to_date,
+        opening_balance=opening_balance,
+        closing_balance=running,
+        total_debits=total_debits,
+        total_credits=total_credits,
+        period_change=total_debits - total_credits,
+        rows=out,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GSTR-1 (CUT-302)
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Invoices in these lifecycle states are billed to the customer and
+# therefore appear on GSTR-1. DRAFT / CANCELLED / DISCARDED are
+# excluded — they never made it to a customer.
+_GSTR1_LIFECYCLE = (
+    InvoiceLifecycleStatus.FINALIZED,
+    InvoiceLifecycleStatus.POSTED,
+    InvoiceLifecycleStatus.PARTIALLY_PAID,
+    InvoiceLifecycleStatus.PAID,
+    InvoiceLifecycleStatus.OVERDUE,
+)
+
+# Non-state place-of-supply tokens the PoS engine writes for
+# zero-rated overseas / SEZ / EOU destinations.
+_EXPORT_POS_TOKENS = frozenset({"SEZ", "EXPORT", "EOU"})
+
+
+@dataclass(frozen=True)
+class _Gstr1InvoiceRow:
+    sales_invoice_id: uuid.UUID
+    invoice_date: datetime.date
+    series: str
+    number: str
+    party_id: uuid.UUID
+    party_name: str
+    gstin: str | None
+    place_of_supply_state: str | None
+    invoice_value: Decimal
+    taxable_value: Decimal
+    gst_rate: Decimal | None
+    cgst: Decimal
+    sgst: Decimal
+    igst: Decimal
+
+
+@dataclass(frozen=True)
+class _Gstr1B2csRow:
+    place_of_supply_state: str
+    gst_rate: Decimal
+    taxable_value: Decimal
+    cgst: Decimal
+    sgst: Decimal
+    igst: Decimal
+    invoice_count: int
+
+
+@dataclass(frozen=True)
+class _Gstr1HsnRow:
+    hsn_code: str
+    description: str | None
+    uom: str
+    total_qty: Decimal
+    taxable_value: Decimal
+    cgst: Decimal
+    sgst: Decimal
+    igst: Decimal
+    total_value: Decimal
+
+
+@dataclass(frozen=True)
+class _Gstr1Result:
+    period: str
+    from_date: datetime.date
+    to_date: datetime.date
+    b2b: list[_Gstr1InvoiceRow]
+    b2cl: list[_Gstr1InvoiceRow]
+    b2cs: list[_Gstr1B2csRow]
+    export: list[_Gstr1InvoiceRow]
+    hsn: list[_Gstr1HsnRow]
+
+
+def _parse_period(period: str) -> tuple[datetime.date, datetime.date]:
+    """``YYYY-MM`` → (from_date, to_date) covering that month inclusively."""
+    try:
+        year_str, month_str = period.split("-", 1)
+        year = int(year_str)
+        month = int(month_str)
+        if not (1 <= month <= 12):
+            raise ValueError(f"Month out of range: {month}")
+        from_date = datetime.date(year, month, 1)
+    except (ValueError, AttributeError) as exc:
+        raise AppValidationError(
+            f"Invalid period {period!r}; expected YYYY-MM (e.g. 2026-04)."
+        ) from exc
+    # to_date = last day of the month.
+    if month == 12:
+        to_date = datetime.date(year, 12, 31)
+    else:
+        to_date = datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
+    return from_date, to_date
+
+
+def _bucket_for_invoice(
+    *,
+    seller_state: str,
+    party_gstin: bytes | None,
+    party_is_export: bool,
+    party_is_sez: bool,
+    place_of_supply_state: str | None,
+    invoice_value: Decimal,
+) -> str:
+    """Classify a sales invoice into one of B2B / B2CL / B2CS / EXPORT.
+
+    Rules (mirroring `gst_service.determine_place_of_supply` + GSTR-1):
+      - export: party.is_export OR party.is_sez OR place_of_supply IN
+        {'SEZ','EXPORT','EOU'} (non-state tokens from the PoS engine).
+      - b2b: party has a GSTIN on file (REGISTERED).
+      - b2cl: B2C (no GSTIN), inter-state, invoice_value > ₹2.5L.
+      - b2cs: everything else B2C (intra-state, or inter-state ≤ ₹2.5L).
+    """
+    if party_is_export or party_is_sez:
+        return "export"
+    if place_of_supply_state in _EXPORT_POS_TOKENS:
+        return "export"
+    if party_gstin is not None:
+        return "b2b"
+    is_inter_state = place_of_supply_state is not None and place_of_supply_state != seller_state
+    if is_inter_state and invoice_value > gst_service.B2C_INTER_STATE_THRESHOLD:
+        return "b2cl"
+    return "b2cs"
+
+
+def _tax_type_for_invoice(*, raw_tax_type: str | None) -> TaxType:
+    """Map the stored ``sales_invoice.tax_type`` string to ``TaxType``.
+
+    NULL → CGST_SGST as a safe default (legacy invoices pre-PoS engine
+    were assumed intra-state). Unknown strings (forward-compat) fall
+    through to ``NIL`` so a stray value can't mis-split tax.
+    """
+    if not raw_tax_type:
+        return TaxType.CGST_SGST
+    try:
+        return TaxType(raw_tax_type)
+    except ValueError:
+        return TaxType.NIL
+
+
+def compute_gstr1(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    period: str,
+) -> _Gstr1Result:
+    """GSTR-1 buckets for a period (``YYYY-MM``).
+
+    Returns five buckets (b2b / b2cl / b2cs / export / hsn). All money is
+    Decimal end-to-end. Reuses `gst_service.split_tax` for the
+    CGST/SGST/IGST split per invoice.
+    """
+    from app.models import Firm  # local import to avoid top-of-module cycle.
+
+    from_date, to_date = _parse_period(period)
+
+    firm = session.execute(
+        select(Firm.firm_id, Firm.state_code).where(Firm.firm_id == firm_id, Firm.org_id == org_id)
+    ).one_or_none()
+    if firm is None:
+        # firm not visible — treat as empty bucket result (RLS-default).
+        return _Gstr1Result(
+            period=period,
+            from_date=from_date,
+            to_date=to_date,
+            b2b=[],
+            b2cl=[],
+            b2cs=[],
+            export=[],
+            hsn=[],
+        )
+    seller_state = firm.state_code or ""
+
+    inv_stmt = (
+        select(
+            SalesInvoice.sales_invoice_id,
+            SalesInvoice.invoice_date,
+            SalesInvoice.series,
+            SalesInvoice.number,
+            SalesInvoice.party_id,
+            SalesInvoice.place_of_supply_state,
+            SalesInvoice.invoice_amount,
+            SalesInvoice.gst_amount,
+            SalesInvoice.tax_type,
+            Party.name.label("party_name"),
+            Party.gstin.label("party_gstin"),
+            Party.is_export.label("party_is_export"),
+            Party.is_sez.label("party_is_sez"),
+        )
+        .join(Party, Party.party_id == SalesInvoice.party_id)
+        .where(
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.firm_id == firm_id,
+            SalesInvoice.deleted_at.is_(None),
+            SalesInvoice.invoice_date >= from_date,
+            SalesInvoice.invoice_date <= to_date,
+            SalesInvoice.lifecycle_status.in_(_GSTR1_LIFECYCLE),
+        )
+        .order_by(SalesInvoice.invoice_date.asc(), SalesInvoice.number.asc())
+    )
+
+    b2b: list[_Gstr1InvoiceRow] = []
+    b2cl: list[_Gstr1InvoiceRow] = []
+    export: list[_Gstr1InvoiceRow] = []
+    b2cs_agg: dict[tuple[str, Decimal], dict[str, Any]] = {}
+
+    for r in session.execute(inv_stmt):
+        invoice_total = Decimal(r.invoice_amount or 0)
+        gst_total = Decimal(r.gst_amount or 0)
+        taxable_value = invoice_total - gst_total
+        tax_type = _tax_type_for_invoice(raw_tax_type=r.tax_type)
+        split = gst_service.split_tax(tax_type=tax_type, gst_amount=gst_total)
+        bucket = _bucket_for_invoice(
+            seller_state=seller_state,
+            party_gstin=r.party_gstin,
+            party_is_export=bool(r.party_is_export),
+            party_is_sez=bool(r.party_is_sez),
+            place_of_supply_state=r.place_of_supply_state,
+            invoice_value=invoice_total,
+        )
+
+        if bucket == "b2cs":
+            # Aggregate by (state, representative-rate). Rate comes from
+            # the predominant line; for v1 we derive a single rate when
+            # all lines share one — otherwise we sum at the invoice's
+            # effective rate. Simpler approach: use total_gst/taxable as
+            # a derived rate, quantized to 2 decimals.
+            state = r.place_of_supply_state or seller_state
+            rate = (
+                (gst_total / taxable_value * Decimal("100")).quantize(Decimal("0.01"))
+                if taxable_value > 0
+                else Decimal("0")
+            )
+            b2cs_key: tuple[str, Decimal] = (state, rate)
+            bucket_row = b2cs_agg.setdefault(
+                b2cs_key,
+                {
+                    "place_of_supply_state": state,
+                    "gst_rate": rate,
+                    "taxable_value": Decimal("0"),
+                    "cgst": Decimal("0"),
+                    "sgst": Decimal("0"),
+                    "igst": Decimal("0"),
+                    "invoice_count": 0,
+                },
+            )
+            bucket_row["taxable_value"] += taxable_value
+            bucket_row["cgst"] += split.cgst
+            bucket_row["sgst"] += split.sgst
+            bucket_row["igst"] += split.igst
+            bucket_row["invoice_count"] += 1
+            continue
+
+        # GSTIN ciphertext is bytes; render as hex so the FE has *something*
+        # to display without leaking plaintext. Real-filing flow (Wave 5)
+        # will decrypt for the IRN payload; reporting just needs a stable
+        # opaque identifier.
+        gstin_str = r.party_gstin.hex() if r.party_gstin is not None else None
+        derived_rate = (
+            (gst_total / taxable_value * Decimal("100")).quantize(Decimal("0.01"))
+            if taxable_value > 0
+            else None
+        )
+        row = _Gstr1InvoiceRow(
+            sales_invoice_id=r.sales_invoice_id,
+            invoice_date=r.invoice_date,
+            series=r.series,
+            number=r.number,
+            party_id=r.party_id,
+            party_name=r.party_name,
+            gstin=gstin_str,
+            place_of_supply_state=r.place_of_supply_state,
+            invoice_value=invoice_total,
+            taxable_value=taxable_value,
+            gst_rate=derived_rate,
+            cgst=split.cgst,
+            sgst=split.sgst,
+            igst=split.igst,
+        )
+        if bucket == "b2b":
+            b2b.append(row)
+        elif bucket == "b2cl":
+            b2cl.append(row)
+        elif bucket == "export":
+            export.append(row)
+
+    # HSN summary — sum every taxable line in the period by item.hsn_code.
+    # Re-uses the same lifecycle filter. NULL HSN → empty-string bucket so
+    # FE can flag "missing HSN" without a separate code path.
+    hsn_stmt = (
+        select(
+            func.coalesce(Item.hsn_code, "").label("hsn_code"),
+            Item.primary_uom.label("uom"),
+            func.coalesce(func.sum(SiLine.qty), 0).label("total_qty"),
+            func.coalesce(func.sum(SiLine.line_amount), 0).label("taxable_value"),
+            func.coalesce(func.sum(SiLine.gst_amount), 0).label("gst_amount"),
+            SalesInvoice.tax_type,
+        )
+        .select_from(SiLine)
+        .join(SalesInvoice, SalesInvoice.sales_invoice_id == SiLine.sales_invoice_id)
+        .join(Item, Item.item_id == SiLine.item_id)
+        .where(
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.firm_id == firm_id,
+            SalesInvoice.deleted_at.is_(None),
+            SalesInvoice.invoice_date >= from_date,
+            SalesInvoice.invoice_date <= to_date,
+            SalesInvoice.lifecycle_status.in_(_GSTR1_LIFECYCLE),
+        )
+        # Group by hsn + uom + tax_type so the split is honest across mixed
+        # invoices. Most small businesses have a single HSN per item-class
+        # so this is one row per HSN in practice.
+        .group_by(
+            func.coalesce(Item.hsn_code, ""),
+            Item.primary_uom,
+            SalesInvoice.tax_type,
+        )
+        .order_by(func.coalesce(Item.hsn_code, ""))
+    )
+
+    hsn_agg: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in session.execute(hsn_stmt):
+        hsn_code = r.hsn_code or ""
+        uom: str = r.uom.value if hasattr(r.uom, "value") else str(r.uom)
+        qty = Decimal(r.total_qty or 0)
+        taxable = Decimal(r.taxable_value or 0)
+        gst_amt = Decimal(r.gst_amount or 0)
+        split = gst_service.split_tax(
+            tax_type=_tax_type_for_invoice(raw_tax_type=r.tax_type), gst_amount=gst_amt
+        )
+        hsn_key: tuple[str, str] = (hsn_code, uom)
+        agg = hsn_agg.setdefault(
+            hsn_key,
+            {
+                "hsn_code": hsn_code,
+                "description": None,
+                "uom": uom,
+                "total_qty": Decimal("0"),
+                "taxable_value": Decimal("0"),
+                "cgst": Decimal("0"),
+                "sgst": Decimal("0"),
+                "igst": Decimal("0"),
+                "total_value": Decimal("0"),
+            },
+        )
+        agg["total_qty"] += qty
+        agg["taxable_value"] += taxable
+        agg["cgst"] += split.cgst
+        agg["sgst"] += split.sgst
+        agg["igst"] += split.igst
+        agg["total_value"] += taxable + gst_amt
+
+    hsn_rows = [
+        _Gstr1HsnRow(
+            hsn_code=r["hsn_code"],
+            description=r["description"],
+            uom=r["uom"],
+            total_qty=r["total_qty"],
+            taxable_value=r["taxable_value"],
+            cgst=r["cgst"],
+            sgst=r["sgst"],
+            igst=r["igst"],
+            total_value=r["total_value"],
+        )
+        for r in sorted(hsn_agg.values(), key=lambda r: (r["hsn_code"], r["uom"]))
+    ]
+
+    b2cs_rows = [
+        _Gstr1B2csRow(
+            place_of_supply_state=r["place_of_supply_state"],
+            gst_rate=r["gst_rate"],
+            taxable_value=r["taxable_value"],
+            cgst=r["cgst"],
+            sgst=r["sgst"],
+            igst=r["igst"],
+            invoice_count=r["invoice_count"],
+        )
+        for r in sorted(
+            b2cs_agg.values(), key=lambda r: (r["place_of_supply_state"], r["gst_rate"])
+        )
+    ]
+
+    return _Gstr1Result(
+        period=period,
+        from_date=from_date,
+        to_date=to_date,
+        b2b=b2b,
+        b2cl=b2cl,
+        b2cs=b2cs_rows,
+        export=export,
+        hsn=hsn_rows,
+    )
+
+
 __all__ = [
+    "compute_ageing",
     "compute_daybook",
+    "compute_gstr1",
+    "compute_ledger_statement",
+    "compute_party_statement",
     "compute_pnl",
     "compute_stock_summary",
     "compute_tb",
