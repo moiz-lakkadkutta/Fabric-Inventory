@@ -31,9 +31,10 @@ dependencies = [
   # dependency so a future slimming of the FastAPI extras can't break
   # the production email path silently.
   "httpx>=0.27",
-  # TASK-CUT-403: openpyxl renders the XLSX export branch on list +
-  # report endpoints. Direct cell-level API (no pandas) — we control
-  # number formats so Decimal money round-trips without float drift.
+  # CUT-403: renders the XLSX export branch on list + report endpoints
+  # (direct cell-level API, no pandas — Decimal round-trips without drift).
+  # CUT-402: reads Vyapar's Excel export (source format chosen in
+  # docs/spikes/vyapar-source-format.md). Pure-Python, MIT, no native deps.
   "openpyxl>=3.1",
 ]
 

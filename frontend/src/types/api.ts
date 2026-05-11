@@ -72,6 +72,103 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/migrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List migrations for this organization (newest first) */
+        get: operations["list_migrations_admin_migrations_get"];
+        put?: never;
+        /**
+         * Upload an external-source export, run the adapter, return a reconciliation report
+         * @description Run the adapter's ``validate`` pass + persist the report.
+         *
+         *     The caller must have ``admin.migrations.approve`` — the same gate
+         *     as the approve step, because uploading effectively previews a
+         *     commit the same user is about to authorize. Tightening this is
+         *     cheap (split into ``admin.migrations.upload`` later) but for v1
+         *     Owner-only is fine.
+         *
+         *     No idempotency caching at the file level — each upload mints a
+         *     fresh ``migration_id``. The header is consumed by the middleware
+         *     but the body is multipart, which the middleware does NOT
+         *     JSON-stringify; replays would create duplicate rows. The FE
+         *     accepts this and uses a one-shot Upload button.
+         */
+        post: operations["upload_migration_admin_migrations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/migrations/{migration_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch one migration row + its reconciliation report */
+        get: operations["get_migration_admin_migrations__migration_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/migrations/{migration_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Commit the parties + opening balances from a reconciled migration. Re-uploads the source file so the approver commits what they reviewed.
+         * @description Commit parties + opening balances within one DB transaction.
+         *
+         *     The FE supplies the source bytes on the click-Approve form. We
+         *     re-run the adapter against those bytes so a replay of the same
+         *     migration_id can't subvert the previewed report — the same file
+         *     must be present.
+         *
+         *     Status flips to APPROVED on success, FAILED with ``failure_reason``
+         *     on any service-layer ``AppValidationError`` (the get_db_sync
+         *     dependency rolls back on raise, so the FAILED stamp is a best-
+         *     effort post-rollback emit in a fresh sub-step).
+         */
+        post: operations["approve_migration_admin_migrations__migration_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/migrations/{migration_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject a reconciled migration without committing. */
+        post: operations["reject_migration_admin_migrations__migration_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/roles": {
         parameters: {
             query?: never;
@@ -1712,6 +1809,22 @@ export interface components {
             ifsc_code?: string | null;
             /** Last Reconciled Date */
             last_reconciled_date?: string | null;
+        };
+        /** Body_approve_migration_admin_migrations__migration_id__approve_post */
+        Body_approve_migration_admin_migrations__migration_id__approve_post: {
+            /**
+             * File
+             * @description The same source file that produced the reconciliation report.
+             */
+            file: string;
+        };
+        /** Body_upload_migration_admin_migrations_post */
+        Body_upload_migration_admin_migrations_post: {
+            /**
+             * File
+             * @description The Vyapar Excel export (.xlsx).
+             */
+            file: string;
         };
         /** ChequeCreateRequest */
         ChequeCreateRequest: {
@@ -3396,6 +3509,109 @@ export interface components {
             password: string;
             /** Totp Code */
             totp_code: string;
+        };
+        /** MigrationListResponse */
+        MigrationListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["MigrationResponse"][];
+        };
+        /**
+         * MigrationReconciliationReport
+         * @description Reconciliation envelope rendered by the FE preview pane.
+         *
+         *     ``tb_diff`` is signed: positive means DR > CR, negative means CR > DR.
+         *     A balanced migration has ``tb_diff == 0`` and ``tb_reconciles=True``.
+         */
+        MigrationReconciliationReport: {
+            /**
+             * Errors
+             * @default 0
+             */
+            errors: number;
+            /** Rows */
+            rows?: components["schemas"]["MigrationReconciliationRow"][];
+            /** Tb Credits */
+            tb_credits?: string | null;
+            /** Tb Debits */
+            tb_debits?: string | null;
+            /** Tb Diff */
+            tb_diff?: string | null;
+            /** Tb Reconciles */
+            tb_reconciles?: boolean | null;
+            /**
+             * Total Opening Balances
+             * @default 0
+             */
+            total_opening_balances: number;
+            /**
+             * Total Parties
+             * @default 0
+             */
+            total_parties: number;
+            /**
+             * Warnings
+             * @default 0
+             */
+            warnings: number;
+        };
+        /**
+         * MigrationReconciliationRow
+         * @description One feedback row, mirror of the intermediate-format ``ReconciliationRow``.
+         */
+        MigrationReconciliationRow: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /** Severity */
+            severity: string;
+            /** Source Ref */
+            source_ref?: string | null;
+        };
+        /**
+         * MigrationResponse
+         * @description One migration row — list item + detail share this shape.
+         */
+        MigrationResponse: {
+            /** Approved At */
+            approved_at: string | null;
+            /** Approved By */
+            approved_by: string | null;
+            /** Failure Reason */
+            failure_reason: string | null;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * Migration Id
+             * Format: uuid
+             */
+            migration_id: string;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            reconciliation?: components["schemas"]["MigrationReconciliationReport"] | null;
+            /** Rejected At */
+            rejected_at: string | null;
+            /** Source Filename */
+            source_filename: string;
+            /** Source Format */
+            source_format: string;
+            /** Status */
+            status: string;
+            /**
+             * Uploaded At
+             * Format: date-time
+             */
+            uploaded_at: string;
+            /** Uploaded By */
+            uploaded_by: string | null;
         };
         /** PICreateRequest */
         PICreateRequest: {
@@ -5111,6 +5327,176 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AcceptInviteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_migrations_admin_migrations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MigrationListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_migration_admin_migrations_post: {
+        parameters: {
+            query?: {
+                source_format?: string;
+                firm_id?: string | null;
+            };
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_migration_admin_migrations_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MigrationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_migration_admin_migrations__migration_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                migration_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MigrationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_migration_admin_migrations__migration_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                migration_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_approve_migration_admin_migrations__migration_id__approve_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MigrationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_migration_admin_migrations__migration_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                migration_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MigrationResponse"];
                 };
             };
             /** @description Validation Error */

@@ -15,6 +15,7 @@ import NotFound from '@/pages/NotFound';
 import Placeholder from '@/pages/Placeholder';
 import AccountingHub from '@/pages/accounting/AccountingHub';
 import AdminHub from '@/pages/admin/AdminHub';
+import Migrations from '@/pages/admin/Migrations';
 import InventoryList from '@/pages/inventory/InventoryList';
 import LotDetail from '@/pages/inventory/LotDetail';
 import JobWorkOverview from '@/pages/jobwork/JobWorkOverview';
@@ -110,6 +111,7 @@ const router = createBrowserRouter([
       { path: 'masters/items', element: <ItemList /> },
       { path: 'masters/items/:id', element: <ItemDetail /> },
       { path: 'admin', element: <AdminHub /> },
+      { path: 'admin/migrations', element: <Migrations /> },
       { path: '*', element: <NotFound /> },
     ],
   },
