@@ -1,0 +1,92 @@
+"""Admin router request / response models (TASK-CUT-304).
+
+Surface covered:
+
+- GET /admin/users — list users with role + status
+- POST /admin/invites — mint an invite + console-log the link
+- POST /admin/invites/accept — consume an invite + create the user
+- PATCH /admin/users/{user_id}/role — swap a user's role (with
+  last-Owner-demotion protection)
+
+All endpoints are gated by `admin.user.manage` per the RBAC catalog.
+The accept endpoint is the one exception: it MUST run without a JWT
+(the user hasn't logged in yet) and is exempt from the
+Idempotency-Key middleware (the token IS the idempotency key —
+it's single-use by construction).
+"""
+
+from __future__ import annotations
+
+import datetime
+import uuid
+
+from pydantic import BaseModel, EmailStr, Field
+
+
+class AdminUserResponse(BaseModel):
+    """One row in the admin users list — slim shape the FE table renders."""
+
+    user_id: uuid.UUID
+    email: EmailStr
+    name: str | None = None
+    role: str
+    """Role display name (e.g. "Owner", "Salesperson"). Not the code."""
+    role_id: uuid.UUID
+    """Role identifier — the FE PATCHes this when changing role."""
+    status: str
+    """One of "ACTIVE" / "SUSPENDED" / "INACTIVE"."""
+    last_login_at: datetime.datetime | None = None
+    created_at: datetime.datetime
+
+
+class AdminUserListResponse(BaseModel):
+    items: list[AdminUserResponse]
+    count: int
+
+
+class InviteCreateRequest(BaseModel):
+    """Owner-initiated invite. `firm_id` is optional — omit for org-wide
+    (Owner) invites; populate for per-firm roles like Salesperson.
+    """
+
+    email: EmailStr
+    role_id: uuid.UUID
+    firm_id: uuid.UUID | None = None
+
+
+class InviteCreateResponse(BaseModel):
+    invite_id: uuid.UUID
+    email: EmailStr
+    expires_at: datetime.datetime
+    invite_link: str
+    """Full FE URL the recipient opens — printed to the dev console too.
+    Kept in the response body so test code (and the FE toast) can verify
+    + display it without scraping logs."""
+
+
+class AcceptInviteRequest(BaseModel):
+    """The invitee posts this from `/invite/:token`."""
+
+    token: str = Field(min_length=8, max_length=128)
+    name: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=8, max_length=200)
+
+
+class AcceptInviteResponse(BaseModel):
+    """201 on success. Issues no tokens — the FE redirects to /login so
+    the new user enters their freshly-set password and the standard login
+    flow exercises bcrypt + MFA-enrollment paths. Decision recorded in
+    `docs/retros/task-CUT-304.md`.
+
+    `org_name` is echoed back so the login form can pre-fill the org
+    field (the recipient is unlikely to know the exact org name).
+    """
+
+    user_id: uuid.UUID
+    org_id: uuid.UUID
+    email: EmailStr
+    org_name: str
+
+
+class UpdateUserRoleRequest(BaseModel):
+    role_id: uuid.UUID

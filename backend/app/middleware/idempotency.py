@@ -62,6 +62,12 @@ IDEMPOTENT_BY_DESIGN_PATHS = frozenset(
         # retry from a different session.
         "/auth/forgot",
         "/auth/reset",
+        # CUT-304: invite acceptance is public (no JWT yet) AND single-use
+        # by construction — the invite token IS the idempotency key
+        # (sha256-hashed in DB, `used_at` stamped atomically on accept).
+        # Requiring a UUID Idempotency-Key from a not-yet-authenticated
+        # user is friction for zero security benefit.
+        "/admin/invites/accept",
     }
 )
 

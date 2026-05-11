@@ -20,6 +20,7 @@ from app.middleware import (
     register_error_handlers,
 )
 from app.routers import accounting as accounting_router
+from app.routers import admin as admin_router
 from app.routers import auth as auth_router
 from app.routers import banking as banking_router
 from app.routers import dashboard as dashboard_router
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(reports_router.router)
     app.include_router(jobwork_router.router)
     app.include_router(jobwork_router.itc04_router)
+    app.include_router(admin_router.router)
 
     @app.get("/live")
     async def live() -> dict[str, str]:

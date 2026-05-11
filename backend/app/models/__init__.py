@@ -62,6 +62,7 @@ from .identity import (  # noqa: E402
     RolePermission,
     Session,
     UserFirmScope,
+    UserInvite,
     UserRole,
 )
 from .inventory import (  # noqa: E402
@@ -200,6 +201,7 @@ __all__ = [
     "Uom",
     "UomType",
     "UserFirmScope",
+    "UserInvite",
     "UserRole",
     "Voucher",
     "VoucherLine",

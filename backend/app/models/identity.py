@@ -514,6 +514,60 @@ class PasswordResetToken(Base):
         )
 
 
+class UserInvite(Base):
+    """Pending user invite — minted by an Owner, consumed by the invitee.
+
+    Exempt from the standard audit-mixin suite because invites are a
+    minted-and-consumed lifecycle (no in-place edits): the create row is
+    audited via `audit_log` once, the accept stamps `used_at`, and that's
+    the entire surface. Adding `updated_at`/`created_by`/etc would just
+    duplicate data the audit log already carries.
+
+    Token security: only `token_hash` (sha256 hex) lives in the row. The
+    raw 32-byte token leaves the API once at create time (printed to the
+    dev console as `${FRONTEND_URL}/invite/${token}`); the accept
+    endpoint sha256's the presented token and looks up by hash.
+    """
+
+    __tablename__ = "user_invite"
+
+    invite_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("organization.org_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    role_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("role.role_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    firm_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("firm.firm_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    invited_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    role: Mapped[Role] = relationship()
+    firm: Mapped[Firm | None] = relationship()
+
+
 class AuditLog(Base):
     """Append-only audit log. Inherits `Base` only — exempt from audit_sweep
     per the DDL exempt list. Service layer enforces "no UPDATE / no DELETE";

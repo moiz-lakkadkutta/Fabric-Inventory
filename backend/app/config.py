@@ -34,10 +34,10 @@ class Settings(BaseSettings):
     # our field_validator runs.
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
     sentry_dsn: str | None = None
-    # CUT-303: the BE never serves the reset page itself — it just builds
-    # a link the user clicks. Default to the Vite dev server port so a
-    # fresh checkout works without extra wiring; staging / prod set this
-    # explicitly via FRONTEND_URL.
+    # CUT-303 + CUT-304: where the FE lives. Used to compose reset + invite
+    # links in the dev console-log adapter. Default to the Vite dev server
+    # port so a fresh checkout works without extra wiring; staging/prod set
+    # this via FRONTEND_URL env to the public origin.
     frontend_url: str = "http://localhost:5173"
 
     @field_validator("cors_origins", mode="before")

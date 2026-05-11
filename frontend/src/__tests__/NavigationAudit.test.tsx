@@ -41,10 +41,12 @@ describe('Navigation audit (T7)', () => {
     expect(screen.getByText(/Mark all read/)).toBeInTheDocument();
   });
 
-  it('renders the Admin page with users and roles', () => {
+  it('renders the Admin page with users and roles', async () => {
     wrap(<AdminHub />);
     expect(screen.getByRole('heading', { level: 1, name: /admin/i })).toBeInTheDocument();
-    expect(screen.getByText('Naseem Begum')).toBeInTheDocument();
+    // CUT-304: users + roles are loaded via TanStack Query (mock branch
+    // in test mode), so we wait for the row to land.
+    await waitFor(() => expect(screen.getByText('Naseem Begum')).toBeInTheDocument());
     expect(screen.getByText(/roles & permissions/i)).toBeInTheDocument();
   });
 });

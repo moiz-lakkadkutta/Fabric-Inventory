@@ -3,6 +3,7 @@ import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
 import { RequireAuth } from '@/components/auth/RequireAuth';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuthBootstrap } from '@/hooks/useAuth';
+import AcceptInvite from '@/pages/auth/AcceptInvite';
 import Forgot from '@/pages/auth/Forgot';
 import Invite from '@/pages/auth/Invite';
 import Login from '@/pages/auth/Login';
@@ -51,6 +52,10 @@ const router = createBrowserRouter([
   // in. The orgname carried as `?org=` is read by the page itself.
   { path: '/reset/:token', element: <ResetPassword /> },
   { path: '/invite', element: <Invite /> },
+  // CUT-304: real invite-accept page lives at /invite/:token (token is
+  // the raw secret from the BE-minted invite link). Public route —
+  // outside RequireAuth — the invitee has no session yet.
+  { path: '/invite/:token', element: <AcceptInvite /> },
   { path: '/onboarding', element: <Onboarding /> },
   {
     path: '/',
