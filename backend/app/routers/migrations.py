@@ -72,7 +72,7 @@ def _resolve_single_firm(db: Any, *, org_id: uuid.UUID) -> uuid.UUID | None:
     )
     if len(rows) != 1:
         return None
-    return rows[0][0]
+    return uuid.UUID(str(rows[0][0]))
 
 
 def _row_to_response(row: UserMigration) -> MigrationResponse:

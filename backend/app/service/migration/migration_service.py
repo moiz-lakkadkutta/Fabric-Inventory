@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -212,14 +213,12 @@ def upload_and_reconcile(
 
 
 def _sum_ob_sides(
-    obs: object,
+    obs: Iterable[IntermediateOpeningBalance],
 ) -> tuple[Decimal, Decimal]:
-    """Sum DR vs CR amounts; obs is any Iterable[IntermediateOpeningBalance]."""
+    """Sum DR vs CR amounts across the supplied OB rows."""
     dr = Decimal("0")
     cr = Decimal("0")
-    for ob in obs:  # type: ignore[union-attr]
-        if not isinstance(ob, IntermediateOpeningBalance):
-            continue
+    for ob in obs:
         if ob.side == "DR":
             dr += ob.amount
         else:

@@ -636,6 +636,36 @@
         "title": "BankAccountUpdateRequest",
         "type": "object"
       },
+      "Body_approve_migration_admin_migrations__migration_id__approve_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "description": "The same source file that produced the reconciliation report.",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_approve_migration_admin_migrations__migration_id__approve_post",
+        "type": "object"
+      },
+      "Body_upload_migration_admin_migrations_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "description": "The Vyapar Excel export (.xlsx).",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_migration_admin_migrations_post",
+        "type": "object"
+      },
       "ChequeCreateRequest": {
         "properties": {
           "amount": {
@@ -4726,6 +4756,270 @@
           "totp_code"
         ],
         "title": "MfaVerifyRequest",
+        "type": "object"
+      },
+      "MigrationListResponse": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MigrationResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "count"
+        ],
+        "title": "MigrationListResponse",
+        "type": "object"
+      },
+      "MigrationReconciliationReport": {
+        "description": "Reconciliation envelope rendered by the FE preview pane.\n\n``tb_diff`` is signed: positive means DR > CR, negative means CR > DR.\nA balanced migration has ``tb_diff == 0`` and ``tb_reconciles=True``.",
+        "properties": {
+          "errors": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Errors",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/MigrationReconciliationRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "tb_credits": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tb Credits"
+          },
+          "tb_debits": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tb Debits"
+          },
+          "tb_diff": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tb Diff"
+          },
+          "tb_reconciles": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tb Reconciles"
+          },
+          "total_opening_balances": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total Opening Balances",
+            "type": "integer"
+          },
+          "total_parties": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total Parties",
+            "type": "integer"
+          },
+          "warnings": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Warnings",
+            "type": "integer"
+          }
+        },
+        "title": "MigrationReconciliationReport",
+        "type": "object"
+      },
+      "MigrationReconciliationRow": {
+        "description": "One feedback row, mirror of the intermediate-format ``ReconciliationRow``.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "severity": {
+            "pattern": "^(error|warn|info)$",
+            "title": "Severity",
+            "type": "string"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
+          }
+        },
+        "required": [
+          "severity",
+          "code",
+          "message"
+        ],
+        "title": "MigrationReconciliationRow",
+        "type": "object"
+      },
+      "MigrationResponse": {
+        "description": "One migration row \u2014 list item + detail share this shape.",
+        "properties": {
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "migration_id": {
+            "format": "uuid",
+            "title": "Migration Id",
+            "type": "string"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "reconciliation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MigrationReconciliationReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rejected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected At"
+          },
+          "source_filename": {
+            "title": "Source Filename",
+            "type": "string"
+          },
+          "source_format": {
+            "title": "Source Format",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "uploaded_at": {
+            "format": "date-time",
+            "title": "Uploaded At",
+            "type": "string"
+          },
+          "uploaded_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded By"
+          }
+        },
+        "required": [
+          "migration_id",
+          "org_id",
+          "firm_id",
+          "source_format",
+          "source_filename",
+          "status",
+          "uploaded_by",
+          "uploaded_at",
+          "approved_by",
+          "approved_at",
+          "rejected_at",
+          "failure_reason"
+        ],
+        "title": "MigrationResponse",
         "type": "object"
       },
       "PICreateRequest": {
@@ -9220,6 +9514,313 @@
         "summary": "Consume an invite token: create the user and assign their role",
         "tags": [
           "admin"
+        ]
+      }
+    },
+    "/admin/migrations": {
+      "get": {
+        "operationId": "list_migrations_admin_migrations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List migrations for this organization (newest first)",
+        "tags": [
+          "admin",
+          "migrations"
+        ]
+      },
+      "post": {
+        "description": "Run the adapter's ``validate`` pass + persist the report.\n\nThe caller must have ``admin.migrations.approve`` \u2014 the same gate\nas the approve step, because uploading effectively previews a\ncommit the same user is about to authorize. Tightening this is\ncheap (split into ``admin.migrations.upload`` later) but for v1\nOwner-only is fine.\n\nNo idempotency caching at the file level \u2014 each upload mints a\nfresh ``migration_id``. The header is consumed by the middleware\nbut the body is multipart, which the middleware does NOT\nJSON-stringify; replays would create duplicate rows. The FE\naccepts this and uses a one-shot Upload button.",
+        "operationId": "upload_migration_admin_migrations_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "source_format",
+            "required": false,
+            "schema": {
+              "default": "vyapar_excel",
+              "title": "Source Format",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "firm_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Firm Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_migration_admin_migrations_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload an external-source export, run the adapter, return a reconciliation report",
+        "tags": [
+          "admin",
+          "migrations"
+        ]
+      }
+    },
+    "/admin/migrations/{migration_id}": {
+      "get": {
+        "operationId": "get_migration_admin_migrations__migration_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "migration_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Migration Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fetch one migration row + its reconciliation report",
+        "tags": [
+          "admin",
+          "migrations"
+        ]
+      }
+    },
+    "/admin/migrations/{migration_id}/approve": {
+      "post": {
+        "description": "Commit parties + opening balances within one DB transaction.\n\nThe FE supplies the source bytes on the click-Approve form. We\nre-run the adapter against those bytes so a replay of the same\nmigration_id can't subvert the previewed report \u2014 the same file\nmust be present.\n\nStatus flips to APPROVED on success, FAILED with ``failure_reason``\non any service-layer ``AppValidationError`` (the get_db_sync\ndependency rolls back on raise, so the FAILED stamp is a best-\neffort post-rollback emit in a fresh sub-step).",
+        "operationId": "approve_migration_admin_migrations__migration_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "migration_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Migration Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_approve_migration_admin_migrations__migration_id__approve_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Commit the parties + opening balances from a reconciled migration. Re-uploads the source file so the approver commits what they reviewed.",
+        "tags": [
+          "admin",
+          "migrations"
+        ]
+      }
+    },
+    "/admin/migrations/{migration_id}/reject": {
+      "post": {
+        "operationId": "reject_migration_admin_migrations__migration_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "migration_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Migration Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject a reconciled migration without committing.",
+        "tags": [
+          "admin",
+          "migrations"
         ]
       }
     },
