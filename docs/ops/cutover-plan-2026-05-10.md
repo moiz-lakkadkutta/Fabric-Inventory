@@ -322,9 +322,9 @@ After spawn, Claude monitors progress; agents self-merge on green CI. When all 5
 | 1 | **PRs landed; superseded by Wave 2** | 2026-05-10 | 2026-05-10 | rolled into the Wave 2 demo (the 8 steps cover the Wave 1 surface area + the new Wave 2 surface) | CUT-006 hot-fix shipped (post-merge regression — 17 vitest failures restored); CUT-007 filed (`make dev-restart`) |
 | 2 | **Demo passed (with hot-fixes)** | 2026-05-10 | 2026-05-10 | ✅ — after the two amber hot-fixes landed (CUT-107 firm-id-null on signup, CUT-108 InvoiceCreate empty-state), the user-reported blockers cleared and Moiz greenlit Wave 3 | CUT-107 (#70 merged), CUT-108 (#71 merged); operational reminder: `alembic upgrade head` is required when schema migrations land (a fresh DB hit `voucher.party_id does not exist` until CUT-104 migration was applied — surface in cutover runbook) |
 | 3 | **Demo passed (with hot-fix)** | 2026-05-10 | 2026-05-10 | ✅ — CUT-206 hot-fix shipped during walk (no warehouse locations + no UI to add them); user confirmed end-to-end procurement + sales lifecycle + adjust-stock + PDF download all work | CUT-206 (#78 merged) |
-| 4 | **PRs landed; demo pending** | 2026-05-11 | 2026-05-11 | awaiting Moiz walk of `docs/ops/wave-4-demo.md` | (none filed yet — pending demo walk; retro-noted follow-ups listed at the bottom of the demo doc) |
-| 5 | Blocked by Wave 4 demo gate | | | | |
-| 6 | Blocked by Wave 5 | | | | |
+| 4 | **Demo passed** | 2026-05-11 | 2026-05-11 | ✅ — Moiz greenlit Wave 5 directly ("Go ahead with Wave 5") | retro-noted follow-ups carried into Wave-5 demo doc |
+| 5 | **PRs landed; demo pending** | 2026-05-11 | 2026-05-11 | awaiting Moiz walk of `docs/ops/wave-5-demo.md` | (none filed yet — pending demo walk; retro-noted follow-ups listed at the bottom of the demo doc) |
+| 6 | Blocked by Wave 5 demo gate | | | | |
 
 ### Wave 1 PRs
 
@@ -397,6 +397,37 @@ After all 5 Wave 4 PRs merged to `origin/main`, the following ran clean on a fre
 - Alembic: chain is linear; head = `task_cut_304_user_invite`.
 
 Wave 4 grew the FE test count from 221 (post-Wave-3) → 234 (+13 tests). Backend pytest grew from 121 → 128 (+7 of the 23 new tests are non-skipped without live DB; the remaining 16 are integration-only and run under CI's Postgres service container).
+
+### Wave 5 PRs
+
+| PR | Task | State | Notes |
+|---|---|---|---|
+| #85 | TASK-CUT-401 | merged | Job-work FE wired live — send-out / receive-back / karigar cards against CUT-305's BE; new `lib/queries/jobwork.ts`; 4 live-mode integration tests |
+| #86 | TASK-CUT-404 | merged | Backups (`pg_dump` → `gzip` → `gpg AES256` → Backblaze B2; 7-day retention) + restore + dry-run + sibling-DB target; weekly CI round-trip via postgres:16 service container; operator runbook at `docs/ops/backup-runbook.md` |
+| #87 | TASK-CUT-405 | merged | `ops/Caddyfile` (HSTS + security headers) + `docker-compose.prod.yml` (one-shot migrate via profile) + `.github/workflows/deploy.yml` (tag-triggered, `production` GH environment with required-reviewer manual approval) + prod Dockerfiles + `MailgunEmailAdapter` with boot-time registry swap + Sentry FE prod-gate (`PROD && VITE_SENTRY_DSN`) at `tracesSampleRate: 0.1`; runbook at `docs/ops/deployment-runbook.md` |
+| #88 | TASK-CUT-403 | merged | Per-list CSV/Excel export — `?format=csv\|xlsx` on every list endpoint + multi-sheet xlsx for GSTR-1 (B2B/B2CL/B2CS/Export/HSN); FE Export buttons wired on InvoiceList/PartyList/ItemList/AccountingHub/ReportsHub via new `lib/api/download.ts` blob+filename helper |
+| #89 | TASK-CUT-402 | merged | Vyapar adapter (openpyxl, source format per Wave-1 spike) + new `user_migration` table; `POST /admin/migrations` upload + reconciliation report (parties matched/ambiguous/new, opening-TB pre/post diff target ±₹1) + Owner-approval flow; opening balances post as one compound journal voucher dated 1 day before migration |
+
+### Wave 5 spawn rationale + coordination notes
+
+The plan said "Wave 5 blocks on Wave 4 demo." Reality: Moiz greenlit Wave 5 directly. The 5 agents spawned in parallel; CUT-402 (Vyapar) was the only one with a new migration (`user_migration` table), so the alembic-branch coordination issue from Wave 4 didn't recur. Two notable mid-wave events:
+
+1. **CUT-401 worktree drift.** The CUT-401 agent's early `Bash` calls without absolute paths landed file edits in `/Users/moizp/fabric/` instead of its isolated worktree. Recovered cleanly by copying into the worktree + reverting in main. Caveat: the main repo was on `task/CUT-402-vyapar-adapter` at the time (CUT-402 also worked out of the main repo, not its worktree — its valid in-progress state). The two didn't collide.
+2. **CUT-402 PR-89 needed a rebase.** CUT-402 finished after CUT-403 merged, so its branch was based on `4645c02` while main moved to `2874463`. Conflicts on `backend/pyproject.toml` (both added `openpyxl>=3.1`), `frontend/scripts/openapi-snapshot.json`, and `frontend/src/types/api.ts` — resolved at integration time by union-merging the openpyxl note and regenerating the codegen artifacts via `frontend/scripts/dump-openapi.py`.
+
+Memo for Wave 6 agent prompts: emphasize "ALL `Bash` calls MUST use absolute paths within the worktree" — both Wave-4 and Wave-5 had agents drift into the main repo's checkout. Cosmetic, but it created cleanup work each time.
+
+### Post-Wave-5 integration verification (already executed)
+
+After all 5 Wave 5 PRs merged to `origin/main`, the following ran clean on a fresh checkout:
+- Backend: `cd backend && uv run ruff check . && uv run ruff format --check .` — clean
+- Backend: `cd backend && uv run pytest -q` — 150 passed (655 skipped require live DB env vars)
+- Frontend: `cd frontend && pnpm exec vitest run` — 56 files / 250 tests / 0 failures
+- Frontend: `cd frontend && pnpm tsc --noEmit && pnpm exec eslint . && pnpm exec prettier --check .` — clean
+- Frontend: `cd frontend && pnpm check:types` — OpenAPI snapshot drift gate green (78 paths)
+- Alembic: chain is linear; head = `task_cut_402_user_migration`.
+
+Wave 5 grew the FE test count from 234 (post-Wave-4) → 250 (+16 tests across 4 new test files) and the BE pytest count from 128 → 150 (+22 non-skipped; the remaining new integration tests run under CI's Postgres service container).
 
 ### Wave 2 spawn rationale (deviation from the plan)
 
