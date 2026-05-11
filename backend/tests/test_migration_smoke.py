@@ -20,10 +20,14 @@ from sqlalchemy.engine import Engine
 
 from alembic import command
 
-# Minimum table count for the phase-1 schema. ddl.sql declares 102 BASE TABLE
-# entries; add `alembic_version` for >=103. Use >= so future-task migrations
-# that add tables don't break this assertion.
-_MIN_TABLES = 102
+# Minimum table count for the phase-1 schema. ddl.sql originally declared
+# 102 BASE TABLE entries. TASK-CUT-305 net-removed two tables when it
+# replaced the manufacturing-flavored `job_work_order` + `outward_challan`
+# + `inward_challan` + `job_work_bill` design (6 tables) with the simpler
+# textile-flavored `job_work_order` + `_line` + `job_work_receipt` + `_line`
+# (4 tables). Future migrations that add tables only need to keep this
+# floor — they shouldn't have to bump it.
+_MIN_TABLES = 100
 
 
 def _alembic_ini_path() -> Path:
@@ -83,4 +87,4 @@ def test_baseline_migration_smoke(sync_postgres_engine: Engine) -> None:
 
     assert table_count >= _MIN_TABLES, f"expected >= {_MIN_TABLES} tables, got {table_count}"
     # Latest forward-only migration head; bump on each new migration.
-    assert version == "task_cut_303_pw_reset", f"unexpected revision: {version!r}"
+    assert version == "task_cut_305_jobwork", f"unexpected revision: {version!r}"
