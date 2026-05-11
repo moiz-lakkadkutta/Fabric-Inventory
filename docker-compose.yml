@@ -47,6 +47,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      # `/ready` checks DB + Redis; `/live` is the cheap liveness probe.
+      # We use `/ready` so compose only flips to "healthy" once the app
+      # can actually serve requests (alembic finished + DB reachable).
+      test:
+        - CMD-SHELL
+        - "python -c 'import urllib.request,sys; urllib.request.urlopen(\"http://localhost:8000/ready\",timeout=2); sys.exit(0)' || exit 1"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   web:
     build:
@@ -59,7 +70,28 @@ services:
       - "5173:5173"
     environment:
       CHOKIDAR_USEPOLLING: "true"
-      VITE_API_BASE_URL: http://localhost:8000
+      # CUT-001 wired the FE through a same-origin Vite proxy at /api.
+      # `VITE_API_BASE_URL=/api` makes the browser hit /api/* on the
+      # Vite dev server; `VITE_API_TARGET=http://api:8000` makes Vite
+      # forward those calls to the FastAPI container over the compose
+      # network. `VITE_API_MODE=live` flips every TanStack Query hook
+      # off the click-dummy and onto the live backend — required for
+      # the CUT-503 acceptance Playwright suite.
+      VITE_API_BASE_URL: /api
+      VITE_API_TARGET: http://api:8000
+      VITE_API_MODE: live
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      # Vite dev server returns 200 for the SPA shell on `/`. The
+      # `wget -q --spider` form returns rc=0 on a 2xx response and
+      # rc!=0 otherwise — perfect for compose healthcheck.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5173/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
 
 volumes:
   pgdata:
