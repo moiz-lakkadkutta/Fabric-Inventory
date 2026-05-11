@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     # port so a fresh checkout works without extra wiring; staging/prod set
     # this via FRONTEND_URL env to the public origin.
     frontend_url: str = "http://localhost:5173"
+    # CUT-405: production email provider config. When MAILGUN_API_KEY is
+    # set on app boot, main.py swaps the email adapter from
+    # ConsoleEmailAdapter → MailgunEmailAdapter. All three vars must be
+    # set together; partial config is treated as "use console" so a
+    # half-configured staging box doesn't silently fail to send mail.
+    mailgun_api_key: str | None = None
+    mailgun_domain: str | None = None
+    mailgun_sender: str | None = None
 
     @field_validator("cors_origins", mode="before")
     @classmethod

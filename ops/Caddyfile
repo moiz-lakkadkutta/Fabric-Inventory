@@ -1,0 +1,70 @@
+# Caddyfile — production reverse proxy for app.taana.in (CUT-405).
+#
+# Heritage: derived from the staging Caddyfile parked on
+# task/int-0-staging-bootstrap (commit 6611421). Differences from
+# staging:
+#   - Host is {$CADDY_DOMAIN} (defaults to app.taana.in) so the same
+#     file can be reused if we add a second prod box later.
+#   - HSTS preload header added — production posture, not staging.
+#   - The /api prefix routing matches staging exactly so FE code does
+#     not need to know which environment it runs in.
+#
+# Caddy auto-provisions Let's Encrypt certs on first start. DNS for
+# {$CADDY_DOMAIN} MUST resolve to this box BEFORE bringing the stack
+# up — otherwise the ACME HTTP-01 challenge fails and Caddy backs off
+# (exponential retry). See ops/deployment-runbook.md § DNS for the
+# pre-flight check.
+#
+# Routing:
+#   /api/*  → fastapi:8000   (strips /api prefix; FastAPI sees /v1/...
+#                              and its own non-versioned paths)
+#   /live   → fastapi:8000   (k8s-style liveness; uptime monitor target)
+#   /ready  → fastapi:8000   (readiness w/ DB + Redis checks)
+#   /*      → web:80         (static Vite bundle served by nginx)
+#
+# Email is the contact Let's Encrypt uses for cert-expiry warnings.
+{
+	email {$CADDY_EMAIL}
+}
+
+{$CADDY_DOMAIN:app.taana.in} {
+	encode zstd gzip
+
+	# HSTS — once we set this and a browser sees it, every subsequent
+	# request for this host hits HTTPS even if the user types `http://`.
+	# 31536000 = 1 year. `preload` is the precondition for joining the
+	# Chromium HSTS preload list later; safe even if we don't apply.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+	header X-Content-Type-Options "nosniff"
+	header Referrer-Policy "strict-origin-when-cross-origin"
+
+	# Backend — Caddy strips the /api prefix before proxying so the
+	# FastAPI app keeps its native /v1/... and /auth/... paths.
+	# Caddy 2 forwards X-Forwarded-{For,Proto,Host} by default on
+	# reverse_proxy — no header_up needed.
+	handle_path /api/* {
+		reverse_proxy fastapi:8000
+	}
+
+	# Health checks — passthrough so external uptime monitors hit
+	# FastAPI directly without going through the SPA fallback.
+	handle /live {
+		reverse_proxy fastapi:8000
+	}
+	handle /ready {
+		reverse_proxy fastapi:8000
+	}
+
+	# SPA — fall through to the static bundle for everything else.
+	handle {
+		reverse_proxy web:80
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+		format json
+	}
+}
