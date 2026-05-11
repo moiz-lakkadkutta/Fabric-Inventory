@@ -116,7 +116,7 @@ Detailed acceptance criteria for each TASK-CUT-NNN: see `docs/ops/cutover-plan-2
 | ID | Subject | Layer | Status |
 |---|---|---|---|
 | **TASK-CUT-301** | Reports FE wired live (5 tabs) | FE | Blocked by Wave 3 |
-| **TASK-CUT-302** | Remaining Reports BE: Ledger detail + Ageing + Party statement + GSTR-1 | BE | Blocked by Wave 3 |
+| **TASK-CUT-302** | Remaining Reports BE: Ledger detail + Ageing + Party statement + GSTR-1 | BE | **Done** (PR #80) |
 | **TASK-CUT-303** | Forgot-password BE+FE | BE+FE | Blocked by Wave 3 |
 | **TASK-CUT-304** | Admin/invites BE+FE | BE+FE | Blocked by Wave 3 |
 | **TASK-CUT-305** | MigrationAdapter protocol + intermediate format + Job-work BE | BE | Blocked by Wave 3 |
