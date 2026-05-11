@@ -21,6 +21,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/forgot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a password reset link (no enumeration leak)
+         * @description Issue a reset link if the email matches a real user in the named
+         *     org; no-op otherwise. The 200 response is uniform either way so a
+         *     caller can't probe which emails are registered.
+         *
+         *     No JWT required (it's the lost-password recovery flow), no
+         *     Idempotency-Key required (exempt list in IdempotencyMiddleware so
+         *     a normal "request again" works without the FE minting a UUID).
+         */
+        post: operations["forgot_password_auth_forgot_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/login": {
         parameters: {
             query?: never;
@@ -108,6 +134,32 @@ export interface paths {
         put?: never;
         /** Exchange a refresh token for a new pair */
         post: operations["refresh_auth_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Consume a reset link and set a new password
+         * @description Validate the token + rotate the user's password. All failure
+         *     modes (unknown / expired / consumed / malformed) collapse to a
+         *     single 400 ``INVALID_RESET_TOKEN`` so the response never reveals
+         *     WHICH branch tripped.
+         *
+         *     The audit emit records the password rotation against the user;
+         *     no PII (email / new password) is captured in the changes blob.
+         */
+        post: operations["reset_password_auth_reset_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1685,6 +1737,37 @@ export interface components {
             voucher_id: string;
             /** Voucher Type */
             voucher_type: string;
+        };
+        /**
+         * ForgotPasswordRequest
+         * @description CUT-303: /auth/forgot input.
+         *
+         *     ``org_name`` is required (same multi-tenancy model as /auth/login —
+         *     we can't resolve a user from email alone). The router treats
+         *     "unknown org" and "unknown email under known org" the same way: it
+         *     returns 200 ``{ok: True}`` and does NOT issue a token, so neither
+         *     case leaks.
+         */
+        ForgotPasswordRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Org Name */
+            org_name: string;
+        };
+        /**
+         * ForgotPasswordResponse
+         * @description Uniform shape regardless of whether the email matched a real
+         *     user. Carries no user-identifying fields by design.
+         */
+        ForgotPasswordResponse: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
         };
         /** GRNCreateRequest */
         GRNCreateRequest: {
@@ -3271,6 +3354,32 @@ export interface components {
             /** Refresh Token */
             refresh_token?: string | null;
         };
+        /**
+         * ResetPasswordRequest
+         * @description CUT-303: /auth/reset input.
+         *
+         *     ``token`` is the 32-byte url-safe secret from the reset link.
+         *     ``org_name`` comes from the link's ``?org=`` query param — the FE
+         *     page reads it and resubmits with the form body so the service can
+         *     seed RLS GUC before the token lookup (see
+         *     ``password_reset_service`` module docstring for the rationale).
+         */
+        ResetPasswordRequest: {
+            /** New Password */
+            new_password: string;
+            /** Org Name */
+            org_name: string;
+            /** Token */
+            token: string;
+        };
+        /** ResetPasswordResponse */
+        ResetPasswordResponse: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+        };
         /** SOCreateRequest */
         SOCreateRequest: {
             /** Delivery Date */
@@ -4162,6 +4271,39 @@ export interface operations {
             };
         };
     };
+    forgot_password_auth_forgot_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForgotPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForgotPasswordResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     login_auth_login_post: {
         parameters: {
             query?: never;
@@ -4313,6 +4455,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TokenPairResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_password_auth_reset_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResetPasswordResponse"];
                 };
             };
             /** @description Validation Error */

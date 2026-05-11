@@ -315,3 +315,74 @@ export function useSwitchFirm() {
     onSuccess: () => qc.clear(),
   });
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Forgot / reset password (CUT-303)
+// ──────────────────────────────────────────────────────────────────────
+
+export interface ForgotPasswordInput {
+  email: string;
+  org_name: string;
+}
+
+export interface ResetPasswordInput {
+  token: string;
+  org_name: string;
+  new_password: string;
+}
+
+// The BE response is uniform `{ ok: true }` whether the email matched a
+// real user or not — that's the no-enumeration contract. The hooks
+// expose the same shape regardless of mode so callers don't branch.
+interface OkResponse {
+  ok: true;
+}
+
+async function liveForgotPassword(input: ForgotPasswordInput): Promise<OkResponse> {
+  // BE has /auth/forgot on the Idempotency-Key exempt list, but the
+  // FE api() wrapper requires a key for all mutating methods. Mint one
+  // per call — server-side it's a no-op for these paths.
+  await api<OkResponse>('/auth/forgot', {
+    method: 'POST',
+    idempotencyKey: crypto.randomUUID(),
+    body: { email: input.email, org_name: input.org_name },
+  });
+  return { ok: true };
+}
+
+async function mockForgotPassword(): Promise<OkResponse> {
+  await fakeFetch(undefined);
+  return { ok: true };
+}
+
+export function useForgotPassword() {
+  return useMutation({
+    mutationFn: (input: ForgotPasswordInput) =>
+      IS_LIVE ? liveForgotPassword(input) : mockForgotPassword(),
+  });
+}
+
+async function liveResetPassword(input: ResetPasswordInput): Promise<OkResponse> {
+  await api<OkResponse>('/auth/reset', {
+    method: 'POST',
+    idempotencyKey: crypto.randomUUID(),
+    body: {
+      token: input.token,
+      org_name: input.org_name,
+      new_password: input.new_password,
+    },
+  });
+  return { ok: true };
+}
+
+async function mockResetPassword(): Promise<OkResponse> {
+  await fakeFetch(undefined);
+  return { ok: true };
+}
+
+export function useResetPassword() {
+  return useMutation({
+    mutationFn: (input: ResetPasswordInput) =>
+      IS_LIVE ? liveResetPassword(input) : mockResetPassword(),
+  });
+}

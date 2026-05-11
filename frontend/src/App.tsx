@@ -8,6 +8,7 @@ import Invite from '@/pages/auth/Invite';
 import Login from '@/pages/auth/Login';
 import Mfa from '@/pages/auth/Mfa';
 import Onboarding from '@/pages/auth/Onboarding';
+import ResetPassword from '@/pages/auth/ResetPassword';
 import Dashboard from '@/pages/Dashboard';
 import NotFound from '@/pages/NotFound';
 import Placeholder from '@/pages/Placeholder';
@@ -45,6 +46,10 @@ const router = createBrowserRouter([
   { path: '/login', element: <Login /> },
   { path: '/mfa', element: <Mfa /> },
   { path: '/forgot', element: <Forgot /> },
+  // CUT-303: /reset/:token is a public route (outside RequireAuth) —
+  // the whole point is letting the user back in when they can't log
+  // in. The orgname carried as `?org=` is read by the page itself.
+  { path: '/reset/:token', element: <ResetPassword /> },
   { path: '/invite', element: <Invite /> },
   { path: '/onboarding', element: <Onboarding /> },
   {

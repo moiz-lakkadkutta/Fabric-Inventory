@@ -1000,6 +1000,91 @@ paths:
           $ref: '#/components/responses/Unauthorized'
       x-permission: auth.logout
 
+  /auth/forgot:
+    post:
+      summary: Request a password-reset link (no enumeration leak)
+      description: |
+        Mints a one-time reset token and (in dev) prints the reset
+        link to stdout via the console email adapter; in prod a real
+        provider delivers the email. Returns the same `{ok: true}`
+        envelope whether the email matches a real user or not — the
+        response shape MUST NOT reveal user existence.
+      operationId: forgotPassword
+      tags:
+        - identity
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - org_name
+              properties:
+                email:
+                  type: string
+                  format: email
+                org_name:
+                  type: string
+      responses:
+        '200':
+          description: Reset link issued (or silently dropped — same shape either way)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+      x-permission: public
+
+  /auth/reset:
+    post:
+      summary: Consume a reset link and set a new password
+      description: |
+        Validates the 32-byte token (looked up by sha256(token) within
+        the named org), rotates the user's password, marks the token
+        used. Any failure (unknown / expired / consumed / malformed)
+        returns 400 INVALID_RESET_TOKEN — the response never reveals
+        WHICH branch tripped.
+      operationId: resetPassword
+      tags:
+        - identity
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - token
+                - org_name
+                - new_password
+              properties:
+                token:
+                  type: string
+                org_name:
+                  type: string
+                new_password:
+                  type: string
+                  minLength: 8
+      responses:
+        '200':
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '400':
+          description: Reset link invalid or expired
+      x-permission: public
+
   /auth/mfa/enroll:
     post:
       summary: Enroll in MFA

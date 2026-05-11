@@ -39,6 +39,11 @@ class ErrorCode(StrEnum):
     MFA_INVALID = "MFA_INVALID"
     TOKEN_INVALID = "TOKEN_INVALID"  # noqa: S105 — error code, not a password
     USER_EMAIL_TAKEN = "USER_EMAIL_TAKEN"
+    # CUT-303: a single code covers all reset-token failure modes
+    # (unknown / expired / consumed / malformed) so the response never
+    # leaks WHICH branch tripped — that's the same posture as
+    # INVALID_CREDENTIALS for login.
+    INVALID_RESET_TOKEN = "INVALID_RESET_TOKEN"  # noqa: S105 — error code, not a token
 
     # Authorization
     PERMISSION_DENIED = "PERMISSION_DENIED"
@@ -174,6 +179,20 @@ class LocationCodeTakenError(AppError):
     code = ErrorCode.LOCATION_CODE_TAKEN
     title = "Location code already in use"
     http_status = 409
+
+
+class InvalidResetTokenError(AppError):
+    """CUT-303: password reset token unknown / expired / consumed.
+
+    Single 400 with one stable code regardless of WHICH branch tripped,
+    so the response never leaks "is this token valid but expired?" vs
+    "was it never issued?" — same posture as InvalidCredentialsError
+    on login.
+    """
+
+    code = ErrorCode.INVALID_RESET_TOKEN
+    title = "Reset link invalid or expired"
+    http_status = 400
 
 
 class NotFoundError(AppError):
