@@ -452,6 +452,68 @@ class Session(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     device: Mapped[Device | None] = relationship()
 
 
+class PasswordResetToken(Base):
+    """One-time password-reset secrets (CUT-303).
+
+    The raw token (32 random bytes, url-safe) is delivered ONCE in the
+    reset email; the DB stores only ``sha256(token)`` in
+    ``token_hash``. A DB snapshot alone cannot be used to forge reset
+    links — an attacker would have to brute-force a 32-byte secret out
+    of a SHA-256 hash.
+
+    Lifecycle:
+        - Issued by ``password_reset_service.request_reset`` with a
+          30-minute TTL (``expires_at``).
+        - Consumed by ``password_reset_service.consume`` which sets
+          ``used_at`` atomically. A second use returns 400
+          ``INVALID_RESET_TOKEN``.
+
+    Why not store the token on ``app_user``?
+        - Concurrent /auth/forgot requests would clobber each other
+          and silently invalidate any unconsumed earlier link.
+        - Re-requesting a reset is a normal user flow; a separate row
+          per request keeps both alive until one is consumed.
+
+    Exempt from the DDL ``audit_sweep`` (system table — no
+    user-driven mutation other than the two service entry points), so
+    the migration carries no audit-column suite for this table.
+    """
+
+    __tablename__ = "password_reset_token"
+
+    password_reset_token_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("organization.org_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # sha256 hex digest of the 32-byte raw token (64 chars). Unique so
+    # an attacker can't reuse a previously-leaked hash, and so the
+    # consume path can SELECT by hash without a covering index.
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:
+        # Deliberately omit token_hash from repr — no surface for accidental logging.
+        return (
+            f"PasswordResetToken(id={self.password_reset_token_id!r}, "
+            f"user_id={self.user_id!r}, used_at={self.used_at!r})"
+        )
+
+
 class AuditLog(Base):
     """Append-only audit log. Inherits `Base` only — exempt from audit_sweep
     per the DDL exempt list. Service layer enforces "no UPDATE / no DELETE";

@@ -1325,6 +1325,40 @@
         "title": "DaybookVoucher",
         "type": "object"
       },
+      "ForgotPasswordRequest": {
+        "description": "CUT-303: /auth/forgot input.\n\n``org_name`` is required (same multi-tenancy model as /auth/login \u2014\nwe can't resolve a user from email alone). The router treats\n\"unknown org\" and \"unknown email under known org\" the same way: it\nreturns 200 ``{ok: True}`` and does NOT issue a token, so neither\ncase leaks.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "org_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Org Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "org_name"
+        ],
+        "title": "ForgotPasswordRequest",
+        "type": "object"
+      },
+      "ForgotPasswordResponse": {
+        "description": "Uniform shape regardless of whether the email matched a real\nuser. Carries no user-identifying fields by design.",
+        "properties": {
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "title": "ForgotPasswordResponse",
+        "type": "object"
+      },
       "GRNCreateRequest": {
         "properties": {
           "firm_id": {
@@ -5016,6 +5050,47 @@
         "title": "RefreshRequest",
         "type": "object"
       },
+      "ResetPasswordRequest": {
+        "description": "CUT-303: /auth/reset input.\n\n``token`` is the 32-byte url-safe secret from the reset link.\n``org_name`` comes from the link's ``?org=`` query param \u2014 the FE\npage reads it and resubmits with the form body so the service can\nseed RLS GUC before the token lookup (see\n``password_reset_service`` module docstring for the rationale).",
+        "properties": {
+          "new_password": {
+            "maxLength": 200,
+            "minLength": 8,
+            "title": "New Password",
+            "type": "string"
+          },
+          "org_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Org Name",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "org_name",
+          "new_password"
+        ],
+        "title": "ResetPasswordRequest",
+        "type": "object"
+      },
+      "ResetPasswordResponse": {
+        "properties": {
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "title": "ResetPasswordResponse",
+        "type": "object"
+      },
       "SOCreateRequest": {
         "properties": {
           "delivery_date": {
@@ -7268,6 +7343,48 @@
         ]
       }
     },
+    "/auth/forgot": {
+      "post": {
+        "description": "Issue a reset link if the email matches a real user in the named\norg; no-op otherwise. The 200 response is uniform either way so a\ncaller can't probe which emails are registered.\n\nNo JWT required (it's the lost-password recovery flow), no\nIdempotency-Key required (exempt list in IdempotencyMiddleware so\na normal \"request again\" works without the FE minting a UUID).",
+        "operationId": "forgot_password_auth_forgot_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForgotPasswordResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request a password reset link (no enumeration leak)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/auth/login": {
       "post": {
         "operationId": "login_auth_login_post",
@@ -7567,6 +7684,48 @@
           }
         },
         "summary": "Exchange a refresh token for a new pair",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/reset": {
+      "post": {
+        "description": "Validate the token + rotate the user's password. All failure\nmodes (unknown / expired / consumed / malformed) collapse to a\nsingle 400 ``INVALID_RESET_TOKEN`` so the response never reveals\nWHICH branch tripped.\n\nThe audit emit records the password rotation against the user;\nno PII (email / new password) is captured in the changes blob.",
+        "operationId": "reset_password_auth_reset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetPasswordResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Consume a reset link and set a new password",
         "tags": [
           "auth"
         ]

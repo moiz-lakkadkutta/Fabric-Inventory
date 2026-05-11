@@ -31,6 +31,8 @@ from app.exceptions import (
 from app.models import AppUser, Firm, Organization, Role
 from app.models import Session as DbSession
 from app.schemas.auth import (
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginRequest,
     LoginResponse,
     LogoutRequest,
@@ -39,6 +41,8 @@ from app.schemas.auth import (
     MeResponse,
     MfaVerifyRequest,
     RefreshRequest,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
     SignupRequest,
     SignupResponse,
     SwitchFirmRequest,
@@ -49,6 +53,7 @@ from app.service import (
     audit_service,
     feature_flag_service,
     identity_service,
+    password_reset_service,
     rbac_service,
     seed_service,
 )
@@ -392,6 +397,63 @@ def mfa_verify(
         access_expires_at=pair.access_expires_at,
         refresh_expires_at=pair.refresh_expires_at,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Forgot / reset password — public, exempt from Idempotency-Key (CUT-303)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/forgot",
+    response_model=ForgotPasswordResponse,
+    summary="Request a password reset link (no enumeration leak)",
+)
+def forgot_password(body: ForgotPasswordRequest, db: SyncDBSession) -> ForgotPasswordResponse:
+    """Issue a reset link if the email matches a real user in the named
+    org; no-op otherwise. The 200 response is uniform either way so a
+    caller can't probe which emails are registered.
+
+    No JWT required (it's the lost-password recovery flow), no
+    Idempotency-Key required (exempt list in IdempotencyMiddleware so
+    a normal "request again" works without the FE minting a UUID).
+    """
+    password_reset_service.request_reset(db, email=body.email, org_name=body.org_name)
+    db.flush()
+    return ForgotPasswordResponse(ok=True)
+
+
+@router.post(
+    "/reset",
+    response_model=ResetPasswordResponse,
+    summary="Consume a reset link and set a new password",
+)
+def reset_password(body: ResetPasswordRequest, db: SyncDBSession) -> ResetPasswordResponse:
+    """Validate the token + rotate the user's password. All failure
+    modes (unknown / expired / consumed / malformed) collapse to a
+    single 400 ``INVALID_RESET_TOKEN`` so the response never reveals
+    WHICH branch tripped.
+
+    The audit emit records the password rotation against the user;
+    no PII (email / new password) is captured in the changes blob.
+    """
+    user = password_reset_service.consume(
+        db,
+        token=body.token,
+        org_name=body.org_name,
+        new_password=body.new_password,
+    )
+    audit_service.emit(
+        db,
+        org_id=user.org_id,
+        firm_id=None,
+        user_id=user.user_id,
+        entity_type="auth.password",
+        entity_id=user.user_id,
+        action="reset",
+    )
+    db.flush()
+    return ResetPasswordResponse(ok=True)
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -120,6 +120,47 @@ class SwitchFirmResponse(TokenPairResponse):
     firm_id: uuid.UUID
 
 
+class ForgotPasswordRequest(BaseModel):
+    """CUT-303: /auth/forgot input.
+
+    ``org_name`` is required (same multi-tenancy model as /auth/login —
+    we can't resolve a user from email alone). The router treats
+    "unknown org" and "unknown email under known org" the same way: it
+    returns 200 ``{ok: True}`` and does NOT issue a token, so neither
+    case leaks.
+    """
+
+    email: EmailStr
+    org_name: str = Field(min_length=1, max_length=255)
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Uniform shape regardless of whether the email matched a real
+    user. Carries no user-identifying fields by design.
+    """
+
+    ok: bool = True
+
+
+class ResetPasswordRequest(BaseModel):
+    """CUT-303: /auth/reset input.
+
+    ``token`` is the 32-byte url-safe secret from the reset link.
+    ``org_name`` comes from the link's ``?org=`` query param — the FE
+    page reads it and resubmits with the form body so the service can
+    seed RLS GUC before the token lookup (see
+    ``password_reset_service`` module docstring for the rationale).
+    """
+
+    token: str = Field(min_length=1, max_length=200)
+    org_name: str = Field(min_length=1, max_length=255)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+class ResetPasswordResponse(BaseModel):
+    ok: bool = True
+
+
 class LogoutRequest(BaseModel):
     """Logout via cookie-only is the canonical path; body refresh_token
     stays optional for back-compat with existing CLI/tests."""

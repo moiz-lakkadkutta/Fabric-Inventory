@@ -50,7 +50,20 @@ CACHE_TTL_SECONDS = 24 * 60 * 60
 # response and replaying it for 24 h would re-issue the original tokens
 # (and the original Set-Cookie header) for any caller with the same
 # Idempotency-Key — see `docs/ops/platform-audit-2026-05-10.md` P0-4.
-IDEMPOTENT_BY_DESIGN_PATHS = frozenset({"/auth/login", "/auth/refresh", "/auth/signup"})
+IDEMPOTENT_BY_DESIGN_PATHS = frozenset(
+    {
+        "/auth/login",
+        "/auth/refresh",
+        "/auth/signup",
+        # CUT-303: forgot/reset are auth-by-design (no JWT) and must
+        # not be gated on Idempotency-Key — the FE forms generate one
+        # request per user click; cache-replay would either re-issue a
+        # stale link to the wrong user or silently swallow a legitimate
+        # retry from a different session.
+        "/auth/forgot",
+        "/auth/reset",
+    }
+)
 
 # Response headers that MUST NOT be persisted in the idempotency cache.
 # `set-cookie` is the audit's exact attack vector — the refresh-token
