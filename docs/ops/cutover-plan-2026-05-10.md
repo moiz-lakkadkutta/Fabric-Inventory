@@ -321,9 +321,9 @@ After spawn, Claude monitors progress; agents self-merge on green CI. When all 5
 |---|---|---|---|---|---|
 | 1 | **PRs landed; superseded by Wave 2** | 2026-05-10 | 2026-05-10 | rolled into the Wave 2 demo (the 8 steps cover the Wave 1 surface area + the new Wave 2 surface) | CUT-006 hot-fix shipped (post-merge regression — 17 vitest failures restored); CUT-007 filed (`make dev-restart`) |
 | 2 | **Demo passed (with hot-fixes)** | 2026-05-10 | 2026-05-10 | ✅ — after the two amber hot-fixes landed (CUT-107 firm-id-null on signup, CUT-108 InvoiceCreate empty-state), the user-reported blockers cleared and Moiz greenlit Wave 3 | CUT-107 (#70 merged), CUT-108 (#71 merged); operational reminder: `alembic upgrade head` is required when schema migrations land (a fresh DB hit `voucher.party_id does not exist` until CUT-104 migration was applied — surface in cutover runbook) |
-| 3 | **PRs landed; demo pending** | 2026-05-10 | 2026-05-10 | awaiting Moiz walk of `docs/ops/wave-3-demo.md` | (none filed yet — pending demo walk; retro-noted follow-ups listed at the bottom of the demo doc) |
-| 4 | Blocked by Wave 3 demo gate | | | | |
-| 5 | Blocked by Wave 4 | | | | |
+| 3 | **Demo passed (with hot-fix)** | 2026-05-10 | 2026-05-10 | ✅ — CUT-206 hot-fix shipped during walk (no warehouse locations + no UI to add them); user confirmed end-to-end procurement + sales lifecycle + adjust-stock + PDF download all work | CUT-206 (#78 merged) |
+| 4 | **PRs landed; demo pending** | 2026-05-11 | 2026-05-11 | awaiting Moiz walk of `docs/ops/wave-4-demo.md` | (none filed yet — pending demo walk; retro-noted follow-ups listed at the bottom of the demo doc) |
+| 5 | Blocked by Wave 4 demo gate | | | | |
 | 6 | Blocked by Wave 5 | | | | |
 
 ### Wave 1 PRs
@@ -369,6 +369,34 @@ After all 5 Wave 3 PRs merged to `origin/main`, the following ran clean on a fre
 - Frontend: `cd frontend && pnpm exec eslint . && pnpm exec prettier --check .` — clean
 
 Wave 3 grew the FE test count from 158 (post-Wave-2 hot-fixes) → 221 (+63 tests across the five PRs). No integration regressions; per-PR CI sufficed without any post-merge hot-fix.
+
+### Wave 4 PRs
+
+| PR | Task | State | Notes |
+|---|---|---|---|
+| #79 | TASK-CUT-301 | merged | Reports FE wired live (4 of 5 tabs: P&L, TB, Daybook, Stock summary); GSTR-1 tab renders a coming-soon panel pending Wave-5 export task |
+| #80 | TASK-CUT-302 | merged | Reports BE remainder: `GET /reports/{ledger/{id},ageing,party-statement/{id},gstr1}` — lazy SQL aggregates over existing tables, no schema migration |
+| #81 | TASK-CUT-305 | merged | MigrationAdapter Protocol foundation at `backend/app/service/migration/` (NoopAdapter stub for Wave-5 Vyapar drop-in) + Job-work BE (new `job_work_order` / `_line` / `job_work_receipt` / `_line` tables + router; `POST /job-work-orders`, `/receive`, `GET /reports/itc04`) |
+| #82 | TASK-CUT-304 | merged | Admin invites BE+FE: new `user_invite` table; `POST /admin/invites`, `POST /admin/invites/accept`, `GET /admin/users`, `PATCH /admin/users/{id}/role`; AdminHub wired live; `/invite/:token` accept page; last-Owner demotion protection |
+| #83 | TASK-CUT-303 | merged | Forgot-password BE+FE: new `password_reset_token` table; `POST /auth/forgot` + `POST /auth/reset`; `EmailAdapter` Protocol with `ConsoleEmailAdapter` dev impl; `/forgot` + `/reset/:token` FE pages; no-enumeration response shape; single-use sha256-hashed tokens |
+
+### Wave 4 spawn rationale (deviation from the plan)
+
+The plan said "Wave 4 blocks on Wave 3 demo." Reality: at the end of the Wave 3 cycle, Moiz greenlit Wave 4 directly. The 5 agents spawned in parallel; mid-flight, three of them (CUT-303, CUT-304, CUT-305) all added tenant-scoped tables off the same parent migration (`task_cut_104_voucher_party_id`), producing a temporary alembic branching state. Resolved at integration time by linearizing the chain in the order PRs merged: `task_cut_104 → task_cut_303_pw_reset → task_cut_305_jobwork → task_cut_304_user_invite`. Each affected branch was rebased + force-pushed with the corrected `down_revision`; CI re-greened; PRs merged in the new order.
+
+Pre-task coordination memo for future waves: when two agents both create migrations off the same parent in the same wave, the second-to-merge MUST `git fetch origin && git rebase origin/main` to chain its migration AFTER the first's, and update its `Revises:` docstring + `down_revision` + the smoke-test head assertion. Wave-4 surfaced this; the next agent-prompt template revision should call it out explicitly.
+
+### Post-Wave-4 integration verification (already executed)
+
+After all 5 Wave 4 PRs merged to `origin/main`, the following ran clean on a fresh checkout:
+- Backend: `cd backend && uv run ruff check . && uv run ruff format --check .` — clean
+- Backend: `cd backend && uv run pytest -q` — 128 passed (631 skipped require live DB env vars)
+- Frontend: `cd frontend && pnpm exec vitest run` — 52 files / 234 tests / 0 failures
+- Frontend: `cd frontend && pnpm tsc --noEmit && pnpm exec eslint . && pnpm exec prettier --check .` — clean
+- Frontend: `cd frontend && pnpm check:types` — OpenAPI snapshot drift gate green (70 paths)
+- Alembic: chain is linear; head = `task_cut_304_user_invite`.
+
+Wave 4 grew the FE test count from 221 (post-Wave-3) → 234 (+13 tests). Backend pytest grew from 121 → 128 (+7 of the 23 new tests are non-skipped without live DB; the remaining 16 are integration-only and run under CI's Postgres service container).
 
 ### Wave 2 spawn rationale (deviation from the plan)
 
