@@ -1,54 +1,81 @@
+/*
+ * JobWorkOverview (TASK-CUT-401)
+ *
+ * Live job-work tracker. Replaces the Wave-design click-dummy with
+ * GET /job-work-orders + the new SendOut / ReceiveBack dialogs.
+ *
+ * Layout:
+ *   - Header with "+ Send out" CTA
+ *   - KarigarCards (per-karigar rollup tiles)
+ *   - Active jobs table (JWOs whose status is not CLOSED/CANCELLED) —
+ *     each row has a "Receive back" affordance that opens the dialog
+ *     pre-targeted at that JWO.
+ */
+
 import { Plus } from 'lucide-react';
+import * as React from 'react';
 
 import { Button } from '@/components/ui/button';
-import { useComingSoon } from '@/components/ui/coming-soon-dialog';
-import { Monogram } from '@/components/ui/monogram';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useJobs, useKarigars } from '@/lib/queries/jobwork';
-import type { JobStatus } from '@/lib/mock/jobwork';
+import {
+  useJobWorkOrders,
+  useKarigars,
+  type JobWorkOrder,
+  type JobWorkOrderStatus,
+} from '@/lib/queries/jobwork';
+import { useMe } from '@/store/auth';
 
-const JOB_PILL: Record<JobStatus, { kind: PillKind; label: string }> = {
-  SENT: { kind: 'draft', label: 'Sent' },
-  IN_PROGRESS: { kind: 'karigar', label: 'In progress' },
-  PARTIAL_RETURN: { kind: 'due', label: 'Partial return' },
-  COMPLETED: { kind: 'paid', label: 'Completed' },
-  BREACHED: { kind: 'overdue', label: 'Breached' },
+import { KarigarCards } from './KarigarCards';
+import { ReceiveBackDialog } from './ReceiveBackDialog';
+import { SendOutDialog } from './SendOutDialog';
+
+const STATUS_PILL: Record<JobWorkOrderStatus, { kind: PillKind; label: string }> = {
+  DRAFT: { kind: 'draft', label: 'Draft' },
+  SENT: { kind: 'karigar', label: 'Sent' },
+  PARTIAL_RECEIVED: { kind: 'due', label: 'Partial' },
+  CLOSED: { kind: 'paid', label: 'Closed' },
+  CANCELLED: { kind: 'overdue', label: 'Cancelled' },
 };
 
 export default function JobWorkOverview() {
+  const me = useMe();
+  const ordersQuery = useJobWorkOrders({ firmId: me?.firm_id ?? null });
   const karigarsQuery = useKarigars();
-  const jobsQuery = useJobs();
-  const receive = useComingSoon({
-    feature: 'Receive back from karigar',
-    task: 'TASK-034 (Job receive-back)',
-  });
-  const send = useComingSoon({
-    feature: 'Send out to karigar',
-    task: 'TASK-032 (Job send-out)',
-  });
+
+  const [sendOpen, setSendOpen] = React.useState(false);
+  const [receiveTarget, setReceiveTarget] = React.useState<JobWorkOrder | null>(null);
+
+  const orders = ordersQuery.data ?? [];
+  const karigarCount = karigarsQuery.data?.length ?? 0;
+  const openOrders = orders.filter((o) => o.status !== 'CLOSED' && o.status !== 'CANCELLED');
+  const karigarNameById = new Map<string, string>(
+    (karigarsQuery.data ?? []).map((k) => [k.party_id, k.name]),
+  );
 
   return (
     <div className="space-y-4">
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.015em' }}>Job work</h1>
         <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
-          {karigarsQuery.isPending
+          {ordersQuery.isPending || karigarsQuery.isPending
             ? '—'
-            : `${karigarsQuery.data?.length ?? 0} karigars · ${jobsQuery.data?.length ?? 0} active jobs`}
+            : `${karigarCount} karigars · ${openOrders.length} active jobs`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" {...receive.triggerProps}>
-            Receive back
-          </Button>
-          <Button {...send.triggerProps}>
+          <Button onClick={() => setSendOpen(true)}>
             <Plus />
             Send out
           </Button>
         </div>
       </header>
-      {receive.dialog}
-      {send.dialog}
+
+      <SendOutDialog open={sendOpen} onClose={() => setSendOpen(false)} />
+      <ReceiveBackDialog
+        open={receiveTarget !== null}
+        onClose={() => setReceiveTarget(null)}
+        jwo={receiveTarget}
+      />
 
       <section
         style={{
@@ -67,56 +94,7 @@ export default function JobWorkOverview() {
         >
           <h2 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Karigars</h2>
         </header>
-        {karigarsQuery.isPending ? (
-          <CardGridSkeleton />
-        ) : (
-          <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
-            {(karigarsQuery.data ?? []).map((k) => (
-              <article
-                key={k.karigar_id}
-                style={{
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 8,
-                  padding: 14,
-                  background: 'var(--bg-surface)',
-                }}
-              >
-                <div className="flex items-start gap-3">
-                  <Monogram
-                    initials={k.name
-                      .split(' ')
-                      .map((w) => w[0])
-                      .slice(0, 2)
-                      .join('')}
-                    size={36}
-                    tone="accent"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{k.name}</div>
-                    <div
-                      className="truncate"
-                      style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}
-                    >
-                      {k.city} · {k.ops.join(' · ')}
-                    </div>
-                  </div>
-                </div>
-                <div
-                  className="mt-3 grid grid-cols-3 gap-2 pt-3"
-                  style={{ borderTop: '1px solid var(--border-subtle)' }}
-                >
-                  <SmallStat k="Active" v={k.active_qty} />
-                  <SmallStat k="Open" v={`${k.open_orders}`} />
-                  <SmallStat
-                    k="On-time"
-                    v={`${k.on_time_pct}%`}
-                    color={k.on_time_pct >= 90 ? 'var(--success-text)' : 'var(--warning-text)'}
-                  />
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
+        <KarigarCards orders={orders} />
       </section>
 
       <section
@@ -137,74 +115,67 @@ export default function JobWorkOverview() {
           <h2 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Active jobs</h2>
         </header>
         <div className="overflow-x-auto">
-          {jobsQuery.isPending ? (
+          {ordersQuery.isPending ? (
             <Skeleton width="100%" height={240} />
+          ) : openOrders.length === 0 ? (
+            <div className="px-4 py-8" style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
+              No active job-work orders. Click <strong>Send out</strong> above to dispatch fabric to
+              a karigar.
+            </div>
           ) : (
             <table className="w-full text-left" style={{ minWidth: 980 }}>
               <thead style={{ background: 'var(--bg-sunken)' }}>
                 <tr style={{ color: 'var(--text-tertiary)' }}>
-                  <Th>Job #</Th>
+                  <Th>Challan #</Th>
                   <Th>Karigar</Th>
                   <Th>Operation</Th>
                   <Th align="right">Sent</Th>
-                  <Th align="right">Returned</Th>
-                  <Th>Due</Th>
-                  <Th>Status</Th>
+                  <Th align="right">Received</Th>
                   <Th align="right">Wastage</Th>
+                  <Th>Status</Th>
+                  <Th align="right">Action</Th>
                 </tr>
               </thead>
               <tbody>
-                {(jobsQuery.data ?? []).map((j) => {
-                  const pill = JOB_PILL[j.status];
+                {openOrders.map((order) => {
+                  const totals = sumOrderLines(order);
+                  const pill = STATUS_PILL[order.status];
                   return (
-                    <tr key={j.job_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <tr
+                      key={order.job_work_order_id}
+                      style={{ borderTop: '1px solid var(--border-subtle)' }}
+                    >
                       <td className="px-3 py-3">
                         <span className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>
-                          {j.number}
+                          {order.number}
                         </span>
                       </td>
                       <td className="px-3 py-3" style={{ fontSize: 13, fontWeight: 500 }}>
-                        {j.karigar_name}
+                        {karigarNameById.get(order.karigar_party_id) ??
+                          shortenId(order.karigar_party_id)}
                       </td>
                       <td
                         className="px-3 py-3"
                         style={{ fontSize: 13, color: 'var(--text-secondary)' }}
                       >
-                        {j.op}
+                        {order.operation ?? '—'}
                       </td>
                       <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
-                        {j.sent_qty}
+                        {totals.sent} {totals.uom}
                       </td>
                       <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
-                        {j.returned_qty}
+                        {totals.received} {totals.uom}
                       </td>
-                      <td
-                        className="num px-3 py-3"
-                        style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}
-                      >
-                        {j.due_date}
+                      <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
+                        {totals.wastage} {totals.uom}
                       </td>
                       <td className="px-3 py-3">
                         <Pill kind={pill.kind}>{pill.label}</Pill>
                       </td>
-                      <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
-                        {j.wastage_pct !== undefined ? (
-                          <span
-                            style={{
-                              color:
-                                j.wastage_pct > 5
-                                  ? 'var(--danger)'
-                                  : j.wastage_pct > 0
-                                    ? 'var(--warning-text)'
-                                    : 'var(--text-tertiary)',
-                              fontSize: 12.5,
-                            }}
-                          >
-                            {j.wastage_pct}%
-                          </span>
-                        ) : (
-                          <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-                        )}
+                      <td className="px-3 py-3" style={{ textAlign: 'right' }}>
+                        <Button variant="outline" onClick={() => setReceiveTarget(order)}>
+                          Receive back
+                        </Button>
                       </td>
                     </tr>
                   );
@@ -214,34 +185,6 @@ export default function JobWorkOverview() {
           )}
         </div>
       </section>
-    </div>
-  );
-}
-
-function SmallStat({ k, v, color }: { k: string; v: string; color?: string }) {
-  return (
-    <div>
-      <div
-        className="uppercase"
-        style={{
-          fontSize: 10,
-          color: 'var(--text-tertiary)',
-          letterSpacing: '0.04em',
-          fontWeight: 600,
-        }}
-      >
-        {k}
-      </div>
-      <div
-        className="num mt-0.5"
-        style={{
-          fontSize: 13,
-          fontWeight: 600,
-          color: color ?? 'var(--text-primary)',
-        }}
-      >
-        {v}
-      </div>
     </div>
   );
 }
@@ -263,16 +206,37 @@ function Th({ children, align = 'left' }: { children: React.ReactNode; align?: '
   );
 }
 
-function CardGridSkeleton() {
-  return (
-    <div
-      role="status"
-      aria-label="Loading karigars"
-      className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2 xl:grid-cols-4"
-    >
-      {Array.from({ length: 4 }).map((_, i) => (
-        <Skeleton key={i} width="100%" height={130} radius={8} />
-      ))}
-    </div>
-  );
+function sumOrderLines(order: JobWorkOrder): {
+  sent: string;
+  received: string;
+  wastage: string;
+  uom: string;
+} {
+  let sent = 0;
+  let received = 0;
+  let wastage = 0;
+  let uom = '';
+  for (const line of order.lines ?? []) {
+    sent += parseFloat(line.qty_sent ?? '0') || 0;
+    received += parseFloat(line.qty_received ?? '0') || 0;
+    wastage += parseFloat(line.qty_wastage ?? '0') || 0;
+    // First non-empty UOM wins; if a JWO has mixed UOMs the BE would
+    // have rejected it on send-out so this is safe.
+    if (!uom && line.uom) uom = line.uom;
+  }
+  return {
+    sent: formatQty(sent),
+    received: formatQty(received),
+    wastage: formatQty(wastage),
+    uom,
+  };
+}
+
+function formatQty(n: number): string {
+  if (Number.isInteger(n)) return String(n);
+  return n.toFixed(2);
+}
+
+function shortenId(id: string): string {
+  return id.slice(0, 8) + '…';
 }
