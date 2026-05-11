@@ -277,6 +277,83 @@ def voucher_export_rows(vouchers: Sequence[Any]) -> list[dict[str, Any]]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Bank accounts (TASK-CUT-501b)
+# ──────────────────────────────────────────────────────────────────────
+
+
+BANK_ACCOUNT_COLUMNS: Sequence[Column] = (
+    Column("bank_name", "Bank"),
+    Column("account_number", "Account #"),
+    Column("ifsc_code", "IFSC"),
+    Column("account_type", "Type"),
+    Column("balance", "Balance", "money"),
+    Column("last_reconciled_date", "Last reconciled", "date"),
+)
+
+
+def bank_account_export_rows(accounts: Sequence[Any]) -> list[dict[str, Any]]:
+    """Decrypt PII + flatten for export.
+
+    Caller passes `BankAccountResponse` schema objects (where
+    `account_number` is already plaintext via the router's
+    `_to_bank_response` decrypt helper), not the raw BankAccount ORM
+    rows whose `account_number` is cipher bytes.
+    """
+    out: list[dict[str, Any]] = []
+    for a in accounts:
+        out.append(
+            {
+                "bank_name": a.bank_name or "",
+                "account_number": a.account_number or "",
+                "ifsc_code": a.ifsc_code or "",
+                "account_type": a.account_type or "",
+                "balance": _as_decimal(a.balance),
+                "last_reconciled_date": a.last_reconciled_date,
+            }
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cheques (TASK-CUT-501b)
+# ──────────────────────────────────────────────────────────────────────
+
+
+CHEQUE_COLUMNS: Sequence[Column] = (
+    Column("cheque_number", "Cheque #"),
+    Column("cheque_date", "Date", "date"),
+    Column("payee_name", "Payee"),
+    Column("amount", "Amount", "money"),
+    Column("status", "Status"),
+    Column("clearing_date", "Cleared", "date"),
+    Column("bounce_reason", "Bounce reason"),
+)
+
+
+def cheque_export_rows(cheques: Sequence[Any]) -> list[dict[str, Any]]:
+    """Map ``ChequeResponse``/Cheque ORM rows → export dicts.
+
+    Status is an enum on the wire — coerce to its string value so the
+    cell renders as plain text, not the Python enum repr.
+    """
+    out: list[dict[str, Any]] = []
+    for c in cheques:
+        status_val = c.status.value if hasattr(c.status, "value") else c.status
+        out.append(
+            {
+                "cheque_number": c.cheque_number,
+                "cheque_date": c.cheque_date,
+                "payee_name": c.payee_name or "",
+                "amount": _as_decimal(c.amount),
+                "status": status_val or "",
+                "clearing_date": c.clearing_date,
+                "bounce_reason": c.bounce_reason or "",
+            }
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Reports
 # ──────────────────────────────────────────────────────────────────────
 

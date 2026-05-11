@@ -4095,9 +4095,10 @@ paths:
         - $ref: '#/components/parameters/FirmId'
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: Paginated bank account list
+          description: Paginated bank account list (or CSV/XLSX attachment when `format` is set)
           content:
             application/json:
               schema:
@@ -4205,9 +4206,10 @@ paths:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/ExportFormat'
       responses:
         '200':
-          description: Paginated cheque list
+          description: Paginated cheque list (or CSV/XLSX attachment when `format` is set)
           content:
             application/json:
               schema:

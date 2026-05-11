@@ -238,6 +238,144 @@ Two cases.
 
 ---
 
+## 11. User invite flow
+
+Operators (Owners) invite the rest of the org from `/admin`. There's
+no self-signup once an org exists — the only way to add a user is via
+an invite. Documenting the exact post-accept UX here so nobody is
+surprised when they walk a new user through it.
+
+### How an Owner sends an invite
+
+1. Sign in as Owner, visit `/admin`. The page is `AdminHub`
+   (`frontend/src/pages/admin/AdminHub.tsx`), gated by
+   `admin.user.manage`.
+2. Click **+ Invite user** → fill email, pick a role from the
+   dropdown (sourced from `GET /admin/roles`), optionally pick a
+   firm. Submit. The FE calls `POST /admin/invites`.
+3. The response (`InviteCreateResponse`) carries the invite link.
+   The Owner sees a toast with the link; the same link is also
+   `print()`-ed to the backend stdout (dev console-log adapter) and
+   sent via Mailgun in prod once `EMAIL_PROVIDER=mailgun` is set
+   (see §5).
+4. The new row appears in the AdminHub users table only AFTER the
+   invitee accepts. Until then the invite is in `user_invite` table
+   with `used_at = NULL`. Owners with the `admin.user.manage`
+   permission could query that table directly; the FE doesn't
+   surface pending invites in v1 (filed follow-up).
+
+### What the invitee sees after clicking the link
+
+The invite link is `${FRONTEND_URL}/invite/<32-byte-hex-token>` (see
+`backend/app/service/invite_service.py::_frontend_invite_url`). The
+public page `AcceptInvite` (no auth required, outside `<RequireAuth>`)
+renders a tiny form: **Your name** + **Password**. On submit the FE
+calls `POST /admin/invites/accept` with `{ token, name, password }`
+and gets back this shape:
+
+```jsonc
+// 201 Created — AcceptInviteResponse
+{
+  "user_id":  "<uuid>",
+  "org_id":   "<uuid>",
+  "email":    "naseem@example.com",
+  "org_name": "Audit Co"
+}
+```
+
+**Note: no tokens are issued.** The accept endpoint deliberately
+returns 201 + identity (not a session). The FE then redirects to
+`/login` with `prefillEmail` + `prefillOrgName` + a flash message
+("Invite accepted. Sign in to continue."). The invitee types the
+password they just set and goes through the standard login flow.
+
+### Why no auto-login? (the decision)
+
+Two paths were on the table; v1 picked option B.
+
+| | A — Auto-login on accept | B — Redirect to `/login` after accept (CURRENT) |
+|---|---|---|
+| Server returns | Access + refresh tokens | 201 + identity envelope, no tokens |
+| Invitee experience | Lands signed-in on `/` | Types password they just set; one extra click |
+| MFA enrollment | Bypassed on first session (worse, if the org turns MFA on later) | Exercised on first login like every other user |
+| bcrypt verify path | Not exercised at first session | Exercised — proves the password the user just set actually unlocks the account |
+| Code surface | Need to mint tokens at accept-time, plumb refresh, special-case session-without-login | One redirect; standard `/login` flow works as-is |
+| Trade-off | One-fewer click for the invitee | Invitee types the password twice in ~5 seconds |
+
+**v1 picked B** for the dogfood phase. The trade-off — typing the
+password twice — is acceptable because (a) the redirect arrives with
+email + org name pre-filled so only the password field is empty,
+(b) MFA-enrollment will need this path anyway when we turn MFA on
+(per CLAUDE.md "MFA mandatory for Admin"), and (c) it halves the
+auth-related code surface for the same dogfood outcome. Documented
+in `docs/retros/task-CUT-304.md` § "Accept-endpoint returns 201 +
+redirect-to-/login".
+
+If feedback from a friendly customer's trial pushes us to switch to
+auto-login (option A) post-v1, the change is:
+
+1. Service-layer: have `accept_invite()` mint an
+   `access_token` + `refresh_token` pair from `identity_service` and
+   include them in `AcceptInviteResponse`.
+2. FE-layer: `AcceptInvite.tsx::onSuccess` does
+   `authStore.set({ accessToken, refreshToken, ... })` and navigates
+   to `/` instead of `/login`.
+3. Tests: `tests/test_admin_invites.py` adds a happy-path that
+   asserts the response carries tokens; the FE test asserts the
+   landing is `/` not `/login`.
+
+That's a ~1-day task. Not on the v1 critical path.
+
+### What the Owner sees on `/admin/users` after accept
+
+The accept handler:
+
+1. Creates an `app_user` row (`email`, `legal_name=body.name`,
+   bcrypt'd password hash).
+2. Creates a `user_role` row mapping that user to the invited
+   role + (optional) firm.
+3. Stamps `user_invite.used_at = now()` and clears the token.
+4. Emits audit-log entries: `invite.accept` + `user_role.create`.
+
+The next `GET /admin/users` shows the new row with:
+
+- `status: "ACTIVE"`
+- `last_login_at: null` (they haven't completed the `/login` step yet)
+- `role: "<the role display name>"`
+- `created_at` is the accept moment, not the invite moment
+
+After the invitee logs in successfully for the first time,
+`last_login_at` populates and the per-row `<select>` for role-change
+appears (Owner can promote/demote via `PATCH /admin/users/{id}/role`,
+gated by `admin.user.manage`, with last-Owner-demotion protection at
+the service layer).
+
+### Idempotency notes
+
+- `POST /admin/invites` is **idempotent by email-within-org**: if an
+  Owner clicks Invite twice for the same email, the same `invite_id`
+  is returned but the token is rotated. This stops row sprawl when
+  the Owner thinks the first invite didn't go through.
+- `POST /admin/invites/accept` is in
+  `app/middleware/idempotency.py::IDEMPOTENT_BY_DESIGN_PATHS`, so the
+  invitee doesn't need to mint a UUID. The single-use invite token is
+  the idempotency key by construction (sha256-hashed in DB, `used_at`
+  stamped atomically; replays return `TOKEN_INVALID`).
+
+### Operational checklist
+
+- [ ] When `EMAIL_PROVIDER=console`, the invite link prints to backend
+      stdout. `docker compose logs fastapi | grep invite` finds it.
+- [ ] When `EMAIL_PROVIDER=mailgun`, double-check SPF + DKIM in
+      `app.taana.in` DNS (see §5 of this runbook).
+- [ ] Tokens expire after 7 days. Invitees who miss the window get
+      `TOKEN_INVALID`; the Owner re-clicks Invite to mint a fresh
+      one.
+- [ ] If an Owner ever deletes themselves: the service refuses
+      (`last_owner` 422). Add a second Owner first via this flow.
+
+---
+
 ## What's deliberately deferred (post-v0.1.0)
 
 - S3 / B2 off-box backup. CUT-404 lands local-disk `pg_dump`; off-box upload is a v2 task.

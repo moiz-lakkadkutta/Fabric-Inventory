@@ -67,15 +67,34 @@ export default function AccountingHub() {
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
+  const receipts = useReceipts();
+  const vouchers = useVouchers();
+  const bankAccounts = useBankAccounts();
+  // Cheques is keyed on the selected bank account; first account selected
+  // by default once the list resolves.
+  const effectiveBankAccountId =
+    selectedBankAccountId ?? bankAccounts.data?.[0]?.bank_account_id ?? null;
+  const cheques = useCheques(effectiveBankAccountId);
+
   const handleExport = async (format: 'csv' | 'xlsx') => {
     if (!IS_LIVE) {
       setExportError('Export is wired to the live backend (set VITE_API_MODE=live).');
       return;
     }
-    // Map current tab → BE endpoint. Bank accounts + cheques don't
-    // have export-ready BE list endpoints yet (filed follow-up); they
-    // share the screen but are excluded from this Wave 5 task.
-    const endpoint = tab === 'receipts' ? '/receipts' : tab === 'vouchers' ? '/vouchers' : null;
+    // Map current tab → BE endpoint. Bank accounts + cheques learnt
+    // `?format=` in TASK-CUT-501b; cheques is filtered per bank account
+    // so we forward the selected account in the query string.
+    let endpoint: string | null = null;
+    if (tab === 'receipts') endpoint = '/receipts';
+    else if (tab === 'vouchers') endpoint = '/vouchers';
+    else if (tab === 'bank-accounts') endpoint = '/bank-accounts';
+    else if (tab === 'cheques') {
+      if (!effectiveBankAccountId) {
+        setExportError('Pick a bank account first.');
+        return;
+      }
+      endpoint = `/cheques?bank_account_id=${effectiveBankAccountId}`;
+    }
     if (!endpoint) {
       setExportError('This tab is not exportable yet.');
       return;
@@ -94,15 +113,6 @@ export default function AccountingHub() {
       setIsExporting(false);
     }
   };
-
-  const receipts = useReceipts();
-  const vouchers = useVouchers();
-  const bankAccounts = useBankAccounts();
-  // Cheques is keyed on the selected bank account; first account selected
-  // by default once the list resolves.
-  const effectiveBankAccountId =
-    selectedBankAccountId ?? bankAccounts.data?.[0]?.bank_account_id ?? null;
-  const cheques = useCheques(effectiveBankAccountId);
 
   const reconcile = useComingSoon({
     feature: 'Bank reconciliation',
@@ -161,26 +171,22 @@ export default function AccountingHub() {
           <Button variant="outline" {...reconcile.triggerProps}>
             Reconcile bank
           </Button>
-          {(tab === 'receipts' || tab === 'vouchers') && (
-            <>
-              <Button
-                variant="outline"
-                onClick={() => handleExport('csv')}
-                disabled={isExporting}
-                aria-label={`Export ${tab} to CSV`}
-              >
-                {isExporting ? 'Exporting…' : 'Export CSV'}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => handleExport('xlsx')}
-                disabled={isExporting}
-                aria-label={`Export ${tab} to Excel`}
-              >
-                Export Excel
-              </Button>
-            </>
-          )}
+          <Button
+            variant="outline"
+            onClick={() => handleExport('csv')}
+            disabled={isExporting || (tab === 'cheques' && !effectiveBankAccountId)}
+            aria-label={`Export ${tab} to CSV`}
+          >
+            {isExporting ? 'Exporting…' : 'Export CSV'}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => handleExport('xlsx')}
+            disabled={isExporting || (tab === 'cheques' && !effectiveBankAccountId)}
+            aria-label={`Export ${tab} to Excel`}
+          >
+            Export Excel
+          </Button>
           {cta}
         </div>
       </header>

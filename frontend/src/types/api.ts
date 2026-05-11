@@ -5895,6 +5895,8 @@ export interface operations {
                 firm_id?: string | null;
                 limit?: number;
                 offset?: number;
+                /** @description Optional export format. `csv` returns text/csv (UTF-8 BOM); `xlsx` returns an Excel workbook. Permission is the same as the JSON list. */
+                format?: string | null;
             };
             header?: never;
             path?: never;
@@ -6063,6 +6065,8 @@ export interface operations {
                 bank_account_id: string;
                 limit?: number;
                 offset?: number;
+                /** @description Optional export format. `csv` returns text/csv (UTF-8 BOM); `xlsx` returns an Excel workbook. Permission is the same as the JSON list. */
+                format?: string | null;
             };
             header?: never;
             path?: never;

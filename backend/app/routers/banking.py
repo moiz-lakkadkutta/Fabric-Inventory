@@ -37,7 +37,15 @@ from app.schemas.banking import (
     VoucherListResponse,
 )
 from app.service import banking_service
-from app.service.export_builders import VOUCHER_COLUMNS, filename_for, voucher_export_rows
+from app.service.export_builders import (
+    BANK_ACCOUNT_COLUMNS,
+    CHEQUE_COLUMNS,
+    VOUCHER_COLUMNS,
+    bank_account_export_rows,
+    cheque_export_rows,
+    filename_for,
+    voucher_export_rows,
+)
 from app.service.export_service import (
     CSV_MEDIA_TYPE,
     XLSX_MEDIA_TYPE,
@@ -141,16 +149,52 @@ def list_bank_accounts(
     firm_id: Annotated[uuid.UUID | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> BankAccountListResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description=(
+                "Optional export format. `csv` returns text/csv (UTF-8 BOM); "
+                "`xlsx` returns an Excel workbook. Permission is the same "
+                "as the JSON list."
+            ),
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> BankAccountListResponse | Response:
+    # Bump the page size when exporting so the file matches "all rows
+    # behind the current filter" rather than the 50-row page. 10k matches
+    # the cap used by other list-with-export endpoints (TASK-CUT-403).
+    effective_limit = 10_000 if export_format else limit
     accounts = banking_service.list_bank_accounts(
         db,
         org_id=current_user.org_id,
         firm_id=firm_id,
-        limit=limit,
+        limit=effective_limit,
         offset=offset,
     )
+    responses = [_to_bank_response(a) for a in accounts]
+    if export_format is not None:
+        rows = bank_account_export_rows(responses)
+        if export_format == "csv":
+            return Response(
+                content=to_csv(rows, BANK_ACCOUNT_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(
+                        filename_for("bank-accounts", "csv")
+                    ),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="Bank accounts", columns=BANK_ACCOUNT_COLUMNS, rows=rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(filename_for("bank-accounts", "xlsx")),
+            },
+        )
     return BankAccountListResponse(
-        items=[_to_bank_response(a) for a in accounts],
+        items=responses,
         limit=limit,
         offset=offset,
         count=len(accounts),
@@ -263,14 +307,44 @@ def list_cheques(
     bank_account_id: Annotated[uuid.UUID, Query(description="Filter by bank account")],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> ChequeListResponse:
+    export_format: Annotated[
+        str | None,
+        Query(
+            alias="format",
+            description=(
+                "Optional export format. `csv` returns text/csv (UTF-8 BOM); "
+                "`xlsx` returns an Excel workbook. Permission is the same "
+                "as the JSON list."
+            ),
+            pattern="^(csv|xlsx)$",
+        ),
+    ] = None,
+) -> ChequeListResponse | Response:
+    effective_limit = 10_000 if export_format else limit
     cheques = banking_service.list_cheques_for_account(
         db,
         org_id=current_user.org_id,
         bank_account_id=bank_account_id,
-        limit=limit,
+        limit=effective_limit,
         offset=offset,
     )
+    if export_format is not None:
+        rows = cheque_export_rows(cheques)
+        if export_format == "csv":
+            return Response(
+                content=to_csv(rows, CHEQUE_COLUMNS),
+                media_type=CSV_MEDIA_TYPE,
+                headers={
+                    "Content-Disposition": content_disposition(filename_for("cheques", "csv")),
+                },
+            )
+        return Response(
+            content=to_xlsx([Sheet(name="Cheques", columns=CHEQUE_COLUMNS, rows=rows)]),
+            media_type=XLSX_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": content_disposition(filename_for("cheques", "xlsx")),
+            },
+        )
     return ChequeListResponse(
         items=[_to_cheque_response(c) for c in cheques],
         limit=limit,
