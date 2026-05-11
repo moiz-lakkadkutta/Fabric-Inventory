@@ -21,6 +21,10 @@ test-results/
 .env
 .env.local
 .env.*.local
+ops/.env.backup
+
+# Backup artefacts (TASK-CUT-404). Never commit dumps; .gpg or otherwise.
+ops/backups/
 
 # OS / editor
 .DS_Store

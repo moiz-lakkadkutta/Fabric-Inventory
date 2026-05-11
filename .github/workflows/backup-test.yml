@@ -1,0 +1,108 @@
+name: Backup round-trip test
+
+# TASK-CUT-404 — runs the bash integration test in tests/test_backup.sh
+# against a real Postgres 16 service container. Verifies that
+# ops/backup.sh produces an encrypted dump and ops/restore.sh round-trips
+# a sentinel row.
+#
+# Triggers:
+#   - PRs that touch ops/, the Makefile, or this workflow itself (fast
+#     feedback while iterating on the scripts).
+#   - Weekly cron (Mon 04:00 UTC ≈ 09:30 IST) so script-bitrot trips a
+#     red CI before a real prod incident does.
+#   - Manual dispatch for ad-hoc reruns.
+
+on:
+  pull_request:
+    paths:
+      - 'ops/**'
+      - 'Makefile'
+      - 'tests/test_backup.sh'
+      - '.github/workflows/backup-test.yml'
+  push:
+    branches: ['main']
+    paths:
+      - 'ops/**'
+      - 'Makefile'
+      - 'tests/test_backup.sh'
+      - '.github/workflows/backup-test.yml'
+  schedule:
+    # Mondays 04:00 UTC. Catches AWS CLI / postgresql-client / gpg
+    # upstream regressions on the runner image.
+    - cron: '0 4 * * 1'
+  workflow_dispatch: {}
+
+concurrency:
+  group: backup-test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backup-restore-roundtrip:
+    name: pg_dump → gpg → restore round-trip
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # The test creates its own throw-away DBs; this just satisfies the
+      # require-check in ops/backup.sh.
+      POSTGRES_DB: postgres
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Postgres 16 client + gpg
+        # Ubuntu 24.04 runners ship postgresql-client-16 in the default
+        # apt repo, which matches the service container's server version.
+        # gnupg is preinstalled; we re-declare for paranoia.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            postgresql-client-16 \
+            gnupg
+          pg_dump --version
+          gpg --version | head -n1
+
+      - name: shellcheck ops/*.sh + tests/test_backup.sh
+        # Bash lint guardrail. Severity=warning catches genuine bugs
+        # without forcing pedantic style changes.
+        run: |
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck --severity=warning \
+            ops/backup.sh \
+            ops/restore.sh \
+            tests/test_backup.sh
+
+      - name: Run round-trip test
+        run: bash tests/test_backup.sh
+
+      - name: Verify `make backup` target is wired
+        # Sanity: `make backup` should at least run end-to-end here too,
+        # using the same env. We point it at a temp BACKUP_DIR so it
+        # doesn't collide with whatever the test left around.
+        env:
+          BACKUP_DIR: /tmp/make-backup-smoke
+          BACKUP_GPG_PASSPHRASE: ci-smoke-passphrase
+        run: |
+          mkdir -p "$BACKUP_DIR"
+          make backup
+          ls -lh "$BACKUP_DIR"
+          test -n "$(ls -A "$BACKUP_DIR"/fabric_*.sql.gz.gpg 2>/dev/null)" \
+            || { echo "make backup did not produce a .gpg artefact"; exit 1; }
