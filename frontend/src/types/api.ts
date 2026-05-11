@@ -572,6 +572,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/job-work-orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List job-work orders with optional filters
+         * @description Paginated JWO list, newest first.
+         *
+         *     The list endpoint does NOT eager-load lines (saves a join on the hot
+         *     path; the FE list page only renders header fields). Use GET-by-id
+         *     for the detail view.
+         */
+        get: operations["list_job_work_orders_job_work_orders_get"];
+        put?: never;
+        /**
+         * Send goods to a karigar for job-work
+         * @description Create a job-work order and post the stock-out movements.
+         *
+         *     The send-out moves the goods from the firm's MAIN warehouse to a
+         *     JOBWORK staging location (representing the karigar's premises). The
+         *     inventory cost basis is preserved across the transfer; on receive-back
+         *     the goods return to MAIN at the same weighted-avg cost.
+         */
+        post: operations["create_job_work_order_job_work_orders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/job-work-orders/{jwo_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a job-work order by id with its lines */
+        get: operations["get_job_work_order_job_work_orders__jwo_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/job-work-orders/{jwo_id}/receive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receive goods back from a karigar
+         * @description Record a receive-back against an existing JWO.
+         *
+         *     Each line carries the finished qty (returns to MAIN) and wastage qty
+         *     (consumed off-books at karigar). The sum cannot exceed the JWO line's
+         *     open qty — exceeding → 422.
+         *
+         *     On success: the JWO header status promotes to PARTIAL_RECEIVED (or
+         *     CLOSED if every line is fully accounted for). One stock_ledger row
+         *     pair per non-zero line.
+         */
+        post: operations["receive_back_job_work_orders__jwo_id__receive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ledgers": {
         parameters: {
             query?: never;
@@ -944,6 +1022,32 @@ export interface paths {
         };
         /** GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period */
         get: operations["get_gstr1_reports_gstr1_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/itc04": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * ITC-04 quarterly data (send-outs + receipts in the period)
+         * @description Return structured ITC-04 data for the firm + period.
+         *
+         *     No PDF / Excel rendering here — that's Wave 5's CUT-403. This is the
+         *     data preparer the FE / export job consumes. Plain string period is
+         *     accepted in both monthly (YYYY-MM) and quarterly (YYYY-QN) shapes
+         *     per the cutover-plan's "accept both styles via a single ``period``
+         *     string" guidance.
+         */
+        get: operations["get_itc04_reports_itc04_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2078,6 +2182,146 @@ export interface components {
             is_rcm_applicable: boolean | null;
         };
         /**
+         * ITC04ReceiveRow
+         * @description One receive-back challan row in the ITC-04 export (Table 5A/5B).
+         *
+         *     ``original_challan_no`` points back to the send-out so the GST portal
+         *     can cross-reference. Wastage is broken out for compliance — ITC-04
+         *     Table 5B (job-worker's premises) reports wastage separately from
+         *     received qty.
+         */
+        ITC04ReceiveRow: {
+            /** Hsn */
+            hsn: string | null;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Item Name */
+            item_name: string;
+            /**
+             * Job Work Receipt Id
+             * Format: uuid
+             */
+            job_work_receipt_id: string;
+            /** Karigar Gstin */
+            karigar_gstin: string | null;
+            /** Karigar Name */
+            karigar_name: string;
+            /**
+             * Karigar Party Id
+             * Format: uuid
+             */
+            karigar_party_id: string;
+            /**
+             * Original Challan Date
+             * Format: date
+             */
+            original_challan_date: string;
+            /** Original Challan No */
+            original_challan_no: string;
+            /** Qty Received */
+            qty_received: string;
+            /** Qty Wastage */
+            qty_wastage: string;
+            /**
+             * Receipt Date
+             * Format: date
+             */
+            receipt_date: string;
+            /** Uom */
+            uom: string;
+        };
+        /**
+         * ITC04Report
+         * @description ITC-04 data envelope.
+         *
+         *     ``period`` echoes the user's request. ``YYYY-MM`` → monthly cut;
+         *     ``YYYY-QN`` (Q1=Apr-Jun) → quarterly cut. Quarterly is just a
+         *     sum/concat of three months — same row shape, wider window.
+         */
+        ITC04Report: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * From Date
+             * Format: date
+             */
+            from_date: string;
+            /** Period */
+            period: string;
+            /** Receipts */
+            receipts?: components["schemas"]["ITC04ReceiveRow"][];
+            /** Send Outs */
+            send_outs?: components["schemas"]["ITC04SendOutRow"][];
+            /**
+             * To Date
+             * Format: date
+             */
+            to_date: string;
+            /**
+             * Total Receipts
+             * @default 0
+             */
+            total_receipts: number;
+            /**
+             * Total Send Outs
+             * @default 0
+             */
+            total_send_outs: number;
+        };
+        /**
+         * ITC04SendOutRow
+         * @description One send-out challan row in the ITC-04 export.
+         *
+         *     Field selection mirrors the official ITC-04 quarterly form (Table 4):
+         *     challan number/date, GSTIN + name of karigar, item description,
+         *     HSN, qty, uom, taxable value (zero for v1 — job-work is not invoiced
+         *     at the send-out step in textile trade), nature of job.
+         */
+        ITC04SendOutRow: {
+            /**
+             * Challan Date
+             * Format: date
+             */
+            challan_date: string;
+            /** Challan No */
+            challan_no: string;
+            /** Hsn */
+            hsn: string | null;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Item Name */
+            item_name: string;
+            /**
+             * Job Work Order Id
+             * Format: uuid
+             */
+            job_work_order_id: string;
+            /** Karigar Gstin */
+            karigar_gstin: string | null;
+            /** Karigar Name */
+            karigar_name: string;
+            /**
+             * Karigar Party Id
+             * Format: uuid
+             */
+            karigar_party_id: string;
+            /** Nature Of Job */
+            nature_of_job: string | null;
+            /** Qty Sent */
+            qty_sent: string;
+            /** Uom */
+            uom: string;
+        };
+        /**
          * InvoiceLifecycleStatus
          * @description Richer per-document lifecycle for sales invoices, layered on top
          *     of the basic `voucher_status` (which the DDL keeps as a parallel
@@ -2210,6 +2454,296 @@ export interface components {
             name?: string | null;
             primary_uom?: components["schemas"]["UomType"] | null;
             tracking?: components["schemas"]["TrackingType"] | null;
+        };
+        /**
+         * JobWorkOrderCreateRequest
+         * @description POST /job-work-orders body.
+         */
+        JobWorkOrderCreateRequest: {
+            /**
+             * Challan Date
+             * Format: date
+             */
+            challan_date: string;
+            /** Expected Return Date */
+            expected_return_date?: string | null;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * Karigar Party Id
+             * Format: uuid
+             */
+            karigar_party_id: string;
+            /** Lines */
+            lines: components["schemas"]["JobWorkOrderLineRequest"][];
+            /** Notes */
+            notes?: string | null;
+            /** Operation */
+            operation?: string | null;
+            /** Series */
+            series?: string | null;
+        };
+        /**
+         * JobWorkOrderLineRequest
+         * @description One line of a new JWO.
+         */
+        JobWorkOrderLineRequest: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Lot Id */
+            lot_id?: string | null;
+            /** Notes */
+            notes?: string | null;
+            /** Qty Sent */
+            qty_sent: number | string;
+            /** Uom */
+            uom: string;
+        };
+        /**
+         * JobWorkOrderLineResponse
+         * @description One line on a JWO header response.
+         */
+        JobWorkOrderLineResponse: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /**
+             * Job Work Order Line Id
+             * Format: uuid
+             */
+            job_work_order_line_id: string;
+            /** Line No */
+            line_no: number;
+            /** Lot Id */
+            lot_id: string | null;
+            /** Notes */
+            notes: string | null;
+            /** Qty Received */
+            qty_received: string;
+            /** Qty Sent */
+            qty_sent: string;
+            /** Qty Wastage */
+            qty_wastage: string;
+            /** Uom */
+            uom: string;
+        };
+        /**
+         * JobWorkOrderListResponse
+         * @description Paginated list of JWO headers.
+         */
+        JobWorkOrderListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["JobWorkOrderResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /**
+         * JobWorkOrderResponse
+         * @description One JWO on a list or detail response.
+         *
+         *     Lines are populated on GET-by-id; on the list response, lines is an
+         *     empty list (saves a join on the hot path). The FE list page only
+         *     needs the header fields anyway.
+         */
+        JobWorkOrderResponse: {
+            /**
+             * Challan Date
+             * Format: date
+             */
+            challan_date: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Expected Return Date */
+            expected_return_date: string | null;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * From Location Id
+             * Format: uuid
+             */
+            from_location_id: string;
+            /**
+             * Job Work Order Id
+             * Format: uuid
+             */
+            job_work_order_id: string;
+            /**
+             * Karigar Party Id
+             * Format: uuid
+             */
+            karigar_party_id: string;
+            /** Lines */
+            lines?: components["schemas"]["JobWorkOrderLineResponse"][];
+            /** Notes */
+            notes: string | null;
+            /** Number */
+            number: string;
+            /** Operation */
+            operation: string | null;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /** Series */
+            series: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "DRAFT" | "SENT" | "PARTIAL_RECEIVED" | "CLOSED" | "CANCELLED";
+            /**
+             * To Location Id
+             * Format: uuid
+             */
+            to_location_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * JobWorkReceiptLineRequest
+         * @description One line of a receive-back. ``job_work_order_line_id`` MUST belong
+         *     to the parent JWO; the service validates this and rejects with 422
+         *     on mismatch.
+         *
+         *     Either ``qty_received`` OR ``qty_wastage`` (or both) MUST be > 0 so
+         *     the receipt isn't a no-op.
+         */
+        JobWorkReceiptLineRequest: {
+            /**
+             * Job Work Order Line Id
+             * Format: uuid
+             */
+            job_work_order_line_id: string;
+            /** Notes */
+            notes?: string | null;
+            /**
+             * Qty Received
+             * @default 0
+             */
+            qty_received: number | string;
+            /**
+             * Qty Wastage
+             * @default 0
+             */
+            qty_wastage: number | string;
+        };
+        /**
+         * JobWorkReceiptLineResponse
+         * @description One line on a receipt response.
+         */
+        JobWorkReceiptLineResponse: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /**
+             * Job Work Order Line Id
+             * Format: uuid
+             */
+            job_work_order_line_id: string;
+            /**
+             * Job Work Receipt Line Id
+             * Format: uuid
+             */
+            job_work_receipt_line_id: string;
+            /** Line No */
+            line_no: number;
+            /** Notes */
+            notes: string | null;
+            /** Qty Received */
+            qty_received: string;
+            /** Qty Wastage */
+            qty_wastage: string;
+            /** Uom */
+            uom: string;
+        };
+        /**
+         * JobWorkReceiptResponse
+         * @description One receipt header. Returned by POST /receive and the future GET.
+         */
+        JobWorkReceiptResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * Job Work Order Id
+             * Format: uuid
+             */
+            job_work_order_id: string;
+            /**
+             * Job Work Receipt Id
+             * Format: uuid
+             */
+            job_work_receipt_id: string;
+            /** Lines */
+            lines?: components["schemas"]["JobWorkReceiptLineResponse"][];
+            /** Notes */
+            notes: string | null;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /**
+             * Receipt Date
+             * Format: date
+             */
+            receipt_date: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "POSTED" | "VOID";
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * JobWorkReceiveRequest
+         * @description POST /job-work-orders/{id}/receive body.
+         */
+        JobWorkReceiveRequest: {
+            /** Lines */
+            lines: components["schemas"]["JobWorkReceiptLineRequest"][];
+            /** Notes */
+            notes?: string | null;
+            /**
+             * Receipt Date
+             * Format: date
+             */
+            receipt_date: string;
         };
         /** KpiListResponse */
         KpiListResponse: {
@@ -5676,6 +6210,144 @@ export interface operations {
             };
         };
     };
+    list_job_work_orders_job_work_orders_get: {
+        parameters: {
+            query?: {
+                firm_id?: string | null;
+                karigar_party_id?: string | null;
+                status?: ("DRAFT" | "SENT" | "PARTIAL_RECEIVED" | "CLOSED" | "CANCELLED") | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobWorkOrderListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_job_work_order_job_work_orders_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobWorkOrderCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobWorkOrderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_work_order_job_work_orders__jwo_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jwo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobWorkOrderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    receive_back_job_work_orders__jwo_id__receive_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                jwo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JobWorkReceiveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobWorkReceiptResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_ledgers_ledgers_get: {
         parameters: {
             query?: {
@@ -6673,6 +7345,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Gstr1Response"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_itc04_reports_itc04_get: {
+        parameters: {
+            query: {
+                /** @description Firm to scope the report to */
+                firm_id: string;
+                /** @description Period: YYYY-MM (monthly) or YYYY-QN (quarterly). Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar of NEXT year. */
+                period: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ITC04Report"];
                 };
             };
             /** @description Validation Error */
