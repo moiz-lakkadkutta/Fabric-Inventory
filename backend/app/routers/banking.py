@@ -301,7 +301,7 @@ def _to_voucher_list_item(voucher: Voucher) -> VoucherListItem:
 
 @_voucher_router.get(
     "",
-    response_model=None,
+    response_model=VoucherListResponse,
     summary="List vouchers for the current firm (newest-first)",
 )
 def list_vouchers(

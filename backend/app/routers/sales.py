@@ -465,7 +465,7 @@ def _invoice_to_list_item(invoice: SalesInvoice, *, party_name: str | None) -> S
 
 @invoice_router.get(
     "",
-    response_model=None,
+    response_model=SalesInvoiceListResponse,
     summary="List sales invoices for the current firm (defaults from JWT)",
     responses={
         200: {

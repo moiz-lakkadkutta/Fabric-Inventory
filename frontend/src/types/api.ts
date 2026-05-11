@@ -6235,6 +6235,8 @@ export interface operations {
                 recent?: boolean;
                 limit?: number;
                 offset?: number;
+                /** @description Optional export format. `csv` returns text/csv (UTF-8 BOM); `xlsx` returns an Excel workbook. Permission is the same as the JSON list. */
+                format?: string | null;
             };
             header?: never;
             path?: never;
@@ -6242,7 +6244,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Default JSON list response, or a CSV/XLSX attachment when `format=csv|xlsx` is set. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6416,6 +6418,8 @@ export interface operations {
                 search?: string | null;
                 limit?: number;
                 offset?: number;
+                /** @description `csv` or `xlsx` returns a download instead of JSON. */
+                format?: string | null;
             };
             header?: never;
             path?: never;
@@ -6982,6 +6986,8 @@ export interface operations {
                 search?: string | null;
                 limit?: number;
                 offset?: number;
+                /** @description `csv` or `xlsx` returns a download instead of JSON. */
+                format?: string | null;
             };
             header?: never;
             path?: never;
@@ -7600,6 +7606,8 @@ export interface operations {
             query?: {
                 limit?: number;
                 offset?: number;
+                /** @description `csv` or `xlsx` returns a download instead of JSON. */
+                format?: string | null;
             };
             header?: never;
             path?: never;
@@ -7697,6 +7705,8 @@ export interface operations {
         parameters: {
             query?: {
                 date?: string | null;
+                /** @description `csv` or `xlsx` returns a download instead of JSON. */
+                format?: string | null;
             };
             header?: never;
             path?: never;
@@ -7729,6 +7739,8 @@ export interface operations {
             query: {
                 /** @description Period as YYYY-MM (Indian fiscal month). */
                 period: string;
+                /** @description `xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / Export / HSN); `csv` flattens the B2B sheet (use xlsx for the full filing). */
+                format?: string | null;
             };
             header?: never;
             path?: never;
@@ -7863,6 +7875,8 @@ export interface operations {
             query?: {
                 from?: string | null;
                 to?: string | null;
+                /** @description `csv` or `xlsx` returns a download instead of JSON. */
+                format?: string | null;
             };
             header?: never;
             path?: never;
@@ -7895,6 +7909,8 @@ export interface operations {
             query?: {
                 as_of?: string | null;
                 include_zero?: boolean;
+                /** @description `csv` or `xlsx` returns a download instead of JSON. */
+                format?: string | null;
             };
             header?: never;
             path?: never;
@@ -7926,6 +7942,8 @@ export interface operations {
         parameters: {
             query?: {
                 as_of?: string | null;
+                /** @description `csv` or `xlsx` returns a download instead of JSON. */
+                format?: string | null;
             };
             header?: never;
             path?: never;
@@ -8420,6 +8438,8 @@ export interface operations {
                 to?: string | null;
                 limit?: number;
                 offset?: number;
+                /** @description `csv` or `xlsx` returns a download instead of JSON. */
+                format?: string | null;
             };
             header?: never;
             path?: never;

@@ -11267,6 +11267,25 @@
               "title": "Offset",
               "type": "integer"
             }
+          },
+          {
+            "description": "Optional export format. `csv` returns text/csv (UTF-8 BOM); `xlsx` returns an Excel workbook. Permission is the same as the JSON list.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional export format. `csv` returns text/csv (UTF-8 BOM); `xlsx` returns an Excel workbook. Permission is the same as the JSON list.",
+              "title": "Format"
+            }
           }
         ],
         "responses": {
@@ -11278,7 +11297,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Default JSON list response, or a CSV/XLSX attachment when `format=csv|xlsx` is set."
           },
           "422": {
             "content": {
@@ -11602,6 +11621,25 @@
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "description": "`csv` or `xlsx` returns a download instead of JSON.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`csv` or `xlsx` returns a download instead of JSON.",
+              "title": "Format"
             }
           }
         ],
@@ -12703,6 +12741,25 @@
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "description": "`csv` or `xlsx` returns a download instead of JSON.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`csv` or `xlsx` returns a download instead of JSON.",
+              "title": "Format"
             }
           }
         ],
@@ -13850,6 +13907,25 @@
               "title": "Offset",
               "type": "integer"
             }
+          },
+          {
+            "description": "`csv` or `xlsx` returns a download instead of JSON.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`csv` or `xlsx` returns a download instead of JSON.",
+              "title": "Format"
+            }
           }
         ],
         "responses": {
@@ -14009,6 +14085,25 @@
               ],
               "title": "Date"
             }
+          },
+          {
+            "description": "`csv` or `xlsx` returns a download instead of JSON.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`csv` or `xlsx` returns a download instead of JSON.",
+              "title": "Format"
+            }
           }
         ],
         "responses": {
@@ -14052,6 +14147,25 @@
               "description": "Period as YYYY-MM (Indian fiscal month).",
               "title": "Period",
               "type": "string"
+            }
+          },
+          {
+            "description": "`xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / Export / HSN); `csv` flattens the B2B sheet (use xlsx for the full filing).",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / Export / HSN); `csv` flattens the B2B sheet (use xlsx for the full filing).",
+              "title": "Format"
             }
           }
         ],
@@ -14334,6 +14448,25 @@
               ],
               "title": "To"
             }
+          },
+          {
+            "description": "`csv` or `xlsx` returns a download instead of JSON.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`csv` or `xlsx` returns a download instead of JSON.",
+              "title": "Format"
+            }
           }
         ],
         "responses": {
@@ -14394,6 +14527,25 @@
               "title": "Include Zero",
               "type": "boolean"
             }
+          },
+          {
+            "description": "`csv` or `xlsx` returns a download instead of JSON.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`csv` or `xlsx` returns a download instead of JSON.",
+              "title": "Format"
+            }
           }
         ],
         "responses": {
@@ -14443,6 +14595,25 @@
                 }
               ],
               "title": "As Of"
+            }
+          },
+          {
+            "description": "`csv` or `xlsx` returns a download instead of JSON.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`csv` or `xlsx` returns a download instead of JSON.",
+              "title": "Format"
             }
           }
         ],
@@ -15451,6 +15622,25 @@
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "description": "`csv` or `xlsx` returns a download instead of JSON.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`csv` or `xlsx` returns a download instead of JSON.",
+              "title": "Format"
             }
           }
         ],

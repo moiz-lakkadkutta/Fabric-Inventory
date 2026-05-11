@@ -130,10 +130,12 @@ CSV_MEDIA = "text/csv"
 XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-def _assert_attachment(resp, media: str, suffix: str) -> None:
-    assert resp.status_code == 200, resp.text
-    assert resp.headers["content-type"].startswith(media), resp.headers["content-type"]
-    disp = resp.headers["content-disposition"]
+def _assert_attachment(resp: object, media: str, suffix: str) -> None:
+    # `resp` is httpx.Response from TestClient; typed as `object` because
+    # the import lives behind a fixture.
+    assert resp.status_code == 200, resp.text  # type: ignore[attr-defined]
+    assert resp.headers["content-type"].startswith(media), resp.headers["content-type"]  # type: ignore[attr-defined]
+    disp = resp.headers["content-disposition"]  # type: ignore[attr-defined]
     assert disp.startswith('attachment; filename="'), disp
     assert disp.rstrip('"').endswith(f".{suffix}"), disp
 

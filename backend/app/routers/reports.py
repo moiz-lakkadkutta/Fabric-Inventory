@@ -85,7 +85,7 @@ def _require_active_firm(current_user: TokenPayload) -> None:
 
 @router.get(
     "/pnl",
-    response_model=None,
+    response_model=PnlResponse,
     summary="Profit & Loss for a date range, grouped by ledger group",
 )
 def get_pnl(
@@ -165,7 +165,7 @@ def get_pnl(
 
 @router.get(
     "/tb",
-    response_model=None,
+    response_model=TbResponse,
     summary="Trial Balance as of a date — debits must equal credits",
 )
 def get_tb(
@@ -232,7 +232,7 @@ def get_tb(
 
 @router.get(
     "/daybook",
-    response_model=None,
+    response_model=DaybookResponse,
     summary="All vouchers posted on a single day",
 )
 def get_daybook(
@@ -298,7 +298,7 @@ def get_daybook(
 
 @router.get(
     "/stock-summary",
-    response_model=None,
+    response_model=StockSummaryResponse,
     summary="On-hand qty + weighted-average cost per item",
 )
 def get_stock_summary(
@@ -516,7 +516,7 @@ def get_party_statement(
 
 @router.get(
     "/gstr1",
-    response_model=None,
+    response_model=Gstr1Response,
     summary="GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period",
 )
 def get_gstr1(

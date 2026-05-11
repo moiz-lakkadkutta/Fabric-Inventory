@@ -119,7 +119,7 @@ def post_receipt(
 
 @router.get(
     "",
-    response_model=None,
+    response_model=ReceiptListResponse,
     summary="List receipts for the current firm (newest-first)",
 )
 def list_receipts(

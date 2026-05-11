@@ -130,7 +130,7 @@ def create_item(
 
 @items_router.get(
     "",
-    response_model=None,
+    response_model=ItemListResponse,
     summary="List items (RLS-scoped to current org)",
 )
 def list_items(

@@ -106,7 +106,7 @@ def create_party(
 
 @router.get(
     "",
-    response_model=None,
+    response_model=PartyListResponse,
     summary="List parties (RLS-scoped to current org)",
 )
 def list_parties(
