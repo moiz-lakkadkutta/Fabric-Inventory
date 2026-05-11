@@ -8,6 +8,7 @@ from .auth import AuthMiddleware
 from .errors import register_error_handlers
 from .idempotency import IdempotencyMiddleware
 from .logging import LoggingMiddleware, configure_logging
+from .rate_limit import rate_limit, set_redis_client_for_testing
 from .request_context import RequestContextMiddleware
 from .rls import RLSMiddleware
 
@@ -18,5 +19,7 @@ __all__ = [
     "RLSMiddleware",
     "RequestContextMiddleware",
     "configure_logging",
+    "rate_limit",
     "register_error_handlers",
+    "set_redis_client_for_testing",
 ]

@@ -35,6 +35,40 @@ from sqlalchemy.engine import Engine
 from app.service import email_adapter
 
 
+@pytest.fixture(autouse=True)
+def _reset_forgot_rate_limit() -> Iterator[None]:
+    """CUT-501a: ``/auth/forgot`` is rate-limited (5 reqs / 60s / IP).
+    Multiple tests in this file each hit the endpoint from the same
+    TestClient peer (``testclient`` host), so without a between-test
+    reset the 6th test would always trip the limiter regardless of
+    its own behaviour. Clear the ratelimit:* keys between tests.
+
+    Resolves the URL via pydantic-settings (not ``os.environ``) so the
+    fixture works whether REDIS_URL came from a process env or from
+    the on-disk ``.env`` file.
+    """
+    from app.config import get_settings
+
+    redis_url = get_settings().redis_url
+    if not redis_url:
+        yield
+        return
+
+    import redis as sync_redis
+
+    client = sync_redis.from_url(redis_url, decode_responses=True)
+    try:
+        # Drop only our prefix so a parallel suite using Redis for other
+        # things isn't disrupted.
+        for key in client.scan_iter("ratelimit:auth.forgot:*"):
+            client.delete(key)
+        yield
+    finally:
+        for key in client.scan_iter("ratelimit:auth.forgot:*"):
+            client.delete(key)
+        client.close()
+
+
 def _unique_email() -> str:
     return f"u-{uuid.uuid4().hex[:10]}@example.com"
 

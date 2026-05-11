@@ -48,7 +48,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Final
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -193,4 +193,65 @@ def consume(session: Session, *, token: str, org_name: str, new_password: str) -
     return user
 
 
-__all__ = ["consume", "request_reset"]
+def cleanup_expired_tokens(session: Session, *, now: datetime.datetime | None = None) -> int:
+    """Purge stale ``password_reset_token`` rows. CUT-501a.
+
+    Two cohorts qualify:
+
+      1. ``used_at IS NOT NULL`` AND ``used_at < now() - 7 days`` —
+         the token was consumed; the 7-day window is the forensic
+         retention horizon. Audits older than that look at the
+         ``audit_log`` ``auth.password reset`` events, not the
+         token table.
+      2. ``expires_at < now() - 1 day`` — long-expired, never used.
+         A token that's already past TTL by more than a day can never
+         be used (the consume path short-circuits on ``expires_at <=
+         now``), so the row is pure clutter.
+
+    The two cohorts are unioned via ``OR`` in one DELETE so cron runs
+    in a single round-trip. Returns the row count deleted so the
+    cron / Makefile log carries a useful signal.
+
+    RLS note: this is a cross-tenant cleanup — the cron job runs as
+    the migration / admin role (BYPASSRLS), not ``fabric_app``. The
+    function is therefore deliberately tenant-agnostic; it does NOT
+    set ``app.current_org_id``. If a future caller invokes it from
+    inside a tenant request, the org-scoped RLS policy on
+    ``password_reset_token`` would limit the DELETE to that org's
+    rows, which is also fine (just narrower).
+
+    Args:
+        session: ORM session bound to a connection capable of issuing
+            cross-tenant DELETEs. The CLI entrypoint at
+            ``app.cli.cleanup_tokens`` uses ``MIGRATION_DATABASE_URL``
+            for this; tests use the transactional ``db_session``
+            fixture under ``fabric_app`` with an RLS-seeded org.
+        now: timestamp to compare against. Defaults to ``now(UTC)``
+            but is parameterised so tests can drive the boundaries
+            deterministically.
+
+    Returns:
+        Number of rows deleted.
+    """
+    from app.models import PasswordResetToken
+
+    current = now if now is not None else _now_utc()
+    used_cutoff = current - datetime.timedelta(days=7)
+    expired_cutoff = current - datetime.timedelta(days=1)
+
+    stmt = delete(PasswordResetToken).where(
+        or_(
+            (PasswordResetToken.used_at.is_not(None)) & (PasswordResetToken.used_at < used_cutoff),
+            PasswordResetToken.expires_at < expired_cutoff,
+        )
+    )
+    result = session.execute(stmt)
+    session.flush()
+    # ``CursorResult.rowcount`` is the SQLAlchemy-2.x attribute, but the
+    # generic ``Result`` protocol that ``Session.execute`` is typed to
+    # return doesn't expose it. We're issuing a real DELETE, so the
+    # cursor variant is guaranteed at runtime.
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+__all__ = ["cleanup_expired_tokens", "consume", "request_reset"]

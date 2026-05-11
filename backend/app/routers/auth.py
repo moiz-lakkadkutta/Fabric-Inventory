@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from fastapi import APIRouter, Cookie, Header, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response, status
 from sqlalchemy import select, text
 
 from app.config import get_settings
@@ -28,6 +28,7 @@ from app.exceptions import (
     PermissionDeniedError,
     TokenInvalidError,
 )
+from app.middleware.rate_limit import rate_limit
 from app.models import AppUser, Firm, Organization, Role
 from app.models import Session as DbSession
 from app.schemas.auth import (
@@ -404,10 +405,24 @@ def mfa_verify(
 # ──────────────────────────────────────────────────────────────────────
 
 
+# Per-IP sliding window: 5 requests per 60s, 6th gets 429 + Retry-After.
+# Per CUT-501a brief / CUT-303 retro follow-up #1. Threshold is generous
+# vs legitimate use (a user fat-fingering their own email + retrying
+# under typical latency lands well under 5/min) but tight against the
+# email-pump abuse vector.
+_FORGOT_RATE_LIMIT = rate_limit(bucket="auth.forgot", max_requests=5, window_seconds=60)
+
+
 @router.post(
     "/forgot",
     response_model=ForgotPasswordResponse,
     summary="Request a password reset link (no enumeration leak)",
+    responses={
+        429: {
+            "description": "Rate limit exceeded — see Retry-After header.",
+        },
+    },
+    dependencies=[Depends(_FORGOT_RATE_LIMIT)],
 )
 def forgot_password(body: ForgotPasswordRequest, db: SyncDBSession) -> ForgotPasswordResponse:
     """Issue a reset link if the email matches a real user in the named

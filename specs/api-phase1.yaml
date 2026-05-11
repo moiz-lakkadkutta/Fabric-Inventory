@@ -1052,6 +1052,17 @@ paths:
                 properties:
                   ok:
                     type: boolean
+        '429':
+          description: |
+            Rate limit exceeded — CUT-501a applies a per-IP sliding
+            window (5 reqs / 60s). Response carries a `Retry-After`
+            header (seconds) and the standard error envelope with
+            `code: "RATE_LIMIT_EXCEEDED"`.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                description: Seconds to wait before retrying.
       x-permission: public
 
   /auth/reset:

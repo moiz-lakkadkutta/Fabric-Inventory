@@ -9973,6 +9973,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Rate limit exceeded \u2014 see Retry-After header."
           }
         },
         "summary": "Request a password reset link (no enumeration leak)",
