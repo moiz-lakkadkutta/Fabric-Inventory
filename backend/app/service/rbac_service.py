@@ -112,6 +112,14 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("jobwork.order", "create", "Create job-work send-out orders"),
     ("jobwork.order", "read", "View job-work orders and receipts"),
     ("jobwork.report", "read", "View ITC-04 and other job-work reports"),
+    # Migrations (TASK-CUT-402) — upload + approve external-source data
+    # imports (Vyapar today; Tally / generic Excel later).
+    ("admin.migrations", "read", "View migration uploads and reconciliation reports"),
+    (
+        "admin.migrations",
+        "approve",
+        "Approve migration uploads (commits parties + opening balances)",
+    ),
 )
 
 

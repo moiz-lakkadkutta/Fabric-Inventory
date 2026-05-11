@@ -14,8 +14,9 @@
  * CRUD is deferred to Wave 5+ per the cutover plan.
  */
 
-import { Plus, ShieldCheck } from 'lucide-react';
+import { Plus, ShieldCheck, Upload } from 'lucide-react';
 import * as React from 'react';
+import { Link } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
@@ -53,6 +54,12 @@ export default function AdminHub() {
           {usersList.length} users · {rolesList.length} roles
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" asChild>
+            <Link to="/admin/migrations">
+              <Upload />
+              Migrations
+            </Link>
+          </Button>
           <Button variant="outline" {...newRole.triggerProps}>
             Add role
           </Button>

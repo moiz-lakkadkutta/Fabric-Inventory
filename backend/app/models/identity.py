@@ -568,6 +568,74 @@ class UserInvite(Base):
     firm: Mapped[Firm | None] = relationship()
 
 
+class UserMigration(Base):
+    """One migration attempt from an external source (Vyapar today).
+
+    Tracks the full upload → reconcile → approve|reject lifecycle in one
+    row. The reconciliation report (a serialized
+    ``MigrationValidationReport``) lives in ``reconciliation_json`` so
+    the FE can render it without re-running the adapter.
+
+    Exempt from the standard ``created_by``/``updated_by`` audit mixins
+    — provenance lives in the dedicated ``uploaded_by`` /
+    ``approved_by`` columns, and the standard ``audit_log`` table picks
+    up the create / approve / reject lines emitted by the service.
+
+    Status state machine (enforced at the service layer, free-form
+    string in DDL so future statuses don't require a migration):
+        UPLOADED → RECONCILED → APPROVED | REJECTED | FAILED
+    """
+
+    __tablename__ = "user_migration"
+
+    migration_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("organization.org_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    firm_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("firm.firm_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source_format: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    uploaded_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    reconciliation_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    approved_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rejected_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    deleted_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class AuditLog(Base):
     """Append-only audit log. Inherits `Base` only — exempt from audit_sweep
     per the DDL exempt list. Service layer enforces "no UPDATE / no DELETE";
