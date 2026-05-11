@@ -10489,6 +10489,25 @@
               "title": "Offset",
               "type": "integer"
             }
+          },
+          {
+            "description": "Optional export format. `csv` returns text/csv (UTF-8 BOM); `xlsx` returns an Excel workbook. Permission is the same as the JSON list.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional export format. `csv` returns text/csv (UTF-8 BOM); `xlsx` returns an Excel workbook. Permission is the same as the JSON list.",
+              "title": "Format"
+            }
           }
         ],
         "responses": {
@@ -10783,6 +10802,25 @@
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Optional export format. `csv` returns text/csv (UTF-8 BOM); `xlsx` returns an Excel workbook. Permission is the same as the JSON list.",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(csv|xlsx)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional export format. `csv` returns text/csv (UTF-8 BOM); `xlsx` returns an Excel workbook. Permission is the same as the JSON list.",
+              "title": "Format"
             }
           }
         ],
