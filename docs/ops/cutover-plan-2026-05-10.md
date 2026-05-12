@@ -323,8 +323,8 @@ After spawn, Claude monitors progress; agents self-merge on green CI. When all 5
 | 2 | **Demo passed (with hot-fixes)** | 2026-05-10 | 2026-05-10 | ✅ — after the two amber hot-fixes landed (CUT-107 firm-id-null on signup, CUT-108 InvoiceCreate empty-state), the user-reported blockers cleared and Moiz greenlit Wave 3 | CUT-107 (#70 merged), CUT-108 (#71 merged); operational reminder: `alembic upgrade head` is required when schema migrations land (a fresh DB hit `voucher.party_id does not exist` until CUT-104 migration was applied — surface in cutover runbook) |
 | 3 | **Demo passed (with hot-fix)** | 2026-05-10 | 2026-05-10 | ✅ — CUT-206 hot-fix shipped during walk (no warehouse locations + no UI to add them); user confirmed end-to-end procurement + sales lifecycle + adjust-stock + PDF download all work | CUT-206 (#78 merged) |
 | 4 | **Demo passed** | 2026-05-11 | 2026-05-11 | ✅ — Moiz greenlit Wave 5 directly ("Go ahead with Wave 5") | retro-noted follow-ups carried into Wave-5 demo doc |
-| 5 | **PRs landed; demo pending** | 2026-05-11 | 2026-05-11 | awaiting Moiz walk of `docs/ops/wave-5-demo.md` | (none filed yet — pending demo walk; retro-noted follow-ups listed at the bottom of the demo doc) |
-| 6 | Blocked by Wave 5 demo gate | | | | |
+| 5 | **Demo passed** | 2026-05-11 | 2026-05-11 | ✅ — Moiz greenlit Wave 6 directly ("Go ahead with Wave 6") | retro-noted follow-ups carried into Wave-6 demo doc |
+| 6 | **PRs landed; cutover-day pending** | 2026-05-11 | 2026-05-12 | per cutover plan, Wave 6's "demo" IS the cutover itself — runbook executed against Moiz's live Vyapar data on a scheduled cutover day | retro-noted follow-ups listed in `docs/ops/wave-6-demo.md`; not blockers |
 
 ### Wave 1 PRs
 
@@ -428,6 +428,37 @@ After all 5 Wave 5 PRs merged to `origin/main`, the following ran clean on a fre
 - Alembic: chain is linear; head = `task_cut_402_user_migration`.
 
 Wave 5 grew the FE test count from 234 (post-Wave-4) → 250 (+16 tests across 4 new test files) and the BE pytest count from 128 → 150 (+22 non-skipped; the remaining new integration tests run under CI's Postgres service container).
+
+### Wave 6 PRs
+
+| PR | Task | State | Notes |
+|---|---|---|---|
+| #91 | TASK-CUT-502 | merged | Cutover runbook (`docs/ops/cutover-runbook.md`) — 562 lines; T-7/T-1 pre-flight, H-Hour timed sequence (09:00→10:15 IST), 7-day soak monitor, three-branch rollback decision tree, sign-off block. Surfaced 7 operational gaps documented in the retro and the wave-6 demo doc |
+| #92 | TASK-CUT-501c | merged | Ops + docs hygiene closeout: `@sentry/react`+`@sentry/tracing` installed; new `prod-docker-smoke` CI job builds both prod Dockerfiles; `ops/backup.sh` hard-fails when `BACKUP_FAIL_PLAINTEXT=1` is set and no GPG passphrase; TASKS.md fully synced (all CUT-NNN through Wave 5 marked Done); agent-prompt-template gained 3 coordination memos (worktree hygiene, migration-chain coordination, codegen-drift resolution) |
+| #93 | TASK-CUT-501b | merged | FE polish: bank-accounts + cheques tabs now have CSV/Excel exports (PII decrypted before export, Indian-style number formatting); deployment-runbook gained §11 documenting the v1 redirect-to-/login choice over auto-login for `POST /admin/invites/accept` |
+| #94 | TASK-CUT-503 | merged | Acceptance Playwright suite: `frontend/__tests__/e2e/cutover.spec.ts` runs the union of Wave-1-through-5 demos as one continuous scenario against a real docker-compose stack; new `e2e-acceptance` CI job (1m54s when green); two debug iterations needed during landing (UOM mismatch + ITC-04 missing `firm_id` query param) |
+| #95 | TASK-CUT-501a | merged | Auth security closeout: Redis sliding-window rate-limit on `/auth/forgot` (5 req/60s/IP) with `Retry-After` envelope; `password_reset_service.cleanup_expired_tokens()` + `make cleanup` Make target; deployment-runbook §9a documents the cron line |
+
+### Wave 6 spawn rationale + coordination notes
+
+Wave 6 spawned per plan (5 agents in parallel). Three notable events:
+
+1. **CUT-502 surfaced 7 operational gaps** (no automated soak tracker, no `make rollback-to-morning` shortcut, no automated TB-vs-Vyapar diff, GSTR-1 tab still coming-soon, Vyapar adapter doesn't import cash/capital/bank firm-level openings, `/inventory` SOH refresh lag, no BE-side error capture independent of Sentry FE). User triaged: accept as documented manual operator steps for v1; revisit in v2 if cutover-day stress reveals demand. Documented in `docs/ops/wave-6-demo.md` "Known carry-overs".
+2. **CUT-503 needed two debug iterations** post-spawn. The Playwright spec was correct in shape but had two data-coupling bugs: (a) UOM mismatch — sent `qty_sent=100 METER` while the item was seeded with `primary_uom=PIECE`, so the stock-ledger lookup couldn't find inventory, returning 422 on send-out; fix was qty_sent=10 PIECE matching the seed. (b) ITC-04 endpoint requires both `firm_id` and `period` query params (unlike the other reports endpoints which derive firm_id from the JWT); test only passed `period`. Both flagged as BE inconsistencies worth a polish follow-up but not blocking. Also surfaced that CUT-503's Wave-3 stock-adjust step silently returned when `/api/locations` was empty — hardened by adding an inline POST to create a default `MAIN` warehouse via CUT-206's endpoint.
+3. **CUT-503 agent stalled** mid-run. Watchdog terminated; parent resumed by inspecting the stalled state, stashing the agent's payload diagnosis, finishing the rebase against main (resolved a 3-way ci.yml conflict between CUT-501c's `prod-docker-smoke` job and CUT-503's `e2e-acceptance` job — both kept), applying the agent's fix on top, and shipping. Memo: long-running e2e agents may need their max-stall threshold tuned for the docker-compose-boot-then-Playwright pattern.
+
+### Post-Wave-6 integration verification (already executed)
+
+After all 5 Wave 6 PRs merged to `origin/main`, the following ran clean on a fresh checkout:
+- Backend: `cd backend && uv run ruff check . && uv run ruff format --check .` — clean
+- Backend: `cd backend && uv run pytest -q` — 153 passed (667 skipped require live DB env vars)
+- Frontend: `cd frontend && pnpm exec vitest run` — 57 files / 252 tests / 0 failures
+- Frontend: `cd frontend && pnpm tsc --noEmit && pnpm exec eslint . && pnpm exec prettier --check .` — clean
+- Frontend: `cd frontend && pnpm check:types` — OpenAPI snapshot drift gate green
+- CI on the merge commit: every job green including `e2e-acceptance` (the new Playwright suite) + `prod-docker-smoke` (the new BE+FE prod Dockerfile build)
+- Alembic: chain is linear; head = `task_cut_402_user_migration` (Wave 6 added no migrations)
+
+Wave 6 grew the BE pytest count from 150 → 153 (+3 non-skipped; the Wave-6 tests are mostly integration-only and run under CI's Postgres service container) and the FE vitest count from 250 → 252 (+2 in the new banking-exports test file).
 
 ### Wave 2 spawn rationale (deviation from the plan)
 
