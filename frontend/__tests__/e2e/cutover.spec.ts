@@ -644,11 +644,13 @@ test.describe('CUT-503 acceptance: Wave 1-5 cutover scenario', () => {
         });
         expect([200, 201]).toContain(receive.status());
       }
-      // ITC-04 prep endpoint smoke.
+      // ITC-04 prep endpoint smoke. Requires firm_id + period query params.
       const period = new Date().toISOString().slice(0, 7);
-      const itc04 = await apiFetch(request, `/api/reports/itc04?period=${period}`, {
-        token: ctx.accessToken,
-      });
+      const itc04 = await apiFetch(
+        request,
+        `/api/reports/itc04?firm_id=${ctx.firmId}&period=${period}`,
+        { token: ctx.accessToken },
+      );
       expect(itc04.status()).toBe(200);
     });
 
