@@ -159,6 +159,20 @@ def post_receipt(
     if mode not in {"CASH", "BANK", "UPI"}:
         raise AppValidationError(f"Unknown receipt mode {mode!r}; expected CASH, BANK, or UPI")
 
+    # CUT-QA-03c (B15): render the party's display name in the narration so
+    # the AccountingHub voucher view doesn't leak the raw UUID. One lookup;
+    # cheap because party_id is the PK.
+    party = session.execute(
+        select(Party).where(
+            Party.party_id == party_id,
+            Party.org_id == org_id,
+            Party.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if party is None:
+        raise AppValidationError(f"Party {party_id} not found in org {org_id}")
+    party_display = party.name
+
     open_invoices = _list_open_invoices_fifo(
         session, org_id=org_id, firm_id=firm_id, party_id=party_id
     )
@@ -183,7 +197,7 @@ def post_receipt(
         # receipts listing can recover the party even when there are no
         # allocations (direct credit / advance / pre-invoice).
         party_id=party_id,
-        narration=f"Receipt from party {party_id}" + (f" · ref {reference}" if reference else ""),
+        narration=f"Receipt from {party_display}" + (f" · ref {reference}" if reference else ""),
         status=VoucherStatus.POSTED,
         total_debit=amount,
         total_credit=amount,
