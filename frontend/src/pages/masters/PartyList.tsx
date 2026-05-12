@@ -275,6 +275,12 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
   };
 
   const close = () => {
+    // Mint a fresh idempotency key for the next intent. Without this,
+    // a dialog that errored, was closed, then reopened with edits would
+    // retry with the original key — the BE replay-cache then refuses
+    // the new payload with IDEMPOTENCY_KEY_PAYLOAD_MISMATCH and the
+    // user can only recover via a full-page reload.
+    idem.reset();
     reset();
     onClose();
   };
@@ -302,6 +308,10 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
       reset();
       onClose();
     } catch (e) {
+      // Mint a fresh key on every failed attempt so the next submit
+      // (possibly with a different payload after the user fixes the
+      // flagged field) isn't blocked by the BE replay-cache.
+      idem.reset();
       if (e instanceof ApiError) {
         const fe = e.field_errors ?? {};
         const next: Record<string, string> = {};
