@@ -504,3 +504,54 @@ def test_delete_received_grn_returns_409(http_client: TestClient) -> None:
         headers=_auth(me["access_token"]),
     )
     assert resp.status_code == 409
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Bug B9 — GRN response includes `item_name` on each line
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_grn_response_includes_line_item_name(http_client: TestClient) -> None:
+    """GRN detail must surface the human-readable item name (B9)."""
+    me = _signup_owner(http_client)
+    supplier = _create_supplier(http_client, me["access_token"], me["org_id"], me["firm_id"])
+    item = http_client.post(
+        "/items",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": f"I-{uuid.uuid4().hex[:6]}",
+            "name": "Cotton Suit",
+            "item_type": "RAW",
+            "primary_uom": "METER",
+        },
+    ).json()
+
+    po = _create_confirmed_po(
+        http_client,
+        me["access_token"],
+        party_id=supplier["party_id"],
+        firm_id=me["firm_id"],
+        item_id=item["item_id"],
+    )
+    po_lines_obj = po["lines"]
+    assert isinstance(po_lines_obj, list)
+    first_line: dict[str, object] = po_lines_obj[0]
+    po_line_id = str(first_line["po_line_id"])
+
+    grn = http_client.post(
+        "/grns",
+        headers=_auth(me["access_token"]),
+        json=_grn_payload(
+            party_id=supplier["party_id"],
+            firm_id=me["firm_id"],
+            item_id=item["item_id"],
+            purchase_order_id=str(po["purchase_order_id"]),
+            po_line_id=po_line_id,
+        ),
+    ).json()
+    grn_id = grn["grn_id"]
+
+    resp = http_client.get(f"/grns/{grn_id}", headers=_auth(me["access_token"]))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["lines"][0]["item_name"] == "Cotton Suit"
