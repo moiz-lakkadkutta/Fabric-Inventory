@@ -9,6 +9,7 @@ import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ApiError } from '@/lib/api/client';
 import { downloadExport } from '@/lib/api/download';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { IS_LIVE } from '@/lib/api/mode';
@@ -254,6 +255,10 @@ function NewItemDialog({ open, onClose }: NewItemDialogProps) {
   const [hsnCode, setHsnCode] = React.useState('');
   const [gstRate, setGstRate] = React.useState('5');
   const [error, setError] = React.useState<string | null>(null);
+  // Per-field errors from a BE 422 (field_errors map). Stored as the
+  // first message per field — the form renders them inline next to
+  // each Field. Cleared on every new submit attempt + on close.
+  const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({});
 
   // Reset form when dialog re-opens.
   React.useEffect(() => {
@@ -265,14 +270,26 @@ function NewItemDialog({ open, onClose }: NewItemDialogProps) {
     setHsnCode('');
     setGstRate('5');
     setError(null);
+    setFieldErrors({});
   }, [open]);
 
   const uoms: UomChoice[] = uomsQuery.data ?? [];
   const hsnRows: HsnChoice[] = hsnQuery.data ?? [];
 
+  const handleClose = () => {
+    // Mint a fresh idempotency key for the next intent. Without this,
+    // a dialog that errored, was closed, then reopened with edits would
+    // retry with the original key — the BE replay-cache then refuses
+    // the new payload with IDEMPOTENCY_KEY_PAYLOAD_MISMATCH and the
+    // user can only recover via a full-page reload.
+    idempotency.reset();
+    onClose();
+  };
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setFieldErrors({});
     if (!code.trim() || !name.trim()) {
       setError('Code and Name are required.');
       return;
@@ -293,21 +310,37 @@ function NewItemDialog({ open, onClose }: NewItemDialogProps) {
       idempotency.reset();
       onClose();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to create item';
-      setError(msg);
+      // Mint a fresh key on every failed attempt so the next submit
+      // (possibly with a different payload after the user fixes the
+      // flagged field) isn't blocked by the BE replay-cache.
+      idempotency.reset();
+      if (err instanceof ApiError) {
+        const fe = err.field_errors ?? {};
+        const next: Record<string, string> = {};
+        for (const [field, msgs] of Object.entries(fe)) {
+          if (Array.isArray(msgs) && msgs.length > 0) next[field] = msgs[0];
+        }
+        setFieldErrors(next);
+        if (Object.keys(next).length === 0) {
+          setError(`${err.title}${err.detail ? ` — ${err.detail}` : ''}`);
+        }
+      } else {
+        const msg = err instanceof Error ? err.message : 'Failed to create item';
+        setError(msg);
+      }
     }
   };
 
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       title="New item"
       description="Create an inventory item that can appear on invoices and stock moves."
       width={520}
       footer={
         <>
-          <Button variant="ghost" onClick={onClose} disabled={createItem.isPending}>
+          <Button variant="ghost" onClick={handleClose} disabled={createItem.isPending}>
             Cancel
           </Button>
           <Button
@@ -323,7 +356,7 @@ function NewItemDialog({ open, onClose }: NewItemDialogProps) {
     >
       <form onSubmit={onSubmit} className="space-y-3" id="new-item-form">
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Item code" htmlFor="item-code" required>
+          <Field label="Item code" htmlFor="item-code" required error={fieldErrors.code}>
             <Input
               id="item-code"
               aria-label="Item code"
@@ -333,7 +366,7 @@ function NewItemDialog({ open, onClose }: NewItemDialogProps) {
               required
             />
           </Field>
-          <Field label="Item name" htmlFor="item-name" required>
+          <Field label="Item name" htmlFor="item-name" required error={fieldErrors.name}>
             <Input
               id="item-name"
               aria-label="Item name"
@@ -345,7 +378,7 @@ function NewItemDialog({ open, onClose }: NewItemDialogProps) {
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Item type" htmlFor="item-type" required>
+          <Field label="Item type" htmlFor="item-type" required error={fieldErrors.item_type}>
             <select
               id="item-type"
               aria-label="Item type"
@@ -365,7 +398,7 @@ function NewItemDialog({ open, onClose }: NewItemDialogProps) {
               ))}
             </select>
           </Field>
-          <Field label="Primary UOM" htmlFor="item-uom" required>
+          <Field label="Primary UOM" htmlFor="item-uom" required error={fieldErrors.primary_uom}>
             <select
               id="item-uom"
               aria-label="Primary UOM"
@@ -407,7 +440,12 @@ function NewItemDialog({ open, onClose }: NewItemDialogProps) {
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="HSN code" htmlFor="item-hsn" hint="4–8 digits">
+          <Field
+            label="HSN code"
+            htmlFor="item-hsn"
+            hint="4–8 digits"
+            error={fieldErrors.hsn_code}
+          >
             <select
               id="item-hsn"
               aria-label="HSN code"
@@ -429,7 +467,12 @@ function NewItemDialog({ open, onClose }: NewItemDialogProps) {
               ))}
             </select>
           </Field>
-          <Field label="GST rate %" htmlFor="item-gst" hint="0 / 5 / 12 / 18 / 28">
+          <Field
+            label="GST rate %"
+            htmlFor="item-gst"
+            hint="0 / 5 / 12 / 18 / 28"
+            error={fieldErrors.gst_rate}
+          >
             <select
               id="item-gst"
               aria-label="GST rate"
