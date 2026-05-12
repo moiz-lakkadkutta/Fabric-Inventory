@@ -26,6 +26,7 @@ class POLineRequest(BaseModel):
 class POLineResponse(BaseModel):
     po_line_id: uuid.UUID
     item_id: uuid.UUID
+    item_name: str | None = None
     qty_ordered: Decimal
     qty_received: Decimal | None
     rate: Decimal
@@ -82,6 +83,7 @@ class GRNLineResponse(BaseModel):
     grn_line_id: uuid.UUID
     grn_id: uuid.UUID
     item_id: uuid.UUID
+    item_name: str | None = None
     po_line_id: uuid.UUID | None
     qty_received: Decimal
     rate: Decimal | None
@@ -141,6 +143,7 @@ class PILineResponse(BaseModel):
     pi_line_id: uuid.UUID
     purchase_invoice_id: uuid.UUID
     item_id: uuid.UUID
+    item_name: str | None = None
     qty: Decimal | None
     rate: Decimal | None
     line_amount: Decimal | None

@@ -97,6 +97,10 @@ function mapLine(line: BackendPoLine): PoLine {
   const ratePaise = rupeesToPaise(line.rate);
   return {
     item_id: line.item_id,
+    // `item_name` is populated by the BE PO response (TASK-CUT-QA-03a)
+    // so the detail page renders the human-readable name instead of the
+    // raw UUID (bug B9). Optional — older cached payloads may omit it.
+    item_name: line.item_name ?? undefined,
     qty,
     rate: ratePaise,
     amount: rupeesToPaise(line.line_amount ?? '0'),

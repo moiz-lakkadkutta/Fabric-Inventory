@@ -12,9 +12,11 @@ from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.dependencies import SyncDBSession, require_permission
-from app.models import GRN, GRNLine, PILine, POLine, PurchaseInvoice, PurchaseOrder
+from app.models import GRN, GRNLine, Item, PILine, POLine, PurchaseInvoice, PurchaseOrder
 from app.models.procurement import GRNStatus, PurchaseOrderStatus, VoucherStatus
 from app.schemas.procurement import (
     GRNCreateRequest,
@@ -37,10 +39,28 @@ router = APIRouter(prefix="/purchase-orders", tags=["procurement", "po"])
 grn_router = APIRouter(prefix="/grns", tags=["procurement", "grn"])
 
 
-def _line_to_response(line: POLine) -> POLineResponse:
+def _item_name_map(
+    db: Session, *, org_id: uuid.UUID, item_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """Return `item_id → name` for the given items, scoped to the org.
+
+    Single SELECT, no N+1. Empty input short-circuits to {}. Used by the
+    PO/GRN/PI response serializers so detail pages can render names
+    instead of raw UUIDs (bug B9).
+    """
+    if not item_ids:
+        return {}
+    rows = db.execute(
+        select(Item.item_id, Item.name).where(Item.org_id == org_id, Item.item_id.in_(item_ids))
+    ).all()
+    return {row.item_id: row.name for row in rows}
+
+
+def _line_to_response(line: POLine, *, item_name: str | None) -> POLineResponse:
     return POLineResponse(
         po_line_id=line.po_line_id,
         item_id=line.item_id,
+        item_name=item_name,
         qty_ordered=line.qty_ordered,
         qty_received=line.qty_received,
         rate=line.rate,
@@ -51,7 +71,7 @@ def _line_to_response(line: POLine) -> POLineResponse:
     )
 
 
-def _po_to_response(po: PurchaseOrder) -> POResponse:
+def _po_to_response(po: PurchaseOrder, *, item_names: dict[uuid.UUID, str]) -> POResponse:
     return POResponse(
         purchase_order_id=po.purchase_order_id,
         org_id=po.org_id,
@@ -64,10 +84,26 @@ def _po_to_response(po: PurchaseOrder) -> POResponse:
         status=po.status or PurchaseOrderStatus.DRAFT,
         total_amount=po.total_amount,
         notes=po.notes,
-        lines=[_line_to_response(line) for line in po.lines],
+        lines=[
+            _line_to_response(line, item_name=item_names.get(line.item_id)) for line in po.lines
+        ],
         created_at=po.created_at,
         updated_at=po.updated_at,
     )
+
+
+def _po_response(db: Session, po: PurchaseOrder) -> POResponse:
+    """Build a POResponse with item_name populated on each line."""
+    names = _item_name_map(db, org_id=po.org_id, item_ids=[line.item_id for line in po.lines])
+    return _po_to_response(po, item_names=names)
+
+
+def _po_list_response(db: Session, pos: list[PurchaseOrder]) -> list[POResponse]:
+    """Build POResponse list — single Item lookup spanning every line."""
+    item_ids = [line.item_id for po in pos for line in po.lines]
+    org_id = pos[0].org_id if pos else None
+    names = _item_name_map(db, org_id=org_id, item_ids=item_ids) if org_id else {}
+    return [_po_to_response(po, item_names=names) for po in pos]
 
 
 @router.post(
@@ -104,7 +140,7 @@ def create_po(
         notes=body.notes,
         created_by=current_user.user_id,
     )
-    return _po_to_response(po)
+    return _po_response(db, po)
 
 
 @router.get(
@@ -131,7 +167,7 @@ def list_pos(
         offset=offset,
     )
     return POListResponse(
-        items=[_po_to_response(po) for po in pos],
+        items=_po_list_response(db, pos),
         limit=limit,
         offset=offset,
         count=len(pos),
@@ -149,7 +185,7 @@ def get_po(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.po.read"))],
 ) -> POResponse:
     po = procurement_service.get_po(db, org_id=current_user.org_id, po_id=po_id)
-    return _po_to_response(po)
+    return _po_response(db, po)
 
 
 @router.post(
@@ -166,7 +202,7 @@ def approve_po(
     po = procurement_service.approve_po(
         db, org_id=current_user.org_id, po_id=po_id, updated_by=current_user.user_id
     )
-    return _po_to_response(po)
+    return _po_response(db, po)
 
 
 @router.post(
@@ -183,7 +219,7 @@ def confirm_po(
     po = procurement_service.confirm_po(
         db, org_id=current_user.org_id, po_id=po_id, updated_by=current_user.user_id
     )
-    return _po_to_response(po)
+    return _po_response(db, po)
 
 
 @router.post(
@@ -200,7 +236,7 @@ def cancel_po(
     po = procurement_service.cancel_po(
         db, org_id=current_user.org_id, po_id=po_id, updated_by=current_user.user_id
     )
-    return _po_to_response(po)
+    return _po_response(db, po)
 
 
 @router.delete(
@@ -224,11 +260,12 @@ def delete_po(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _grn_line_to_response(line: GRNLine) -> GRNLineResponse:
+def _grn_line_to_response(line: GRNLine, *, item_name: str | None) -> GRNLineResponse:
     return GRNLineResponse(
         grn_line_id=line.grn_line_id,
         grn_id=line.grn_id,
         item_id=line.item_id,
+        item_name=item_name,
         po_line_id=line.po_line_id,
         qty_received=line.qty_received,
         rate=line.rate,
@@ -237,7 +274,7 @@ def _grn_line_to_response(line: GRNLine) -> GRNLineResponse:
     )
 
 
-def _grn_to_response(grn: GRN) -> GRNResponse:
+def _grn_to_response(grn: GRN, *, item_names: dict[uuid.UUID, str]) -> GRNResponse:
     return GRNResponse(
         grn_id=grn.grn_id,
         org_id=grn.org_id,
@@ -251,10 +288,27 @@ def _grn_to_response(grn: GRN) -> GRNResponse:
         total_qty_received=grn.total_qty_received,
         total_amount=grn.total_amount,
         notes=grn.notes,
-        lines=[_grn_line_to_response(line) for line in grn.lines],
+        lines=[
+            _grn_line_to_response(line, item_name=item_names.get(line.item_id))
+            for line in grn.lines
+        ],
         created_at=grn.created_at,
         updated_at=grn.updated_at,
     )
+
+
+def _grn_response(db: Session, grn: GRN) -> GRNResponse:
+    """Build a GRNResponse with item_name populated on each line."""
+    names = _item_name_map(db, org_id=grn.org_id, item_ids=[line.item_id for line in grn.lines])
+    return _grn_to_response(grn, item_names=names)
+
+
+def _grn_list_response(db: Session, grns: list[GRN]) -> list[GRNResponse]:
+    """Build GRNResponse list — single Item lookup spanning every line."""
+    item_ids = [line.item_id for grn in grns for line in grn.lines]
+    org_id = grns[0].org_id if grns else None
+    names = _item_name_map(db, org_id=org_id, item_ids=item_ids) if org_id else {}
+    return [_grn_to_response(grn, item_names=names) for grn in grns]
 
 
 @grn_router.post(
@@ -291,7 +345,7 @@ def create_grn(
         notes=body.notes,
         created_by=current_user.user_id,
     )
-    return _grn_to_response(grn)
+    return _grn_response(db, grn)
 
 
 @grn_router.get(
@@ -318,7 +372,7 @@ def list_grns(
         offset=offset,
     )
     return GRNListResponse(
-        items=[_grn_to_response(grn) for grn in grns],
+        items=_grn_list_response(db, grns),
         limit=limit,
         offset=offset,
         count=len(grns),
@@ -336,7 +390,7 @@ def get_grn(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.grn.read"))],
 ) -> GRNResponse:
     grn = procurement_service.get_grn(db, org_id=current_user.org_id, grn_id=grn_id)
-    return _grn_to_response(grn)
+    return _grn_response(db, grn)
 
 
 @grn_router.post(
@@ -353,7 +407,7 @@ def receive_grn(
     grn = procurement_service.receive_grn(
         db, org_id=current_user.org_id, grn_id=grn_id, updated_by=current_user.user_id
     )
-    return _grn_to_response(grn)
+    return _grn_response(db, grn)
 
 
 @grn_router.delete(
@@ -380,11 +434,12 @@ def delete_grn(
 pi_router = APIRouter(prefix="/purchase-invoices", tags=["procurement", "pi"])
 
 
-def _pi_line_to_response(line: PILine) -> PILineResponse:
+def _pi_line_to_response(line: PILine, *, item_name: str | None) -> PILineResponse:
     return PILineResponse(
         pi_line_id=line.pi_line_id,
         purchase_invoice_id=line.purchase_invoice_id,
         item_id=line.item_id,
+        item_name=item_name,
         qty=line.qty,
         rate=line.rate,
         line_amount=line.line_amount,
@@ -394,7 +449,7 @@ def _pi_line_to_response(line: PILine) -> PILineResponse:
     )
 
 
-def _pi_to_response(pi: PurchaseInvoice) -> PIResponse:
+def _pi_to_response(pi: PurchaseInvoice, *, item_names: dict[uuid.UUID, str]) -> PIResponse:
     return PIResponse(
         purchase_invoice_id=pi.purchase_invoice_id,
         org_id=pi.org_id,
@@ -412,10 +467,26 @@ def _pi_to_response(pi: PurchaseInvoice) -> PIResponse:
         paid_amount=pi.paid_amount or Decimal("0"),
         due_date=pi.due_date,
         notes=pi.notes,
-        lines=[_pi_line_to_response(line) for line in pi.lines],
+        lines=[
+            _pi_line_to_response(line, item_name=item_names.get(line.item_id)) for line in pi.lines
+        ],
         created_at=pi.created_at,
         updated_at=pi.updated_at,
     )
+
+
+def _pi_response(db: Session, pi: PurchaseInvoice) -> PIResponse:
+    """Build a PIResponse with item_name populated on each line."""
+    names = _item_name_map(db, org_id=pi.org_id, item_ids=[line.item_id for line in pi.lines])
+    return _pi_to_response(pi, item_names=names)
+
+
+def _pi_list_response(db: Session, pis: list[PurchaseInvoice]) -> list[PIResponse]:
+    """Build PIResponse list — single Item lookup spanning every line."""
+    item_ids = [line.item_id for pi in pis for line in pi.lines]
+    org_id = pis[0].org_id if pis else None
+    names = _item_name_map(db, org_id=org_id, item_ids=item_ids) if org_id else {}
+    return [_pi_to_response(pi, item_names=names) for pi in pis]
 
 
 @pi_router.post(
@@ -453,7 +524,7 @@ def create_pi(
         notes=body.notes,
         created_by=current_user.user_id,
     )
-    return _pi_to_response(pi)
+    return _pi_response(db, pi)
 
 
 @pi_router.get(
@@ -482,7 +553,7 @@ def list_pis(
         offset=offset,
     )
     return PIListResponse(
-        items=[_pi_to_response(pi) for pi in pis],
+        items=_pi_list_response(db, pis),
         limit=limit,
         offset=offset,
         count=len(pis),
@@ -500,7 +571,7 @@ def get_pi(
     current_user: Annotated[TokenPayload, Depends(require_permission("purchase.invoice.read"))],
 ) -> PIResponse:
     pi = procurement_service.get_pi(db, org_id=current_user.org_id, pi_id=pi_id)
-    return _pi_to_response(pi)
+    return _pi_response(db, pi)
 
 
 @pi_router.post(
@@ -517,7 +588,7 @@ def post_pi(
     pi = procurement_service.post_pi(
         db, org_id=current_user.org_id, pi_id=pi_id, updated_by=current_user.user_id
     )
-    return _pi_to_response(pi)
+    return _pi_response(db, pi)
 
 
 @pi_router.post(
@@ -534,7 +605,7 @@ def void_pi(
     pi = procurement_service.void_pi(
         db, org_id=current_user.org_id, pi_id=pi_id, updated_by=current_user.user_id
     )
-    return _pi_to_response(pi)
+    return _pi_response(db, pi)
 
 
 @pi_router.delete(

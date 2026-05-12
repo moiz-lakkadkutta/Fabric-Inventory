@@ -200,3 +200,36 @@ def test_finalize_invoice_writes_voucher_via_endpoint() -> None:
     this placeholder keeps the file's intent obvious in the table-of-contents.
     """
     _ = Voucher, VoucherLine
+
+
+def test_sale_voucher_narration_uses_party_name(db_session: OrmSession) -> None:
+    """TASK-CUT-QA-03c: sale voucher narration shows the party's name, not its UUID.
+
+    Bug B15: `accounting_service.post_invoice_to_gl` set the narration to
+    ``f"Sale to party {invoice.party_id}"``, which leaked the raw UUID
+    into the AccountingHub voucher detail view. Fix renders ``party.name``.
+    """
+    org_id, firm_id, party_id, item_id = _seed_org_with_coa(db_session)
+    # Rename the seeded party so the assertion is unambiguous.
+    party = db_session.execute(select(Party).where(Party.party_id == party_id)).scalar_one()
+    party.name = "ACME Saree Centre Pvt Ltd"
+    db_session.flush()
+
+    invoice = _make_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_amount=Decimal("1180.00"),
+        gst_amount=Decimal("180.00"),
+    )
+
+    voucher = accounting_service.post_invoice_to_gl(db_session, invoice=invoice)
+
+    assert "ACME Saree Centre Pvt Ltd" in (voucher.narration or ""), (
+        f"narration should contain the party name; got {voucher.narration!r}"
+    )
+    assert str(party_id) not in (voucher.narration or ""), (
+        f"narration should not leak party UUID {party_id}; got {voucher.narration!r}"
+    )

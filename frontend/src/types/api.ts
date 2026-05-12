@@ -2251,6 +2251,8 @@ export interface components {
              * Format: uuid
              */
             item_id: string;
+            /** Item Name */
+            item_name?: string | null;
             /** Line Sequence */
             line_sequence: number | null;
             /** Lot Number */
@@ -3673,6 +3675,8 @@ export interface components {
              * Format: uuid
              */
             item_id: string;
+            /** Item Name */
+            item_name?: string | null;
             /** Line Amount */
             line_amount: string | null;
             /** Line Sequence */
@@ -3821,6 +3825,8 @@ export interface components {
              * Format: uuid
              */
             item_id: string;
+            /** Item Name */
+            item_name?: string | null;
             /** Line Amount */
             line_amount: string | null;
             /** Line Sequence */

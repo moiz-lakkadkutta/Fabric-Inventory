@@ -192,9 +192,16 @@ export default function PurchaseInvoiceDetail() {
                     {line.line_sequence}
                   </td>
                   <td className="px-3 py-3">
-                    <span className="mono" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                      {line.item_id.slice(0, 8)}…
-                    </span>
+                    {line.item_name ? (
+                      <span style={{ fontSize: 13 }}>{line.item_name}</span>
+                    ) : (
+                      <span
+                        className="mono"
+                        style={{ fontSize: 12, color: 'var(--text-tertiary)' }}
+                      >
+                        {line.item_id.slice(0, 8)}…
+                      </span>
+                    )}
                   </td>
                   <td className="num px-3 py-3" style={{ textAlign: 'right', fontSize: 13 }}>
                     {line.qty ?? '—'}

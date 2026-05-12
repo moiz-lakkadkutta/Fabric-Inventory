@@ -381,3 +381,42 @@ def test_delete_po_in_draft_returns_204(http_client: TestClient) -> None:
         headers=_auth(me["access_token"]),
     )
     assert resp.status_code == 204
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Bug B9 — PO response includes `item_name` on each line
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_po_response_includes_line_item_name(http_client: TestClient) -> None:
+    """PO detail must surface the human-readable item name (B9) so the
+    FE detail page doesn't fall back to UUID prefixes.
+    """
+    me = _signup_owner(http_client)
+    supplier = _create_supplier(http_client, me["access_token"], me["org_id"], me["firm_id"])
+    item = http_client.post(
+        "/items",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": f"I-{uuid.uuid4().hex[:6]}",
+            "name": "Cotton Suit",
+            "item_type": "RAW",
+            "primary_uom": "METER",
+        },
+    ).json()
+
+    po = http_client.post(
+        "/purchase-orders",
+        headers=_auth(me["access_token"]),
+        json=_po_payload(
+            party_id=supplier["party_id"],
+            firm_id=me["firm_id"],
+            item_id=item["item_id"],
+        ),
+    ).json()
+    po_id = po["purchase_order_id"]
+
+    resp = http_client.get(f"/purchase-orders/{po_id}", headers=_auth(me["access_token"]))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["lines"][0]["item_name"] == "Cotton Suit"

@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
-from app.models import Ledger, SalesInvoice, Voucher, VoucherLine
+from app.models import Ledger, Party, SalesInvoice, Voucher, VoucherLine
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 
 # Ledger codes seeded by `seed_service.seed_coa`. Don't change without
@@ -118,6 +118,17 @@ def post_invoice_to_gl(
         series=invoice.series,
     )
 
+    # CUT-QA-03c (B15): render the party's display name in the narration so
+    # the AccountingHub voucher view doesn't leak the raw UUID. One PK lookup.
+    party = session.execute(
+        select(Party).where(
+            Party.party_id == invoice.party_id,
+            Party.org_id == invoice.org_id,
+            Party.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    party_display = party.name if party is not None else str(invoice.party_id)
+
     voucher = Voucher(
         org_id=invoice.org_id,
         firm_id=invoice.firm_id,
@@ -127,7 +138,7 @@ def post_invoice_to_gl(
         voucher_date=invoice.invoice_date or datetime.datetime.now(tz=datetime.UTC).date(),
         reference_type="sales_invoice",
         reference_id=invoice.sales_invoice_id,
-        narration=f"Sale to party {invoice.party_id}",
+        narration=f"Sale to {party_display}",
         status=VoucherStatus.POSTED,
         total_debit=total,
         total_credit=total,
