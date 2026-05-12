@@ -440,13 +440,24 @@ test.describe('CUT-503 acceptance: Wave 1-5 cutover scenario', () => {
         };
         locationId = locs.items?.[0]?.location_id;
       }
-      // Adjustment endpoint shape varies — CUT-204 ships POST /stock-adjustments
-      // returning 201; we accept 200/201 and any 4xx as "endpoint exists +
-      // your schema may have shifted" rather than red.
-      // Skip cleanly if no default location is configured — CUT-204
-      // auto-provisions one via the UI flow but the BE-only smoke
-      // doesn't trigger that path. Surfacing a follow-up rather than
-      // failing the wave-3 step keeps the journey moving.
+      // If no default location exists (BE-only flow doesn't auto-provision
+      // the way the FE dialog does), create one inline via CUT-206's
+      // POST /locations. This unblocks both this step AND Wave 5's job-work
+      // send-out, which depends on stock-on-hand from this adjustment.
+      if (!locationId) {
+        const locRes = await apiFetch(request, '/api/locations', {
+          method: 'POST',
+          token: ctx.accessToken,
+          body: {
+            firm_id: ctx.firmId,
+            code: 'MAIN',
+            name: 'Main Warehouse',
+          },
+        });
+        if ([200, 201].includes(locRes.status())) {
+          locationId = ((await locRes.json()) as { location_id: string }).location_id;
+        }
+      }
       if (!locationId) return;
       const res = await apiFetch(request, '/api/stock-adjustments', {
         method: 'POST',
@@ -595,6 +606,12 @@ test.describe('CUT-503 acceptance: Wave 1-5 cutover scenario', () => {
     // -------------------------------------------------------------------
 
     await test.step('Wave 5 / step 1: job-work send-out → receive-back', async () => {
+      // Send-out decrements stock from the firm's default location.
+      // Wave 3 step 5 already adjusted +50 PIECE of the item into stock,
+      // so we send out 10 PIECE (well under the available qty) using the
+      // item's master UOM. A UOM mismatch (e.g. requesting 100 METER on a
+      // PIECE-master item) would 422 with "No stock at item=…" because
+      // the stock ledger keys on the item's primary UOM.
       const today = new Date().toISOString().slice(0, 10);
       const res = await apiFetch(request, '/api/job-work-orders', {
         method: 'POST',
@@ -604,7 +621,7 @@ test.describe('CUT-503 acceptance: Wave 1-5 cutover scenario', () => {
           karigar_party_id: ctx.karigarId,
           challan_date: today,
           operation: 'Embroidery',
-          lines: [{ item_id: ctx.itemId, qty_sent: '100', uom: 'METER' }],
+          lines: [{ item_id: ctx.itemId, qty_sent: '10', uom: 'PIECE' }],
         },
       });
       expect([200, 201]).toContain(res.status());
@@ -621,7 +638,8 @@ test.describe('CUT-503 acceptance: Wave 1-5 cutover scenario', () => {
           token: ctx.accessToken,
           body: {
             receipt_date: today,
-            lines: [{ job_work_order_line_id: lineId, qty_received: '95', qty_wastage: '5' }],
+            // Match the sent qty: 9 finished + 1 wastage = 10 (the dispatch).
+            lines: [{ job_work_order_line_id: lineId, qty_received: '9', qty_wastage: '1' }],
           },
         });
         expect([200, 201]).toContain(receive.status());
