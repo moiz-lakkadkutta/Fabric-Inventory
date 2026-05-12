@@ -1783,6 +1783,17 @@
             "title": "Item Id",
             "type": "string"
           },
+          "item_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Name"
+          },
           "line_sequence": {
             "anyOf": [
               {
@@ -5205,6 +5216,17 @@
             "title": "Item Id",
             "type": "string"
           },
+          "item_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Name"
+          },
           "line_amount": {
             "anyOf": [
               {
@@ -5616,6 +5638,17 @@
             "format": "uuid",
             "title": "Item Id",
             "type": "string"
+          },
+          "item_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Name"
           },
           "line_amount": {
             "anyOf": [
