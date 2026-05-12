@@ -387,9 +387,7 @@ def test_list_jwos_without_auth_returns_401(http_client: TestClient) -> None:
     assert resp.status_code == 401
 
 
-def test_list_jwos_includes_lines_on_each_row(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_list_jwos_includes_lines_on_each_row(http_client: TestClient, sync_engine: Engine) -> None:
     """Regression for CUT-QA-07 (B22).
 
     The FE Active-jobs table sums per-line ``qty_sent`` to render the
