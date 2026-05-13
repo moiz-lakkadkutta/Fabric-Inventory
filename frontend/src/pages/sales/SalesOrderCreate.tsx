@@ -28,6 +28,22 @@ interface DraftLine {
   item_id: string | null;
   qty: number;
   rate: number; // paise
+  /**
+   * Raw editing text for the rate input.
+   *
+   * The rate field is keystroke-edited in rupees (e.g. "500", "500.5",
+   * "500.50") but stored as integer paise. If we re-derive the input
+   * value from `rate` every render (formatting via `(rate/100).toFixed(2)`),
+   * partial typing like "5" gets parsed as 0.05 rupees, snaps the
+   * display to "0.05", and the next keystroke sees "0.055" — every
+   * subsequent digit just appends more decimals. That's the B13 10,000×
+   * drift: 500 typed → 1 paisa stored.
+   *
+   * Solution: track the user's literal text here while the field is
+   * being edited, and only re-format on blur. `rate` (paise) is the
+   * canonical source for totals and the wire payload.
+   */
+  rate_text: string;
   gst_pct: number;
 }
 
@@ -35,6 +51,18 @@ let lineSeq = 0;
 function nextLineId() {
   lineSeq += 1;
   return `dl_${lineSeq}`;
+}
+
+/** Parse a rupees-as-text input into integer paise. NaN-safe. */
+function parseRupeesToPaise(text: string): number {
+  const n = Number(text);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.round(n * 100);
+}
+
+/** Format integer paise as a rupees string for the input (e.g. 50000 → "500.00"). */
+function formatPaiseForInput(paise: number): string {
+  return (paise / 100).toFixed(2);
 }
 
 function todayIso(): string {
@@ -54,7 +82,7 @@ export default function SalesOrderCreate() {
   const [notes, setNotes] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<DraftLine[]>(() => [
-    { line_id: nextLineId(), item_id: null, qty: 1, rate: 0, gst_pct: 5 },
+    { line_id: nextLineId(), item_id: null, qty: 1, rate: 0, rate_text: '', gst_pct: 5 },
   ]);
 
   const customers = useMemo(() => customersQuery.data ?? [], [customersQuery.data]);
@@ -90,7 +118,7 @@ export default function SalesOrderCreate() {
   const addLine = () =>
     setLines((ls) => [
       ...ls,
-      { line_id: nextLineId(), item_id: null, qty: 1, rate: 0, gst_pct: 5 },
+      { line_id: nextLineId(), item_id: null, qty: 1, rate: 0, rate_text: '', gst_pct: 5 },
     ]);
 
   const removeLine = (id: string) =>
@@ -322,12 +350,23 @@ export default function SalesOrderCreate() {
                           <Input
                             aria-label="Rate"
                             name={`line-${l.line_id}-rate`}
-                            value={String((l.rate / 100).toFixed(2))}
-                            onChange={(e) =>
+                            inputMode="decimal"
+                            placeholder="0.00"
+                            value={l.rate_text}
+                            onChange={(e) => {
+                              const text = e.target.value;
+                              // Don't reformat mid-edit — keep the raw text so the
+                              // user can finish typing (e.g. "500" → "500.50").
                               updateLine(l.line_id, {
-                                rate: Math.round(Number(e.target.value) * 100) || 0,
-                              })
-                            }
+                                rate_text: text,
+                                rate: parseRupeesToPaise(text),
+                              });
+                            }}
+                            onBlur={() => {
+                              // On blur, snap the visible text to the canonical
+                              // 2-decimal form derived from the stored paise.
+                              updateLine(l.line_id, { rate_text: formatPaiseForInput(l.rate) });
+                            }}
                             style={{ width: 96, textAlign: 'right' }}
                           />
                         </td>

@@ -35,12 +35,30 @@ interface DraftLine {
   item_id: string | null;
   qty: number;
   rate: number; // paise (optional on wire; sent only if > 0)
+  /**
+   * Raw editing text for the rate input. See SalesOrderCreate for the
+   * full B13 write-up: re-deriving the input value from `rate` every
+   * render caused typed digits to be appended to a formatted zero, so
+   * "500" became ₹0.01. We now track the literal keystrokes here and
+   * only reformat on blur.
+   */
+  rate_text: string;
 }
 
 let lineSeq = 0;
 function nextLineId() {
   lineSeq += 1;
   return `dl_${lineSeq}`;
+}
+
+function parseRupeesToPaise(text: string): number {
+  const n = Number(text);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.round(n * 100);
+}
+
+function formatPaiseForInput(paise: number): string {
+  return paise > 0 ? (paise / 100).toFixed(2) : '';
 }
 
 function todayIso(): string {
@@ -67,7 +85,7 @@ export default function DeliveryChallanCreate() {
   const [shipState, setShipState] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<DraftLine[]>(() => [
-    { line_id: nextLineId(), item_id: null, qty: 1, rate: 0 },
+    { line_id: nextLineId(), item_id: null, qty: 1, rate: 0, rate_text: '' },
   ]);
 
   // Pull the chosen SO so we can pre-fill lines + lock the customer.
@@ -95,6 +113,7 @@ export default function DeliveryChallanCreate() {
           item_id: l.item_id,
           qty: open,
           rate: l.price,
+          rate_text: formatPaiseForInput(l.price),
         };
       })
       .filter((l) => l.qty > 0);
@@ -128,7 +147,10 @@ export default function DeliveryChallanCreate() {
   };
 
   const addLine = () =>
-    setLines((ls) => [...ls, { line_id: nextLineId(), item_id: null, qty: 1, rate: 0 }]);
+    setLines((ls) => [
+      ...ls,
+      { line_id: nextLineId(), item_id: null, qty: 1, rate: 0, rate_text: '' },
+    ]);
 
   const removeLine = (id: string) =>
     setLines((ls) => (ls.length === 1 ? ls : ls.filter((l) => l.line_id !== id)));
@@ -386,12 +408,19 @@ export default function DeliveryChallanCreate() {
                           <Input
                             aria-label="Rate"
                             name={`line-${l.line_id}-rate`}
-                            value={String((l.rate / 100).toFixed(2))}
-                            onChange={(e) =>
+                            inputMode="decimal"
+                            placeholder="0.00"
+                            value={l.rate_text}
+                            onChange={(e) => {
+                              const text = e.target.value;
                               updateLine(l.line_id, {
-                                rate: Math.round(Number(e.target.value) * 100) || 0,
-                              })
-                            }
+                                rate_text: text,
+                                rate: parseRupeesToPaise(text),
+                              });
+                            }}
+                            onBlur={() => {
+                              updateLine(l.line_id, { rate_text: formatPaiseForInput(l.rate) });
+                            }}
                             style={{ width: 96, textAlign: 'right' }}
                           />
                         </td>

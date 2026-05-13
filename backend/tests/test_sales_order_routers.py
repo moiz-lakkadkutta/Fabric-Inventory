@@ -122,6 +122,44 @@ def test_create_so_returns_201_with_lines(http_client: TestClient) -> None:
     assert len(body["lines"]) == 2
 
 
+def test_create_so_persists_rate_correctly(http_client: TestClient) -> None:
+    """B13 contract pin: POST /sales-orders with price="500.00" rupees.
+
+    Locks the wire contract — `price` is a rupees-as-string Decimal (NOT
+    paise). If the FE sends "0.01" the BE will faithfully store ₹0.01;
+    if the BE silently divides/multiplies, this test catches the drift.
+    """
+    from decimal import Decimal
+
+    me = _signup_owner(http_client)
+    customer = _create_customer(http_client, me["access_token"])
+    item = _create_item(http_client, me["access_token"])
+
+    resp = http_client.post(
+        "/sales-orders",
+        headers=_auth(me["access_token"]),
+        json=_so_payload(
+            party_id=customer["party_id"],
+            firm_id=me["firm_id"],
+            item_id=item["item_id"],
+            lines=[
+                {"item_id": item["item_id"], "qty_ordered": "20", "price": "500.00"},
+            ],
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert len(body["lines"]) == 1
+    line = body["lines"][0]
+    # price echoes back exactly what was sent — rupees, not paise.
+    assert Decimal(line["price"]) == Decimal("500.00"), (
+        f"BE drifted the rate: sent 500.00 rupees, got {line['price']}"
+    )
+    # line_amount = qty * price = 20 * 500 = 10,000 rupees.
+    assert Decimal(line["line_amount"]) == Decimal("10000.00")
+    assert Decimal(body["total_amount"]) == Decimal("10000.00")
+
+
 def test_create_so_without_auth_returns_401(http_client: TestClient) -> None:
     resp = http_client.post(
         "/sales-orders",
