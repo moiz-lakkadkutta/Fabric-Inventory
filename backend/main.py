@@ -63,7 +63,8 @@ def _probe_weasyprint() -> None:
         raise RuntimeError(
             "WeasyPrint native libraries are not loadable. The "
             "/v1/invoices/{id}/pdf endpoint would 500 on every call. "
-            "On macOS, launch uvicorn with "
+            "Easiest fix: run `make -C backend run` (or `./scripts/dev-native.sh`) "
+            "which auto-sets the env. Manual: on macOS, launch uvicorn with "
             "DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib (or "
             "/usr/local/lib on Intel) so pango/cairo/libgobject can be "
             "dlopen()ed. On Linux, install libpango-1.0-0, libcairo2, "
