@@ -256,6 +256,10 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Per-field errors from a BE 422 (field_errors map). Stored as the
+  // first message per field — the form renders them inline next to
+  // each Field. Cleared on every new submit attempt + on close.
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const reset = () => {
     setCode('');
@@ -267,15 +271,23 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
     setEmail('');
     setPhone('');
     setError(null);
+    setFieldErrors({});
   };
 
   const close = () => {
+    // Mint a fresh idempotency key for the next intent. Without this,
+    // a dialog that errored, was closed, then reopened with edits would
+    // retry with the original key — the BE replay-cache then refuses
+    // the new payload with IDEMPOTENCY_KEY_PAYLOAD_MISMATCH and the
+    // user can only recover via a full-page reload.
+    idem.reset();
     reset();
     onClose();
   };
 
   const submit = async () => {
     setError(null);
+    setFieldErrors({});
     if (!code.trim() || !name.trim()) {
       setError('Code and name are required.');
       return;
@@ -296,8 +308,21 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
       reset();
       onClose();
     } catch (e) {
+      // Mint a fresh key on every failed attempt so the next submit
+      // (possibly with a different payload after the user fixes the
+      // flagged field) isn't blocked by the BE replay-cache.
+      idem.reset();
       if (e instanceof ApiError) {
-        setError(`${e.title}${e.detail ? ` — ${e.detail}` : ''}`);
+        const fe = e.field_errors ?? {};
+        const next: Record<string, string> = {};
+        for (const [field, msgs] of Object.entries(fe)) {
+          if (Array.isArray(msgs) && msgs.length > 0) next[field] = msgs[0];
+        }
+        setFieldErrors(next);
+        // If no per-field errors arrived, fall back to the envelope toast.
+        if (Object.keys(next).length === 0) {
+          setError(`${e.title}${e.detail ? ` — ${e.detail}` : ''}`);
+        }
       } else if (e instanceof Error) {
         setError(e.message);
       } else {
@@ -326,7 +351,7 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
     >
       <div className="space-y-3">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <Field label="Code" htmlFor="np-code" required>
+          <Field label="Code" htmlFor="np-code" required error={fieldErrors.code}>
             <Input
               id="np-code"
               aria-label="Code"
@@ -335,7 +360,7 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
               placeholder="C-0001"
             />
           </Field>
-          <Field label="Name" htmlFor="np-name" required>
+          <Field label="Name" htmlFor="np-name" required error={fieldErrors.name}>
             <Input
               id="np-name"
               aria-label="Name"
@@ -376,7 +401,7 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
         </Field>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <Field label="GSTIN" htmlFor="np-gstin">
+          <Field label="GSTIN" htmlFor="np-gstin" error={fieldErrors.gstin}>
             <Input
               id="np-gstin"
               aria-label="GSTIN"
@@ -386,7 +411,7 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
               placeholder="27AAACA1234N1Z5"
             />
           </Field>
-          <Field label="State code" htmlFor="np-state-code">
+          <Field label="State code" htmlFor="np-state-code" error={fieldErrors.state_code}>
             <Input
               id="np-state-code"
               aria-label="State code"
@@ -399,7 +424,7 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
         </div>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <Field label="PAN" htmlFor="np-pan">
+          <Field label="PAN" htmlFor="np-pan" error={fieldErrors.pan}>
             <Input
               id="np-pan"
               aria-label="PAN"
@@ -408,7 +433,7 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
               maxLength={10}
             />
           </Field>
-          <Field label="Email" htmlFor="np-email">
+          <Field label="Email" htmlFor="np-email" error={fieldErrors.email}>
             <Input
               id="np-email"
               aria-label="Email"
@@ -417,7 +442,7 @@ function NewPartyDialog({ open, onClose }: NewPartyDialogProps) {
               onChange={(e) => setEmail(e.target.value)}
             />
           </Field>
-          <Field label="Phone" htmlFor="np-phone">
+          <Field label="Phone" htmlFor="np-phone" error={fieldErrors.phone}>
             <Input
               id="np-phone"
               aria-label="Phone"
