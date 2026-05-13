@@ -12581,7 +12581,7 @@
     },
     "/job-work-orders": {
       "get": {
-        "description": "Paginated JWO list, newest first.\n\nThe list endpoint does NOT eager-load lines (saves a join on the hot\npath; the FE list page only renders header fields). Use GET-by-id\nfor the detail view.",
+        "description": "Paginated JWO list, newest first.\n\nLines are bulk-loaded for every returned row (single query, grouped\nby jwo_id) so the FE's Active-jobs table can render per-line totals\n(SENT / RECEIVED / WASTAGE columns) and the receive-back dialog has\nthe lines it needs without an N+1 detail fetch. See CUT-QA-07 (B22).",
         "operationId": "list_job_work_orders_job_work_orders_get",
         "parameters": [
           {

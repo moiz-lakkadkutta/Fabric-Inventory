@@ -802,9 +802,10 @@ export interface paths {
          * List job-work orders with optional filters
          * @description Paginated JWO list, newest first.
          *
-         *     The list endpoint does NOT eager-load lines (saves a join on the hot
-         *     path; the FE list page only renders header fields). Use GET-by-id
-         *     for the detail view.
+         *     Lines are bulk-loaded for every returned row (single query, grouped
+         *     by jwo_id) so the FE's Active-jobs table can render per-line totals
+         *     (SENT / RECEIVED / WASTAGE columns) and the receive-back dialog has
+         *     the lines it needs without an N+1 detail fetch. See CUT-QA-07 (B22).
          */
         get: operations["list_job_work_orders_job_work_orders_get"];
         put?: never;
