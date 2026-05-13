@@ -147,8 +147,7 @@ describe('NewPartyDialog — B4 resets idempotency key on close + error', () => 
     await waitFor(() => {
       const posts = fetchMock.mock.calls.filter(
         ([url, init]) =>
-          String(url).endsWith('/parties') &&
-          (init as RequestInit | undefined)?.method === 'POST',
+          String(url).endsWith('/parties') && (init as RequestInit | undefined)?.method === 'POST',
       );
       expect(posts.length).toBeGreaterThanOrEqual(2);
     });

@@ -109,9 +109,7 @@ describe('NewItemDialog — B3 surfaces BE field_errors', () => {
     fireEvent.change(screen.getByLabelText(/item name/i), { target: { value: 'Dup item' } });
     fireEvent.click(screen.getByRole('button', { name: /create item/i }));
 
-    await waitFor(() =>
-      expect(screen.getByText(/Item code already exists/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Item code already exists/i)).toBeInTheDocument());
     expect(screen.getByText(/Unknown HSN/i)).toBeInTheDocument();
   });
 });
@@ -148,9 +146,7 @@ describe('NewItemDialog — B4 resets idempotency key on close + error', () => {
     fireEvent.change(screen.getByLabelText(/item code/i), { target: { value: 'X1' } });
     fireEvent.change(screen.getByLabelText(/item name/i), { target: { value: 'X item' } });
     fireEvent.click(screen.getByRole('button', { name: /create item/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/Item code already exists/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Item code already exists/i)).toBeInTheDocument());
 
     // Close + reopen + retry with a tweaked code.
     fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
@@ -162,8 +158,7 @@ describe('NewItemDialog — B4 resets idempotency key on close + error', () => {
     await waitFor(() => {
       const posts = fetchMock.mock.calls.filter(
         ([url, init]) =>
-          String(url).endsWith('/items') &&
-          (init as RequestInit | undefined)?.method === 'POST',
+          String(url).endsWith('/items') && (init as RequestInit | undefined)?.method === 'POST',
       );
       expect(posts.length).toBeGreaterThanOrEqual(2);
     });
