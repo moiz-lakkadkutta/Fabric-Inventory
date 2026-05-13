@@ -37,11 +37,52 @@ from app.service import email_adapter as email_adapter_module
 from app.service.email_adapter import MailgunEmailAdapter
 
 
+def _probe_weasyprint() -> None:
+    """Fail fast at app boot if WeasyPrint can't ``dlopen()`` its native
+    deps (libgobject / libpango / libcairo).
+
+    Bug B7 (E2E QA 2026-05-12): on macOS without
+    ``DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib``, the PDF endpoint
+    500'd at request time — silent until the user clicked Print. A
+    one-byte render at startup turns the silent-per-request failure
+    into a loud-once-at-boot failure that names the exact env var the
+    operator needs to set.
+
+    Linux deploys (Dockerfile.prod installs libpango/libcairo/fonts-noto)
+    pull libgobject as a transitive dep of libpango, so this probe is
+    effectively a no-op there — but it still hard-gates the same class
+    of misconfiguration if anyone ever trims the prod image.
+    """
+    try:
+        from weasyprint import HTML
+
+        # Smallest possible document — the bytes don't matter, only
+        # that the dlopen chain (gobject → pango → cairo) succeeds.
+        HTML(string="<p>x</p>").write_pdf()
+    except (OSError, ImportError) as exc:
+        raise RuntimeError(
+            "WeasyPrint native libraries are not loadable. The "
+            "/v1/invoices/{id}/pdf endpoint would 500 on every call. "
+            "On macOS, launch uvicorn with "
+            "DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib (or "
+            "/usr/local/lib on Intel) so pango/cairo/libgobject can be "
+            "dlopen()ed. On Linux, install libpango-1.0-0, libcairo2, "
+            f"and libharfbuzz-subset0 in the container image. "
+            f"Underlying error: {exc!r}"
+        ) from exc
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(level=settings.log_level)
     init_sentry(settings.sentry_dsn, settings.environment)
+    # CUT-QA-04: fail fast if WeasyPrint can't dlopen its native deps —
+    # otherwise the /invoices/{id}/pdf endpoint silently 500s on every
+    # request (Bug B7, 2026-05-12). Probe BEFORE swapping the email
+    # adapter so a half-configured Mailgun setup can't mask the
+    # WeasyPrint failure in the stacktrace.
+    _probe_weasyprint()
     # CUT-405: if all three Mailgun env vars are present, swap the
     # email adapter at app boot. Partial config (e.g. just the API key
     # set) keeps the ConsoleEmailAdapter — partial config almost
