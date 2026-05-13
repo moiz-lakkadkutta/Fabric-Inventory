@@ -387,6 +387,45 @@ def test_list_jwos_without_auth_returns_401(http_client: TestClient) -> None:
     assert resp.status_code == 401
 
 
+def test_list_jwos_includes_lines_on_each_row(http_client: TestClient, sync_engine: Engine) -> None:
+    """Regression for CUT-QA-07 (B22).
+
+    The FE Active-jobs table sums per-line ``qty_sent`` to render the
+    SENT column. Before this fix the list endpoint omitted ``lines``
+    (it only eager-loaded them on GET-by-id), so the FE summed across
+    an empty list and showed ``0`` even when 10 pieces were dispatched.
+
+    Asserts the list response now ships each row's lines so the FE
+    can render totals without an N+1 detail fetch.
+    """
+    me = _signup_owner(http_client)
+    karigar = _create_karigar(http_client, me["access_token"], firm_id=me["firm_id"])
+    item = _create_item(http_client, me["access_token"])
+    _seed_main_stock(sync_engine, me["org_id"], me["firm_id"], item["item_id"], Decimal("100"))
+
+    created = http_client.post(
+        "/job-work-orders",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "karigar_party_id": karigar["party_id"],
+            "challan_date": "2026-05-12",
+            "lines": [{"item_id": item["item_id"], "qty_sent": "10", "uom": "METER"}],
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    resp = http_client.get("/job-work-orders", headers=_auth(me["access_token"]))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["count"] == 1
+    row = body["items"][0]
+    assert "lines" in row
+    assert len(row["lines"]) == 1
+    assert Decimal(row["lines"][0]["qty_sent"]) == Decimal("10")
+    assert row["lines"][0]["uom"] == "METER"
+
+
 def test_get_jwo_by_id_returns_lines(http_client: TestClient, sync_engine: Engine) -> None:
     me = _signup_owner(http_client)
     karigar = _create_karigar(http_client, me["access_token"], firm_id=me["firm_id"])

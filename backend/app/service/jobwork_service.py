@@ -371,6 +371,30 @@ def get_jwo_lines(session: Session, *, jwo_id: uuid.UUID) -> list[JobWorkOrderLi
     )
 
 
+def get_jwo_lines_bulk(
+    session: Session, *, jwo_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[JobWorkOrderLine]]:
+    """Bulk-load lines for many JWOs in a single query, grouped by jwo_id.
+
+    Used by the list endpoint so the FE can render per-line totals (SENT /
+    RECEIVED / WASTAGE columns) without an N+1 detail fetch.
+    """
+    if not jwo_ids:
+        return {}
+    rows = session.execute(
+        select(JobWorkOrderLine)
+        .where(
+            JobWorkOrderLine.job_work_order_id.in_(jwo_ids),
+            JobWorkOrderLine.deleted_at.is_(None),
+        )
+        .order_by(JobWorkOrderLine.line_no)
+    ).scalars()
+    grouped: dict[uuid.UUID, list[JobWorkOrderLine]] = {jid: [] for jid in jwo_ids}
+    for line in rows:
+        grouped.setdefault(line.job_work_order_id, []).append(line)
+    return grouped
+
+
 def list_jwos(
     session: Session,
     *,
@@ -805,6 +829,7 @@ __all__ = [
     "create_send_out",
     "get_jwo",
     "get_jwo_lines",
+    "get_jwo_lines_bulk",
     "get_or_create_jobwork_location",
     "list_jwos",
     "prepare_itc04_data",

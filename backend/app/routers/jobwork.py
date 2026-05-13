@@ -263,9 +263,10 @@ def list_job_work_orders(
 ) -> JobWorkOrderListResponse:
     """Paginated JWO list, newest first.
 
-    The list endpoint does NOT eager-load lines (saves a join on the hot
-    path; the FE list page only renders header fields). Use GET-by-id
-    for the detail view.
+    Lines are bulk-loaded for every returned row (single query, grouped
+    by jwo_id) so the FE's Active-jobs table can render per-line totals
+    (SENT / RECEIVED / WASTAGE columns) and the receive-back dialog has
+    the lines it needs without an N+1 detail fetch. See CUT-QA-07 (B22).
     """
     status_enum = JobWorkOrderStatus(status_filter) if status_filter is not None else None
     rows = jobwork_service.list_jwos(
@@ -277,8 +278,11 @@ def list_job_work_orders(
         limit=limit,
         offset=offset,
     )
+    lines_by_jwo = jobwork_service.get_jwo_lines_bulk(
+        db, jwo_ids=[r.job_work_order_id for r in rows]
+    )
     return JobWorkOrderListResponse(
-        items=[_jwo_to_response(r) for r in rows],
+        items=[_jwo_to_response(r, lines_by_jwo.get(r.job_work_order_id, [])) for r in rows],
         count=len(rows),
         limit=limit,
         offset=offset,
