@@ -440,12 +440,7 @@ function NewItemDialog({ open, onClose }: NewItemDialogProps) {
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field
-            label="HSN code"
-            htmlFor="item-hsn"
-            hint="4–8 digits"
-            error={fieldErrors.hsn_code}
-          >
+          <Field label="HSN code" htmlFor="item-hsn" hint="4–8 digits" error={fieldErrors.hsn_code}>
             <select
               id="item-hsn"
               aria-label="HSN code"
