@@ -2,6 +2,111 @@
 
 Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the next **Ready** task; only Ready tasks have no blockers. Update status after each session.
 
+---
+
+## 2026-05-14 — Customer-trial plan (CURRENT / AUTHORITATIVE)
+
+**Authoritative plan:** [`docs/implementation-plan-trial.md`](docs/implementation-plan-trial.md)
+**Driven by:** live audit on 2026-05-14 (backend verified real; frontend mock/stub surface mapped).
+**Goal:** customer-trial-ready for a named friendly customer — an in-house ladies-suit manufacturer, sub-₹5 Cr.
+**Trial target:** ~2026-09-01 (≈15 weeks).
+
+This section supersedes the 2026-05-10 cutover block for task selection. The `TASK-CUT-*` backlog below it is either Done or folded into the tracks here. Pick the next **Ready** `TASK-TR-*` task in wave order.
+
+### Locked decisions (see plan doc §2)
+- Migration scope = **Parties + Opening Balances only**, verified E2E. Items entered manually at onboarding. CLAUDE.md #5 amended (trial ≠ cutover).
+- Manufacturing v1 = **full designed model** (routing DAG, karigar send-out, versioned BOM, QC, WIP costing).
+- GST e-invoice **stays flag-off** (sub-₹5 Cr).
+- Concurrency = **phased 2-3 tracks**; Manufacturing is the continuous spine.
+- Quality bar = CLAUDE.md baseline + E2E critical journeys + security review + GST/accounting correctness audit.
+- **Stretch (first to slip):** quotes, credit control.
+
+### Tracks & worktrees
+| Track | Worktree | Wave |
+|-------|----------|------|
+| A — Manufacturing (spine, serial, TDD) | `wt/tr-manufacturing` | continuous W1–W12 |
+| B — Audit-gap stubs (parallel agents) | `wt/tr-audit-gaps` | Wave 1 |
+| C — Accounting (journal voucher, bank rec) | `wt/tr-accounting` | Wave 1 |
+| D — Returns | `wt/tr-returns` | Wave 2 |
+| E — Deploy + hardening | `wt/tr-ops` | Wave 0 + Wave 3 |
+| Q — Quality gates | run on `main` | Waves 3–4 |
+| S — Stretch | `wt/tr-stretch` | Wave 3 (if ahead) |
+
+Per CLAUDE.md: each task gets its own `task/<id>-slug` branch inside the track worktree. Self-review + merge on green CI; escalate to Moiz on red CI or Ask-vs-Decide gates. `[$]` = money/tax-touching → balanced-GL test + Moiz review required.
+
+### Backlog — Wave 0 (de-risk, W1–W2) — START HERE
+| ID | Task | Status | Notes |
+|----|------|--------|-------|
+| TASK-TR-E06 | Verify Vyapar migration commit path E2E | **Done** (2026-05-14) | Upload/preview work; commit had a P0 blocker — see E06a. Verification script `/tmp/e06_migration_verify.py` |
+| TASK-TR-E06a `[$]` | Fix migration commit — post OB imbalance to suspense ledger | **Ready** | **Spec'd:** new seeded ledger `3200 Opening Balance Difference` (suspense, EQUITY); commit succeeds + reports parked amount prominently; `tb_reconciles` stays false. Money-logic → failing test first, PR for Moiz review, no self-merge |
+| TASK-TR-E01 | (audit half) Audit deploy artifacts + provisioning checklist | **Done** (2026-05-14) | `docs/ops/hetzner-provisioning-checklist.md` — 9 blockers, 27-step checklist |
+| TASK-TR-A01 | Manufacturing SQLAlchemy models (11 tables) + schema parity | **In progress** | Worktree `../fabric-worktrees/tr-manufacturing` @ `task/tr-a01-mfg-models`. Schema source: `schema/ddl.sql:555–2105` (11 tables, 4 enums) |
+| TASK-TR-Q04 | Moiz dogfooding — run trader modules on real business | **Ready** | **Uses synthetic data for now** (not real-data migration) — unblocks immediately, see Q04a |
+| TASK-TR-Q04a | `make seed-demo` — synthetic textile dataset (parties, items, stock, a few txns) | **Ready** | So Moiz can dogfood + Manufacturing can be synthetically dogfooded without waiting on E06a |
+
+> **Box provisioning (TASK-TR-E01 deploy half) — deferred to pre-trial (~August)** per Moiz 2026-05-14. Repo stays **private**; the box uses `docker login ghcr.io` with a `read:packages` token. The artifact audit is done, so what's left is the actual run-through. Moved to Wave 3 below. Open: confirm `taana.in` domain ownership before then.
+
+### Backlog — Wave 1 (spine + honesty, W2–W6)
+| ID | Task | Status | Blocked by |
+|----|------|--------|-----------|
+| TASK-TR-A02 | Design + Operation Master + Cost Centre CRUD | Blocked | A01 |
+| TASK-TR-A03 | BOM service + router (versioned, `part_role`) | Blocked | A02 |
+| TASK-TR-A04 | Routing service + router (DAG, edge types, no-cycle validation) | Blocked | A02 |
+| TASK-TR-A05 | MO creation + lifecycle (`mo_status` machine, BOM explosion, routing instantiation) | Blocked | A03, A04 |
+| TASK-TR-A06 `[$]` | Material issue — consume stock + WIP/inventory GL posting | Blocked | A05 |
+| TASK-TR-B01 | Inventory live stock-on-hand (wire `useSkus` off the zero-stub) | **Ready** | — |
+| TASK-TR-B02 | Lots live — backend endpoints if missing + wire `useLots`/`useLot` | **Ready** | — |
+| TASK-TR-B03 | GSTR-1 UI — wire `useGstr1` to live `/reports/gstr1` + panel + export | **Ready** | — |
+| TASK-TR-B04 | Report tabs — Ageing, Ledger statement, Party statement, ITC-04 | **Ready** | — |
+| TASK-TR-B05 | Dead-button cleanup — remove/wire ComingSoon buttons; fix Inventory "New GRN" | **Ready** | — |
+| TASK-TR-B06 | Inventory/reports E2E + retro | Blocked | B01–B05 |
+| TASK-TR-C01 `[$]` | Manual journal voucher — service + router + schema (revives TASK-042) | **Ready** | — |
+| TASK-TR-C02 | Manual journal voucher UI ("New voucher" → real form) | Blocked | C01 |
+| TASK-TR-C03 `[$]` | Bank reconciliation — service + router (revives TASK-056) | **Ready** | — |
+| TASK-TR-C04 | Bank reconciliation UI ("Reconcile bank" → real flow) | Blocked | C03 |
+| TASK-TR-C05 | Accounting E2E + retro | Blocked | C02, C04 |
+
+### Backlog — Wave 2 (production depth + returns, W6–W10)
+| ID | Task | Status | Blocked by |
+|----|------|--------|-----------|
+| TASK-TR-A07 | Operation progress (in-house) — state machine, qty in/out, `production_event` | Blocked | A06 |
+| TASK-TR-A08 | Per-operation karigar send-out — challan integration with job-work module | Blocked | A07 |
+| TASK-TR-A09 | Routing DAG flow engine — threshold partial-flow. **Hardest task — buffer it** | Blocked | A07 |
+| TASK-TR-A10 | QC operation — pass/fail/rework, scrap, by-product | Blocked | A09 |
+| TASK-TR-A11 `[$]` | MO completion — finished-goods receipt + WIP cost settlement + GL | Blocked | A10 |
+| TASK-TR-D01 `[$]` | Sales return / credit note — stock + GL reversal | **Ready** | (start after B/C land) |
+| TASK-TR-D02 `[$]` | Purchase return / debit note — stock + GL reversal | Blocked | D01 |
+| TASK-TR-D03 | Returns UI — sales + purchase return screens; wire `/sales/returns` | Blocked | D01, D02 |
+| TASK-TR-D04 | Returns E2E + retro | Blocked | D03 |
+| TASK-TR-E02 | Backup/restore round-trip proof on the box | Blocked | E01 |
+| TASK-TR-E03 | Monitoring — Sentry (BE+FE), uptime, structured logging review | Blocked | E01 |
+| TASK-TR-Q05 | Customer co-design sessions begin (weekly, W6→) | Blocked | A05 |
+
+### Backlog — Wave 3 (frontend + hardening + gates, W10–W13)
+| ID | Task | Status | Blocked by |
+|----|------|--------|-----------|
+| TASK-TR-A12 | Manufacturing frontend — replace mock; MO list/detail, Kanban live, BOM/routing editors, QC UI | Blocked | A11 |
+| TASK-TR-A13 | Manufacturing E2E (Playwright) — full design→FG journey | Blocked | A12 |
+| TASK-TR-A14 | Feature-flag wire (`manufacturing.enabled`) + un-hide nav | Blocked | A13 |
+| TASK-TR-E01 (deploy half) | Provision Hetzner CX22, run `deploy.yml`, verify stack + migrations + TLS + Phase F | **Ready** (pre-trial) | Deferred from Wave 0 per Moiz. Follow `docs/ops/hetzner-provisioning-checklist.md` |
+| TASK-TR-E01a | Deploy-artifact repo fixes (`.dockerignore`s, `.env.backup` DB name, runbook sequencing, backup cron) | **Ready** | Small batch PR; can land anytime |
+| TASK-TR-E04 | Error states + onboarding polish (invite→accept→first-login) | Blocked | E01 |
+| TASK-TR-E05 | Staging environment + staging→prod promotion | Blocked | E01 |
+| TASK-TR-Q01 | Security review pass — RLS isolation, permission matrix, idempotency | Blocked | Wave 2 merged |
+| TASK-TR-Q02 | GST + accounting correctness audit — 30 PoS scenarios, balanced-GL all doc types | Blocked | Wave 2 merged |
+| TASK-TR-Q03 | E2E critical-journeys suite — 4 journeys green | Blocked | A13, D04 |
+| TASK-TR-S01 | *(Stretch)* Sales quotations — service + UI | **Stretch** | only if ahead |
+| TASK-TR-S02 | *(Stretch)* Credit control — receivables-limit enforcement + UI | **Stretch** | only if ahead |
+
+### Backlog — Wave 4 (buffer + readiness, W13–W15)
+| ID | Task | Status | Blocked by |
+|----|------|--------|-----------|
+| TASK-TR-Q06 | Trial-readiness gate — go/no-go checklist (plan doc §8) | Blocked | Q01, Q02, Q03 |
+| — | Bug-fix capacity from dogfooding + co-design feedback | ongoing | — |
+| — | Customer onboarding rehearsal (their parties+OB import, items session) | Blocked | Q06 |
+
+---
+
 > **2026-04-27 — Backend-first execution.** Frontend design is still in progress, so every UI task (Login UI, Dashboard, Admin panel, list/create screens, etc.) is marked **Deferred — frontend design pending** and should not be picked up. Pick the next **Ready** task from the backend pool only. The "Frontend Phase" picks up wholesale once the design system lands. Backend tasks that previously listed a UI task as blocker (TASK-027, TASK-032, TASK-061a all named TASK-021) have been re-pointed at the backend predecessor (TASK-011 Item CRUD) so they unblock cleanly.
 
 ---
