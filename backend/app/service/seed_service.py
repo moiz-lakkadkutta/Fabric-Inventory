@@ -11,7 +11,8 @@ What's seeded:
 - 10 HSN rows: textile-trade common HSN codes with their GST rates.
 - COA: 5 top-level groups (Asset / Liability / Equity / Revenue / Expense)
   + a starter set of system ledgers under each (Cash, Bank, AR, AP,
-  Inventory, Sales, Purchases, Capital, Tax Payable, Salaries).
+  Inventory, Sales, Purchases, Capital, Tax Payable, Salaries, plus an
+  "Opening Balance Difference" suspense ledger for the migration cutover).
   Trial-balance balanced (all opening balances = 0).
 
 Demo data (a fully-populated dev org with parties + items) is intentionally
@@ -136,6 +137,11 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     ("2200", "TDS Payable", "TAX", "LIABILITY", False),
     ("3000", "Capital Account", "CAPITAL", "EQUITY", False),
     ("3100", "Retained Earnings", "EQUITY", "EQUITY", False),
+    # Suspense ledger for the migration cutover. A parties-only Vyapar
+    # export never self-balances (the firm's capital / cash / stock live
+    # in other sheets), so migration_service parks the DR/CR gap here;
+    # the accountant reclassifies it post-cutover via a manual voucher.
+    ("3200", "Opening Balance Difference", "EQUITY", "EQUITY", False),
     ("4000", "Sales Revenue", "REVENUE", "REVENUE", False),
     ("4100", "Other Income", "REVENUE", "REVENUE", False),
     ("5000", "Cost of Goods Sold", "COGS", "EXPENSE", False),

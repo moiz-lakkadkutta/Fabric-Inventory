@@ -14,10 +14,12 @@ Cases covered:
 
 from __future__ import annotations
 
+import io
 import uuid
 from decimal import Decimal
 from pathlib import Path
 
+import openpyxl
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -417,6 +419,122 @@ def test_reject_marks_status_without_commit(http_client: TestClient, sync_engine
     post_dr, post_cr = _tb_state(sync_engine, org_id=org_id, firm_id=firm_id)
     assert post_dr == pre_dr
     assert post_cr == pre_cr
+
+
+def _build_unbalanced_vyapar_xlsx() -> bytes:
+    """A realistic Vyapar parties export — party OBs do NOT self-balance.
+
+    A Vyapar "Parties" export only carries party-scoped balances; the
+    firm's capital / cash / stock are in other sheets, so a parties-only
+    export is *always* lopsided. Here:
+
+        Customers (To Receive -> Sundry Debtors DR): 50000 + 30000 = 80000
+        Suppliers (To Pay     -> Sundry Creditors CR):              20000
+        => DR-heavy by 60000. The 60000 must be parked in the
+           '3200 Opening Balance Difference' suspense ledger.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Parties"
+    ws.append(["Name", "Phone", "State", "Opening Balance", "Balance Type", "Type"])
+    ws.append(["Anita Fashions", "9820011111", "27", "50000", "To Receive", "Customer"])
+    ws.append(["Reema Boutique", "9820022222", "27", "30000", "To Receive", "Customer"])
+    ws.append(["Surat Mills", "9601033333", "24", "20000", "To Pay", "Supplier"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_approve_unbalanced_obs_parks_to_suspense(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A parties-only export never self-balances — commit must still succeed.
+
+    The DR/CR gap (the firm's capital/cash/stock, absent from a parties
+    sheet) is posted to the seeded '3200 Opening Balance Difference'
+    suspense ledger so the OB voucher balances.
+
+    Regression: before TASK-TR-E06a the approve step rejected any
+    unbalanced source with a 422, which blocked every realistic
+    customer migration.
+    """
+    body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    org_id = body["org_id"]
+    firm_id = body["firm_id"]
+    token = body["access_token"]
+    xlsx = _build_unbalanced_vyapar_xlsx()
+
+    # Upload — the preview is honest: tb does NOT reconcile, diff = 60000.
+    upload = http_client.post(
+        "/admin/migrations",
+        headers=_auth(token),
+        files={
+            "file": (
+                "vyapar-unbalanced.xlsx",
+                xlsx,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert upload.status_code == 201, upload.text
+    recon = upload.json()["reconciliation"]
+    assert recon["tb_reconciles"] is False
+    assert Decimal(recon["tb_diff"]) == Decimal("60000")
+    migration_id = upload.json()["migration_id"]
+
+    # Approve — commit SUCCEEDS (the load-bearing fix).
+    approve = http_client.post(
+        f"/admin/migrations/{migration_id}/approve",
+        headers=_auth(token),
+        files={
+            "file": (
+                "vyapar-unbalanced.xlsx",
+                xlsx,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert approve.status_code == 200, approve.text
+    assert approve.json()["status"] == "APPROVED"
+
+    # TB still balances post-commit — the suspense line closed the gap.
+    post_dr, post_cr = _tb_state(sync_engine, org_id=org_id, firm_id=firm_id)
+    assert post_dr == post_cr, f"OB voucher unbalanced: DR {post_dr} vs CR {post_cr}"
+    assert post_dr == Decimal("80000")
+
+    # The 60000 gap is parked on ledger 3200, CR side (source was DR-heavy).
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        suspense_lines = s.execute(
+            text(
+                """
+                SELECT vl.line_type, vl.amount
+                FROM voucher_line vl
+                JOIN ledger l ON l.ledger_id = vl.ledger_id
+                JOIN voucher v ON v.voucher_id = vl.voucher_id
+                WHERE l.code = '3200' AND v.org_id = :o AND v.firm_id = :f
+                  AND v.status = 'POSTED'
+                """
+            ),
+            {"o": org_id, "f": firm_id},
+        ).all()
+    assert len(suspense_lines) == 1, f"expected one suspense line, got {suspense_lines}"
+    assert suspense_lines[0][0] == "CR"
+    assert Decimal(str(suspense_lines[0][1])) == Decimal("60000")
+
+    # And the parked difference is reported prominently in the report.
+    detail = http_client.get(f"/admin/migrations/{migration_id}", headers=_auth(token)).json()
+    rows = detail["reconciliation"]["rows"]
+    parked = [r for r in rows if r["code"] == "OB_DIFFERENCE_PARKED"]
+    assert parked, f"expected an OB_DIFFERENCE_PARKED row, got {rows}"
+    assert "3200" in parked[0]["message"] or "Opening Balance Difference" in parked[0]["message"]
+    # tb_reconciles stays False — honest: the source itself did not reconcile.
+    assert detail["reconciliation"]["tb_reconciles"] is False
 
 
 def test_empty_file_rejected(http_client: TestClient, sync_engine: Engine) -> None:
