@@ -24,7 +24,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
-from app.models.manufacturing import OperationType
+from app.models.manufacturing import OperationType, RoutingEdgeType
 from app.models.masters import CostCentreType, UomType
 
 # ──────────────────────────────────────────────────────────────────────
@@ -217,6 +217,74 @@ class BomListResponse(BaseModel):
     total_count: int  # total matching rows across all pages
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Routing (A04) — operation DAG per design.
+# Edges are validated globally (cycle / threshold rules), so we ship them
+# in one shot on create + replace them atomically on PATCH /edges.
+# threshold_qty / threshold_pct are NUMERIC(15,4) / NUMERIC(5,2) on the
+# model; Decimal in code, never float.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class RoutingEdgeInput(BaseModel):
+    """Request component for a single routing edge."""
+
+    from_operation_id: uuid.UUID
+    to_operation_id: uuid.UUID
+    edge_type: RoutingEdgeType
+    threshold_qty: Decimal | None = None
+    threshold_pct: Decimal | None = None
+    sequence: int | None = None
+
+
+class RoutingEdgeResponse(BaseModel):
+    routing_edge_id: uuid.UUID
+    routing_id: uuid.UUID
+    from_operation_id: uuid.UUID
+    to_operation_id: uuid.UUID
+    edge_type: RoutingEdgeType
+    threshold_qty: Decimal | None
+    threshold_pct: Decimal | None
+    sequence: int | None
+
+
+class RoutingCreateRequest(BaseModel):
+    firm_id: uuid.UUID
+    design_id: uuid.UUID
+    code: str = Field(min_length=1, max_length=50)
+    name: str = Field(min_length=1, max_length=255)
+    # ``max_length=500`` is a sane upper bound for an operation DAG in
+    # this domain (cut+stitch+finish+QC variations rarely exceed a few
+    # dozen edges). Acts as a cheap DoS guard.
+    edges: list[RoutingEdgeInput] = Field(min_length=1, max_length=500)
+
+
+class RoutingEdgesUpdateRequest(BaseModel):
+    edges: list[RoutingEdgeInput] = Field(min_length=1, max_length=500)
+
+
+class RoutingResponse(BaseModel):
+    routing_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    design_id: uuid.UUID
+    code: str
+    version_number: int
+    is_active: bool
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+    deleted_at: datetime.datetime | None
+    edges: list[RoutingEdgeResponse]
+
+
+class RoutingListResponse(BaseModel):
+    items: list[RoutingResponse]
+    limit: int
+    offset: int
+    count: int
+    total_count: int
+
+
 __all__ = [
     "BomCreateRequest",
     "BomLineInput",
@@ -235,4 +303,10 @@ __all__ = [
     "OperationMasterListResponse",
     "OperationMasterResponse",
     "OperationMasterUpdateRequest",
+    "RoutingCreateRequest",
+    "RoutingEdgeInput",
+    "RoutingEdgeResponse",
+    "RoutingEdgesUpdateRequest",
+    "RoutingListResponse",
+    "RoutingResponse",
 ]

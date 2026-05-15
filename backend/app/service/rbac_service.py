@@ -142,6 +142,14 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("manufacturing.bom", "update", "Activate a BOM (demotes prior actives)"),
     ("manufacturing.bom", "read", "View BOMs and their lines"),
     ("manufacturing.bom", "delete", "Soft-delete BOMs"),
+    # Routing (TASK-TR-A04) — operation DAG per design. Edits flow
+    # through "replace edges" (atomic re-validation); a single
+    # ``write`` permission covers create / update / soft-delete because
+    # routing changes are inseparable from re-validating the DAG. Read
+    # is split so Salesperson / Accountant can see routings (needed for
+    # quoting + cost roll-up) without write access.
+    ("manufacturing.routing", "write", "Create / update / soft-delete routings"),
+    ("manufacturing.routing", "read", "View routings and their edges"),
 )
 
 
@@ -198,6 +206,9 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # BOM (A03) — Accountant reads only; cost-centre-tied
                 # GL postings need BOM visibility, no editing.
                 "manufacturing.bom.read",
+                # Routing (A04) — Accountant reads only; routing edges
+                # tie to per-operation cost accrual on the MO ledger.
+                "manufacturing.routing.read",
             }
         ),
     ),
@@ -234,6 +245,11 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # know which BOM (and therefore which components / cost)
                 # backs a finished item. No write.
                 "manufacturing.bom.read",
+                # Routing (A04) — Salesperson reads only; visible for
+                # quoting context (which operation chain backs a
+                # design), no write. NB: deny is the security test the
+                # service test suite locks in.
+                "manufacturing.routing.read",
             }
         ),
     ),
@@ -293,6 +309,10 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "manufacturing.bom.update",
                 "manufacturing.bom.read",
                 "manufacturing.bom.delete",
+                # Routing (A04) — Production Manager owns routing
+                # lifecycle (create / replace edges / soft-delete + read).
+                "manufacturing.routing.write",
+                "manufacturing.routing.read",
             }
         ),
     ),

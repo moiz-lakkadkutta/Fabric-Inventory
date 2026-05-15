@@ -8655,6 +8655,334 @@
         "title": "ResetPasswordResponse",
         "type": "object"
       },
+      "RoutingCreateRequest": {
+        "properties": {
+          "code": {
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "design_id": {
+            "format": "uuid",
+            "title": "Design Id",
+            "type": "string"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/RoutingEdgeInput"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Edges",
+            "type": "array"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "firm_id",
+          "design_id",
+          "code",
+          "name",
+          "edges"
+        ],
+        "title": "RoutingCreateRequest",
+        "type": "object"
+      },
+      "RoutingEdgeInput": {
+        "description": "Request component for a single routing edge.",
+        "properties": {
+          "edge_type": {
+            "$ref": "#/components/schemas/RoutingEdgeType"
+          },
+          "from_operation_id": {
+            "format": "uuid",
+            "title": "From Operation Id",
+            "type": "string"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence"
+          },
+          "threshold_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold Pct"
+          },
+          "threshold_qty": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold Qty"
+          },
+          "to_operation_id": {
+            "format": "uuid",
+            "title": "To Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_operation_id",
+          "to_operation_id",
+          "edge_type"
+        ],
+        "title": "RoutingEdgeInput",
+        "type": "object"
+      },
+      "RoutingEdgeResponse": {
+        "properties": {
+          "edge_type": {
+            "$ref": "#/components/schemas/RoutingEdgeType"
+          },
+          "from_operation_id": {
+            "format": "uuid",
+            "title": "From Operation Id",
+            "type": "string"
+          },
+          "routing_edge_id": {
+            "format": "uuid",
+            "title": "Routing Edge Id",
+            "type": "string"
+          },
+          "routing_id": {
+            "format": "uuid",
+            "title": "Routing Id",
+            "type": "string"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence"
+          },
+          "threshold_pct": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold Pct"
+          },
+          "threshold_qty": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold Qty"
+          },
+          "to_operation_id": {
+            "format": "uuid",
+            "title": "To Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "routing_edge_id",
+          "routing_id",
+          "from_operation_id",
+          "to_operation_id",
+          "edge_type",
+          "threshold_qty",
+          "threshold_pct",
+          "sequence"
+        ],
+        "title": "RoutingEdgeResponse",
+        "type": "object"
+      },
+      "RoutingEdgeType": {
+        "description": "Routing-DAG edge dependency \u2014 `routing_edge_type` Postgres enum.",
+        "enum": [
+          "FINISH_TO_START",
+          "START_TO_START",
+          "PARTIAL_FINISH_TO_START"
+        ],
+        "title": "RoutingEdgeType",
+        "type": "string"
+      },
+      "RoutingEdgesUpdateRequest": {
+        "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/RoutingEdgeInput"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Edges",
+            "type": "array"
+          }
+        },
+        "required": [
+          "edges"
+        ],
+        "title": "RoutingEdgesUpdateRequest",
+        "type": "object"
+      },
+      "RoutingListResponse": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RoutingResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset",
+          "count",
+          "total_count"
+        ],
+        "title": "RoutingListResponse",
+        "type": "object"
+      },
+      "RoutingResponse": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "design_id": {
+            "format": "uuid",
+            "title": "Design Id",
+            "type": "string"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/RoutingEdgeResponse"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "routing_id": {
+            "format": "uuid",
+            "title": "Routing Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version_number": {
+            "title": "Version Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "routing_id",
+          "org_id",
+          "firm_id",
+          "design_id",
+          "code",
+          "version_number",
+          "is_active",
+          "created_at",
+          "updated_at",
+          "deleted_at",
+          "edges"
+        ],
+        "title": "RoutingResponse",
+        "type": "object"
+      },
       "SOCreateRequest": {
         "properties": {
           "delivery_date": {
@@ -18273,6 +18601,330 @@
         "summary": "Trial Balance as of a date \u2014 debits must equal credits",
         "tags": [
           "reports"
+        ]
+      }
+    },
+    "/routings": {
+      "get": {
+        "operationId": "list_routings_routings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "firm_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Firm Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "design_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Design Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "active_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Active Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List routings (RLS-scoped to current org)",
+        "tags": [
+          "manufacturing",
+          "routing"
+        ]
+      },
+      "post": {
+        "operationId": "create_routing_routings_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutingCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a routing (operation DAG for a design)",
+        "tags": [
+          "manufacturing",
+          "routing"
+        ]
+      }
+    },
+    "/routings/{routing_id}": {
+      "delete": {
+        "operationId": "delete_routing_routings__routing_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "routing_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Routing Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Soft-delete a routing (refused if referenced by an active MO)",
+        "tags": [
+          "manufacturing",
+          "routing"
+        ]
+      },
+      "get": {
+        "operationId": "get_routing_routings__routing_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "routing_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Routing Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get a routing by id (with edges)",
+        "tags": [
+          "manufacturing",
+          "routing"
+        ]
+      }
+    },
+    "/routings/{routing_id}/edges": {
+      "patch": {
+        "operationId": "update_routing_edges_routings__routing_id__edges_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "routing_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Routing Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutingEdgesUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace a routing's edge set atomically (re-validates the DAG)",
+        "tags": [
+          "manufacturing",
+          "routing"
         ]
       }
     },
