@@ -1,0 +1,31 @@
+# frontend/.dockerignore — keep the build context small + avoid baking
+# host-only state into the image. The repo-root .dockerignore handles
+# broad strokes; this file is the per-image refinement when
+# `docker build` runs with `frontend/` as the context.
+
+# VCS
+.git
+.gitignore
+
+# Node
+node_modules
+dist
+build
+.cache
+.vite
+
+# Local secrets — Vite inlines VITE_* at build time from build-args, NOT
+# from .env files inside the image. Keep them out of the layer entirely.
+.env
+.env.local
+.env.*.local
+
+# Tests / reports — large + only useful on the host
+coverage
+playwright-report
+test-results
+__tests__/e2e/.cache
+
+# OS / editor noise
+.DS_Store
+*.swp

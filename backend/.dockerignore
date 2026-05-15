@@ -1,0 +1,38 @@
+# backend/.dockerignore — keep the build context small + avoid baking
+# host-only state (caches, venv, secrets) into the image. The repo-root
+# .dockerignore handles broad strokes; this file is the per-image
+# refinement when `docker build` runs with `backend/` as the context.
+
+# VCS
+.git
+.gitignore
+
+# Python virtualenv + caches
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Node (only present if someone ran tooling here by accident)
+node_modules
+dist
+build
+
+# Local secrets — NEVER ship into a layer.
+# .env.example and .env.test are KEPT (useful inside the image for
+# defaults / pytest fixtures).
+.env
+.env.local
+.env.*.local
+
+# OS / editor noise
+.DS_Store
+*.swp
+
+# Test artefacts
+.coverage
+htmlcov
+.tox
