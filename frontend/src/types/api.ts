@@ -5581,8 +5581,6 @@ export interface components {
              * Format: uuid
              */
             firm_id: string;
-            /** Name */
-            name: string;
         };
         /**
          * RoutingEdgeInput
