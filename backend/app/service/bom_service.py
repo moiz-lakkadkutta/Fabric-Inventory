@@ -28,13 +28,20 @@ The headline invariants this module guarantees:
    non-deleted version is promoted to active.
 
 Concurrency note: the active-uniqueness invariant is enforced *per
-transaction* — within a single ``create_bom`` / ``activate_bom`` call we
-issue a row-level lock (``SELECT ... FOR UPDATE``) on every BOM row for the
-``(design_id, finished_item_id)`` partition before we read-modify-write
-``is_active``. Two concurrent writers on the same partition serialize on
-that lock, so neither can read a stale "old active" set and create a
-two-active state. A future task can add a partial unique index
-(``... WHERE is_active AND deleted_at IS NULL``) for belt-and-braces.
+transaction* — within a single ``create_bom`` / ``activate_bom`` /
+``delete_bom`` call we take a transaction-scoped advisory lock keyed on
+the partition tuple ``(org_id, firm_id, finished_item_id)`` BEFORE we
+read or mutate the partition. ``pg_advisory_xact_lock`` serialises
+concurrent writers even when the partition is currently empty (the
+row-level ``SELECT ... FOR UPDATE`` we also take is only effective for
+non-empty partitions; the advisory lock is the actual race guard for
+first-creators). The DB unique constraint
+``UNIQUE (firm_id, finished_item_id, version_number)`` is the final
+defence-in-depth — if it ever trips, we translate the IntegrityError
+to a 422 with a clear retry message rather than leaking a 500.
+
+A future task can add a partial unique index
+(``... WHERE is_active AND deleted_at IS NULL``) for additional safety.
 """
 
 from __future__ import annotations
@@ -44,7 +51,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError
@@ -79,16 +87,54 @@ class BomLineInput:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _advisory_lock_partition(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    finished_item_id: uuid.UUID,
+) -> None:
+    """Take a transaction-scoped Postgres advisory lock for the BOM
+    partition keyed by ``(org_id, firm_id, finished_item_id)``.
+
+    This serialises concurrent ``create_bom`` / ``activate_bom`` /
+    ``delete_bom`` calls on the same partition even when no rows yet
+    exist — which is the case ``SELECT ... FOR UPDATE`` cannot cover
+    (empty result locks zero rows). The key matches the
+    ``UNIQUE (firm_id, finished_item_id, version_number)`` constraint's
+    column set (with ``org_id`` prefixed for tenant safety), so we cannot
+    race between the two protections.
+
+    Implementation: build a stable ``bom:<org>:<firm>:<finished_item>``
+    string and hand it to ``pg_advisory_xact_lock(hashtext(...)::bigint)``.
+    Postgres widens the 32-bit ``hashtext`` result into the 64-bit slot
+    the function expects; the ``bom:`` prefix keeps us in our own
+    namespace if other domains later adopt advisory locks too. The lock
+    auto-releases at COMMIT / ROLLBACK so callers don't have to.
+    """
+    key = f"bom:{org_id}:{firm_id}:{finished_item_id}"
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:k)::bigint)"),
+        {"k": key},
+    )
+
+
 def _lock_partition(
     session: Session, *, org_id: uuid.UUID, design_id: uuid.UUID, finished_item_id: uuid.UUID
 ) -> list[Bom]:
-    """Take a row-level lock on every BOM row in the
+    """Take a row-level lock on every NON-DELETED BOM row in the
     ``(design_id, finished_item_id)`` partition and return them ordered
     by ``version_number DESC``.
 
-    The lock ensures two concurrent writers serialize, so the
-    "exactly-one-active" invariant cannot be violated by an interleaved
-    read-modify-write.
+    Used to read the **active set** for demote/promote bookkeeping; do
+    NOT use the result for next-version calculation — soft-deleted rows
+    still occupy version numbers that the unique constraint enforces. Use
+    ``_max_version_number_including_deleted`` for that.
+
+    The actual race serialisation between concurrent writers on an empty
+    partition is handled by ``_advisory_lock_partition``; this row lock
+    is the second layer for non-empty partitions and the source of the
+    "active rows in this partition" view.
     """
     rows = session.execute(
         select(Bom)
@@ -104,16 +150,31 @@ def _lock_partition(
     return list(rows)
 
 
-def _next_version_number(existing: list[Bom]) -> int:
-    """Compute the next ``version_number`` given the locked partition.
+def _max_version_number_including_deleted(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    finished_item_id: uuid.UUID,
+) -> int:
+    """Return ``max(version_number)`` across the WHOLE history of the
+    partition (including soft-deleted rows), or ``0`` if no rows exist.
 
-    Tolerates partitions where prior versions are NULL (legacy data) by
-    treating NULL as 0.
+    Necessary because the DB unique constraint
+    ``UNIQUE (firm_id, finished_item_id, version_number)`` is
+    unconditional — a soft-deleted intermediate version still occupies
+    its number, so the next create must skip past it.
+
+    Keyed by ``firm_id`` (not ``design_id``) to match the DB unique.
     """
-    if not existing:
-        return 1
-    current_max = max((b.version_number or 0) for b in existing)
-    return current_max + 1
+    result = session.execute(
+        select(func.max(Bom.version_number)).where(
+            Bom.org_id == org_id,
+            Bom.firm_id == firm_id,
+            Bom.finished_item_id == finished_item_id,
+        )
+    ).scalar()
+    return int(result or 0)
 
 
 def _demote_other_active_boms(
@@ -207,11 +268,29 @@ def create_bom(
         if line.qty_required <= 0:
             raise AppValidationError("BOM line qty_required must be > 0")
 
-    # 4. Lock the partition and compute the next version.
+    # 4. Serialise concurrent first-creators on the same partition. The
+    #    advisory lock is the actual race guard; the row-level lock below
+    #    only helps for non-empty partitions.
+    _advisory_lock_partition(
+        session, org_id=org_id, firm_id=firm_id, finished_item_id=finished_item_id
+    )
+
+    # 5. Read the active set for demote bookkeeping (row-level lock; safe
+    #    even when the partition is empty because the advisory lock has
+    #    already serialised us).
     partition = _lock_partition(
         session, org_id=org_id, design_id=design_id, finished_item_id=finished_item_id
     )
-    next_version = _next_version_number(partition)
+
+    # 6. Next version number is computed across the WHOLE history,
+    #    including soft-deleted rows, because the DB unique constraint on
+    #    ``(firm_id, finished_item_id, version_number)`` is unconditional.
+    next_version = (
+        _max_version_number_including_deleted(
+            session, org_id=org_id, firm_id=firm_id, finished_item_id=finished_item_id
+        )
+        + 1
+    )
 
     bom = Bom(
         org_id=org_id,
@@ -224,9 +303,15 @@ def create_bom(
         updated_by=created_by,
     )
     session.add(bom)
-    session.flush()  # mint bom_id so the lines + audit emit can reference it
+    try:
+        session.flush()  # mint bom_id so the lines + audit emit can reference it
+    except IntegrityError as exc:
+        # Defence-in-depth: should be unreachable now that we hold the
+        # advisory lock + use a history-wide MAX. If it ever trips,
+        # surface a clean retry instead of a 500.
+        raise AppValidationError("BOM version race detected — please retry the request.") from exc
 
-    # 5. Insert lines.
+    # 7. Insert lines.
     for line in lines:
         session.add(
             BomLine(
@@ -243,7 +328,7 @@ def create_bom(
             )
         )
 
-    # 6. Demote any prior actives in this partition. Always safe to call.
+    # 8. Demote any prior actives in this partition. Always safe to call.
     _demote_other_active_boms(session, partition=partition, keep_active_bom_id=bom.bom_id)
     session.flush()
 
@@ -348,15 +433,43 @@ def activate_bom(
     """Activate ``bom_id`` and demote every other BOM in the same
     ``(design_id, finished_item_id)`` partition. Idempotent on an
     already-active BOM (no error, returns the same row).
+
+    Locks the partition FIRST (advisory lock keyed on
+    ``(org_id, firm_id, finished_item_id)``) then re-reads the BOM. This
+    closes the race window where a concurrent ``delete_bom`` would soft-
+    delete the row between our read and our ``is_active`` write —
+    leaving a malformed ``deleted_at IS NOT NULL AND is_active = TRUE``
+    row in the DB.
     """
-    bom = get_bom(session, org_id=org_id, bom_id=bom_id)
+    # Cheap read to discover the partition coordinates so we can advisory-
+    # lock. RLS filters org_id, so this still cannot leak across orgs.
+    coords = session.execute(
+        select(Bom.org_id, Bom.firm_id, Bom.design_id, Bom.finished_item_id).where(
+            Bom.bom_id == bom_id,
+            Bom.org_id == org_id,
+        )
+    ).first()
+    if coords is None:
+        raise AppValidationError(f"BOM {bom_id} not found")
+    _, partition_firm_id, partition_design_id, partition_finished_item_id = coords
+
+    _advisory_lock_partition(
+        session,
+        org_id=org_id,
+        firm_id=partition_firm_id,
+        finished_item_id=partition_finished_item_id,
+    )
 
     partition = _lock_partition(
         session,
         org_id=org_id,
-        design_id=bom.design_id,
-        finished_item_id=bom.finished_item_id,
+        design_id=partition_design_id,
+        finished_item_id=partition_finished_item_id,
     )
+
+    # Re-fetch under the lock; rejects if it was soft-deleted concurrently.
+    bom = get_bom(session, org_id=org_id, bom_id=bom_id)
+
     if not bom.is_active:
         bom.is_active = True
         bom.updated_at = datetime.now(tz=UTC)
@@ -393,6 +506,10 @@ def delete_bom(
     """Soft-delete ``bom_id``. If the deleted BOM was active, promote the
     next-most-recent non-deleted version of the same
     ``(design_id, finished_item_id)`` partition to active.
+
+    Acquires the partition advisory lock BEFORE the mutation so the
+    delete + promote sequence cannot interleave with a concurrent
+    ``create_bom`` / ``activate_bom`` on the same partition.
     """
     bom = session.execute(
         select(Bom).where(Bom.bom_id == bom_id, Bom.org_id == org_id)
@@ -402,10 +519,19 @@ def delete_bom(
     if bom.deleted_at is not None:
         return
 
-    was_active = bool(bom.is_active)
     design_id = bom.design_id
     finished_item_id = bom.finished_item_id
     firm_id = bom.firm_id
+
+    _advisory_lock_partition(
+        session, org_id=org_id, firm_id=firm_id, finished_item_id=finished_item_id
+    )
+    # Re-read inside the lock — another writer might have soft-deleted us
+    # already and committed.
+    session.refresh(bom)
+    if bom.deleted_at is not None:
+        return
+    was_active = bool(bom.is_active)
 
     bom.deleted_at = datetime.now(tz=UTC)
     bom.is_active = False
