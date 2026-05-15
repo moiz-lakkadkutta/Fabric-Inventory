@@ -1525,6 +1525,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/routings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List routings (RLS-scoped to current org) */
+        get: operations["list_routings_routings_get"];
+        put?: never;
+        /** Create a routing (operation DAG for a design) */
+        post: operations["create_routing_routings_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routings/{routing_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a routing by id (with edges) */
+        get: operations["get_routing_routings__routing_id__get"];
+        put?: never;
+        post?: never;
+        /** Soft-delete a routing (refused if referenced by an active MO) */
+        delete: operations["delete_routing_routings__routing_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routings/{routing_id}/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Replace a routing's edge set atomically (re-validates the DAG) */
+        patch: operations["update_routing_edges_routings__routing_id__edges_patch"];
+        trace?: never;
+    };
     "/sales-orders": {
         parameters: {
             query?: never;
@@ -5051,6 +5104,145 @@ export interface components {
              * @default true
              */
             ok: boolean;
+        };
+        /** RoutingCreateRequest */
+        RoutingCreateRequest: {
+            /** Code */
+            code: string;
+            /**
+             * Design Id
+             * Format: uuid
+             */
+            design_id: string;
+            /** Edges */
+            edges: components["schemas"]["RoutingEdgeInput"][];
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Name */
+            name: string;
+        };
+        /**
+         * RoutingEdgeInput
+         * @description Request component for a single routing edge.
+         */
+        RoutingEdgeInput: {
+            edge_type: components["schemas"]["RoutingEdgeType"];
+            /**
+             * From Operation Id
+             * Format: uuid
+             */
+            from_operation_id: string;
+            /** Sequence */
+            sequence?: number | null;
+            /** Threshold Pct */
+            threshold_pct?: number | string | null;
+            /** Threshold Qty */
+            threshold_qty?: number | string | null;
+            /**
+             * To Operation Id
+             * Format: uuid
+             */
+            to_operation_id: string;
+        };
+        /** RoutingEdgeResponse */
+        RoutingEdgeResponse: {
+            edge_type: components["schemas"]["RoutingEdgeType"];
+            /**
+             * From Operation Id
+             * Format: uuid
+             */
+            from_operation_id: string;
+            /**
+             * Routing Edge Id
+             * Format: uuid
+             */
+            routing_edge_id: string;
+            /**
+             * Routing Id
+             * Format: uuid
+             */
+            routing_id: string;
+            /** Sequence */
+            sequence: number | null;
+            /** Threshold Pct */
+            threshold_pct: string | null;
+            /** Threshold Qty */
+            threshold_qty: string | null;
+            /**
+             * To Operation Id
+             * Format: uuid
+             */
+            to_operation_id: string;
+        };
+        /**
+         * RoutingEdgeType
+         * @description Routing-DAG edge dependency — `routing_edge_type` Postgres enum.
+         * @enum {string}
+         */
+        RoutingEdgeType: "FINISH_TO_START" | "START_TO_START" | "PARTIAL_FINISH_TO_START";
+        /** RoutingEdgesUpdateRequest */
+        RoutingEdgesUpdateRequest: {
+            /** Edges */
+            edges: components["schemas"]["RoutingEdgeInput"][];
+        };
+        /** RoutingListResponse */
+        RoutingListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["RoutingResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total Count */
+            total_count: number;
+        };
+        /** RoutingResponse */
+        RoutingResponse: {
+            /** Code */
+            code: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Deleted At */
+            deleted_at: string | null;
+            /**
+             * Design Id
+             * Format: uuid
+             */
+            design_id: string;
+            /** Edges */
+            edges: components["schemas"]["RoutingEdgeResponse"][];
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Is Active */
+            is_active: boolean;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /**
+             * Routing Id
+             * Format: uuid
+             */
+            routing_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version Number */
+            version_number: number;
         };
         /** SOCreateRequest */
         SOCreateRequest: {
@@ -9708,6 +9900,175 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TbResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_routings_routings_get: {
+        parameters: {
+            query?: {
+                firm_id?: string | null;
+                design_id?: string | null;
+                active_only?: boolean;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutingListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_routing_routings_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoutingCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_routing_routings__routing_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                routing_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_routing_routings__routing_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                routing_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_routing_edges_routings__routing_id__edges_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                routing_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoutingEdgesUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutingResponse"];
                 };
             };
             /** @description Validation Error */

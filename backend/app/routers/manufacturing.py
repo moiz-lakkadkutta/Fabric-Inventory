@@ -25,7 +25,17 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
-from app.models.manufacturing import Bom, BomLine, Design, OperationMaster, OperationType
+from app.exceptions import AppValidationError
+from app.models.manufacturing import (
+    Bom,
+    BomLine,
+    Design,
+    OperationMaster,
+    OperationType,
+    Routing,
+    RoutingEdge,
+    RoutingEdgeType,
+)
 from app.models.masters import CostCentre, CostCentreType
 from app.schemas.manufacturing import (
     BomCreateRequest,
@@ -44,8 +54,13 @@ from app.schemas.manufacturing import (
     OperationMasterListResponse,
     OperationMasterResponse,
     OperationMasterUpdateRequest,
+    RoutingCreateRequest,
+    RoutingEdgeResponse,
+    RoutingEdgesUpdateRequest,
+    RoutingListResponse,
+    RoutingResponse,
 )
-from app.service import bom_service, manufacturing_masters_service
+from app.service import bom_service, manufacturing_masters_service, routing_service
 from app.service.identity_service import TokenPayload
 
 designs_router = APIRouter(prefix="/designs", tags=["manufacturing", "design"])
@@ -54,6 +69,7 @@ operation_masters_router = APIRouter(
 )
 cost_centres_router = APIRouter(prefix="/cost-centres", tags=["manufacturing", "cost_centre"])
 boms_router = APIRouter(prefix="/boms", tags=["manufacturing", "bom"])
+routings_router = APIRouter(prefix="/routings", tags=["manufacturing", "routing"])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -665,4 +681,194 @@ def delete_bom(
         org_id=current_user.org_id,
         bom_id=bom_id,
         actor_user_id=current_user.user_id,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Routing endpoints (TASK-TR-A04)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _routing_edge_to_response(edge: RoutingEdge) -> RoutingEdgeResponse:
+    # ``edge_type`` is nullable on the ORM (server default
+    # ``'FINISH_TO_START'::routing_edge_type``) but the service always
+    # sets it on create. Coerce defensively so the wire shape can
+    # advertise a non-nullable enum.
+    return RoutingEdgeResponse(
+        routing_edge_id=edge.routing_edge_id,
+        routing_id=edge.routing_id,
+        from_operation_id=edge.from_operation_id,
+        to_operation_id=edge.to_operation_id,
+        edge_type=edge.edge_type if edge.edge_type is not None else RoutingEdgeType.FINISH_TO_START,
+        threshold_qty=edge.threshold_qty,
+        threshold_pct=edge.threshold_pct,
+        sequence=edge.sequence,
+    )
+
+
+def _routing_to_response(routing: Routing) -> RoutingResponse:
+    return RoutingResponse(
+        routing_id=routing.routing_id,
+        org_id=routing.org_id,
+        firm_id=routing.firm_id,
+        design_id=routing.design_id,
+        code=routing.code,
+        version_number=routing.version_number if routing.version_number is not None else 1,
+        is_active=bool(routing.is_active),
+        created_at=routing.created_at,
+        updated_at=routing.updated_at,
+        deleted_at=routing.deleted_at,
+        edges=[_routing_edge_to_response(e) for e in routing.edges],
+    )
+
+
+@routings_router.post(
+    "",
+    response_model=RoutingResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a routing (operation DAG for a design)",
+)
+def create_routing(
+    body: RoutingCreateRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.routing.write"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> RoutingResponse:
+    # Defense-in-depth: when the session has an explicit firm scope, the
+    # body firm_id must match (a stale FE token shouldn't be able to
+    # cross-write). When the session is org-level (signup-issued tokens
+    # carry ``firm_id=None``), defer to the design-composition + RLS
+    # checks in the service — same pattern as the BOM router.
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+
+    service_edges = [
+        routing_service.RoutingEdgeInput(
+            from_operation_id=e.from_operation_id,
+            to_operation_id=e.to_operation_id,
+            edge_type=e.edge_type,
+            threshold_qty=e.threshold_qty,
+            threshold_pct=e.threshold_pct,
+            sequence=e.sequence,
+        )
+        for e in body.edges
+    ]
+    routing = routing_service.create_routing(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        design_id=body.design_id,
+        code=body.code,
+        name=body.name,
+        edges=service_edges,
+        created_by=current_user.user_id,
+    )
+    return _routing_to_response(routing)
+
+
+@routings_router.get(
+    "",
+    response_model=RoutingListResponse,
+    summary="List routings (RLS-scoped to current org)",
+)
+def list_routings(
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.routing.read"))
+    ],
+    firm_id: Annotated[uuid.UUID | None, Query()] = None,
+    design_id: Annotated[uuid.UUID | None, Query()] = None,
+    active_only: Annotated[bool, Query()] = False,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> RoutingListResponse:
+    items, total = routing_service.list_routings(
+        db,
+        org_id=current_user.org_id,
+        firm_id=firm_id,
+        design_id=design_id,
+        active_only=active_only,
+        limit=limit,
+        offset=offset,
+    )
+    return RoutingListResponse(
+        items=[_routing_to_response(r) for r in items],
+        limit=limit,
+        offset=offset,
+        count=len(items),
+        total_count=total,
+    )
+
+
+@routings_router.get(
+    "/{routing_id}",
+    response_model=RoutingResponse,
+    summary="Get a routing by id (with edges)",
+)
+def get_routing(
+    routing_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.routing.read"))
+    ],
+) -> RoutingResponse:
+    routing = routing_service.get_routing(db, org_id=current_user.org_id, routing_id=routing_id)
+    return _routing_to_response(routing)
+
+
+@routings_router.patch(
+    "/{routing_id}/edges",
+    response_model=RoutingResponse,
+    summary="Replace a routing's edge set atomically (re-validates the DAG)",
+)
+def update_routing_edges(
+    routing_id: uuid.UUID,
+    body: RoutingEdgesUpdateRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.routing.write"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> RoutingResponse:
+    service_edges = [
+        routing_service.RoutingEdgeInput(
+            from_operation_id=e.from_operation_id,
+            to_operation_id=e.to_operation_id,
+            edge_type=e.edge_type,
+            threshold_qty=e.threshold_qty,
+            threshold_pct=e.threshold_pct,
+            sequence=e.sequence,
+        )
+        for e in body.edges
+    ]
+    routing = routing_service.update_routing_edges(
+        db,
+        org_id=current_user.org_id,
+        routing_id=routing_id,
+        edges=service_edges,
+        updated_by=current_user.user_id,
+    )
+    return _routing_to_response(routing)
+
+
+@routings_router.delete(
+    "/{routing_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Soft-delete a routing (refused if referenced by an active MO)",
+)
+def delete_routing(
+    routing_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.routing.write"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> None:
+    routing_service.delete_routing(
+        db,
+        org_id=current_user.org_id,
+        routing_id=routing_id,
+        deleted_by=current_user.user_id,
     )
