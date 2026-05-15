@@ -1,15 +1,12 @@
 /*
- * reports.ts — TASK-CUT-301 live wiring for the 5 ReportsHub tabs.
+ * reports.ts — live wiring for the 5 ReportsHub tabs.
  *
- * Four endpoints from CUT-105 are live in this PR:
+ * All five endpoints (CUT-105 + CUT-302) are live:
  *   GET /reports/pnl?from=&to=
  *   GET /reports/tb?as_of=
  *   GET /reports/daybook?date=
  *   GET /reports/stock-summary?as_of=
- *
- * GSTR-1 is still on mock fixtures; the BE endpoint lands in CUT-302
- * (Wave 4 sibling). Once it ships, swap useGstr1's live branch in the
- * same shape as the four above.
+ *   GET /reports/gstr1?period=YYYY-MM           [TASK-TR-B03]
  *
  * Money on the wire is rupees-as-Decimal-string (per CLAUDE.md). All
  * mappers convert to integer paise before handing data to the React
@@ -51,6 +48,10 @@ type BackendDaybookResponse = components['schemas']['DaybookResponse'];
 type BackendDaybookVoucher = components['schemas']['DaybookVoucher'];
 type BackendStockSummaryResponse = components['schemas']['StockSummaryResponse'];
 type BackendStockSummaryRow = components['schemas']['StockSummaryRow'];
+type BackendGstr1Response = components['schemas']['Gstr1Response'];
+type BackendGstr1InvoiceRow = components['schemas']['Gstr1InvoiceRow'];
+type BackendGstr1B2csRow = components['schemas']['Gstr1B2csRow'];
+type BackendGstr1HsnRow = components['schemas']['Gstr1HsnRow'];
 
 // ──────────────────────────────────────────────────────────────────────
 // Money helpers — rupees-decimal-string → integer paise.
@@ -208,19 +209,178 @@ export function useTrialBalance() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// GSTR-1 (still on mock — CUT-302 will land the BE endpoint and this
-// hook should mirror the four above)
+// GSTR-1 mappers + hook (TASK-TR-B03)
+//
+// BE envelope shape (Gstr1Response):
+//   b2b:    per-counterparty invoices (GSTIN-present)
+//   b2cl:   inter-state B2C invoices > ₹2.5L
+//   b2cs:   aggregated B2C below threshold, grouped by (state, gst_rate)
+//   export: zero-rated overseas / SEZ / EOU sales
+//   hsn:    per-HSN aggregation across taxable lines
+//
+// Money is rupees-decimal-string on the wire; we convert to integer
+// paise here so the panel formats with `formatINRCompact` like the
+// other tabs.
 // ──────────────────────────────────────────────────────────────────────
 
-export function useGstr1() {
+export interface Gstr1InvoiceVM {
+  sales_invoice_id: string;
+  party_id: string;
+  party_name: string;
+  gstin: string | null;
+  series: string;
+  number: string;
+  invoice_date: string;
+  place_of_supply_state: string | null;
+  gst_rate: string | null;
+  taxable_value: number; // paise
+  cgst: number; // paise
+  sgst: number; // paise
+  igst: number; // paise
+  invoice_value: number; // paise
+}
+
+export interface Gstr1B2csVM {
+  place_of_supply_state: string;
+  gst_rate: string;
+  invoice_count: number;
+  taxable_value: number; // paise
+  cgst: number; // paise
+  sgst: number; // paise
+  igst: number; // paise
+}
+
+export interface Gstr1HsnVM {
+  hsn_code: string;
+  description: string | null;
+  uom: string;
+  total_qty: number; // bare count (not money) — display tolerates float
+  total_value: number; // paise
+  taxable_value: number; // paise
+  cgst: number; // paise
+  sgst: number; // paise
+  igst: number; // paise
+}
+
+export interface Gstr1VM {
+  period: string;
+  from_date: string;
+  to_date: string;
+  b2b: Gstr1InvoiceVM[];
+  b2cl: Gstr1InvoiceVM[];
+  b2cs: Gstr1B2csVM[];
+  export: Gstr1InvoiceVM[];
+  hsn: Gstr1HsnVM[];
+}
+
+function mapGstr1Invoice(b: BackendGstr1InvoiceRow): Gstr1InvoiceVM {
+  return {
+    sales_invoice_id: b.sales_invoice_id,
+    party_id: b.party_id,
+    party_name: b.party_name,
+    gstin: b.gstin,
+    series: b.series,
+    number: b.number,
+    invoice_date: b.invoice_date,
+    place_of_supply_state: b.place_of_supply_state,
+    gst_rate: b.gst_rate,
+    taxable_value: rupeesToPaise(b.taxable_value),
+    cgst: rupeesToPaise(b.cgst),
+    sgst: rupeesToPaise(b.sgst),
+    igst: rupeesToPaise(b.igst),
+    invoice_value: rupeesToPaise(b.invoice_value),
+  };
+}
+
+function mapGstr1B2cs(b: BackendGstr1B2csRow): Gstr1B2csVM {
+  return {
+    place_of_supply_state: b.place_of_supply_state,
+    gst_rate: b.gst_rate,
+    invoice_count: b.invoice_count,
+    taxable_value: rupeesToPaise(b.taxable_value),
+    cgst: rupeesToPaise(b.cgst),
+    sgst: rupeesToPaise(b.sgst),
+    igst: rupeesToPaise(b.igst),
+  };
+}
+
+function mapGstr1Hsn(b: BackendGstr1HsnRow): Gstr1HsnVM {
+  return {
+    hsn_code: b.hsn_code,
+    description: b.description,
+    uom: b.uom,
+    total_qty: parseFloat(b.total_qty || '0'),
+    total_value: rupeesToPaise(b.total_value),
+    taxable_value: rupeesToPaise(b.taxable_value),
+    cgst: rupeesToPaise(b.cgst),
+    sgst: rupeesToPaise(b.sgst),
+    igst: rupeesToPaise(b.igst),
+  };
+}
+
+function mapGstr1Response(r: BackendGstr1Response): Gstr1VM {
+  return {
+    period: r.period,
+    from_date: r.from_date,
+    to_date: r.to_date,
+    b2b: r.b2b.map(mapGstr1Invoice),
+    b2cl: r.b2cl.map(mapGstr1Invoice),
+    b2cs: r.b2cs.map(mapGstr1B2cs),
+    export: r.export.map(mapGstr1Invoice),
+    hsn: r.hsn.map(mapGstr1Hsn),
+  };
+}
+
+async function liveListGstr1(period: string): Promise<Gstr1VM> {
+  const data = await api<BackendGstr1Response>(
+    `/reports/gstr1?period=${encodeURIComponent(period)}`,
+  );
+  return mapGstr1Response(data);
+}
+
+/**
+ * Build a click-dummy GSTR-1 view-model from the existing `gstrRows`
+ * mock fixture. Keeps mock-mode tests (and the click-dummy demo)
+ * working with the new live-shape panel.
+ */
+function mockGstr1ViewModel(period: string): Gstr1VM {
+  const b2bRows = gstrRows.filter((r) => r.section === 'B2B');
+  return {
+    period,
+    from_date: `${period}-01`,
+    to_date: `${period}-30`,
+    b2b: b2bRows.map((r, i) => ({
+      sales_invoice_id: `mock-b2b-${i}`,
+      party_id: `mock-party-${i}`,
+      party_name: r.party,
+      gstin: r.gstin,
+      series: r.invoice.split('/').slice(0, 2).join('/'),
+      number: r.invoice.split('/').pop() ?? r.invoice,
+      invoice_date: r.date,
+      place_of_supply_state: null,
+      gst_rate: '5',
+      taxable_value: r.taxable,
+      cgst: r.cgst,
+      sgst: r.sgst,
+      igst: r.igst,
+      invoice_value: r.total,
+    })),
+    b2cl: [],
+    b2cs: [],
+    export: [],
+    hsn: [],
+  };
+}
+
+/**
+ * Pulls the GSTR-1 envelope for the given period (`YYYY-MM`). The
+ * panel reads the four BE buckets (B2B / B2CL / B2CS / HSN) plus an
+ * export bucket; money is integer paise after mapping.
+ */
+export function useGstr1(period: string) {
   return useQuery({
-    queryKey: ['reports', 'gstr1'],
-    // TODO(CUT-302): once `GET /reports/gstr1?period=YYYY-MM` ships in
-    // Wave 4, swap the live branch to hit it; for now live mode returns
-    // an empty array because the tab's component renders a coming-soon
-    // panel that ignores `q.data`. Mock mode keeps the click-dummy
-    // fixture so existing mock-mode tests pass unchanged.
-    queryFn: () => (IS_LIVE ? mockResolve([]) : mockResolve([...gstrRows])),
+    queryKey: ['reports', 'gstr1', period],
+    queryFn: () => (IS_LIVE ? liveListGstr1(period) : mockResolve(mockGstr1ViewModel(period))),
   });
 }
 
@@ -314,4 +474,8 @@ export const _internal = {
   mapTbRow,
   mapStockRow,
   mapDaybookVoucher,
+  mapGstr1Response,
+  mapGstr1Invoice,
+  mapGstr1B2cs,
+  mapGstr1Hsn,
 };

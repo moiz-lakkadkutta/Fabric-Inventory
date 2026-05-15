@@ -3,7 +3,6 @@ import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
-import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { downloadExport, type ExportFormat } from '@/lib/api/download';
 import { IS_LIVE } from '@/lib/api/mode';
@@ -13,9 +12,13 @@ import {
   usePnL,
   useStockReport,
   useTrialBalance,
+  type Gstr1B2csVM,
+  type Gstr1HsnVM,
+  type Gstr1InvoiceVM,
+  type Gstr1VM,
 } from '@/lib/queries/reports';
 import { formatINRCompact } from '@/lib/format';
-import type { GstrSection, PnlRow } from '@/lib/mock/reports';
+import type { PnlRow } from '@/lib/mock/reports';
 
 type Tab = 'pnl' | 'tb' | 'gstr1' | 'stock' | 'daybook';
 
@@ -30,7 +33,18 @@ const TABS: Array<{ id: Tab; label: string }> = [
 const PERIOD = 'Apr 2026 · FY 2025-26';
 const COMPARE = 'vs Mar 2026';
 
-function reportExportEndpoint(tab: Tab): { path: string; stem: string; xlsxOnly?: boolean } {
+/**
+ * Current YYYY-MM string in local time. Used as the default GSTR-1
+ * period; user can change via the period picker. Local time is fine
+ * because GSTR-1 is filed per Indian fiscal month — the BE re-validates
+ * the format anyway.
+ */
+function currentPeriod(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function reportExportEndpoint(tab: Tab, gstr1Period: string): { path: string; stem: string } {
   // Reports are firm-scoped on the backend; the BE pulls org_id/firm_id
   // off the JWT, so we don't pass them as query params. Period defaults
   // (FY current month) are resolved server-side too.
@@ -40,12 +54,12 @@ function reportExportEndpoint(tab: Tab): { path: string; stem: string; xlsxOnly?
     case 'tb':
       return { path: '/reports/tb', stem: 'tb' };
     case 'gstr1':
-      // GSTR-1 needs a period; default to current month. The XLSX path
-      // is the canonical filing format (5 sheets); CSV flattens to B2B.
+      // GSTR-1 needs a period; default to current month (UI picker).
+      // BE supports both CSV (flattens to B2B) and XLSX (5-sheet
+      // canonical filing).
       return {
-        path: `/reports/gstr1?period=${new Date().toISOString().slice(0, 7)}`,
-        stem: 'gstr1',
-        xlsxOnly: true,
+        path: `/reports/gstr1?period=${encodeURIComponent(gstr1Period)}`,
+        stem: `gstr1-${gstr1Period}`,
       };
     case 'stock':
       return { path: '/reports/stock-summary', stem: 'stock-summary' };
@@ -56,6 +70,9 @@ function reportExportEndpoint(tab: Tab): { path: string; stem: string; xlsxOnly?
 
 export default function ReportsHub() {
   const [tab, setTab] = useState<Tab>('pnl');
+  // GSTR-1 period state, used by both the panel query and the
+  // export-button endpoint resolver. Other tabs ignore it.
+  const [gstr1Period, setGstr1Period] = useState<string>(currentPeriod());
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const print = useComingSoon({
@@ -68,11 +85,7 @@ export default function ReportsHub() {
       setExportError('Export is wired to the live backend (set VITE_API_MODE=live).');
       return;
     }
-    const endpoint = reportExportEndpoint(tab);
-    if (format === 'csv' && endpoint.xlsxOnly) {
-      setExportError('GSTR-1 must be exported as XLSX (multi-sheet filing).');
-      return;
-    }
+    const endpoint = reportExportEndpoint(tab, gstr1Period);
     setExportError(null);
     setIsExporting(true);
     try {
@@ -103,7 +116,7 @@ export default function ReportsHub() {
           <Button
             variant="outline"
             onClick={() => runExport('csv')}
-            disabled={isExporting || tab === 'gstr1'}
+            disabled={isExporting}
             aria-label="Export report as CSV"
           >
             <Download size={14} />
@@ -169,7 +182,7 @@ export default function ReportsHub() {
 
       {tab === 'pnl' && <PnLPanel />}
       {tab === 'tb' && <TrialBalancePanel />}
-      {tab === 'gstr1' && <Gstr1Panel />}
+      {tab === 'gstr1' && <Gstr1Panel period={gstr1Period} onPeriodChange={setGstr1Period} />}
       {tab === 'stock' && <StockPanel />}
       {tab === 'daybook' && <DaybookPanel />}
     </div>
@@ -430,163 +443,444 @@ function TrialBalancePanel() {
   );
 }
 
-const SECTION_PILL: Record<GstrSection, { kind: PillKind; label: string }> = {
-  B2B: { kind: 'finalized', label: 'B2B' },
-  B2C: { kind: 'draft', label: 'B2C' },
-  CDNR: { kind: 'overdue', label: 'CDNR' },
-  EXP: { kind: 'paid', label: 'Export' },
-  NIL: { kind: 'scrap', label: 'Nil' },
-};
+function Gstr1Panel({
+  period,
+  onPeriodChange,
+}: {
+  period: string;
+  onPeriodChange: (p: string) => void;
+}) {
+  // `period` is a YYYY-MM string driven by the panel-local month picker.
+  // Other tabs don't care about the picker; this lets the user re-fetch
+  // GSTR-1 for any month independently of the page-level "Apr 2026"
+  // header (a header-level picker can replace this later — for now the
+  // panel-local control is the simplest path to live wiring).
+  const q = useGstr1(period);
 
-function Gstr1Panel() {
-  // GSTR-1 BE endpoint (`GET /reports/gstr1?period=YYYY-MM`) is owned
-  // by TASK-CUT-302. Until that ships in Wave 4 the live-mode panel
-  // renders a coming-soon strip so we don't show stale mock numbers
-  // to a real-data user. Mock mode keeps the click-dummy fixture for
-  // existing mock-mode tests. The hook is always called (rules-of-hooks)
-  // even when IS_LIVE — it's a cheap memoized query with no fetch in
-  // the live branch since `useGstr1`'s mock branch resolves inline.
-  const q = useGstr1();
-  if (IS_LIVE) return <Gstr1ComingSoon />;
-  if (q.isPending) return <Skeleton width="100%" height={400} radius={8} />;
-  const rows = q.data ?? [];
-  const totalTaxable = rows.reduce((s, r) => s + r.taxable, 0);
-  const totalTax = rows.reduce((s, r) => s + r.cgst + r.sgst + r.igst, 0);
-  const issues = rows.filter((r) => r.status !== 'OK').length;
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat label="Invoices" value={`${rows.length}`} />
-        <Stat label="Taxable value" value={formatINRCompact(totalTaxable)} />
-        <Stat label="Tax (CGST+SGST+IGST)" value={formatINRCompact(totalTax)} />
-        <Stat
-          label="Validation"
-          value={issues === 0 ? '✓ All OK' : `${issues} to review`}
-          color={issues === 0 ? 'var(--success-text)' : 'var(--warning-text)'}
+      <Gstr1Header
+        period={period}
+        onPeriodChange={onPeriodChange}
+        data={q.data}
+        isPending={q.isPending}
+      />
+      {q.isPending ? (
+        <Skeleton width="100%" height={400} radius={8} />
+      ) : q.isError ? (
+        <Gstr1ErrorState message={(q.error as Error)?.message ?? 'Could not load GSTR-1.'} />
+      ) : (
+        <>
+          <Gstr1B2BSection rows={q.data?.b2b ?? []} />
+          <Gstr1B2CLSection rows={q.data?.b2cl ?? []} />
+          <Gstr1B2CSSection rows={q.data?.b2cs ?? []} />
+          <Gstr1HsnSection rows={q.data?.hsn ?? []} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function Gstr1Header({
+  period,
+  onPeriodChange,
+  data,
+  isPending,
+}: {
+  period: string;
+  onPeriodChange: (p: string) => void;
+  data: Gstr1VM | undefined;
+  isPending: boolean;
+}) {
+  const totalTaxable = data
+    ? sumTaxable(data.b2b) +
+      sumTaxable(data.b2cl) +
+      data.b2cs.reduce((s, r) => s + r.taxable_value, 0) +
+      sumTaxable(data.export)
+    : 0;
+  const totalTax = data
+    ? sumTax(data.b2b) +
+      sumTax(data.b2cl) +
+      data.b2cs.reduce((s, r) => s + r.cgst + r.sgst + r.igst, 0) +
+      sumTax(data.export)
+    : 0;
+  const invoiceCount = data
+    ? data.b2b.length +
+      data.b2cl.length +
+      data.b2cs.reduce((s, r) => s + r.invoice_count, 0) +
+      data.export.length
+    : 0;
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <label
+          htmlFor="gstr1-period"
+          style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500 }}
+        >
+          Period
+        </label>
+        <input
+          id="gstr1-period"
+          type="month"
+          value={period}
+          onChange={(e) => onPeriodChange(e.target.value)}
+          aria-label="GSTR-1 period"
+          style={{
+            padding: '6px 10px',
+            fontSize: 13,
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            background: 'var(--bg-surface)',
+            color: 'var(--text-primary)',
+          }}
         />
+        {data && (
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+            {data.from_date} → {data.to_date}
+          </span>
+        )}
       </div>
-      <div
-        className="overflow-x-auto"
-        style={{
-          background: 'var(--bg-surface)',
-          border: '1px solid var(--border-default)',
-          borderRadius: 8,
-        }}
-      >
-        <table className="w-full text-left" style={{ minWidth: 720 }}>
-          <thead style={{ background: 'var(--bg-sunken)' }}>
-            <tr style={{ color: 'var(--text-tertiary)' }}>
-              <Th>Section</Th>
-              <Th>Party</Th>
-              <Th>GSTIN</Th>
-              <Th>Invoice</Th>
-              <Th>Date</Th>
-              <Th align="right">Taxable</Th>
-              <Th align="right">CGST</Th>
-              <Th align="right">SGST</Th>
-              <Th align="right">IGST</Th>
-              <Th align="right">Total</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => {
-              const pill = SECTION_PILL[r.section];
-              return (
-                <tr
-                  key={i}
-                  style={{
-                    borderTop: '1px solid var(--border-subtle)',
-                    background:
-                      r.status === 'WARN'
-                        ? 'var(--warning-subtle)'
-                        : r.status === 'ERROR'
-                          ? 'var(--danger-subtle)'
-                          : 'transparent',
-                  }}
-                >
-                  <td className="px-3 py-2.5">
-                    <Pill kind={pill.kind}>{pill.label}</Pill>
-                  </td>
-                  <td className="px-3 py-2.5" style={{ fontSize: 13, fontWeight: 500 }}>
-                    {r.party}
-                  </td>
-                  <td
-                    className="mono px-3 py-2.5"
-                    style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}
-                  >
-                    {r.gstin}
-                  </td>
-                  <td className="mono px-3 py-2.5" style={{ fontSize: 12, fontWeight: 500 }}>
-                    {r.invoice}
-                  </td>
-                  <td
-                    className="num px-3 py-2.5"
-                    style={{ fontSize: 12, color: 'var(--text-secondary)' }}
-                  >
-                    {r.date}
-                  </td>
-                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
-                    {formatINRCompact(r.taxable)}
-                  </td>
-                  <td
-                    className="num px-3 py-2.5"
-                    style={{ textAlign: 'right', color: 'var(--text-tertiary)' }}
-                  >
-                    {r.cgst > 0 ? formatINRCompact(r.cgst) : '—'}
-                  </td>
-                  <td
-                    className="num px-3 py-2.5"
-                    style={{ textAlign: 'right', color: 'var(--text-tertiary)' }}
-                  >
-                    {r.sgst > 0 ? formatINRCompact(r.sgst) : '—'}
-                  </td>
-                  <td
-                    className="num px-3 py-2.5"
-                    style={{ textAlign: 'right', color: 'var(--text-tertiary)' }}
-                  >
-                    {r.igst > 0 ? formatINRCompact(r.igst) : '—'}
-                  </td>
-                  <td className="num px-3 py-2.5" style={{ textAlign: 'right', fontWeight: 500 }}>
-                    {formatINRCompact(r.total)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat label="Invoices" value={isPending ? '—' : String(invoiceCount)} />
+        <Stat label="Taxable value" value={isPending ? '—' : formatINRCompact(totalTaxable)} />
+        <Stat label="Tax (CGST+SGST+IGST)" value={isPending ? '—' : formatINRCompact(totalTax)} />
+        <Stat label="HSN rows" value={isPending ? '—' : String(data?.hsn.length ?? 0)} />
       </div>
     </div>
   );
 }
 
-function Gstr1ComingSoon() {
+function sumTaxable(rows: Gstr1InvoiceVM[]): number {
+  return rows.reduce((s, r) => s + r.taxable_value, 0);
+}
+function sumTax(rows: Gstr1InvoiceVM[]): number {
+  return rows.reduce((s, r) => s + r.cgst + r.sgst + r.igst, 0);
+}
+
+function SectionWrapper({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count: number;
+  children: React.ReactNode;
+}) {
   return (
-    <div
+    <section
       style={{
         background: 'var(--bg-surface)',
         border: '1px solid var(--border-default)',
         borderRadius: 8,
-        padding: 32,
-        textAlign: 'center',
+        overflow: 'hidden',
       }}
     >
-      <div
+      <header
+        className="flex items-baseline gap-2 px-3"
         style={{
-          fontSize: 13,
-          fontWeight: 600,
-          color: 'var(--text-primary)',
-          marginBottom: 4,
+          background: 'var(--bg-sunken)',
+          borderBottom: '1px solid var(--border-subtle)',
+          paddingTop: 8,
+          paddingBottom: 8,
         }}
       >
-        GSTR-1 prep is coming with TASK-CUT-302
-      </div>
-      <div
-        style={{ fontSize: 12.5, color: 'var(--text-tertiary)', maxWidth: 520, margin: '0 auto' }}
-      >
-        The B2B / B2C(L) / B2C(S) / Export / HSN bucket aggregation lands in Wave 4 (CUT-302). The
-        other four report tabs (P&amp;L, Trial balance, Daybook, Stock) already pull from the live
-        backend.
-      </div>
+        <h2 style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{title}</h2>
+        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          {count} {count === 1 ? 'row' : 'rows'}
+        </span>
+      </header>
+      {children}
+    </section>
+  );
+}
+
+function EmptyRow({ message }: { message: string }) {
+  return (
+    <div
+      style={{
+        padding: '20px 12px',
+        textAlign: 'center',
+        fontSize: 12.5,
+        color: 'var(--text-tertiary)',
+      }}
+    >
+      {message}
+    </div>
+  );
+}
+
+function Gstr1B2BSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
+  return (
+    <SectionWrapper title="B2B" count={rows.length}>
+      {rows.length === 0 ? (
+        <EmptyRow message="No B2B invoices in this period." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left" style={{ minWidth: 720 }}>
+            <thead style={{ background: 'var(--bg-surface)' }}>
+              <tr style={{ color: 'var(--text-tertiary)' }}>
+                <Th>GSTIN</Th>
+                <Th>Counterparty</Th>
+                <Th>Invoice</Th>
+                <Th>Date</Th>
+                <Th align="right">Taxable</Th>
+                <Th align="right">CGST</Th>
+                <Th align="right">SGST</Th>
+                <Th align="right">IGST</Th>
+                <Th align="right">Total</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr
+                  key={r.sales_invoice_id}
+                  style={{ borderTop: '1px solid var(--border-subtle)' }}
+                >
+                  <td
+                    className="mono px-3 py-2.5"
+                    style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}
+                  >
+                    {r.gstin ?? '—'}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ fontSize: 13, fontWeight: 500 }}>
+                    {r.party_name}
+                  </td>
+                  <td className="mono px-3 py-2.5" style={{ fontSize: 12, fontWeight: 500 }}>
+                    {r.series}/{r.number}
+                  </td>
+                  <td
+                    className="num px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-secondary)' }}
+                  >
+                    {r.invoice_date}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {formatINRCompact(r.taxable_value)}
+                  </td>
+                  <Td value={r.cgst} />
+                  <Td value={r.sgst} />
+                  <Td value={r.igst} />
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right', fontWeight: 500 }}>
+                    {formatINRCompact(r.invoice_value)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </SectionWrapper>
+  );
+}
+
+function Gstr1B2CLSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
+  return (
+    <SectionWrapper title="B2CL" count={rows.length}>
+      {rows.length === 0 ? (
+        <EmptyRow message="No B2CL invoices in this period." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left" style={{ minWidth: 720 }}>
+            <thead style={{ background: 'var(--bg-surface)' }}>
+              <tr style={{ color: 'var(--text-tertiary)' }}>
+                <Th>Place of supply</Th>
+                <Th>Counterparty</Th>
+                <Th>Invoice</Th>
+                <Th>Date</Th>
+                <Th align="right">Taxable</Th>
+                <Th align="right">IGST</Th>
+                <Th align="right">Total</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr
+                  key={r.sales_invoice_id}
+                  style={{ borderTop: '1px solid var(--border-subtle)' }}
+                >
+                  <td
+                    className="mono px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-secondary)' }}
+                  >
+                    {r.place_of_supply_state ?? '—'}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ fontSize: 13, fontWeight: 500 }}>
+                    {r.party_name}
+                  </td>
+                  <td className="mono px-3 py-2.5" style={{ fontSize: 12, fontWeight: 500 }}>
+                    {r.series}/{r.number}
+                  </td>
+                  <td
+                    className="num px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-secondary)' }}
+                  >
+                    {r.invoice_date}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {formatINRCompact(r.taxable_value)}
+                  </td>
+                  <Td value={r.igst} />
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right', fontWeight: 500 }}>
+                    {formatINRCompact(r.invoice_value)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </SectionWrapper>
+  );
+}
+
+function Gstr1B2CSSection({ rows }: { rows: Gstr1B2csVM[] }) {
+  return (
+    <SectionWrapper title="B2CS" count={rows.length}>
+      {rows.length === 0 ? (
+        <EmptyRow message="No B2CS aggregates in this period." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left" style={{ minWidth: 720 }}>
+            <thead style={{ background: 'var(--bg-surface)' }}>
+              <tr style={{ color: 'var(--text-tertiary)' }}>
+                <Th>Place of supply</Th>
+                <Th>GST rate</Th>
+                <Th align="right">Invoices</Th>
+                <Th align="right">Taxable</Th>
+                <Th align="right">CGST</Th>
+                <Th align="right">SGST</Th>
+                <Th align="right">IGST</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr
+                  key={`${r.place_of_supply_state}-${r.gst_rate}-${i}`}
+                  style={{ borderTop: '1px solid var(--border-subtle)' }}
+                >
+                  <td
+                    className="mono px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-secondary)' }}
+                  >
+                    {r.place_of_supply_state}
+                  </td>
+                  <td
+                    className="num px-3 py-2.5"
+                    style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}
+                  >
+                    {r.gst_rate}%
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.invoice_count}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {formatINRCompact(r.taxable_value)}
+                  </td>
+                  <Td value={r.cgst} />
+                  <Td value={r.sgst} />
+                  <Td value={r.igst} />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </SectionWrapper>
+  );
+}
+
+function Gstr1HsnSection({ rows }: { rows: Gstr1HsnVM[] }) {
+  return (
+    <SectionWrapper title="HSN summary" count={rows.length}>
+      {rows.length === 0 ? (
+        <EmptyRow message="No HSN summary in this period." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left" style={{ minWidth: 720 }}>
+            <thead style={{ background: 'var(--bg-surface)' }}>
+              <tr style={{ color: 'var(--text-tertiary)' }}>
+                <Th>HSN</Th>
+                <Th>Description</Th>
+                <Th>UQC</Th>
+                <Th align="right">Qty</Th>
+                <Th align="right">Taxable</Th>
+                <Th align="right">CGST</Th>
+                <Th align="right">SGST</Th>
+                <Th align="right">IGST</Th>
+                <Th align="right">Total</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr
+                  key={`${r.hsn_code}-${i}`}
+                  style={{
+                    borderTop: '1px solid var(--border-subtle)',
+                    background: r.hsn_code === '' ? 'var(--warning-subtle)' : 'transparent',
+                  }}
+                >
+                  <td className="mono px-3 py-2.5" style={{ fontSize: 12, fontWeight: 500 }}>
+                    {r.hsn_code === '' ? '(missing)' : r.hsn_code}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ fontSize: 13 }}>
+                    {r.description ?? '—'}
+                  </td>
+                  <td
+                    className="px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-tertiary)' }}
+                  >
+                    {r.uom.toLowerCase()}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.total_qty.toLocaleString('en-IN')}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {formatINRCompact(r.taxable_value)}
+                  </td>
+                  <Td value={r.cgst} />
+                  <Td value={r.sgst} />
+                  <Td value={r.igst} />
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right', fontWeight: 500 }}>
+                    {formatINRCompact(r.total_value)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </SectionWrapper>
+  );
+}
+
+function Td({ value }: { value: number }) {
+  return (
+    <td
+      className="num px-3 py-2.5"
+      style={{
+        textAlign: 'right',
+        color: value > 0 ? 'var(--text-primary)' : 'var(--text-tertiary)',
+      }}
+    >
+      {value > 0 ? formatINRCompact(value) : '—'}
+    </td>
+  );
+}
+
+function Gstr1ErrorState({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      style={{
+        padding: 16,
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--danger)',
+        borderRadius: 8,
+        color: 'var(--danger)',
+        fontSize: 13,
+      }}
+    >
+      Could not load GSTR-1: {message}
     </div>
   );
 }
