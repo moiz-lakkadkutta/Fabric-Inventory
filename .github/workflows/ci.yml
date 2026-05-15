@@ -69,6 +69,21 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      redis:
+        # The idempotency middleware degrades to "presence-only" when
+        # REDIS_URL is unset (see `backend/app/middleware/idempotency.py`).
+        # Without Redis in CI, replay-equality tests like
+        # `test_journal_voucher_idempotency_returns_cached` silently fail
+        # because the second POST allocates a new voucher_id instead of
+        # returning the cached one.
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     env:
       # CI=true is set by GitHub Actions automatically; restated here for clarity.
@@ -80,6 +95,7 @@ jobs:
       # itself runs under the postgres superuser via MIGRATION_DATABASE_URL.
       DATABASE_URL: postgresql+asyncpg://fabric_app:fabric_app_dev@localhost:5432/test
       MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test
+      REDIS_URL: redis://localhost:6379/0
       # TASK-TR-SEC1 review fix (B3 + M5): the app + alembic refuse to boot
       # in any ENVIRONMENT outside {dev, test} without PII_MASTER_KEY.
       # `dev` is in both that allowlist AND `Settings.environment`'s Literal

@@ -46,6 +46,29 @@ if _platform.system() == "Darwin":
             break
 
 
+# TASK-TR-SEC1 follow-up: `organization.encrypted_dek` is NOT NULL post-migration,
+# but ~20 existing test fixtures construct `Organization(...)` directly without
+# setting it (the real signup path does, see routers/auth.py:184-189). Rather
+# than sweeping every fixture, register a `before_insert` hook that auto-mints a
+# wrapped DEK when one isn't provided. Production code is unaffected — auth and
+# the seed-demo CLI pass an explicit `encrypted_dek=` so this branch is dead in
+# prod. Test-only safety net.
+from sqlalchemy import event as _sa_event
+
+from app.models import Organization as _Organization
+from app.utils.crypto import generate_dek as _generate_dek
+from app.utils.crypto import wrap_dek as _wrap_dek
+
+
+@_sa_event.listens_for(_Organization, "before_insert")
+def _autofill_encrypted_dek(_mapper: object, _connection: object, target: _Organization) -> None:
+    if target.encrypted_dek is not None:
+        return
+    if target.org_id is None:
+        target.org_id = uuid.uuid4()
+    target.encrypted_dek = _wrap_dek(_generate_dek(), org_id=target.org_id)
+
+
 @pytest.fixture
 async def client() -> AsyncIterator[AsyncClient]:
     """Async HTTP client over the FastAPI app's ASGI transport."""
