@@ -82,10 +82,12 @@ jobs:
       MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test
       # TASK-TR-SEC1 review fix (B3 + M5): the app + alembic refuse to boot
       # in any ENVIRONMENT outside {dev, test} without PII_MASTER_KEY.
-      # `test` enables the documented public dev KEK fallback (with a loud
-      # WARNING log) so CI doesn't have to manage a real secret. Prod /
-      # staging set both ENVIRONMENT and PII_MASTER_KEY in their secret store.
-      ENVIRONMENT: test
+      # `dev` is in both that allowlist AND `Settings.environment`'s Literal
+      # (`Literal["dev", "staging", "prod"]`), so the public KEK fallback
+      # fires (with a loud WARNING log) and Settings validates cleanly.
+      # Prod / staging set both ENVIRONMENT and PII_MASTER_KEY in their
+      # secret store.
+      ENVIRONMENT: dev
 
     steps:
       - uses: actions/checkout@v4
