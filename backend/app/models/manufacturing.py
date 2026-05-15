@@ -396,8 +396,19 @@ class Routing(Base, TimestampMixin, SoftDeleteMixin):
     )
     updated_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
 
+    # A05 review (M3): the topological sort over these edges has multiple
+    # valid orders on diamond DAGs (A→B, A→C, B→D, C→D). Pinning the
+    # relationship loader to ORDER BY ``from_operation_id, to_operation_id``
+    # gives the downstream Kahn sort a stable starting point so two MOs
+    # created from the same routing land identical ``operation_sequence``
+    # values. The Kahn frontier ALSO sorts ties by ``operation_master_id``
+    # UUID — see ``mo_service._topological_order_operations``. Defense
+    # in depth: the relationship's ORDER BY alone isn't enough because
+    # the topo sort's frontier order matters more than the input order.
     edges: Mapped[list[RoutingEdge]] = relationship(
-        back_populates="routing", cascade="all, delete-orphan"
+        back_populates="routing",
+        cascade="all, delete-orphan",
+        order_by="RoutingEdge.from_operation_id, RoutingEdge.to_operation_id",
     )
 
 

@@ -30,6 +30,11 @@ from app.models.manufacturing import (
     Bom,
     BomLine,
     Design,
+    ManufacturingOrder,
+    MoMaterialLine,
+    MoOperation,
+    MoOperationState,
+    MoStatus,
     OperationMaster,
     OperationType,
     Routing,
@@ -50,6 +55,12 @@ from app.schemas.manufacturing import (
     DesignListResponse,
     DesignResponse,
     DesignUpdateRequest,
+    MoCreateRequest,
+    MoListItem,
+    MoListResponse,
+    MoMaterialLineResponse,
+    MoOperationResponse,
+    MoResponse,
     OperationMasterCreateRequest,
     OperationMasterListResponse,
     OperationMasterResponse,
@@ -60,7 +71,12 @@ from app.schemas.manufacturing import (
     RoutingListResponse,
     RoutingResponse,
 )
-from app.service import bom_service, manufacturing_masters_service, routing_service
+from app.service import (
+    bom_service,
+    manufacturing_masters_service,
+    mo_service,
+    routing_service,
+)
 from app.service.identity_service import TokenPayload
 
 designs_router = APIRouter(prefix="/designs", tags=["manufacturing", "design"])
@@ -70,6 +86,7 @@ operation_masters_router = APIRouter(
 cost_centres_router = APIRouter(prefix="/cost-centres", tags=["manufacturing", "cost_centre"])
 boms_router = APIRouter(prefix="/boms", tags=["manufacturing", "bom"])
 routings_router = APIRouter(prefix="/routings", tags=["manufacturing", "routing"])
+mos_router = APIRouter(prefix="/manufacturing/mo", tags=["manufacturing", "mo"])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -872,3 +889,243 @@ def delete_routing(
         routing_id=routing_id,
         deleted_by=current_user.user_id,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Manufacturing Order endpoints (TASK-TR-A05)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _mo_material_line_to_response(line: MoMaterialLine) -> MoMaterialLineResponse:
+    # ``qty_issued`` / ``qty_scrap`` are nullable on the ORM (server
+    # defaults 0) but ``mo_service.create_mo`` always sets them. Coerce
+    # defensively so the wire shape can advertise non-null Decimals.
+    from decimal import Decimal as _Decimal
+
+    return MoMaterialLineResponse(
+        mo_material_line_id=line.mo_material_line_id,
+        manufacturing_order_id=line.manufacturing_order_id,
+        item_id=line.item_id,
+        qty_required=line.qty_required if line.qty_required is not None else _Decimal("0"),
+        qty_issued=line.qty_issued if line.qty_issued is not None else _Decimal("0"),
+        qty_scrap=line.qty_scrap if line.qty_scrap is not None else _Decimal("0"),
+    )
+
+
+def _mo_operation_to_response(op: MoOperation) -> MoOperationResponse:
+    return MoOperationResponse(
+        mo_operation_id=op.mo_operation_id,
+        manufacturing_order_id=op.manufacturing_order_id,
+        operation_master_id=op.operation_master_id,
+        operation_sequence=op.operation_sequence,
+        state=op.state if op.state is not None else MoOperationState.PENDING,
+        executor=op.executor,
+        qty_in=op.qty_in,
+        qty_out=op.qty_out,
+    )
+
+
+def _mo_to_response(mo: ManufacturingOrder) -> MoResponse:
+    return MoResponse(
+        manufacturing_order_id=mo.manufacturing_order_id,
+        org_id=mo.org_id,
+        firm_id=mo.firm_id,
+        series=mo.series,
+        number=mo.number,
+        design_id=mo.design_id,
+        finished_item_id=mo.finished_item_id,
+        bom_id=mo.bom_id,
+        routing_id=mo.routing_id,
+        status=mo.status if mo.status is not None else MoStatus.DRAFT,
+        mo_date=mo.mo_date,
+        planned_qty=mo.planned_qty,
+        produced_qty=mo.produced_qty,
+        scrap_qty=mo.scrap_qty,
+        closed_at=mo.closed_at,
+        created_at=mo.created_at,
+        updated_at=mo.updated_at,
+        deleted_at=mo.deleted_at,
+        material_lines=[_mo_material_line_to_response(line) for line in mo.material_lines],
+        operations=sorted(
+            (_mo_operation_to_response(op) for op in mo.operations),
+            key=lambda r: r.operation_sequence if r.operation_sequence is not None else 0,
+        ),
+    )
+
+
+def _mo_to_list_item(mo: ManufacturingOrder) -> MoListItem:
+    return MoListItem(
+        manufacturing_order_id=mo.manufacturing_order_id,
+        org_id=mo.org_id,
+        firm_id=mo.firm_id,
+        series=mo.series,
+        number=mo.number,
+        design_id=mo.design_id,
+        finished_item_id=mo.finished_item_id,
+        status=mo.status if mo.status is not None else MoStatus.DRAFT,
+        mo_date=mo.mo_date,
+        planned_qty=mo.planned_qty,
+        created_at=mo.created_at,
+    )
+
+
+@mos_router.post(
+    "",
+    response_model=MoResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a manufacturing order (materializes lines from BOM + ops from routing)",
+)
+def create_mo(
+    body: MoCreateRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> MoResponse:
+    # Defense-in-depth: when the session has an explicit firm scope, the
+    # body firm_id must match — same pattern as the routing router.
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+
+    series = body.series or "MO"
+    mo = mo_service.create_mo(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        design_id=body.design_id,
+        finished_item_id=body.finished_item_id,
+        qty_to_produce=body.qty_to_produce,
+        bom_id=body.bom_id,
+        routing_id=body.routing_id,
+        planned_start_date=body.planned_start_date,
+        planned_end_date=body.planned_end_date,
+        narration=body.narration,
+        series=series,
+        created_by=current_user.user_id,
+    )
+    # Re-fetch with eager-loaded children for the response builder.
+    fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo.manufacturing_order_id)
+    return _mo_to_response(fresh)
+
+
+@mos_router.get(
+    "",
+    response_model=MoListResponse,
+    summary="List manufacturing orders (RLS-scoped to current org)",
+)
+def list_mos(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.read"))],
+    firm_id: Annotated[uuid.UUID | None, Query()] = None,
+    status_filter: Annotated[MoStatus | None, Query(alias="status")] = None,
+    design_id: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> MoListResponse:
+    items, total = mo_service.list_mos(
+        db,
+        org_id=current_user.org_id,
+        firm_id=firm_id,
+        status=status_filter,
+        design_id=design_id,
+        limit=limit,
+        offset=offset,
+    )
+    return MoListResponse(
+        items=[_mo_to_list_item(m) for m in items],
+        limit=limit,
+        offset=offset,
+        count=len(items),
+        total_count=total,
+    )
+
+
+@mos_router.get(
+    "/{mo_id}",
+    response_model=MoResponse,
+    summary="Get a manufacturing order by id (with material lines + operations)",
+)
+def get_mo(
+    mo_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.read"))],
+) -> MoResponse:
+    mo = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
+    return _mo_to_response(mo)
+
+
+@mos_router.post(
+    "/{mo_id}/release",
+    response_model=MoResponse,
+    summary="Release a DRAFT manufacturing order",
+)
+def release_mo(
+    mo_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> MoResponse:
+    mo_service.release_mo(
+        db, org_id=current_user.org_id, mo_id=mo_id, released_by=current_user.user_id
+    )
+    fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
+    return _mo_to_response(fresh)
+
+
+@mos_router.post(
+    "/{mo_id}/start",
+    response_model=MoResponse,
+    summary="Start (RELEASED → IN_PROGRESS) a manufacturing order",
+)
+def start_mo(
+    mo_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> MoResponse:
+    mo_service.start_mo(
+        db, org_id=current_user.org_id, mo_id=mo_id, started_by=current_user.user_id
+    )
+    fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
+    return _mo_to_response(fresh)
+
+
+@mos_router.post(
+    "/{mo_id}/complete",
+    response_model=MoResponse,
+    summary="Complete (IN_PROGRESS → COMPLETED) a manufacturing order",
+)
+def complete_mo(
+    mo_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> MoResponse:
+    mo_service.complete_mo(
+        db, org_id=current_user.org_id, mo_id=mo_id, completed_by=current_user.user_id
+    )
+    fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
+    return _mo_to_response(fresh)
+
+
+@mos_router.post(
+    "/{mo_id}/close",
+    response_model=MoResponse,
+    summary="Close (COMPLETED → CLOSED) a manufacturing order — MO becomes immutable",
+)
+def close_mo(
+    mo_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> MoResponse:
+    mo_service.close_mo(db, org_id=current_user.org_id, mo_id=mo_id, closed_by=current_user.user_id)
+    fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
+    return _mo_to_response(fresh)
+
+
+# NOTE: ``POST /manufacturing/mo/{mo_id}/cancel`` is intentionally NOT
+# wired in A05. The ``mo_status`` Postgres enum does not include a
+# ``CANCELLED`` value (see ``MoStatus`` in ``app.models.manufacturing``),
+# so a cancel endpoint would have nowhere to write to. A follow-up
+# Alembic migration + service method will land in a separate task; the
+# retro at ``docs/retros/task-tr-a05.md`` documents this gap.
