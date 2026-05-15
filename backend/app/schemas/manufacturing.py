@@ -301,6 +301,15 @@ class MoCreateRequest(BaseModel):
     routing_id: uuid.UUID
     qty_to_produce: Decimal = Field(gt=Decimal("0"))
     planned_start_date: datetime.date
+    # ``planned_end_date`` is accepted on the wire for forward
+    # compatibility but is **not persisted** today — the A01
+    # ``manufacturing_order`` schema has only ``mo_date``. The previous
+    # service-level ``end < start`` check was removed because validating
+    # a value the request layer then throws away is more misleading than
+    # not validating: a 201 implied the dates were saved. Will be
+    # re-introduced (alongside the actual persistence) when a schema add
+    # for ``planned_end_date`` lands — see the A05 retro under
+    # "Open follow-ups".
     planned_end_date: datetime.date | None = None
     narration: str | None = Field(default=None, max_length=2000)
     # ``series`` defaults to ``"MO"`` server-side; A future task can let

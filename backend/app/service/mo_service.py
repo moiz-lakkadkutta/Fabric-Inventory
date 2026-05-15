@@ -27,11 +27,17 @@ Invariants this module guarantees:
 
    - BOM not active on ``(firm_id, finished_item_id)``.
    - BOM from a different firm.
+   - BOM whose every line is soft-deleted or optional (after the M4
+     filter — silently producing an MO with zero material lines hides
+     bad BOMs).
    - Routing's ``design_id`` ≠ MO ``design_id``.
    - Routing is soft-deleted.
    - ``qty_to_produce`` ≤ 0.
-   - ``planned_end_date < planned_start_date`` (when both provided).
    - ``finished_item_id`` not firm-scoped.
+
+   ``planned_end_date`` is accepted but neither validated nor persisted
+   today (no column on the A01 ``manufacturing_order``); see the A05
+   retro under "Open follow-ups".
 
 3. **MO number allocation** is per ``(org_id, firm_id, series)``: the
    service computes ``max(number_int) + 1`` and zero-pads to four digits
@@ -41,8 +47,11 @@ Invariants this module guarantees:
    ``mo_number:{org_id}:{firm_id}:{series}`` BEFORE the read — same
    pattern as ``bom_service`` / ``routing_service``. The DB unique
    ``UNIQUE (org_id, firm_id, series, number)`` is the
-   defense-in-depth — if it ever trips we translate IntegrityError →
-   ``AppValidationError`` (422) with a clear retry message.
+   defense-in-depth — when its specific constraint name shows up in
+   ``IntegrityError.orig`` we translate to ``AppValidationError`` (422)
+   with a clear retry message. Other ``IntegrityError`` (e.g. real FK
+   violations) bubble unchanged — mirrors the C01 hardening of
+   ``post_journal_voucher`` (commit 63cec7b).
 
 4. State machine (header):
 
@@ -162,42 +171,58 @@ def _allocate_mo_number(
 def _topological_order_operations(edges: list[RoutingEdge]) -> list[uuid.UUID]:
     """Return the operations referenced by ``edges`` in topological order.
 
-    Kahn's algorithm: build adjacency + indegree from the edge list, then
-    repeatedly emit zero-indegree nodes (breaking ties by insertion order
-    for determinism). The routing service already rejected cycles on
-    create, so the topological sort cannot fail — but we still raise
+    Kahn's algorithm with a **deterministic tiebreaker on
+    ``operation_master_id``** so diamond DAGs (A→B, A→C, B→D, C→D — two
+    valid orders) always produce the same ``operation_sequence``.
+
+    The routing service already rejected cycles on create, so the
+    topological sort cannot fail — but we still raise
     ``AppValidationError`` defensively if it does, to keep the contract
     explicit.
+
+    A05 review (M3): insertion-order tie-breaking is not stable across
+    runs because the relationship's loader and Postgres ``ORDER BY`` on
+    columns we don't pin (``routing_edge_id``) can shuffle the input
+    list. Sorting the Kahn frontier by ``op_id`` UUID is cheap, total,
+    and reproducible. Paired with ``Routing.edges.order_by`` on
+    ``(from_operation_id, to_operation_id)`` for belt-and-braces.
     """
     if not edges:
         return []
 
     adj: dict[uuid.UUID, list[uuid.UUID]] = {}
     indegree: dict[uuid.UUID, int] = {}
-    # Preserve insertion order for deterministic output across runs.
-    nodes: list[uuid.UUID] = []
-    seen: set[uuid.UUID] = set()
+    nodes: set[uuid.UUID] = set()
     for e in edges:
         for op in (e.from_operation_id, e.to_operation_id):
-            if op not in seen:
-                seen.add(op)
-                nodes.append(op)
+            if op not in nodes:
+                nodes.add(op)
                 indegree[op] = 0
                 adj[op] = []
     for e in edges:
         adj[e.from_operation_id].append(e.to_operation_id)
         indegree[e.to_operation_id] += 1
+    # Make adjacency-list order deterministic too — otherwise two MOs
+    # built from the same routing could enqueue children in different
+    # orders depending on edge-load order.
+    for op in adj:
+        adj[op].sort()
 
-    # Zero-indegree queue, processed in insertion order.
-    queue: list[uuid.UUID] = [n for n in nodes if indegree[n] == 0]
+    # Zero-indegree frontier, kept sorted by UUID. ``sorted(...)`` is
+    # cheap (<200 ops in any realistic routing); the cost of correctness
+    # is negligible vs. the cost of non-deterministic shop-floor sequence.
+    frontier: list[uuid.UUID] = sorted(n for n in nodes if indegree[n] == 0)
     ordered: list[uuid.UUID] = []
-    while queue:
-        node = queue.pop(0)
+    while frontier:
+        node = frontier.pop(0)
         ordered.append(node)
         for nxt in adj[node]:
             indegree[nxt] -= 1
             if indegree[nxt] == 0:
-                queue.append(nxt)
+                # Insert preserving sorted order.
+                # bisect would be faster but the list is tiny.
+                frontier.append(nxt)
+                frontier.sort()
 
     if len(ordered) != len(nodes):
         # Routing validation should have rejected cycles already; if we
@@ -259,30 +284,46 @@ def create_mo(
     Validates:
 
       - ``qty_to_produce`` > 0 (NUMERIC(15,4) ⇒ ``Decimal``).
-      - ``planned_end_date`` (if provided) ≥ ``planned_start_date``.
       - Design belongs to ``(org, firm)``.
       - Finished item is firm-scoped (firm-scoped row OR org-wide
         ``firm_id IS NULL``).
       - BOM belongs to ``(org, firm)``, references the same
-        ``finished_item_id``, and is active.
+        ``finished_item_id``, is active, and has at least one
+        non-deleted, non-optional line (M4).
       - Routing belongs to ``(org, firm)``, references the same
         ``design_id``, and is non-deleted.
 
+    ``planned_end_date`` is accepted on the signature for forward
+    compatibility but is neither validated nor persisted today (no
+    column in the A01 ``manufacturing_order`` schema). See the A05
+    retro for the open follow-up.
+
     Materializes:
 
-      - ``mo_material_line`` per non-deleted ``bom_line`` with
-        ``qty_required = bom_line.qty_required * qty_to_produce``.
+      - ``mo_material_line`` per non-deleted, non-optional ``bom_line``
+        with ``qty_required = bom_line.qty_required * qty_to_produce``.
+        Optional lines (M1) are silently skipped — ``mo_material_line``
+        has no ``is_optional`` column today, so we cannot record the
+        flag, and materializing them as required would over-issue at
+        A06.
       - ``mo_operation`` per operation referenced by routing edges,
-        topologically ordered. Empty-routing case: zero operations
-        (caller will surface a follow-up task to wire ops directly).
+        topologically ordered (deterministic on diamond DAGs — M3).
+        Empty-routing case: zero operations (caller will surface a
+        follow-up task to wire ops directly).
     """
     # 1. Numeric guards first — cheap & fail-fast.
     if qty_to_produce is None or Decimal(qty_to_produce) <= Decimal("0"):
         raise AppValidationError("qty_to_produce must be > 0")
     qty_to_produce = Decimal(qty_to_produce)
 
-    if planned_end_date is not None and planned_end_date < planned_start_date:
-        raise AppValidationError("planned_end_date cannot be before planned_start_date")
+    # A05 review follow-up: ``planned_end_date`` has no persisted column
+    # on ``manufacturing_order`` today (A01 schema ships only
+    # ``mo_date``). The wire field is purely informational at the
+    # request layer; validating-and-then-throwing-away the value was
+    # misleading (a 201 implied "your dates are saved"). When a schema
+    # add lands (open flag in the retro), this check should come back —
+    # accompanied by the actual persistence.
+    _ = planned_end_date  # explicit non-use for the typechecker
 
     if not series:
         raise AppValidationError("MO number series is required")
@@ -340,14 +381,34 @@ def create_mo(
     try:
         session.flush()  # mint manufacturing_order_id so children can FK to it
     except IntegrityError as exc:
-        # The advisory lock should have made this unreachable. Surface
-        # as a clean 422 retry rather than leaking a 500.
-        raise AppValidationError("MO number race detected — please retry the request.") from exc
+        # A05 review (M2): only translate the *specific* race on the
+        # MO-number unique key. A real FK violation (e.g. ``bom_id``
+        # deleted between validation and insert) must bubble — silently
+        # labelling everything "MO number race" hid real bugs and broke
+        # parity with the JV pattern at
+        # ``accounting_service.post_journal_voucher`` (C01 hardening,
+        # commit 63cec7b).
+        if "manufacturing_order_org_id_firm_id_series_number_key" in str(exc.orig):
+            raise AppValidationError("MO number race detected — please retry the request.") from exc
+        raise
 
     # 6. Materialize material lines from the BOM. Eager-loaded by
     # ``bom_service.get_bom`` so this is N=0 queries.
+    #
+    # A05 review (M1): ``bom_line.is_optional=True`` lines are SKIPPED
+    # entirely. ``mo_material_line`` has no ``is_optional`` column in
+    # the A01 schema, so we can't persist the flag — and silently
+    # materializing optional components as REQUIRED would over-issue at
+    # A06 (material issue). The right long-term fix is a schema add on
+    # ``mo_material_line.is_optional`` so A06 can branch; tracked in the
+    # A05 retro under "Open follow-ups". Until then, skip-as-default is
+    # the conservative behaviour: an MO will fail to fully consume the
+    # BOM rather than over-consume it.
+    material_line_count = 0
     for line in bom.lines:
         if line.deleted_at is not None:
+            continue
+        if line.is_optional:
             continue
         session.add(
             MoMaterialLine(
@@ -360,6 +421,16 @@ def create_mo(
                 created_by=created_by,
                 updated_by=created_by,
             )
+        )
+        material_line_count += 1
+
+    # A05 review (M4): if every BOM line was soft-deleted (or marked
+    # optional, post-M1), the MO would silently land with zero material
+    # lines and A06 would happily issue nothing. Fail-fast instead so
+    # the caller fixes the BOM or picks a different one.
+    if material_line_count == 0:
+        raise AppValidationError(
+            f"BOM {bom_id} has no active required lines; cannot materialize MO."
         )
 
     # 7. Materialize operations from the routing. ``routing.edges`` is
@@ -404,7 +475,7 @@ def create_mo(
                 "bom_id": str(bom_id),
                 "routing_id": str(routing_id),
                 "qty_to_produce": str(qty_to_produce),
-                "material_line_count": sum(1 for line in bom.lines if line.deleted_at is None),
+                "material_line_count": material_line_count,
                 "operation_count": len(op_order),
             }
         },

@@ -130,16 +130,53 @@ visible reordering, we'll need to surface an additional
 
 ## Open flags carried over
 
-- **`planned_end_date` not persisted.** Validated only. If A07
-  surfaces a Gantt chart, add the column via Alembic and update
-  `create_mo` to write it. Today's schema can't fail the test
-  because we don't read it back from the row.
+- **`planned_end_date` not persisted.** Accepted at the wire layer
+  for forward compatibility, but **not validated and not stored**.
+  Originally the service rejected `end < start`, but PR #121's review
+  flagged that as misleading (a 201 implied the value was saved); the
+  validation was removed in the review-follow-up commit. If A07 surfaces
+  a Gantt chart, add the column via Alembic, re-introduce the
+  `end >= start` check, and update `create_mo` to write it.
 - **`narration` not persisted.** The service accepts a `narration`
   kwarg, but the MO header has no narration column. We currently
   pipe it through to the audit-log `reason` field as a stop-gap.
   A focused schema add (`manufacturing_order.narration TEXT`) is
   the right fix.
+- **`bom_line.is_optional` not respected on persistence.** The A01
+  `mo_material_line` table has no `is_optional` column, so we cannot
+  record the flag. PR #121's review-follow-up makes the service
+  **skip optional BOM lines entirely** at materialization time (the
+  conservative choice — an MO under-issues rather than over-issues).
+  The right long-term fix is a schema add on `mo_material_line` so
+  A06 can branch on the flag (issue required vs ask-before-issue for
+  optional). One Alembic migration + a couple of service tweaks.
 - **Cancellation path.** See deviation #2 + checklist #1.
+
+## PR #121 review follow-ups (committed in this branch)
+
+- **M1: optional BOM lines.** `create_mo` now skips
+  `bom_line.is_optional=True` lines (see "Open flags" above for the
+  long-term schema add). Combined with M4 below, an MO whose entire BOM
+  is optional/soft-deleted fails fast with a clear 422.
+- **M2: narrow IntegrityError catch.** Mirrored the C01 JV pattern
+  (`accounting_service.post_journal_voucher`, commit 63cec7b): only
+  translate to "MO number race" when
+  `manufacturing_order_org_id_firm_id_series_number_key` shows up in
+  `IntegrityError.orig`; everything else (FK violations, etc.) bubbles.
+- **M3: deterministic topological order.** Two-layer defense.
+  (a) `Routing.edges` relationship now `order_by` =
+  `(from_operation_id, to_operation_id)` so the edge list itself is
+  stable. (b) `_topological_order_operations` breaks Kahn-frontier ties
+  by `operation_master_id` UUID (cheap full-sort on a frontier that's
+  always <200 ops). Diamond DAGs (A→B, A→C, B→D, C→D) now produce
+  identical `operation_sequence` across MO creations.
+- **M4: all-soft-deleted/optional BOM guard.** If after the M1 skip
+  the material-line count is zero, raise
+  `AppValidationError("BOM … has no active required lines")`.
+- **Minors:** strengthened body-detail assertions on the four
+  state-transition tests; added `test_create_mo_rejects_routing_from_different_firm`
+  and `test_create_mo_emits_audit_log_on_each_state_transition`;
+  added M-specific tests for each follow-up.
 
 ## Observable state at end of task
 

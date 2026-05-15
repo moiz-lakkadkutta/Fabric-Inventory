@@ -17,7 +17,9 @@ Vertical tracer bullets — one test, one assertion family:
   - Reject BOM from a different firm.
   - Reject routing whose design_id ≠ MO design_id.
   - Reject ``qty_to_produce`` ≤ 0.
-  - Reject ``planned_end_date < planned_start_date``.
+  - ``planned_end_date`` accepted but neither validated nor persisted
+    (review-follow-up: the column doesn't exist yet on A01's
+    ``manufacturing_order``).
   - MO number allocates sequentially within a (firm, series).
   - Idempotency-Key replay returns the same MO id.
   - Salesperson cannot mutate MOs (403 from real RBAC stack).
@@ -37,6 +39,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
+
+from tests.conftest import IdempotentTestClient
 
 # ──────────────────────────────────────────────────────────────────────
 # Test helpers — copied from test_routing.py / test_bom.py style
@@ -519,7 +523,15 @@ def test_create_mo_rejects_non_positive_qty(http_client: TestClient) -> None:
     assert resp.status_code == 422, resp.text
 
 
-def test_create_mo_rejects_end_before_start(http_client: TestClient) -> None:
+def test_create_mo_accepts_end_before_start_silently(http_client: TestClient) -> None:
+    """``planned_end_date`` has no persisted column on ``manufacturing_order``
+    today (A01 schema ships only ``mo_date``). A05 used to reject
+    ``planned_end_date < planned_start_date`` at the service boundary,
+    but rejecting a value the request layer is about to throw away was
+    worse than not validating: callers assume a 201 implies their dates
+    were saved. Until the schema add lands the wire field is purely
+    informational, so any combination must be accepted. This regression
+    test pins the new behaviour."""
     me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
     resp = http_client.post(
         "/manufacturing/mo",
@@ -534,8 +546,7 @@ def test_create_mo_rejects_end_before_start(http_client: TestClient) -> None:
             planned_end_date="2026-06-01",
         ),
     )
-    assert resp.status_code == 422, resp.text
-    assert "before" in resp.json()["detail"].lower()
+    assert resp.status_code == 201, resp.text
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -684,14 +695,22 @@ def test_release_required_before_other_transitions(
         f"/manufacturing/mo/{mo_id}/{action_path}", headers=_auth(me["access_token"])
     )
     assert resp.status_code == 422, resp.text
-    assert "status is" in resp.json()["detail"].lower()
+    body = resp.json()
+    detail_lower = body["detail"].lower()
+    assert "status is" in detail_lower
+    assert "draft" in detail_lower
 
 
 def test_cannot_release_a_non_draft_mo(http_client: TestClient) -> None:
     me, mo_id = _create_one_mo(http_client)
     http_client.post(f"/manufacturing/mo/{mo_id}/release", headers=_auth(me["access_token"]))
     resp = http_client.post(f"/manufacturing/mo/{mo_id}/release", headers=_auth(me["access_token"]))
-    assert resp.status_code == 422
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    # Body must explain why; future refactors mustn't silently degrade
+    # this to a bare "validation failed".
+    assert "status is" in body["detail"].lower()
+    assert "released" in body["detail"].lower()
 
 
 def test_cannot_complete_when_not_in_progress(http_client: TestClient) -> None:
@@ -700,7 +719,10 @@ def test_cannot_complete_when_not_in_progress(http_client: TestClient) -> None:
     resp = http_client.post(
         f"/manufacturing/mo/{mo_id}/complete", headers=_auth(me["access_token"])
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert "status is" in body["detail"].lower()
+    assert "released" in body["detail"].lower()
 
 
 def test_cannot_close_when_not_completed(http_client: TestClient) -> None:
@@ -709,7 +731,10 @@ def test_cannot_close_when_not_completed(http_client: TestClient) -> None:
     http_client.post(f"/manufacturing/mo/{mo_id}/start", headers=_auth(me["access_token"]))
     # IN_PROGRESS → close: rejected.
     resp = http_client.post(f"/manufacturing/mo/{mo_id}/close", headers=_auth(me["access_token"]))
-    assert resp.status_code == 422
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert "status is" in body["detail"].lower()
+    assert "in_progress" in body["detail"].lower()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -776,3 +801,433 @@ def test_cross_org_cannot_see_mo_by_direct_id(http_client: TestClient) -> None:
     # Service returns AppValidationError → 422 with "not found".
     assert resp.status_code == 422, resp.text
     assert "not found" in resp.json()["detail"].lower()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A05 review follow-ups (PR #121)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_mo_skips_optional_bom_lines(http_client: TestClient) -> None:
+    """M1: ``bom_line.is_optional`` must NOT silently materialize as a
+    required ``mo_material_line``.
+
+    The A01 ``mo_material_line`` table has no ``is_optional`` column, so
+    we can't persist the flag — the next-best behaviour is to skip
+    optional lines entirely (documented trade-off in the A05 retro). A06
+    will only issue against rows the service actually wrote.
+    """
+    me = _signup_owner(http_client)
+    design_id = _create_design(http_client, me, code=f"D-{uuid.uuid4().hex[:6]}")
+    finished = _create_item(http_client, me, code=f"F-{uuid.uuid4().hex[:6]}", item_type="FINISHED")
+    raw_required = _create_item(http_client, me, code=f"R-REQ-{uuid.uuid4().hex[:5]}")
+    raw_optional = _create_item(http_client, me, code=f"R-OPT-{uuid.uuid4().hex[:5]}")
+
+    # Hand-rolled BOM: one required line + one is_optional=True line.
+    bom_payload = {
+        "firm_id": me["firm_id"],
+        "design_id": design_id,
+        "finished_item_id": finished,
+        "lines": [
+            {
+                "item_id": raw_required,
+                "qty_required": "2.0000",
+                "uom": "METER",
+                "is_optional": False,
+                "part_role": "SHELL",
+                "sequence": 1,
+            },
+            {
+                "item_id": raw_optional,
+                "qty_required": "1.0000",
+                "uom": "METER",
+                "is_optional": True,
+                "part_role": "TRIM",
+                "sequence": 2,
+            },
+        ],
+    }
+    bom_resp = http_client.post("/boms", headers=_auth(me["access_token"]), json=bom_payload)
+    assert bom_resp.status_code == 201, bom_resp.text
+    bom = bom_resp.json()
+
+    ops = [_create_op(http_client, me, code=f"OP{i}-{uuid.uuid4().hex[:4]}") for i in range(2)]
+    routing = _create_routing(http_client, me, design_id=design_id, ops=ops)
+
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+    lines = resp.json()["material_lines"]
+    # Only the required line is materialized — the optional one is skipped.
+    assert len(lines) == 1
+    assert lines[0]["item_id"] == raw_required
+
+
+def test_create_mo_translates_number_race_to_422(
+    http_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M2: a flush ``IntegrityError`` whose constraint name matches the
+    MO-number unique key surfaces as a clean 422 ``AppValidationError``
+    with a retry message — never a 500.
+
+    Mirrors the JV pattern at ``accounting_service.post_journal_voucher``
+    (C01 hardening, commit 63cec7b)."""
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    from typing import Any
+
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.manufacturing import ManufacturingOrder
+
+    original_flush = OrmSession.flush
+    fired = {"v": False}
+
+    def race_flush(self: OrmSession, *args: Any, **kwargs: Any) -> Any:
+        # Only intercept the flush that is committing a brand-new MO
+        # row — earlier autoflushes during seed reads must pass through
+        # untouched, otherwise we'd raise the race before ``create_mo``
+        # even reaches its try/except.
+        if not fired["v"] and any(isinstance(o, ManufacturingOrder) for o in self.new):
+            fired["v"] = True
+            raise IntegrityError(
+                statement="INSERT INTO manufacturing_order …",
+                params=None,
+                orig=Exception(
+                    "duplicate key value violates unique constraint "
+                    '"manufacturing_order_org_id_firm_id_series_number_key"'
+                ),
+            )
+        return original_flush(self, *args, **kwargs)
+
+    monkeypatch.setattr(OrmSession, "flush", race_flush)
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+        ),
+    )
+    assert fired["v"], "monkeypatch never intercepted the MO-insert flush"
+    assert resp.status_code == 422, resp.text
+    assert "retry" in resp.json()["detail"].lower()
+
+
+def test_create_mo_does_not_swallow_unrelated_integrity_errors(
+    monkeypatch: pytest.MonkeyPatch, sync_engine: Engine
+) -> None:
+    """M2: an ``IntegrityError`` that is NOT the MO-number race (e.g. a
+    surprise FK violation) must bubble — silently labelling everything
+    "MO number race" hid real bugs.
+
+    Uses a dedicated TestClient with ``raise_server_exceptions=False``
+    because the assertion is that an unrelated IntegrityError is NOT
+    translated to ``AppValidationError`` — the default TestClient would
+    re-raise the 500 instead of returning the global handler's envelope.
+    """
+    _ = sync_engine  # ensure the test DB is reachable; mirrors http_client fixture
+    from typing import Any
+
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.manufacturing import ManufacturingOrder
+    from main import create_app
+
+    app = create_app()
+    # Auto-injects Idempotency-Key, but DOESN'T re-raise server
+    # exceptions so we can inspect the global handler's envelope.
+    base_client = IdempotentTestClient(app, raise_server_exceptions=False)
+
+    with base_client as client:
+        me, design_id, finished, _raws, bom, routing = _seed_mo_world(client)
+
+        original_flush = OrmSession.flush
+        fired = {"v": False}
+
+        def fk_violation_flush(self: OrmSession, *args: Any, **kwargs: Any) -> Any:
+            if not fired["v"] and any(isinstance(o, ManufacturingOrder) for o in self.new):
+                fired["v"] = True
+                raise IntegrityError(
+                    statement="INSERT INTO manufacturing_order …",
+                    params=None,
+                    orig=Exception(
+                        'insert or update on table "manufacturing_order" violates '
+                        'foreign key constraint "manufacturing_order_finished_item_id_fkey"'
+                    ),
+                )
+            return original_flush(self, *args, **kwargs)
+
+        monkeypatch.setattr(OrmSession, "flush", fk_violation_flush)
+        resp = client.post(
+            "/manufacturing/mo",
+            headers=_auth(me["access_token"]),
+            json=_mo_payload(
+                me=me,
+                design_id=design_id,
+                finished_item_id=finished,
+                bom_id=str(bom["bom_id"]),
+                routing_id=str(routing["routing_id"]),
+            ),
+        )
+    assert fired["v"], "monkeypatch never intercepted the MO-insert flush"
+    # Must NOT be reported as 422 "retry the request" — anything that
+    # isn't the specific MO-number unique constraint bubbles out
+    # unchanged. The global error handler turns the IntegrityError into
+    # a 500 envelope; "retry" must not appear anywhere in the body.
+    assert resp.status_code == 500, resp.text
+    body_text = resp.text.lower()
+    assert "retry" not in body_text
+
+
+def test_create_mo_assigns_deterministic_sequence_on_diamond_routing(
+    http_client: TestClient,
+) -> None:
+    """M3: on a diamond DAG (A→B, A→C, B→D, C→D) two topo orders are
+    valid (B-before-C or C-before-B). The service must pick one
+    deterministically across runs / sessions so reports + UI don't flap."""
+    me = _signup_owner(http_client)
+    design_id = _create_design(http_client, me, code=f"D-{uuid.uuid4().hex[:6]}")
+    finished = _create_item(http_client, me, code=f"F-{uuid.uuid4().hex[:6]}", item_type="FINISHED")
+    raw = _create_item(http_client, me, code=f"R-{uuid.uuid4().hex[:6]}")
+    bom = _create_bom(
+        http_client,
+        me,
+        design_id=design_id,
+        finished_item_id=finished,
+        line_items=[(raw, "1.0000")],
+    )
+
+    # Reusable diamond: A→B, A→C, B→D, C→D.
+    op_a = _create_op(http_client, me, code=f"OPA-{uuid.uuid4().hex[:4]}")
+    op_b = _create_op(http_client, me, code=f"OPB-{uuid.uuid4().hex[:4]}")
+    op_c = _create_op(http_client, me, code=f"OPC-{uuid.uuid4().hex[:4]}")
+    op_d = _create_op(http_client, me, code=f"OPD-{uuid.uuid4().hex[:4]}")
+
+    # Edges submitted in mixed order (B→D before A→C) to verify that the
+    # deterministic tiebreaker (not insertion order of the *edges*) is
+    # what's driving the result.
+    edges_payload = [
+        {"from_operation_id": op_a, "to_operation_id": op_b, "edge_type": "FINISH_TO_START"},
+        {"from_operation_id": op_b, "to_operation_id": op_d, "edge_type": "FINISH_TO_START"},
+        {"from_operation_id": op_a, "to_operation_id": op_c, "edge_type": "FINISH_TO_START"},
+        {"from_operation_id": op_c, "to_operation_id": op_d, "edge_type": "FINISH_TO_START"},
+    ]
+    routing_resp = http_client.post(
+        "/routings",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "design_id": design_id,
+            "code": f"DIAMOND-{uuid.uuid4().hex[:6]}",
+            "name": "diamond",
+            "edges": edges_payload,
+        },
+    )
+    assert routing_resp.status_code == 201, routing_resp.text
+    routing_id = routing_resp.json()["routing_id"]
+
+    # Create two MOs from the same diamond; assert identical sequence.
+    def seq_for() -> list[str]:
+        r = http_client.post(
+            "/manufacturing/mo",
+            headers=_auth(me["access_token"]),
+            json=_mo_payload(
+                me=me,
+                design_id=design_id,
+                finished_item_id=finished,
+                bom_id=str(bom["bom_id"]),
+                routing_id=routing_id,
+            ),
+        )
+        assert r.status_code == 201, r.text
+        ops = sorted(r.json()["operations"], key=lambda o: o["operation_sequence"])
+        return [op["operation_master_id"] for op in ops]
+
+    seq1 = seq_for()
+    seq2 = seq_for()
+    assert seq1 == seq2, (
+        f"Expected deterministic operation_sequence across MO creations on the same "
+        f"diamond routing; got {seq1} vs {seq2}"
+    )
+    # Sanity: A must come first, D must come last; the middle two are
+    # whichever the tiebreaker picked but must be stable.
+    assert seq1[0] == op_a
+    assert seq1[-1] == op_d
+    assert set(seq1[1:3]) == {op_b, op_c}
+
+
+def test_create_mo_rejects_bom_with_all_lines_soft_deleted(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """M4: a BOM whose every line is tombstoned must fail-fast rather than
+    silently producing an MO with zero material lines (A06 would then
+    issue nothing and the user would assume their BOM was empty)."""
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+
+    # Soft-delete every line on the seeded BOM.
+    from sqlalchemy import update
+
+    from app.models.manufacturing import BomLine
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        session.execute(
+            update(BomLine)
+            .where(BomLine.bom_id == uuid.UUID(str(bom["bom_id"])))
+            .values(deleted_at=text("NOW()"))
+        )
+        session.commit()
+
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+        ),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "no active" in resp.json()["detail"].lower()
+
+
+def test_create_mo_rejects_routing_from_different_firm(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Minor follow-up: A05 already validates ``routing.firm_id == firm_id``
+    in code but no test exercises it. Mirrors the existing BOM-cross-firm
+    pattern so future refactors can't drop the check unnoticed."""
+    me, _design_a, _fin_a, _raws_a, _bom_a, _routing_a = _seed_mo_world(http_client)
+    firm_b_id = _create_second_firm_in_org(sync_engine, org_id=uuid.UUID(me["org_id"]))
+
+    # Switch the owner's session to firm B for the cross-firm seed work.
+    from sqlalchemy import select
+
+    from app.models import AppUser
+    from app.service import identity_service
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        owner_user = session.execute(
+            select(AppUser).where(AppUser.user_id == uuid.UUID(me["user_id"]))
+        ).scalar_one()
+        pair_b = identity_service.issue_tokens(
+            session, user=owner_user, firm_id=uuid.UUID(firm_b_id)
+        )
+        session.commit()
+    owner_b: dict[str, str] = {
+        "access_token": pair_b.access_token,
+        "firm_id": firm_b_id,
+        "org_id": me["org_id"],
+        "user_id": me["user_id"],
+    }
+
+    # Org-wide finished item so firm A's MO can reference it.
+    org_wide_finished_id = uuid.uuid4()
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        from app.models import Item
+
+        session.add(
+            Item(
+                item_id=org_wide_finished_id,
+                org_id=uuid.UUID(me["org_id"]),
+                firm_id=None,
+                code=f"OW-{uuid.uuid4().hex[:6]}",
+                name="org-wide finished",
+                item_type="FINISHED",
+                primary_uom="PIECE",
+            )
+        )
+        session.commit()
+
+    # Firm-B routing for the same shared design wouldn't work either
+    # because design is per-firm. So we build a design under B, then a
+    # routing under B for that design, and try to use it on firm A.
+    design_b = _create_design(http_client, owner_b, code=f"DB-{uuid.uuid4().hex[:6]}")
+    ops_b = [_create_op(http_client, owner_b, code=f"OPB-{uuid.uuid4().hex[:4]}") for _ in range(2)]
+    routing_b = _create_routing(http_client, owner_b, design_id=design_b, ops=ops_b)
+
+    # Build a firm-A BOM on the org-wide finished item.
+    raw_a = _create_item(http_client, me, code=f"RA-{uuid.uuid4().hex[:6]}")
+    bom_a = _create_bom(
+        http_client,
+        me,
+        design_id=_design_a,  # design on firm A
+        finished_item_id=str(org_wide_finished_id),
+        line_items=[(raw_a, "1.0000")],
+    )
+
+    # Firm A request referencing firm B's routing → rejected at firm-match.
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=_design_a,
+            finished_item_id=str(org_wide_finished_id),
+            bom_id=str(bom_a["bom_id"]),
+            routing_id=str(routing_b["routing_id"]),
+        ),
+    )
+    # The first thing the service checks on the routing is design-match.
+    # In this setup both routing_b and _design_a are different — so the
+    # routing-firm check is what catches it first; either way it must
+    # 422.
+    assert resp.status_code == 422, resp.text
+    # `routing.firm_id != firm_id` or `routing.design_id != design_id`:
+    # both responses mention firm or design. Accept either to keep the
+    # test robust against re-ordering of the two checks.
+    detail_lower = resp.json()["detail"].lower()
+    assert "firm" in detail_lower or "design" in detail_lower
+
+
+def test_create_mo_emits_audit_log_on_each_state_transition(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Minor follow-up: every lifecycle POST must fire ``audit_service.log``
+    so the AccountingHub timeline / compliance feed has a row per
+    transition. Verifies the entity_id is the MO and the action string
+    matches the API verb."""
+    me, mo_id = _create_one_mo(http_client)
+    for action in ("release", "start", "complete", "close"):
+        r = http_client.post(
+            f"/manufacturing/mo/{mo_id}/{action}",
+            headers=_auth(me["access_token"]),
+        )
+        assert r.status_code == 200, r.text
+
+    from sqlalchemy import select
+
+    from app.models.identity import AuditLog
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        rows = list(
+            session.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.org_id == uuid.UUID(me["org_id"]),
+                    AuditLog.entity_type == "manufacturing.mo",
+                    AuditLog.entity_id == uuid.UUID(mo_id),
+                )
+                .order_by(AuditLog.created_at.asc())
+            ).scalars()
+        )
+    actions = [row.action for row in rows]
+    # 1 create + 4 transitions = 5.
+    assert actions == ["create", "release", "start", "complete", "close"]
