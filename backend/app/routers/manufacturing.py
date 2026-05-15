@@ -778,7 +778,6 @@ def create_routing(
         firm_id=body.firm_id,
         design_id=body.design_id,
         code=body.code,
-        name=body.name,
         edges=service_edges,
         created_by=current_user.user_id,
     )
