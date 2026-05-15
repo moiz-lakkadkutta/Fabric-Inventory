@@ -3,6 +3,8 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
+import { Pill } from '@/components/ui/pill';
+import { QueryError } from '@/components/ui/query-error';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useSkus } from '@/lib/queries/inventory';
 import { lots } from '@/lib/mock/inventory';
@@ -38,7 +40,9 @@ export default function InventoryList() {
         <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
           {skusQuery.isPending
             ? '—'
-            : `${rows.length} SKUs · ${rows.reduce((s, r) => s + r.lots, 0)} active lots`}
+            : skusQuery.isError
+              ? ''
+              : `${rows.length} SKUs · ${rows.reduce((s, r) => s + r.lots, 0)} active lots`}
         </span>
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" onClick={() => setAdjustOpen(true)}>
@@ -82,7 +86,16 @@ export default function InventoryList() {
           borderRadius: 8,
         }}
       >
-        {skusQuery.isPending ? (
+        {skusQuery.isError ? (
+          <QueryError
+            error={skusQuery.error}
+            onRetry={() => skusQuery.refetch()}
+            // /reports/stock-summary is gated by accounting.report.view
+            // today; the inventory list relies on it for the on-hand
+            // rollup, so a 403 should name that key explicitly.
+            permission="accounting.report.view"
+          />
+        ) : skusQuery.isPending ? (
           <ListSkeleton rows={8} />
         ) : (
           <table className="w-full text-left" style={{ minWidth: 880 }}>
@@ -126,18 +139,27 @@ export default function InventoryList() {
                       )}
                     </td>
                     <td className="num px-3 py-3" style={{ textAlign: 'right' }}>
-                      <span style={{ fontSize: 13.5, fontWeight: 500 }}>
-                        {r.on_hand.toLocaleString('en-IN')}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: 11,
-                          color: 'var(--text-tertiary)',
-                          marginLeft: 4,
-                        }}
-                      >
-                        {r.uom.toLowerCase()}
-                      </span>
+                      <div className="inline-flex items-center justify-end gap-2">
+                        {r.reorder > 0 && r.on_hand < r.reorder && (
+                          <Pill kind="overdue" aria-label="Low stock">
+                            Low stock
+                          </Pill>
+                        )}
+                        <span>
+                          <span style={{ fontSize: 13.5, fontWeight: 500 }}>
+                            {r.on_hand.toLocaleString('en-IN')}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 11,
+                              color: 'var(--text-tertiary)',
+                              marginLeft: 4,
+                            }}
+                          >
+                            {r.uom.toLowerCase()}
+                          </span>
+                        </span>
+                      </div>
                     </td>
                     <td className="px-3 py-3" style={{ width: 220 }}>
                       <StatusMixBar mix={r.mix} />
