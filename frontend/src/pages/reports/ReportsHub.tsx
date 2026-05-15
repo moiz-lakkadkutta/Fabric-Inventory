@@ -6,21 +6,43 @@ import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { downloadExport, type ExportFormat } from '@/lib/api/download';
 import { IS_LIVE } from '@/lib/api/mode';
+import { useLedgers, type LedgerPickerItem } from '@/lib/queries/accounts';
+import { useParties } from '@/lib/queries/parties';
 import {
+  useAgeing,
   useDaybook,
   useGstr1,
+  useItc04,
+  useLedgerStatement,
+  usePartyStatement,
   usePnL,
   useStockReport,
   useTrialBalance,
+  type AgeingRowVM,
+  type AgeingVM,
   type Gstr1B2csVM,
   type Gstr1HsnVM,
   type Gstr1InvoiceVM,
   type Gstr1VM,
+  type Itc04ReceiveRowVM,
+  type Itc04SendOutRowVM,
+  type LedgerStatementVM,
+  type PartyStatementVM,
 } from '@/lib/queries/reports';
 import { formatINRCompact } from '@/lib/format';
 import type { PnlRow } from '@/lib/mock/reports';
+import { useMe } from '@/store/auth';
 
-type Tab = 'pnl' | 'tb' | 'gstr1' | 'stock' | 'daybook';
+type Tab =
+  | 'pnl'
+  | 'tb'
+  | 'gstr1'
+  | 'stock'
+  | 'daybook'
+  | 'ageing'
+  | 'ledger'
+  | 'party-statement'
+  | 'itc04';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'pnl', label: 'P&L' },
@@ -28,6 +50,10 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'gstr1', label: 'GSTR-1' },
   { id: 'stock', label: 'Stock' },
   { id: 'daybook', label: 'Daybook' },
+  { id: 'ageing', label: 'Ageing' },
+  { id: 'ledger', label: 'Ledger statement' },
+  { id: 'party-statement', label: 'Party statement' },
+  { id: 'itc04', label: 'ITC-04' },
 ];
 
 const PERIOD = 'Apr 2026 · FY 2025-26';
@@ -44,7 +70,21 @@ function currentPeriod(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-function reportExportEndpoint(tab: Tab, gstr1Period: string): { path: string; stem: string } {
+/**
+ * Resolve an export endpoint for the given tab. Returns `null` when
+ * the tab's backend endpoint does not (yet) support CSV/XLSX, in which
+ * case the UI surfaces "Export not available for this report" rather
+ * than guessing a flat-file shape.
+ *
+ * TASK-TR-B04: Ageing / Ledger statement / Party statement / ITC-04
+ * have no CSV/XLSX format= path today — ITC-04's own docstring calls
+ * out that PDF/Excel export is Wave-5 (CUT-403). Once those land,
+ * extend this switch and the panels' fallback messages drop away.
+ */
+function reportExportEndpoint(
+  tab: Tab,
+  gstr1Period: string,
+): { path: string; stem: string } | null {
   // Reports are firm-scoped on the backend; the BE pulls org_id/firm_id
   // off the JWT, so we don't pass them as query params. Period defaults
   // (FY current month) are resolved server-side too.
@@ -65,6 +105,11 @@ function reportExportEndpoint(tab: Tab, gstr1Period: string): { path: string; st
       return { path: '/reports/stock-summary', stem: 'stock-summary' };
     case 'daybook':
       return { path: '/reports/daybook', stem: 'daybook' };
+    case 'ageing':
+    case 'ledger':
+    case 'party-statement':
+    case 'itc04':
+      return null;
   }
 }
 
@@ -73,26 +118,42 @@ export default function ReportsHub() {
   // GSTR-1 period state, used by both the panel query and the
   // export-button endpoint resolver. Other tabs ignore it.
   const [gstr1Period, setGstr1Period] = useState<string>(currentPeriod());
+  // Per-panel selector state for TASK-TR-B04 tabs. Hoisted here so the
+  // page can drive each panel's query keys without leaking state across
+  // tab switches. Header-level pickers are a separate refactor.
+  const [ageingAsOf, setAgeingAsOf] = useState<string>('');
+  const [ledgerId, setLedgerId] = useState<string>('');
+  const [ledgerFrom, setLedgerFrom] = useState<string>('');
+  const [ledgerTo, setLedgerTo] = useState<string>('');
+  const [partyId, setPartyId] = useState<string>('');
+  const [partyFrom, setPartyFrom] = useState<string>('');
+  const [partyTo, setPartyTo] = useState<string>('');
+  const [itc04Period, setItc04Period] = useState<string>(currentPeriod());
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const print = useComingSoon({
     feature: 'Print report (PDF)',
     task: 'TASK-046 (Reports → CSV/PDF)',
   });
+  const exportEndpoint = reportExportEndpoint(tab, gstr1Period);
+  const exportSupported = exportEndpoint !== null;
 
   const runExport = async (format: ExportFormat) => {
     if (!IS_LIVE) {
       setExportError('Export is wired to the live backend (set VITE_API_MODE=live).');
       return;
     }
-    const endpoint = reportExportEndpoint(tab, gstr1Period);
+    if (!exportEndpoint) {
+      setExportError('Export not available for this report.');
+      return;
+    }
     setExportError(null);
     setIsExporting(true);
     try {
       await downloadExport({
-        path: endpoint.path,
+        path: exportEndpoint.path,
         format,
-        fallbackFilename: `${endpoint.stem}-${new Date().toISOString().slice(0, 10)}.${format}`,
+        fallbackFilename: `${exportEndpoint.stem}-${new Date().toISOString().slice(0, 10)}.${format}`,
       });
     } catch (err) {
       setExportError(err instanceof Error ? err.message : 'Could not export report.');
@@ -116,8 +177,9 @@ export default function ReportsHub() {
           <Button
             variant="outline"
             onClick={() => runExport('csv')}
-            disabled={isExporting}
+            disabled={isExporting || !exportSupported}
             aria-label="Export report as CSV"
+            title={exportSupported ? undefined : 'Export not available for this report'}
           >
             <Download size={14} />
             {isExporting ? 'Exporting…' : 'Export CSV'}
@@ -125,8 +187,9 @@ export default function ReportsHub() {
           <Button
             variant="outline"
             onClick={() => runExport('xlsx')}
-            disabled={isExporting}
+            disabled={isExporting || !exportSupported}
             aria-label="Export report as Excel"
+            title={exportSupported ? undefined : 'Export not available for this report'}
           >
             <Download size={14} />
             Export Excel
@@ -185,6 +248,28 @@ export default function ReportsHub() {
       {tab === 'gstr1' && <Gstr1Panel period={gstr1Period} onPeriodChange={setGstr1Period} />}
       {tab === 'stock' && <StockPanel />}
       {tab === 'daybook' && <DaybookPanel />}
+      {tab === 'ageing' && <AgeingPanel asOf={ageingAsOf} onAsOfChange={setAgeingAsOf} />}
+      {tab === 'ledger' && (
+        <LedgerStatementPanel
+          ledgerId={ledgerId}
+          fromDate={ledgerFrom}
+          toDate={ledgerTo}
+          onLedgerChange={setLedgerId}
+          onFromChange={setLedgerFrom}
+          onToChange={setLedgerTo}
+        />
+      )}
+      {tab === 'party-statement' && (
+        <PartyStatementPanel
+          partyId={partyId}
+          fromDate={partyFrom}
+          toDate={partyTo}
+          onPartyChange={setPartyId}
+          onFromChange={setPartyFrom}
+          onToChange={setPartyTo}
+        />
+      )}
+      {tab === 'itc04' && <Itc04Panel period={itc04Period} onPeriodChange={setItc04Period} />}
     </div>
   );
 }
@@ -1071,4 +1156,879 @@ function Th({ children, align = 'left' }: { children: React.ReactNode; align?: '
       {children}
     </th>
   );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// TASK-TR-B04 panels: Ageing / Ledger statement / Party statement /
+// ITC-04. Each panel owns its picker state (passed in via props from
+// ReportsHub) so they're trivially hoistable into a shared header-level
+// picker later. Each panel mirrors the GSTR-1 / Gstr1Panel pattern:
+//   1. picker UI (date / ledger / party / month)
+//   2. summary banner
+//   3. one or more <SectionWrapper> tables
+//   4. empty / loading / error states
+// ──────────────────────────────────────────────────────────────────────
+
+function ReportErrorState({ title, message }: { title: string; message: string }) {
+  return (
+    <div
+      role="alert"
+      style={{
+        padding: 16,
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--danger)',
+        borderRadius: 8,
+        color: 'var(--danger)',
+        fontSize: 13,
+      }}
+    >
+      Could not load {title}: {message}
+    </div>
+  );
+}
+
+// ── Ageing panel ──────────────────────────────────────────────────────
+
+function AgeingPanel({ asOf, onAsOfChange }: { asOf: string; onAsOfChange: (v: string) => void }) {
+  const q = useAgeing(asOf || undefined);
+
+  return (
+    <div className="space-y-4">
+      <AgeingHeader asOf={asOf} onAsOfChange={onAsOfChange} data={q.data} isPending={q.isPending} />
+      {q.isPending ? (
+        <Skeleton width="100%" height={400} radius={8} />
+      ) : q.isError ? (
+        <ReportErrorState
+          title="ageing"
+          message={(q.error as Error)?.message ?? 'Unknown error.'}
+        />
+      ) : (
+        <AgeingTable rows={q.data?.rows ?? []} />
+      )}
+    </div>
+  );
+}
+
+function AgeingHeader({
+  asOf,
+  onAsOfChange,
+  data,
+  isPending,
+}: {
+  asOf: string;
+  onAsOfChange: (v: string) => void;
+  data: AgeingVM | undefined;
+  isPending: boolean;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <label
+          htmlFor="ageing-as-of"
+          style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500 }}
+        >
+          As of
+        </label>
+        <input
+          id="ageing-as-of"
+          type="date"
+          value={asOf}
+          onChange={(e) => onAsOfChange(e.target.value)}
+          aria-label="As of date"
+          style={{
+            padding: '6px 10px',
+            fontSize: 13,
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            background: 'var(--bg-surface)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        {data && (
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Snapshot {data.as_of}</span>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <Stat label="Parties" value={isPending ? '—' : String(data?.rows.length ?? 0)} />
+        <Stat
+          label="Total outstanding"
+          value={isPending ? '—' : formatINRCompact(data?.total_outstanding ?? 0)}
+          color="var(--accent)"
+        />
+      </div>
+    </div>
+  );
+}
+
+function AgeingTable({ rows }: { rows: AgeingRowVM[] }) {
+  if (rows.length === 0) {
+    return (
+      <SectionWrapper title="Outstanding by party" count={0}>
+        <EmptyRow message="No parties with outstanding balances at this date." />
+      </SectionWrapper>
+    );
+  }
+  return (
+    <SectionWrapper title="Outstanding by party" count={rows.length}>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left" style={{ minWidth: 720 }}>
+          <thead style={{ background: 'var(--bg-surface)' }}>
+            <tr style={{ color: 'var(--text-tertiary)' }}>
+              <Th>Party</Th>
+              <Th align="right">Current</Th>
+              <Th align="right">1-30 days</Th>
+              <Th align="right">31-60 days</Th>
+              <Th align="right">61-90 days</Th>
+              <Th align="right">&gt; 90 days</Th>
+              <Th align="right">Outstanding</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.party_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                <td className="px-3 py-2.5" style={{ fontSize: 13, fontWeight: 500 }}>
+                  {r.party_name}
+                </td>
+                <Td value={r.current} />
+                <Td value={r.bucket_1_30} />
+                <Td value={r.bucket_31_60} />
+                <Td value={r.bucket_61_90} />
+                <Td value={r.bucket_over_90} />
+                <td className="num px-3 py-2.5" style={{ textAlign: 'right', fontWeight: 600 }}>
+                  {formatINRCompact(r.outstanding)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </SectionWrapper>
+  );
+}
+
+// ── Ledger statement panel ────────────────────────────────────────────
+
+function LedgerStatementPanel({
+  ledgerId,
+  fromDate,
+  toDate,
+  onLedgerChange,
+  onFromChange,
+  onToChange,
+}: {
+  ledgerId: string;
+  fromDate: string;
+  toDate: string;
+  onLedgerChange: (v: string) => void;
+  onFromChange: (v: string) => void;
+  onToChange: (v: string) => void;
+}) {
+  const ledgers = useLedgers();
+  const stmt = useLedgerStatement(ledgerId || null, fromDate || undefined, toDate || undefined);
+
+  return (
+    <div className="space-y-4">
+      <LedgerStatementHeader
+        ledgerId={ledgerId}
+        fromDate={fromDate}
+        toDate={toDate}
+        onLedgerChange={onLedgerChange}
+        onFromChange={onFromChange}
+        onToChange={onToChange}
+        ledgers={ledgers.data ?? []}
+        ledgersPending={ledgers.isPending}
+        stmt={stmt.data}
+        stmtPending={stmt.isPending}
+      />
+      {!ledgerId ? (
+        <SectionWrapper title="Statement" count={0}>
+          <EmptyRow message="Pick a ledger to view its statement." />
+        </SectionWrapper>
+      ) : stmt.isPending ? (
+        <Skeleton width="100%" height={400} radius={8} />
+      ) : stmt.isError ? (
+        <ReportErrorState
+          title="ledger statement"
+          message={(stmt.error as Error)?.message ?? 'Unknown error.'}
+        />
+      ) : (
+        <LedgerStatementTable stmt={stmt.data!} />
+      )}
+    </div>
+  );
+}
+
+function LedgerStatementHeader({
+  ledgerId,
+  fromDate,
+  toDate,
+  onLedgerChange,
+  onFromChange,
+  onToChange,
+  ledgers,
+  ledgersPending,
+  stmt,
+  stmtPending,
+}: {
+  ledgerId: string;
+  fromDate: string;
+  toDate: string;
+  onLedgerChange: (v: string) => void;
+  onFromChange: (v: string) => void;
+  onToChange: (v: string) => void;
+  ledgers: LedgerPickerItem[];
+  ledgersPending: boolean;
+  stmt: LedgerStatementVM | undefined;
+  stmtPending: boolean;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <label
+          htmlFor="ledger-statement-picker"
+          style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500 }}
+        >
+          Ledger
+        </label>
+        <select
+          id="ledger-statement-picker"
+          value={ledgerId}
+          onChange={(e) => onLedgerChange(e.target.value)}
+          aria-label="Ledger"
+          disabled={ledgersPending}
+          style={{
+            padding: '6px 10px',
+            fontSize: 13,
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            background: 'var(--bg-surface)',
+            color: 'var(--text-primary)',
+            minWidth: 240,
+          }}
+        >
+          <option value="">— Choose a ledger —</option>
+          {ledgers.map((l) => (
+            <option key={l.ledger_id} value={l.ledger_id}>
+              {l.code} — {l.name}
+            </option>
+          ))}
+        </select>
+        <label
+          htmlFor="ledger-statement-from"
+          style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500 }}
+        >
+          From
+        </label>
+        <input
+          id="ledger-statement-from"
+          type="date"
+          value={fromDate}
+          onChange={(e) => onFromChange(e.target.value)}
+          aria-label="From date"
+          style={{
+            padding: '6px 10px',
+            fontSize: 13,
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            background: 'var(--bg-surface)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        <label
+          htmlFor="ledger-statement-to"
+          style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500 }}
+        >
+          To
+        </label>
+        <input
+          id="ledger-statement-to"
+          type="date"
+          value={toDate}
+          onChange={(e) => onToChange(e.target.value)}
+          aria-label="To date"
+          style={{
+            padding: '6px 10px',
+            fontSize: 13,
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            background: 'var(--bg-surface)',
+            color: 'var(--text-primary)',
+          }}
+        />
+      </div>
+      {ledgerId && (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Stat
+            label="Opening balance"
+            value={stmtPending ? '—' : formatSignedINR(stmt?.opening_balance ?? 0)}
+          />
+          <Stat
+            label="Debits"
+            value={stmtPending ? '—' : formatINRCompact(stmt?.total_debits ?? 0)}
+          />
+          <Stat
+            label="Credits"
+            value={stmtPending ? '—' : formatINRCompact(stmt?.total_credits ?? 0)}
+          />
+          <Stat
+            label="Closing balance"
+            value={stmtPending ? '—' : formatSignedINR(stmt?.closing_balance ?? 0)}
+            color="var(--accent)"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LedgerStatementTable({ stmt }: { stmt: LedgerStatementVM }) {
+  if (stmt.rows.length === 0) {
+    return (
+      <SectionWrapper title={`${stmt.ledger_name} (${stmt.ledger_code})`} count={0}>
+        <EmptyRow message="No journal lines in this window." />
+      </SectionWrapper>
+    );
+  }
+  return (
+    <SectionWrapper title={`${stmt.ledger_name} (${stmt.ledger_code})`} count={stmt.rows.length}>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left" style={{ minWidth: 720 }}>
+          <thead style={{ background: 'var(--bg-surface)' }}>
+            <tr style={{ color: 'var(--text-tertiary)' }}>
+              <Th>Date</Th>
+              <Th>Voucher</Th>
+              <Th>Description</Th>
+              <Th align="right">Debit</Th>
+              <Th align="right">Credit</Th>
+              <Th align="right">Balance</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {stmt.rows.map((r) => (
+              <tr key={r.voucher_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                <td
+                  className="num px-3 py-2.5"
+                  style={{ fontSize: 12, color: 'var(--text-secondary)' }}
+                >
+                  {r.voucher_date}
+                </td>
+                <td className="mono px-3 py-2.5" style={{ fontSize: 12, fontWeight: 500 }}>
+                  {r.series}/{r.number}
+                </td>
+                <td className="px-3 py-2.5" style={{ fontSize: 13 }}>
+                  {r.description ?? r.narration ?? r.voucher_type}
+                </td>
+                <Td value={r.debit} />
+                <Td value={r.credit} />
+                <td className="num px-3 py-2.5" style={{ textAlign: 'right', fontWeight: 500 }}>
+                  {formatSignedINR(r.balance)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </SectionWrapper>
+  );
+}
+
+// ── Party statement panel ─────────────────────────────────────────────
+
+function PartyStatementPanel({
+  partyId,
+  fromDate,
+  toDate,
+  onPartyChange,
+  onFromChange,
+  onToChange,
+}: {
+  partyId: string;
+  fromDate: string;
+  toDate: string;
+  onPartyChange: (v: string) => void;
+  onFromChange: (v: string) => void;
+  onToChange: (v: string) => void;
+}) {
+  const parties = useParties();
+  const stmt = usePartyStatement(partyId || null, fromDate || undefined, toDate || undefined);
+
+  return (
+    <div className="space-y-4">
+      <PartyStatementHeader
+        partyId={partyId}
+        fromDate={fromDate}
+        toDate={toDate}
+        onPartyChange={onPartyChange}
+        onFromChange={onFromChange}
+        onToChange={onToChange}
+        parties={parties.data ?? []}
+        partiesPending={parties.isPending}
+        stmt={stmt.data}
+        stmtPending={stmt.isPending}
+      />
+      {!partyId ? (
+        <SectionWrapper title="Statement" count={0}>
+          <EmptyRow message="Pick a party to view their statement." />
+        </SectionWrapper>
+      ) : stmt.isPending ? (
+        <Skeleton width="100%" height={400} radius={8} />
+      ) : stmt.isError ? (
+        <ReportErrorState
+          title="party statement"
+          message={(stmt.error as Error)?.message ?? 'Unknown error.'}
+        />
+      ) : (
+        <PartyStatementTable stmt={stmt.data!} />
+      )}
+    </div>
+  );
+}
+
+function PartyStatementHeader({
+  partyId,
+  fromDate,
+  toDate,
+  onPartyChange,
+  onFromChange,
+  onToChange,
+  parties,
+  partiesPending,
+  stmt,
+  stmtPending,
+}: {
+  partyId: string;
+  fromDate: string;
+  toDate: string;
+  onPartyChange: (v: string) => void;
+  onFromChange: (v: string) => void;
+  onToChange: (v: string) => void;
+  parties: Array<{ party_id: string; code: string; name: string }>;
+  partiesPending: boolean;
+  stmt: PartyStatementVM | undefined;
+  stmtPending: boolean;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <label
+          htmlFor="party-statement-picker"
+          style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500 }}
+        >
+          Party
+        </label>
+        <select
+          id="party-statement-picker"
+          value={partyId}
+          onChange={(e) => onPartyChange(e.target.value)}
+          aria-label="Party"
+          disabled={partiesPending}
+          style={{
+            padding: '6px 10px',
+            fontSize: 13,
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            background: 'var(--bg-surface)',
+            color: 'var(--text-primary)',
+            minWidth: 240,
+          }}
+        >
+          <option value="">— Choose a party —</option>
+          {parties.map((p) => (
+            <option key={p.party_id} value={p.party_id}>
+              {p.code} — {p.name}
+            </option>
+          ))}
+        </select>
+        <label
+          htmlFor="party-statement-from"
+          style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500 }}
+        >
+          From
+        </label>
+        <input
+          id="party-statement-from"
+          type="date"
+          value={fromDate}
+          onChange={(e) => onFromChange(e.target.value)}
+          aria-label="From date"
+          style={{
+            padding: '6px 10px',
+            fontSize: 13,
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            background: 'var(--bg-surface)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        <label
+          htmlFor="party-statement-to"
+          style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500 }}
+        >
+          To
+        </label>
+        <input
+          id="party-statement-to"
+          type="date"
+          value={toDate}
+          onChange={(e) => onToChange(e.target.value)}
+          aria-label="To date"
+          style={{
+            padding: '6px 10px',
+            fontSize: 13,
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            background: 'var(--bg-surface)',
+            color: 'var(--text-primary)',
+          }}
+        />
+      </div>
+      {partyId && (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Stat
+            label="Opening balance"
+            value={stmtPending ? '—' : formatSignedINR(stmt?.opening_balance ?? 0)}
+          />
+          <Stat
+            label="Debits"
+            value={stmtPending ? '—' : formatINRCompact(stmt?.total_debits ?? 0)}
+          />
+          <Stat
+            label="Credits"
+            value={stmtPending ? '—' : formatINRCompact(stmt?.total_credits ?? 0)}
+          />
+          <Stat
+            label="Closing balance"
+            value={stmtPending ? '—' : formatSignedINR(stmt?.closing_balance ?? 0)}
+            color="var(--accent)"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PartyStatementTable({ stmt }: { stmt: PartyStatementVM }) {
+  if (stmt.rows.length === 0) {
+    return (
+      <SectionWrapper title={`${stmt.party_name}`} count={0}>
+        <EmptyRow message="No vouchers for this party in the selected window." />
+      </SectionWrapper>
+    );
+  }
+  return (
+    <SectionWrapper title={`${stmt.party_name}`} count={stmt.rows.length}>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left" style={{ minWidth: 720 }}>
+          <thead style={{ background: 'var(--bg-surface)' }}>
+            <tr style={{ color: 'var(--text-tertiary)' }}>
+              <Th>Date</Th>
+              <Th>Voucher</Th>
+              <Th>Narration</Th>
+              <Th align="right">Debit</Th>
+              <Th align="right">Credit</Th>
+              <Th align="right">Balance</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {stmt.rows.map((r) => (
+              <tr key={r.voucher_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                <td
+                  className="num px-3 py-2.5"
+                  style={{ fontSize: 12, color: 'var(--text-secondary)' }}
+                >
+                  {r.voucher_date}
+                </td>
+                <td className="mono px-3 py-2.5" style={{ fontSize: 12, fontWeight: 500 }}>
+                  {r.series}/{r.number}
+                </td>
+                <td className="px-3 py-2.5" style={{ fontSize: 13 }}>
+                  {r.narration ?? r.voucher_type}
+                </td>
+                <Td value={r.debit} />
+                <Td value={r.credit} />
+                <td className="num px-3 py-2.5" style={{ textAlign: 'right', fontWeight: 500 }}>
+                  {formatSignedINR(r.balance)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </SectionWrapper>
+  );
+}
+
+// ── ITC-04 panel ──────────────────────────────────────────────────────
+
+function Itc04Panel({
+  period,
+  onPeriodChange,
+}: {
+  period: string;
+  onPeriodChange: (v: string) => void;
+}) {
+  const me = useMe();
+  const firmId = me?.firm_id ?? '';
+  const q = useItc04(firmId || null, period);
+
+  return (
+    <div className="space-y-4">
+      <Itc04Header
+        period={period}
+        onPeriodChange={onPeriodChange}
+        firmId={firmId}
+        sendOutsCount={q.data?.total_send_outs ?? 0}
+        receiptsCount={q.data?.total_receipts ?? 0}
+        fromDate={q.data?.from_date}
+        toDate={q.data?.to_date}
+        isPending={q.isPending}
+      />
+      {!firmId ? (
+        <ReportErrorState
+          title="ITC-04"
+          message="No firm selected — pick a firm to view ITC-04 data."
+        />
+      ) : q.isPending ? (
+        <Skeleton width="100%" height={400} radius={8} />
+      ) : q.isError ? (
+        <ReportErrorState
+          title="ITC-04"
+          message={(q.error as Error)?.message ?? 'Unknown error.'}
+        />
+      ) : (
+        <>
+          <Itc04SendOutsSection rows={q.data?.send_outs ?? []} />
+          <Itc04ReceiptsSection rows={q.data?.receipts ?? []} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function Itc04Header({
+  period,
+  onPeriodChange,
+  firmId,
+  sendOutsCount,
+  receiptsCount,
+  fromDate,
+  toDate,
+  isPending,
+}: {
+  period: string;
+  onPeriodChange: (v: string) => void;
+  firmId: string;
+  sendOutsCount: number;
+  receiptsCount: number;
+  fromDate?: string;
+  toDate?: string;
+  isPending: boolean;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <label
+          htmlFor="itc04-period"
+          style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500 }}
+        >
+          Period
+        </label>
+        <input
+          id="itc04-period"
+          type="month"
+          value={period}
+          onChange={(e) => onPeriodChange(e.target.value)}
+          aria-label="ITC-04 period"
+          disabled={!firmId}
+          style={{
+            padding: '6px 10px',
+            fontSize: 13,
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            background: 'var(--bg-surface)',
+            color: 'var(--text-primary)',
+          }}
+        />
+        {fromDate && toDate && (
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+            {fromDate} → {toDate}
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+        <Stat label="Send-outs" value={isPending ? '—' : String(sendOutsCount)} />
+        <Stat label="Receipts" value={isPending ? '—' : String(receiptsCount)} />
+      </div>
+    </div>
+  );
+}
+
+function Itc04SendOutsSection({ rows }: { rows: Itc04SendOutRowVM[] }) {
+  return (
+    <SectionWrapper title="Send-outs" count={rows.length}>
+      {rows.length === 0 ? (
+        <EmptyRow message="No send-outs in this period." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left" style={{ minWidth: 720 }}>
+            <thead style={{ background: 'var(--bg-surface)' }}>
+              <tr style={{ color: 'var(--text-tertiary)' }}>
+                <Th>Challan</Th>
+                <Th>Date</Th>
+                <Th>Karigar</Th>
+                <Th>GSTIN</Th>
+                <Th>Item</Th>
+                <Th>HSN</Th>
+                <Th align="right">Qty sent</Th>
+                <Th>UoM</Th>
+                <Th>Nature of job</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr
+                  key={r.job_work_order_id + r.challan_no}
+                  style={{ borderTop: '1px solid var(--border-subtle)' }}
+                >
+                  <td className="mono px-3 py-2.5" style={{ fontSize: 12, fontWeight: 500 }}>
+                    {r.challan_no}
+                  </td>
+                  <td
+                    className="num px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-secondary)' }}
+                  >
+                    {r.challan_date}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ fontSize: 13, fontWeight: 500 }}>
+                    {r.karigar_name}
+                  </td>
+                  <td
+                    className="mono px-3 py-2.5"
+                    style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}
+                  >
+                    {r.karigar_gstin ?? '—'}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ fontSize: 13 }}>
+                    {r.item_name}
+                  </td>
+                  <td
+                    className="mono px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-tertiary)' }}
+                  >
+                    {r.hsn ?? '—'}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.qty_sent.toLocaleString('en-IN')}
+                  </td>
+                  <td
+                    className="px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-tertiary)' }}
+                  >
+                    {r.uom.toLowerCase()}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ fontSize: 12.5 }}>
+                    {r.nature_of_job ?? '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </SectionWrapper>
+  );
+}
+
+function Itc04ReceiptsSection({ rows }: { rows: Itc04ReceiveRowVM[] }) {
+  return (
+    <SectionWrapper title="Receipts" count={rows.length}>
+      {rows.length === 0 ? (
+        <EmptyRow message="No receipts in this period." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left" style={{ minWidth: 720 }}>
+            <thead style={{ background: 'var(--bg-surface)' }}>
+              <tr style={{ color: 'var(--text-tertiary)' }}>
+                <Th>Receipt date</Th>
+                <Th>Original challan</Th>
+                <Th>Karigar</Th>
+                <Th>GSTIN</Th>
+                <Th>Item</Th>
+                <Th>HSN</Th>
+                <Th align="right">Qty received</Th>
+                <Th align="right">Wastage</Th>
+                <Th>UoM</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr
+                  key={r.job_work_receipt_id}
+                  style={{ borderTop: '1px solid var(--border-subtle)' }}
+                >
+                  <td
+                    className="num px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-secondary)' }}
+                  >
+                    {r.receipt_date}
+                  </td>
+                  <td className="mono px-3 py-2.5" style={{ fontSize: 12, fontWeight: 500 }}>
+                    {r.original_challan_no}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ fontSize: 13, fontWeight: 500 }}>
+                    {r.karigar_name}
+                  </td>
+                  <td
+                    className="mono px-3 py-2.5"
+                    style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}
+                  >
+                    {r.karigar_gstin ?? '—'}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ fontSize: 13 }}>
+                    {r.item_name}
+                  </td>
+                  <td
+                    className="mono px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-tertiary)' }}
+                  >
+                    {r.hsn ?? '—'}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.qty_received.toLocaleString('en-IN')}
+                  </td>
+                  <td
+                    className="num px-3 py-2.5"
+                    style={{
+                      textAlign: 'right',
+                      color: r.qty_wastage > 0 ? 'var(--warning-text)' : 'var(--text-tertiary)',
+                    }}
+                  >
+                    {r.qty_wastage > 0 ? r.qty_wastage.toLocaleString('en-IN') : '—'}
+                  </td>
+                  <td
+                    className="px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-tertiary)' }}
+                  >
+                    {r.uom.toLowerCase()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </SectionWrapper>
+  );
+}
+
+/**
+ * Format a signed-paise value: positive → bare INR (debit balance);
+ * negative → "Cr" suffix and bracket-style (credit balance), the
+ * Indian-accounting convention. Used by ledger/party statement
+ * balance columns and KPI banners.
+ */
+function formatSignedINR(paise: number): string {
+  if (paise === 0) return formatINRCompact(0);
+  if (paise > 0) return formatINRCompact(paise);
+  return `${formatINRCompact(-paise)} Cr`;
 }

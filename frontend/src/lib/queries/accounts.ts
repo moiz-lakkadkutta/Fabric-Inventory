@@ -185,6 +185,50 @@ export function useBankAccounts() {
   });
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Ledgers — used by TASK-TR-B04 LedgerStatement panel to populate the
+// ledger picker. Returns the minimal projection the picker needs
+// (id / code / name / type). The full /ledgers list endpoint is RLS-
+// scoped to the current org, so the picker only sees the user's own
+// chart of accounts.
+// ──────────────────────────────────────────────────────────────────────
+
+const LEDGERS_KEY = ['accounts', 'ledgers'] as const;
+
+export interface LedgerPickerItem {
+  ledger_id: string;
+  code: string;
+  name: string;
+  ledger_type: string | null;
+}
+
+type BackendLedgerListResponse = components['schemas']['LedgerListResponse'];
+type BackendLedgerResponse = components['schemas']['LedgerResponse'];
+
+function mapLedgerPicker(b: BackendLedgerResponse): LedgerPickerItem {
+  return {
+    ledger_id: b.ledger_id,
+    code: b.code,
+    name: b.name,
+    ledger_type: b.ledger_type,
+  };
+}
+
+async function liveListLedgers(): Promise<LedgerPickerItem[]> {
+  // 200 is enough for typical CoAs (system seeds ~30 rows; even a busy
+  // firm rarely exceeds ~100 ledgers). If we ever need pagination here
+  // we'll switch to typeahead.
+  const data = await api<BackendLedgerListResponse>('/ledgers?limit=200&is_active=true');
+  return data.items.map(mapLedgerPicker);
+}
+
+export function useLedgers() {
+  return useQuery({
+    queryKey: LEDGERS_KEY,
+    queryFn: () => (IS_LIVE ? liveListLedgers() : fakeFetch<LedgerPickerItem[]>([])),
+  });
+}
+
 export interface CreateBankAccountInput {
   firmId: string;
   bankName: string;
