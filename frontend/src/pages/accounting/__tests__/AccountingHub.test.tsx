@@ -75,7 +75,7 @@ describe('AccountingHub', () => {
     expect(screen.getByLabelText(/ifsc/i)).toBeInTheDocument();
   });
 
-  it('"+ New voucher" still opens a coming-soon (v2 — journal vouchers)', async () => {
+  it('"+ New voucher" opens the journal voucher dialog (TASK-TR-C01)', async () => {
     renderAccounts();
     await waitFor(() => expect(screen.getByText('RC/25-26/0001')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('tab', { name: /vouchers/i }));
@@ -83,6 +83,10 @@ describe('AccountingHub', () => {
     await waitFor(() =>
       expect(screen.getByRole('dialog', { name: /new journal voucher/i })).toBeInTheDocument(),
     );
-    expect(screen.getByText(/v2 — journal vouchers/i)).toBeInTheDocument();
+    // Defaults: two empty lines (one DR, one CR) and the balance pill
+    // shows the Difference indicator before any amounts are entered.
+    expect(screen.getByLabelText(/line 1 ledger/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/line 2 ledger/i)).toBeInTheDocument();
+    expect(screen.getByText(/difference/i)).toBeInTheDocument();
   });
 });

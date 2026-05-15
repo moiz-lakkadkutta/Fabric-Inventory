@@ -1,26 +1,27 @@
-"""Accounting / GL postings (T-INT-4 CRIT-1).
+"""Accounting / GL postings (T-INT-4 CRIT-1 + TASK-TR-C01).
 
-Single entry-point so far: `post_invoice_to_gl(invoice)` creates a
-balanced Voucher (DR Sundry Debtors / CR Sales Revenue / CR GST Payable)
-keyed off the invoice's lifecycle data. Called from
-`sales_service.finalize_invoice` once the lifecycle flips DRAFT →
-FINALIZED, so the trial balance reflects the sale immediately.
+Entry points:
+- `post_invoice_to_gl(invoice)` (T-INT-4 CRIT-1) — auto-derived
+  voucher from a finalized sales invoice (DR AR / CR Sales / CR GST).
+- `post_journal_voucher(...)` (TASK-TR-C01) — user-authored balanced
+  bundle, posted via the manual JV dialog in AccountingHub.
 
 Design notes:
-- One voucher per invoice, three lines (DR AR / CR Sales / CR GST).
-  CGST / SGST / IGST split is collapsed into a single GST Payable
-  line for now — a future refinement can split by tax_type once
-  separate ledgers (output CGST, output SGST, output IGST) exist.
-- Voucher series matches the invoice series; voucher numbers are
-  allocated independently per (org, firm, voucher_type, series).
-- `total_debit == total_credit` invariant is asserted before flush;
-  if it ever fails, we want a loud test crash, not a silent ₹1 hole.
+- One voucher per invoice or per JV; lines hang off ``voucher.lines``.
+- Voucher numbers are allocated independently per
+  (org, firm, voucher_type, series). Manual JVs use series ``"JV"``.
+- `total_debit == total_credit` invariant is asserted before AND after
+  flush — if it ever fails, we want a loud crash, not a silent ₹1 hole.
+- All ledger references are revalidated server-side against
+  (org_id, firm_id-or-null) so a hand-crafted payload can't sneak in a
+  cross-firm ledger even if the RLS GUC was misset.
 """
 
 from __future__ import annotations
 
 import datetime
 import uuid
+from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -29,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.exceptions import AppValidationError
 from app.models import Ledger, Party, SalesInvoice, Voucher, VoucherLine
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
+from app.service import audit_service
 
 # Ledger codes seeded by `seed_service.seed_coa`. Don't change without
 # updating the seed in lockstep — the COA is the contract.
@@ -203,4 +205,216 @@ def post_invoice_to_gl(
     return voucher
 
 
-__all__ = ["post_invoice_to_gl"]
+# ──────────────────────────────────────────────────────────────────────
+# Manual journal voucher posting (TASK-TR-C01).
+#
+# A "journal voucher" is a user-authored balanced bundle: at least two
+# DR/CR splits against existing ledgers, total DR == total CR. Unlike
+# `post_invoice_to_gl`, none of the ledgers are derived — every line's
+# ledger is supplied by the caller. Defense-in-depth: every ledger is
+# revalidated against (org_id, firm_id OR NULL-firm) so a misset GUC or
+# a hostile payload can't reference a ledger that belongs to a
+# different firm in the same org.
+#
+# Series is always ``"JV"`` (one shared running number per firm); a
+# future refinement can let firms configure their own series prefix.
+# ──────────────────────────────────────────────────────────────────────
+
+_JOURNAL_SERIES = "JV"
+
+
+@dataclass(frozen=True)
+class JournalLineInput:
+    """One DR or CR split for a manual journal voucher."""
+
+    ledger_id: uuid.UUID
+    line_type: JournalLineType
+    amount: Decimal
+    description: str | None = None
+
+
+def _validate_journal_lines(lines: list[JournalLineInput]) -> tuple[Decimal, Decimal]:
+    if len(lines) < 2:
+        raise AppValidationError(
+            "A journal voucher must have at least 2 lines.",
+        )
+    debits = Decimal(0)
+    credits = Decimal(0)
+    for idx, line in enumerate(lines, start=1):
+        amount = Decimal(line.amount)
+        if amount <= 0:
+            raise AppValidationError(
+                f"Line {idx}: amount must be positive (got {amount}).",
+            )
+        if line.line_type == JournalLineType.DR:
+            debits += amount
+        elif line.line_type == JournalLineType.CR:
+            credits += amount
+        else:  # pragma: no cover — exhaustive over the enum.
+            raise AppValidationError(f"Line {idx}: unknown line_type {line.line_type!r}.")
+    if debits != credits:
+        raise AppValidationError(
+            f"Journal voucher is not balanced: DR {debits} vs CR {credits}.",
+        )
+    return debits, credits
+
+
+def _resolve_journal_ledgers(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    ledger_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, Ledger]:
+    """Defense-in-depth: confirm every ledger belongs to this org and is
+    either firm-agnostic (NULL firm) or scoped to the same firm. Cross-
+    firm references are rejected even though RLS already filters by org.
+    """
+    if not ledger_ids:
+        return {}
+    rows = list(
+        session.execute(
+            select(Ledger).where(
+                Ledger.org_id == org_id,
+                Ledger.ledger_id.in_(set(ledger_ids)),
+                Ledger.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    by_id = {row.ledger_id: row for row in rows}
+    for ledger_id in ledger_ids:
+        ledger = by_id.get(ledger_id)
+        if ledger is None:
+            raise AppValidationError(
+                f"Unknown ledger {ledger_id} for this org.",
+            )
+        if ledger.firm_id is not None and ledger.firm_id != firm_id:
+            raise AppValidationError(
+                f"Ledger {ledger_id} belongs to a different firm; "
+                "journal voucher lines must stay within the active firm.",
+            )
+    return by_id
+
+
+def post_journal_voucher(
+    *,
+    session: Session,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    voucher_date: datetime.date,
+    narration: str | None,
+    lines: list[JournalLineInput],
+    created_by: uuid.UUID | None,
+) -> Voucher:
+    """Post a manual balanced journal voucher.
+
+    Validations (in order):
+      1. >= 2 lines.
+      2. Every line amount > 0.
+      3. Σ DR == Σ CR.
+      4. Every ledger belongs to (org_id, firm_id or NULL-firm).
+      5. Post-flush re-query: voucher_line rows still balance.
+
+    Returns the POSTED voucher with relationship `lines` already
+    populated (via `session.refresh`).
+    """
+    debits, credits = _validate_journal_lines(lines)
+    _resolve_journal_ledgers(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        ledger_ids=[line.ledger_id for line in lines],
+    )
+
+    voucher_number = _allocate_voucher_number(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        voucher_type=VoucherType.JOURNAL,
+        series=_JOURNAL_SERIES,
+    )
+
+    voucher = Voucher(
+        org_id=org_id,
+        firm_id=firm_id,
+        voucher_type=VoucherType.JOURNAL,
+        series=_JOURNAL_SERIES,
+        number=voucher_number,
+        voucher_date=voucher_date,
+        reference_type="journal_voucher",
+        narration=narration,
+        status=VoucherStatus.POSTED,
+        total_debit=debits,
+        total_credit=credits,
+        created_by=created_by,
+    )
+    session.add(voucher)
+    session.flush()
+
+    for seq, line in enumerate(lines, start=1):
+        session.add(
+            VoucherLine(
+                org_id=org_id,
+                voucher_id=voucher.voucher_id,
+                ledger_id=line.ledger_id,
+                line_type=line.line_type,
+                amount=Decimal(line.amount),
+                description=line.description,
+                sequence=seq,
+            )
+        )
+    session.flush()
+
+    # Defense-in-depth: re-query the persisted lines and re-verify the
+    # invariant. Same posture as post_invoice_to_gl.
+    persisted = list(
+        session.execute(
+            select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id)
+        ).scalars()
+    )
+    persisted_drs = sum(
+        (Decimal(line.amount) for line in persisted if line.line_type == JournalLineType.DR),
+        Decimal(0),
+    )
+    persisted_crs = sum(
+        (Decimal(line.amount) for line in persisted if line.line_type == JournalLineType.CR),
+        Decimal(0),
+    )
+    if persisted_drs != persisted_crs:
+        raise AppValidationError(
+            f"Voucher {voucher.voucher_id} persisted unbalanced: "
+            f"DR={persisted_drs}, CR={persisted_crs}",
+        )
+
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        user_id=created_by,
+        entity_type="accounting.voucher",
+        entity_id=voucher.voucher_id,
+        action="post_journal",
+        changes={
+            "after": {
+                "voucher_id": str(voucher.voucher_id),
+                "voucher_number": f"{_JOURNAL_SERIES}/{voucher_number}",
+                "voucher_type": VoucherType.JOURNAL.value,
+                "total_debit": str(debits),
+                "total_credit": str(credits),
+                "lines": [
+                    {
+                        "ledger_id": str(line.ledger_id),
+                        "line_type": line.line_type.value,
+                        "amount": str(line.amount),
+                        "description": line.description,
+                    }
+                    for line in lines
+                ],
+            }
+        },
+    )
+    session.flush()
+    return voucher
+
+
+__all__ = ["JournalLineInput", "post_invoice_to_gl", "post_journal_voucher"]

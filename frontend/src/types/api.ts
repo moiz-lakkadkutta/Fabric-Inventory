@@ -1719,6 +1719,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/vouchers/journal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Post a manual balanced journal voucher (TASK-TR-C01) */
+        post: operations["post_journal_voucher_vouchers_journal_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3558,6 +3575,111 @@ export interface components {
              * Format: date
              */
             receipt_date: string;
+        };
+        /** JournalLineInput */
+        JournalLineInput: {
+            /** Amount */
+            amount: number | string;
+            /** Description */
+            description?: string | null;
+            /**
+             * Ledger Id
+             * Format: uuid
+             */
+            ledger_id: string;
+            /**
+             * Line Type
+             * @enum {string}
+             */
+            line_type: "DR" | "CR";
+        };
+        /** JournalVoucherCreateRequest */
+        JournalVoucherCreateRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Lines */
+            lines: components["schemas"]["JournalLineInput"][];
+            /** Narration */
+            narration?: string | null;
+            /**
+             * Voucher Date
+             * Format: date
+             */
+            voucher_date: string;
+        };
+        /** JournalVoucherLineResponse */
+        JournalVoucherLineResponse: {
+            /** Amount */
+            amount: string;
+            /** Description */
+            description: string | null;
+            /**
+             * Ledger Id
+             * Format: uuid
+             */
+            ledger_id: string;
+            /**
+             * Line Type
+             * @enum {string}
+             */
+            line_type: "DR" | "CR";
+            /** Sequence */
+            sequence: number | null;
+            /**
+             * Voucher Line Id
+             * Format: uuid
+             */
+            voucher_line_id: string;
+        };
+        /** JournalVoucherResponse */
+        JournalVoucherResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Lines */
+            lines: components["schemas"]["JournalVoucherLineResponse"][];
+            /** Narration */
+            narration: string | null;
+            /** Number */
+            number: string;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /** Series */
+            series: string;
+            /** Status */
+            status: string | null;
+            /** Total Credit */
+            total_credit: string;
+            /** Total Debit */
+            total_debit: string;
+            /**
+             * Voucher Date
+             * Format: date
+             */
+            voucher_date: string;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
+            /**
+             * Voucher Type
+             * @constant
+             */
+            voucher_type: "JOURNAL";
         };
         /** KpiListResponse */
         KpiListResponse: {
@@ -10082,6 +10204,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VoucherListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_journal_voucher_vouchers_journal_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JournalVoucherCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JournalVoucherResponse"];
                 };
             };
             /** @description Validation Error */

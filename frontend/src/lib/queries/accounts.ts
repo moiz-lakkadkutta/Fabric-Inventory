@@ -4,6 +4,7 @@ import { api } from '@/lib/api/client';
 import {
   type BackendBankAccount,
   type BackendCheque,
+  type BackendJournalVoucher,
   type BackendPartyListItem,
   type BackendVoucherListItem,
   createBankAccount,
@@ -14,6 +15,7 @@ import {
   listCoaGroups,
   listCustomerParties,
   listVouchers,
+  postJournalVoucher,
 } from '@/lib/api/banking';
 import { IS_LIVE } from '@/lib/api/mode';
 import { fakeFetch } from '@/lib/mock/api';
@@ -526,6 +528,95 @@ export function usePostReceipt() {
       // Invalidate vouchers so the new receipt voucher shows in the
       // Vouchers tab without a manual refresh.
       qc.invalidateQueries({ queryKey: VOUCHERS_KEY });
+    },
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Manual journal voucher (TASK-TR-C01)
+//
+// Posts a balanced bundle of DR/CR lines as a JOURNAL voucher. Invalidates
+// the vouchers list + the TB report so AccountingHub and the Reports tab
+// refresh in lock-step. Amount input is in paise (UI does the rupees math),
+// stringified to Decimal-on-the-wire here so we never round-trip a float.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface JournalLineDraft {
+  ledger_id: string;
+  line_type: 'DR' | 'CR';
+  amount_paise: number;
+  description?: string;
+}
+
+export interface CreateJournalVoucherInput {
+  firmId: string;
+  voucherDate: string; // YYYY-MM-DD
+  narration?: string;
+  lines: JournalLineDraft[];
+  idempotencyKey: string;
+}
+
+async function liveCreateJournalVoucher(
+  input: CreateJournalVoucherInput,
+): Promise<BackendJournalVoucher> {
+  return await postJournalVoucher(
+    {
+      firm_id: input.firmId,
+      voucher_date: input.voucherDate,
+      narration: input.narration ?? null,
+      lines: input.lines.map((line) => ({
+        ledger_id: line.ledger_id,
+        line_type: line.line_type,
+        amount: paiseToRupees(line.amount_paise),
+        description: line.description ?? null,
+      })),
+    },
+    input.idempotencyKey,
+  );
+}
+
+export function useCreateJournalVoucher() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateJournalVoucherInput): Promise<BackendJournalVoucher> => {
+      if (IS_LIVE) return liveCreateJournalVoucher(input);
+      // Mock branch: build a synthetic voucher so the click-dummy can
+      // exercise the dialog without a real backend. Mirrors the mock
+      // path on usePostReceipt.
+      return fakeFetch(() => {
+        const totalPaise = input.lines
+          .filter((line) => line.line_type === 'DR')
+          .reduce((acc, line) => acc + line.amount_paise, 0);
+        return {
+          voucher_id: `jv_${Date.now()}`,
+          org_id: 'mock-org',
+          firm_id: input.firmId,
+          voucher_type: 'JOURNAL' as const,
+          series: 'JV',
+          number: String(Date.now() % 9999).padStart(4, '0'),
+          voucher_date: input.voucherDate,
+          narration: input.narration ?? null,
+          status: 'POSTED',
+          total_debit: paiseToRupees(totalPaise),
+          total_credit: paiseToRupees(totalPaise),
+          lines: input.lines.map((line, idx) => ({
+            voucher_line_id: `jvl_${Date.now()}_${idx}`,
+            ledger_id: line.ledger_id,
+            line_type: line.line_type,
+            amount: paiseToRupees(line.amount_paise),
+            description: line.description ?? null,
+            sequence: idx + 1,
+          })),
+          created_at: new Date().toISOString(),
+        };
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: VOUCHERS_KEY });
+      // TB / reports cache key is owned by the reports module; invalidate
+      // both shapes used today so any open report tab re-fetches.
+      qc.invalidateQueries({ queryKey: ['accounting', 'tb'] });
+      qc.invalidateQueries({ queryKey: ['reports'] });
     },
   });
 }

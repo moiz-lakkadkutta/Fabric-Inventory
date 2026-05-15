@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query, Response, status
@@ -23,8 +24,13 @@ from sqlalchemy import select
 
 from app.dependencies import SyncDBSession, require_permission
 from app.exceptions import PermissionDeniedError
-from app.models.accounting import Voucher, VoucherType
+from app.models.accounting import JournalLineType, Voucher, VoucherLine, VoucherType
 from app.models.banking import BankAccount, Cheque
+from app.schemas.accounting import (
+    JournalVoucherCreateRequest,
+    JournalVoucherLineResponse,
+    JournalVoucherResponse,
+)
 from app.schemas.banking import (
     BankAccountCreateRequest,
     BankAccountListResponse,
@@ -36,7 +42,7 @@ from app.schemas.banking import (
     VoucherListItem,
     VoucherListResponse,
 )
-from app.service import banking_service
+from app.service import accounting_service, banking_service
 from app.service.export_builders import (
     BANK_ACCOUNT_COLUMNS,
     CHEQUE_COLUMNS,
@@ -455,6 +461,99 @@ def list_vouchers(
         offset=offset,
         count=len(rows),
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Manual journal voucher endpoint (TASK-TR-C01)
+#
+# POST /vouchers/journal — posts a balanced bundle of DR/CR lines as a
+# JOURNAL voucher. Permission gate: accounting.voucher.post. Routes to
+# `accounting_service.post_journal_voucher`; the service revalidates
+# the ledger refs and the balanced-bundle invariant.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _to_journal_response(voucher: Voucher, lines: list[VoucherLine]) -> JournalVoucherResponse:
+    """Serialise a posted JV + its lines into the API response shape."""
+    return JournalVoucherResponse(
+        voucher_id=voucher.voucher_id,
+        org_id=voucher.org_id,
+        firm_id=voucher.firm_id,
+        voucher_type="JOURNAL",
+        series=voucher.series,
+        number=voucher.number,
+        voucher_date=voucher.voucher_date,
+        narration=voucher.narration,
+        status=voucher.status.value if voucher.status is not None else None,
+        total_debit=Decimal(voucher.total_debit or 0),
+        total_credit=Decimal(voucher.total_credit or 0),
+        lines=[
+            JournalVoucherLineResponse(
+                voucher_line_id=line.voucher_line_id,
+                ledger_id=line.ledger_id,
+                line_type=("DR" if line.line_type == JournalLineType.DR else "CR"),
+                amount=line.amount,
+                description=line.description,
+                sequence=line.sequence,
+            )
+            for line in sorted(lines, key=lambda li: (li.sequence or 0, li.created_at))
+        ],
+        created_at=voucher.created_at,
+    )
+
+
+@_voucher_router.post(
+    "/journal",
+    response_model=JournalVoucherResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Post a manual balanced journal voucher (TASK-TR-C01)",
+)
+def post_journal_voucher(
+    body: JournalVoucherCreateRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("accounting.voucher.post"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> JournalVoucherResponse:
+    if current_user.firm_id is None:
+        # JVs are firm-scoped; mirror the receipts / vouchers list posture.
+        raise PermissionDeniedError(
+            "No active firm in this session — switch to a firm first.",
+            title="No active firm",
+        )
+    # The wire `firm_id` must match the active firm in the JWT — we
+    # don't want a JV to silently land in a different firm because the
+    # caller passed a hand-crafted body. Cross-firm reassignment is
+    # explicit (switch-firm), not a per-request side door.
+    if body.firm_id != current_user.firm_id:
+        raise PermissionDeniedError(
+            "firm_id in request body does not match the active firm in this session.",
+            title="Firm mismatch",
+        )
+
+    lines = [
+        accounting_service.JournalLineInput(
+            ledger_id=line.ledger_id,
+            line_type=(JournalLineType.DR if line.line_type == "DR" else JournalLineType.CR),
+            amount=line.amount,
+            description=line.description,
+        )
+        for line in body.lines
+    ]
+    voucher = accounting_service.post_journal_voucher(
+        session=db,
+        org_id=current_user.org_id,
+        firm_id=current_user.firm_id,
+        voucher_date=body.voucher_date,
+        narration=body.narration,
+        lines=lines,
+        created_by=current_user.user_id,
+    )
+    persisted_lines = list(
+        db.execute(
+            select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id)
+        ).scalars()
+    )
+    return _to_journal_response(voucher, persisted_lines)
 
 
 # Mount sub-routers onto the parent router.
