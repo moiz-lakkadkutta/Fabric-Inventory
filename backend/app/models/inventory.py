@@ -234,9 +234,13 @@ class StockLedger(Base):
     # here for ORM↔DDL drift parity since the DDL adds them on every install.
     from_stage: Mapped[StockStage | None] = mapped_column(_STOCK_STAGE_PG, nullable=True)
     to_stage: Mapped[StockStage | None] = mapped_column(_STOCK_STAGE_PG, nullable=True)
-    # FK declared in DDL; not in ORM since `mo_operation` is Phase-3
-    # (not modeled until manufacturing wave). The DB still enforces it.
-    mo_operation_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    # FK to `mo_operation` (modeled in manufacturing.py as of TASK-TR-A01).
+    # DDL: `ON DELETE SET NULL`.
+    mo_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("mo_operation.mo_operation_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
