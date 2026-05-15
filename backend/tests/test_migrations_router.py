@@ -16,14 +16,22 @@ from __future__ import annotations
 
 import io
 import uuid
+from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import openpyxl
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
+
+from app.service.migration import (
+    IntermediateOpeningBalance,
+    IntermediateParty,
+    MigrationValidationReport,
+)
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "vyapar-sample.xlsx"
 
@@ -582,9 +590,7 @@ class _DivergentOrphanAdapter:
     was parked).
     """
 
-    def extract_parties(self, source: object) -> object:
-        from app.service.migration import IntermediateParty
-
+    def extract_parties(self, source: Any) -> Iterable[IntermediateParty]:
         return iter(
             (
                 IntermediateParty(
@@ -596,9 +602,7 @@ class _DivergentOrphanAdapter:
             )
         )
 
-    def extract_opening_balances(self, source: object) -> object:
-        from app.service.migration import IntermediateOpeningBalance
-
+    def extract_opening_balances(self, source: Any) -> Iterable[IntermediateOpeningBalance]:
         return iter(
             (
                 # Legitimate pair on the known party — balanced.
@@ -629,9 +633,7 @@ class _DivergentOrphanAdapter:
             )
         )
 
-    def validate(self, source: object) -> object:
-        from app.service.migration import MigrationValidationReport
-
+    def validate(self, source: Any) -> MigrationValidationReport:
         return MigrationValidationReport(
             total_parties=1,
             total_opening_balances=3,
