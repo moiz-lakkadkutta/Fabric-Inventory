@@ -164,7 +164,6 @@ def _create_routing(
         "firm_id": owner["firm_id"],
         "design_id": design_id,
         "code": code or f"R-{uuid.uuid4().hex[:6]}",
-        "name": "test routing",
         "edges": edges,
     }
     resp = client.post("/routings", headers=_auth(owner["access_token"]), json=payload)

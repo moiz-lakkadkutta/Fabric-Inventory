@@ -182,14 +182,22 @@ def _payload(
     firm_id: str,
     design_id: str,
     code: str,
-    name: str,
+    name: str | None = None,
     edges: list[dict[str, object]],
 ) -> dict[str, object]:
+    """Build a routing-create request body.
+
+    A04 hardening (M2): ``name`` was dropped from ``RoutingCreateRequest``
+    because it was never persisted on the routing row. The keyword arg is
+    kept here purely for back-compat with the existing call sites that
+    still pass a human-readable label; the value is intentionally not
+    forwarded to the request body.
+    """
+    _ = name  # accepted for back-compat; intentionally not sent
     return {
         "firm_id": firm_id,
         "design_id": design_id,
         "code": code,
-        "name": name,
         "edges": edges,
     }
 
@@ -938,3 +946,335 @@ def test_delete_routing_refuses_when_active_mo_references_it(
     resp = http_client.delete(f"/routings/{rid}", headers=_auth(me["access_token"]))
     assert resp.status_code == 422, resp.text
     assert "in use" in resp.json()["detail"].lower()
+
+
+def test_update_routing_edges_rejects_when_referenced_by_active_mo(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A04 hardening (M1): ``update_routing_edges`` must mirror
+    ``delete_routing``'s in-use guard — a routing referenced by a
+    non-CLOSED, non-deleted MO is frozen. Edits routed at it return 422
+    with a clear "active manufacturing order" message.
+    """
+    from datetime import date
+
+    from app.models.manufacturing import ManufacturingOrder, MoStatus
+
+    me, design_id, ops = _seed_routing_world(http_client)
+    a, b, c, _ = ops
+    created = http_client.post(
+        "/routings",
+        headers=_auth(me["access_token"]),
+        json=_payload(
+            firm_id=me["firm_id"],
+            design_id=design_id,
+            code=f"R-{uuid.uuid4().hex[:6]}",
+            name="in-use-update",
+            edges=[
+                {"from_operation_id": a, "to_operation_id": b, "edge_type": "FINISH_TO_START"},
+            ],
+        ),
+    ).json()
+    rid = uuid.UUID(created["routing_id"])
+
+    fin = http_client.post(
+        "/items",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": f"F-{uuid.uuid4().hex[:6]}",
+            "name": "fin",
+            "item_type": "FINISHED",
+            "primary_uom": "PIECE",
+        },
+    ).json()
+
+    org_id = uuid.UUID(me["org_id"])
+    firm_id = uuid.UUID(me["firm_id"])
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        mo = ManufacturingOrder(
+            org_id=org_id,
+            firm_id=firm_id,
+            series="MO",
+            number=uuid.uuid4().hex[:8],
+            design_id=uuid.UUID(design_id),
+            finished_item_id=uuid.UUID(fin["item_id"]),
+            routing_id=rid,
+            status=MoStatus.RELEASED,
+            mo_date=date.today(),
+            planned_qty=10,
+        )
+        session.add(mo)
+        session.commit()
+
+    new_edges = [
+        {"from_operation_id": a, "to_operation_id": b, "edge_type": "FINISH_TO_START"},
+        {"from_operation_id": b, "to_operation_id": c, "edge_type": "FINISH_TO_START"},
+    ]
+    resp = http_client.patch(
+        f"/routings/{rid}/edges",
+        headers=_auth(me["access_token"]),
+        json={"edges": new_edges},
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "active manufacturing order" in body["detail"].lower()
+
+
+def test_update_routing_edges_succeeds_when_only_closed_mos_reference_it(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A04 hardening (M1): CLOSED MOs are historic; they do NOT block
+    routing edits. Drive the MO through the full A05 lifecycle
+    (DRAFT → RELEASED → IN_PROGRESS → COMPLETED → CLOSED) via the
+    ``mo_service`` methods, then verify the PATCH succeeds.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from app.service import mo_service
+
+    me, design_id, ops = _seed_routing_world(http_client)
+    a, b, c, _ = ops
+
+    # Build the routing first (single edge — A05 op-order is deterministic).
+    routing_body = http_client.post(
+        "/routings",
+        headers=_auth(me["access_token"]),
+        json=_payload(
+            firm_id=me["firm_id"],
+            design_id=design_id,
+            code=f"R-{uuid.uuid4().hex[:6]}",
+            name="closed-mo-ok",
+            edges=[
+                {"from_operation_id": a, "to_operation_id": b, "edge_type": "FINISH_TO_START"},
+            ],
+        ),
+    ).json()
+    rid = uuid.UUID(routing_body["routing_id"])
+
+    # Now seed enough masters for an MO via ``mo_service.create_mo``:
+    # finished item + raw item + active BOM.
+    finished = http_client.post(
+        "/items",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": f"F-{uuid.uuid4().hex[:6]}",
+            "name": "fin",
+            "item_type": "FINISHED",
+            "primary_uom": "PIECE",
+        },
+    ).json()
+    raw = http_client.post(
+        "/items",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": f"R-{uuid.uuid4().hex[:6]}",
+            "name": "raw",
+            "item_type": "RAW",
+            "primary_uom": "METER",
+        },
+    ).json()
+    bom = http_client.post(
+        "/boms",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "design_id": design_id,
+            "finished_item_id": finished["item_id"],
+            "lines": [
+                {
+                    "item_id": raw["item_id"],
+                    "qty_required": "1.0000",
+                    "uom": "METER",
+                    "is_optional": False,
+                },
+            ],
+        },
+    ).json()
+
+    org_id = uuid.UUID(me["org_id"])
+    firm_id = uuid.UUID(me["firm_id"])
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        mo = mo_service.create_mo(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            design_id=uuid.UUID(design_id),
+            finished_item_id=uuid.UUID(finished["item_id"]),
+            qty_to_produce=Decimal("5"),
+            bom_id=uuid.UUID(bom["bom_id"]),
+            routing_id=rid,
+            planned_start_date=date.today(),
+        )
+        mo_id = mo.manufacturing_order_id
+        # Drive through the full lifecycle so the MO ends up CLOSED.
+        mo_service.release_mo(session, org_id=org_id, mo_id=mo_id)
+        mo_service.start_mo(session, org_id=org_id, mo_id=mo_id)
+        mo_service.complete_mo(session, org_id=org_id, mo_id=mo_id)
+        mo_service.close_mo(session, org_id=org_id, mo_id=mo_id)
+        session.commit()
+
+    # Now the PATCH should succeed — the only MO referencing this routing
+    # is CLOSED, which the in-use guard treats as historic.
+    new_edges = [
+        {"from_operation_id": a, "to_operation_id": b, "edge_type": "FINISH_TO_START"},
+        {"from_operation_id": b, "to_operation_id": c, "edge_type": "FINISH_TO_START"},
+    ]
+    resp = http_client.patch(
+        f"/routings/{rid}/edges",
+        headers=_auth(me["access_token"]),
+        json={"edges": new_edges},
+    )
+    assert resp.status_code == 200, resp.text
+    assert len(resp.json()["edges"]) == 2
+
+
+# ──────────────────────────────────────────────────────────────────────
+# IntegrityError narrowing (A04 hardening M3)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_routing_does_not_swallow_unrelated_integrity_errors(
+    http_client: TestClient,
+    sync_engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A04 hardening (M3): the IntegrityError catch on ``create_routing``
+    must only translate the ``(firm_id, code, version_number)`` unique
+    violation. Any other constraint failure (FK, NOT NULL, a different
+    unique) must bubble unchanged — relabelling it as a "version race"
+    lies to the caller and loses the original cause.
+
+    Driven at the service layer (no HTTP), so the unrelated
+    ``IntegrityError`` raises straight out of ``create_routing`` and we
+    can assert on the actual exception class + message instead of
+    threading it through the global 500 handler (which would swallow the
+    cause). The matching test
+    ``test_create_routing_translates_unique_violation_to_422`` already
+    pins the *positive* translation path through HTTP.
+    """
+    from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+    from app.exceptions import AppValidationError
+    from app.models.manufacturing import Routing as _RoutingModel
+    from app.models.manufacturing import RoutingEdgeType
+    from app.service import routing_service
+    from app.service.routing_service import RoutingEdgeInput
+
+    me, design_id, ops = _seed_routing_world(http_client)
+    a, b, *_ = ops
+
+    org_id = uuid.UUID(me["org_id"])
+    firm_id = uuid.UUID(me["firm_id"])
+    raised = {"count": 0}
+    real_flush = OrmSession.flush
+
+    def fake_flush(self: OrmSession, objects: object = None) -> None:
+        # Intercept only the routing INSERT flush — earlier validation
+        # flushes for design / op lookups must continue to work.
+        if raised["count"] == 0 and any(isinstance(o, _RoutingModel) for o in self.new):
+            raised["count"] += 1
+            raise SAIntegrityError(
+                statement="INSERT INTO routing ...",
+                params=None,
+                orig=Exception(
+                    "duplicate key value violates unique constraint "
+                    '"some_other_table_unique_key"\n'
+                    "DETAIL: Key (id)=(...) already exists."
+                ),
+            )
+        real_flush(self, objects)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(OrmSession, "flush", fake_flush)
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        with pytest.raises(SAIntegrityError) as excinfo:
+            routing_service.create_routing(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                design_id=uuid.UUID(design_id),
+                code=f"R-{uuid.uuid4().hex[:6]}",
+                edges=[
+                    RoutingEdgeInput(
+                        from_operation_id=uuid.UUID(a),
+                        to_operation_id=uuid.UUID(b),
+                        edge_type=RoutingEdgeType.FINISH_TO_START,
+                    ),
+                ],
+            )
+
+    assert raised["count"] == 1, "fake_flush did not fire — test is invalid"
+    # The raw IntegrityError must surface — NOT a translated
+    # AppValidationError carrying the "version race" retry message.
+    assert "some_other_table_unique_key" in str(excinfo.value.orig)
+    assert not isinstance(excinfo.value, AppValidationError)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Threshold boundary tests (A04 hardening M4)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_routing_accepts_threshold_pct_100(http_client: TestClient) -> None:
+    """A04 hardening (M4): ``threshold_pct == 100`` is on the boundary of
+    the ``> 100`` rejection rule. The validator uses strict ``>`` so 100
+    is accepted (semantically: "flow forward when the upstream operation
+    is 100% done" = effectively FINISH_TO_START, but that's the user's
+    call)."""
+    me, design_id, ops = _seed_routing_world(http_client)
+    a, b, *_ = ops
+    resp = http_client.post(
+        "/routings",
+        headers=_auth(me["access_token"]),
+        json=_payload(
+            firm_id=me["firm_id"],
+            design_id=design_id,
+            code=f"R-{uuid.uuid4().hex[:6]}",
+            name="pct-exactly-100",
+            edges=[
+                {
+                    "from_operation_id": a,
+                    "to_operation_id": b,
+                    "edge_type": "PARTIAL_FINISH_TO_START",
+                    "threshold_pct": "100.00",
+                },
+            ],
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+    edge = resp.json()["edges"][0]
+    assert edge["threshold_pct"] == "100.00"
+
+
+def test_create_routing_rejects_threshold_qty_zero(http_client: TestClient) -> None:
+    """A04 hardening (M4): ``threshold_qty == 0`` is on the boundary of
+    the ``<= 0`` rejection rule. The validator uses ``<= 0`` so zero is
+    rejected (a "release when zero done" gate is meaningless — promote
+    to FINISH_TO_START / START_TO_START if that's the intent)."""
+    me, design_id, ops = _seed_routing_world(http_client)
+    a, b, *_ = ops
+    resp = http_client.post(
+        "/routings",
+        headers=_auth(me["access_token"]),
+        json=_payload(
+            firm_id=me["firm_id"],
+            design_id=design_id,
+            code=f"R-{uuid.uuid4().hex[:6]}",
+            name="qty-zero",
+            edges=[
+                {
+                    "from_operation_id": a,
+                    "to_operation_id": b,
+                    "edge_type": "PARTIAL_FINISH_TO_START",
+                    "threshold_qty": "0.0000",
+                },
+            ],
+        ),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "threshold_qty" in resp.json()["detail"].lower()

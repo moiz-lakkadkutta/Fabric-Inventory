@@ -252,7 +252,12 @@ class RoutingCreateRequest(BaseModel):
     firm_id: uuid.UUID
     design_id: uuid.UUID
     code: str = Field(min_length=1, max_length=50)
-    name: str = Field(min_length=1, max_length=255)
+    # A04 hardening (M2): ``name`` was previously declared here but never
+    # persisted (no column on ``routing``) and never returned in
+    # ``RoutingResponse`` — it leaked only into the audit-log payload.
+    # ``mo_service.create_mo`` (A05) does not reference ``routing.name``
+    # either, so the field had no live consumer. Dropped per the hardening
+    # spec; ``code`` remains the firm-scoped identifier.
     # ``max_length=500`` is a sane upper bound for an operation DAG in
     # this domain (cut+stitch+finish+QC variations rarely exceed a few
     # dozen edges). Acts as a cheap DoS guard.

@@ -297,7 +297,6 @@ def create_routing(
     firm_id: uuid.UUID,
     design_id: uuid.UUID,
     code: str,
-    name: str,
     edges: list[RoutingEdgeInput],
     created_by: uuid.UUID | None = None,
 ) -> Routing:
@@ -305,7 +304,7 @@ def create_routing(
 
     Validates (defense-in-depth on top of RLS + DB unique):
 
-      - ``code`` / ``name`` non-empty.
+      - ``code`` non-empty.
       - ``design_id`` belongs to ``(org, firm)`` — composition against
         ``manufacturing_masters_service.get_design``.
       - Edges form a DAG. Self-loop, cycle, duplicate-pair, and
@@ -316,11 +315,15 @@ def create_routing(
     ``(org, firm, code)`` BEFORE computing the next version number so
     concurrent first-creators are serialised. Catches IntegrityError on
     flush as belt-and-braces and surfaces a clean 422 retry message.
+
+    A04 hardening (M2): the ``name`` argument that used to live on this
+    signature was dropped — the ``routing`` table has no ``name``
+    column today and the value was only ever leaking into the audit-log
+    payload. Drop the field at the boundary; ``code`` remains the
+    firm-scoped identifier.
     """
     if not code:
         raise AppValidationError("Routing code is required")
-    if not name:
-        raise AppValidationError("Routing name is required")
 
     design = manufacturing_masters_service.get_design(session, org_id=org_id, design_id=design_id)
     if design.firm_id != firm_id:
@@ -377,9 +380,19 @@ def create_routing(
     try:
         session.flush()
     except IntegrityError as exc:
-        raise AppValidationError(
-            "Routing version race detected — please retry the request."
-        ) from exc
+        # A04 hardening (M3): only translate the specific
+        # ``(firm_id, code, version_number)`` unique-violation into a
+        # 422 retry message. Any *other* IntegrityError (e.g. an FK
+        # violation because an ``operation_master`` got soft-deleted
+        # between the cross-firm scope check and this flush) should
+        # bubble unchanged — mislabelling it as a "version race" would
+        # lie to the caller and lose the original cause. Mirrors the
+        # JV hardening pattern at ``accounting_service.py:368-386``.
+        if "routing_firm_id_code_version_number_key" in str(exc.orig):
+            raise AppValidationError(
+                "Routing version race detected — please retry the request."
+            ) from exc
+        raise
 
     audit_service.emit(
         session,
@@ -393,7 +406,6 @@ def create_routing(
             "after": {
                 "design_id": str(design_id),
                 "code": code,
-                "name": name,
                 "version_number": next_version,
                 "edge_count": len(edges),
             }
