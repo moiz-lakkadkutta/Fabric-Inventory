@@ -46,10 +46,13 @@ DDL notes folded in here:
     ``version``, etc. ``mo_operation.status`` (the original free-text
     VARCHAR) is kept in parallel with the typed ``state`` column — the
     DDL did not drop it.
-  - ``mo_operation.outward_challan_id`` / ``inward_challan_id`` reference
-    ``outward_challan`` / ``inward_challan``, which are not yet modelled.
-    They are declared as plain UUID columns (no ORM-level ``ForeignKey``)
-    so ``Base.metadata`` still compiles; the DB enforces the constraint.
+  - ``mo_operation.outward_challan_id`` / ``inward_challan_id`` are plain
+    UUID columns with **no FK enforcement anywhere** — neither at the ORM
+    level nor at the DB level. The original ``outward_challan`` /
+    ``inward_challan`` tables were dropped (CASCADE) by TASK-CUT-305's
+    jobwork rework, taking the DB-level FK with them. A future task will
+    model the new jobwork target tables and re-add the FK (both ORM and
+    DB); until then these columns are unenforced UUIDs.
   - ``operation_type`` is a Postgres enum not modelled elsewhere — defined
     here as ``OperationType`` since ``operation_master`` needs it.
 """
@@ -82,6 +85,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
+from .masters import _UOM_TYPE_PG, UomType
 from .mixins import AuditByMixin, SoftDeleteMixin, TimestampMixin
 
 _UUID_DEFAULT = func.gen_random_uuid()
@@ -293,10 +297,9 @@ class BomLine(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     )
     qty_required: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
     # `uom` is the shared `uom_type` Postgres enum (modelled in masters.py
-    # as UomType). Bind by name; do not redeclare the type.
-    uom: Mapped[str] = mapped_column(
-        PG_ENUM(name="uom_type", create_type=False, native_enum=True), nullable=False
-    )
+    # as UomType). Reuse the module-level `_UOM_TYPE_PG` binding so we don't
+    # re-create the type and we get proper Python type narrowing.
+    uom: Mapped[UomType] = mapped_column(_UOM_TYPE_PG, nullable=False)
     is_optional: Mapped[bool | None] = mapped_column(
         Boolean, server_default=text("false"), nullable=True
     )
@@ -585,9 +588,11 @@ class MoOperation(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     optimistic-locking `version` counter. The audit sweep then adds
     `created_by` / `updated_by` / `deleted_at` (plain-UUID — AuditByMixin).
 
-    `outward_challan_id` / `inward_challan_id` reference `outward_challan`
-    / `inward_challan`, which are not yet modelled — declared as plain
-    UUID columns (DB enforces the FK).
+    `outward_challan_id` / `inward_challan_id` are plain UUID columns
+    with **no FK enforcement anywhere**: TASK-CUT-305's jobwork rework
+    dropped the original `outward_challan` / `inward_challan` tables
+    (CASCADE), removing the DB-level FK along with them. A future task
+    will model the new jobwork target tables and re-add the FK.
     """
 
     __tablename__ = "mo_operation"
@@ -641,8 +646,10 @@ class MoOperation(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     executor: Mapped[str] = mapped_column(
         String(20), server_default=text("'IN_HOUSE'"), nullable=False
     )
-    # outward_challan / inward_challan are not yet modelled — plain UUID,
-    # no ORM-level FK. The DB enforces the constraint.
+    # outward_challan / inward_challan: plain UUID columns with no FK
+    # enforcement (ORM or DB) — TASK-CUT-305 dropped the original target
+    # tables CASCADE, taking the DB-level FK with them. A future task will
+    # model the new jobwork target tables and re-add the FK.
     outward_challan_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), nullable=True
     )

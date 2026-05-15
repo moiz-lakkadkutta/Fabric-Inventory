@@ -112,9 +112,14 @@ before `uv run pytest`, or they skip.
 ## Open flags carried over
 
 - `outward_challan` / `inward_challan` are still unmodelled. `mo_operation`'s
-  `outward_challan_id` / `inward_challan_id` are plain UUID columns (no ORM FK) —
-  the DB enforces the constraint. When a future task models the challan tables,
-  add the ORM FKs and the drift test will start checking them.
+  `outward_challan_id` / `inward_challan_id` are plain UUID columns (no ORM FK).
+  **Correction (follow-up PR):** the original phrasing here and in the model
+  docstrings claimed "the DB enforces the constraint" — that is factually wrong.
+  TASK-CUT-305's jobwork rework dropped the `outward_challan` / `inward_challan`
+  tables CASCADE, taking the DB-level FK with them. The columns are unenforced
+  UUIDs at both the ORM and DB level. When a future task models the new jobwork
+  target tables, add the ORM FK (and re-add the DB FK in the migration); the
+  drift test will then start checking them.
 - `qc_plan`, `qc_result`, `labour_slip` and other Phase-3 manufacturing tables
   exist in the DDL but were out of scope here — they reference `mo_operation` /
   `operation_master` and will model cleanly once their owning task lands.
