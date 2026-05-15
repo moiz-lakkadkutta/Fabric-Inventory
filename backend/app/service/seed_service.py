@@ -132,6 +132,12 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     ("1100", "Bank Accounts", "BANK", "ASSET", True),
     ("1200", "Sundry Debtors (AR)", "RECEIVABLE", "ASSET", True),
     ("1300", "Inventory", "INVENTORY", "ASSET", False),
+    # WIP (Work-in-Process) — debited when raw materials are issued from
+    # stock against a Manufacturing Order (TR-A06). Credit goes to
+    # ``1300 Inventory``. On MO completion (TR-A11) WIP credits down,
+    # finished-goods Inventory debits up. Non-control: postings hit this
+    # ledger directly, no party / bank sub-ledger.
+    ("1310", "Work-in-Process", "INVENTORY", "ASSET", False),
     ("2000", "Sundry Creditors (AP)", "PAYABLE", "LIABILITY", True),
     ("2100", "GST Payable", "TAX", "LIABILITY", False),
     ("2200", "TDS Payable", "TAX", "LIABILITY", False),

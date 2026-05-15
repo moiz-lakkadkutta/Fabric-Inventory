@@ -31,6 +31,8 @@ from app.models.manufacturing import (
     BomLine,
     Design,
     ManufacturingOrder,
+    MaterialIssue,
+    MaterialIssueLine,
     MoMaterialLine,
     MoOperation,
     MoOperationState,
@@ -55,6 +57,10 @@ from app.schemas.manufacturing import (
     DesignListResponse,
     DesignResponse,
     DesignUpdateRequest,
+    MaterialIssueCreateRequest,
+    MaterialIssueLineResponse,
+    MaterialIssueListResponse,
+    MaterialIssueResponse,
     MoCreateRequest,
     MoListItem,
     MoListResponse,
@@ -74,6 +80,7 @@ from app.schemas.manufacturing import (
 from app.service import (
     bom_service,
     manufacturing_masters_service,
+    material_issue_service,
     mo_service,
     routing_service,
 )
@@ -1128,3 +1135,146 @@ def close_mo(
 # so a cancel endpoint would have nowhere to write to. A follow-up
 # Alembic migration + service method will land in a separate task; the
 # retro at ``docs/retros/task-tr-a05.md`` documents this gap.
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Material issue endpoints (TASK-TR-A06)
+# ──────────────────────────────────────────────────────────────────────
+
+
+material_issues_router = APIRouter(
+    prefix="/manufacturing", tags=["manufacturing", "material_issue"]
+)
+
+
+def _mi_line_to_response(line: MaterialIssueLine) -> MaterialIssueLineResponse:
+    return MaterialIssueLineResponse(
+        material_issue_line_id=line.material_issue_line_id,
+        material_issue_id=line.material_issue_id,
+        mo_material_line_id=line.mo_material_line_id,
+        item_id=line.item_id,
+        lot_id=line.lot_id,
+        qty_issued=line.qty_issued,
+        unit_cost=line.unit_cost,
+        line_value=line.line_value,
+        stock_ledger_id=line.stock_ledger_id,
+    )
+
+
+def _mi_to_response(mi: MaterialIssue) -> MaterialIssueResponse:
+    return MaterialIssueResponse(
+        material_issue_id=mi.material_issue_id,
+        org_id=mi.org_id,
+        firm_id=mi.firm_id,
+        manufacturing_order_id=mi.manufacturing_order_id,
+        series=mi.series,
+        number=mi.number,
+        issue_date=mi.issue_date,
+        narration=mi.narration,
+        voucher_id=mi.voucher_id,
+        created_at=mi.created_at,
+        updated_at=mi.updated_at,
+        lines=[_mi_line_to_response(ln) for ln in mi.lines],
+    )
+
+
+@mos_router.post(
+    "/{mo_id}/issue-materials",
+    response_model=MaterialIssueResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Issue raw materials from stock against a released MO (DR WIP / CR Inventory)",
+)
+def issue_materials_for_mo(
+    mo_id: uuid.UUID,
+    body: MaterialIssueCreateRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.material_issue.write"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> MaterialIssueResponse:
+    # Defense-in-depth: when the session has an explicit firm scope, the
+    # body firm_id must match — same pattern as create_mo.
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    service_lines = [
+        material_issue_service.MaterialIssueLineInput(
+            mo_material_line_id=ln.mo_material_line_id,
+            qty_to_issue=ln.qty_to_issue,
+            lot_id=ln.lot_id,
+        )
+        for ln in body.lines
+    ]
+    mi = material_issue_service.issue_materials(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_id=mo_id,
+        lines=service_lines,
+        issued_by=current_user.user_id,
+        narration=body.narration,
+        issue_date=body.issue_date,
+        series=body.series or "MI",
+    )
+    # Re-fetch with eager-loaded lines for the response builder.
+    fresh = material_issue_service.get_material_issue(
+        db, org_id=current_user.org_id, issue_id=mi.material_issue_id
+    )
+    return _mi_to_response(fresh)
+
+
+@mos_router.get(
+    "/{mo_id}/material-issues",
+    response_model=MaterialIssueListResponse,
+    summary="List material issues against an MO",
+)
+def list_material_issues_for_mo(
+    mo_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.material_issue.read"))
+    ],
+    firm_id: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> MaterialIssueListResponse:
+    # Need a firm_id to scope the list. Fall back to the session's
+    # firm_id when the FE doesn't pass one (org-level tokens carry None).
+    effective_firm_id = firm_id if firm_id is not None else current_user.firm_id
+    if effective_firm_id is None:
+        raise AppValidationError(
+            "firm_id query param is required when the session is not firm-scoped."
+        )
+    items, total = material_issue_service.list_material_issues(
+        db,
+        org_id=current_user.org_id,
+        firm_id=effective_firm_id,
+        mo_id=mo_id,
+        limit=limit,
+        offset=offset,
+    )
+    return MaterialIssueListResponse(
+        items=[_mi_to_response(mi) for mi in items],
+        limit=limit,
+        offset=offset,
+        count=len(items),
+        total_count=total,
+    )
+
+
+@material_issues_router.get(
+    "/material-issues/{issue_id}",
+    response_model=MaterialIssueResponse,
+    summary="Get a single material issue by id (with per-component lines)",
+)
+def get_material_issue(
+    issue_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.material_issue.read"))
+    ],
+) -> MaterialIssueResponse:
+    mi = material_issue_service.get_material_issue(
+        db, org_id=current_user.org_id, issue_id=issue_id
+    )
+    return _mi_to_response(mi)

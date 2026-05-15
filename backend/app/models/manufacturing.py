@@ -697,6 +697,123 @@ class MoOperation(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Material issue — raw material issued from stock against an MO (TR-A06)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class MaterialIssue(Base, TimestampMixin, SoftDeleteMixin):
+    """One issue of raw material(s) against an MO. Header carries the
+    issue number, MO reference, and the GL voucher posted for the
+    DR WIP / CR Inventory move. Lines (``MaterialIssueLine``) carry the
+    per-component qty / lot / cost detail.
+
+    Per-firm numbering (``UNIQUE (org_id, firm_id, series, number)``).
+    ``audit-sweep`` shape — ``created_by`` declared inline (FK to
+    ``app_user``) per the migration; ``updated_by`` plain UUID via the
+    sweep equivalent.
+    """
+
+    __tablename__ = "material_issue"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "firm_id",
+            "series",
+            "number",
+            name="material_issue_org_firm_series_number_key",
+        ),
+    )
+
+    material_issue_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    firm_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("firm.firm_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    manufacturing_order_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("manufacturing_order.manufacturing_order_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    series: Mapped[str] = mapped_column(String(50), nullable=False)
+    number: Mapped[str] = mapped_column(String(50), nullable=False)
+    issue_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
+    narration: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The posted GL voucher for this issue (DR WIP / CR Inventory).
+    # Nullable for forward-compat / admin imports; the service always
+    # writes a voucher in v1.
+    voucher_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("voucher.voucher_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("app_user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    lines: Mapped[list[MaterialIssueLine]] = relationship(
+        back_populates="material_issue",
+        cascade="all, delete-orphan",
+        order_by="MaterialIssueLine.created_at",
+    )
+
+
+class MaterialIssueLine(Base, TimestampMixin, SoftDeleteMixin):
+    """One issued component on a ``MaterialIssue``. ``line_value`` is
+    persisted (``qty * unit_cost``) so a later reprint can show the
+    historical valuation even if ``stock_position.current_cost`` has
+    drifted since.
+
+    ``stock_ledger_id`` is a plain UUID (no FK) — same posture as
+    ``mo_operation.outward_challan_id``: the ledger is append-only and
+    we never want a CASCADE-from-delete on this column.
+    """
+
+    __tablename__ = "material_issue_line"
+
+    material_issue_line_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    material_issue_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("material_issue.material_issue_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    mo_material_line_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("mo_material_line.mo_material_line_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("item.item_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    lot_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("lot.lot_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    qty_issued: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
+    unit_cost: Mapped[Any | None] = mapped_column(Numeric(15, 6), nullable=True)
+    line_value: Mapped[Any] = mapped_column(Numeric(18, 2), nullable=False)
+    stock_ledger_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+
+    material_issue: Mapped[MaterialIssue] = relationship(back_populates="lines")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Production event — append-only, idempotent event log
 # ──────────────────────────────────────────────────────────────────────
 
@@ -761,6 +878,8 @@ __all__ = [
     "BomLine",
     "Design",
     "ManufacturingOrder",
+    "MaterialIssue",
+    "MaterialIssueLine",
     "MoMaterialLine",
     "MoOperation",
     "MoOperationState",

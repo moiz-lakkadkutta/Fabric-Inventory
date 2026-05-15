@@ -390,6 +390,72 @@ class MoListResponse(BaseModel):
     total_count: int
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Material issue (TASK-TR-A06)
+#
+# Issues raw materials from stock against a released MO. Money-touching:
+# bumps ``mo_material_line.qty_issued`` and posts a balanced GL voucher
+# (DR ``1310 Work-in-Process`` / CR ``1300 Inventory``). All amounts are
+# ``Decimal``; lots are optional per line (mirrors ``inventory_service``
+# semantics — single-lot stock items leave ``lot_id=None``).
+# ──────────────────────────────────────────────────────────────────────
+
+
+class MaterialIssueLineInput(BaseModel):
+    """One issue line in a ``POST /manufacturing/mo/{id}/issue-materials``
+    payload. ``qty_to_issue`` is a positive Decimal in the item's
+    primary_uom; ``lot_id`` is optional and only enforced when the
+    underlying stock is lot-tracked.
+    """
+
+    mo_material_line_id: uuid.UUID
+    qty_to_issue: Decimal = Field(gt=Decimal("0"))
+    lot_id: uuid.UUID | None = None
+
+
+class MaterialIssueCreateRequest(BaseModel):
+    firm_id: uuid.UUID
+    lines: list[MaterialIssueLineInput] = Field(min_length=1)
+    issue_date: datetime.date | None = None
+    narration: str | None = Field(default=None, max_length=2000)
+    series: str | None = Field(default=None, max_length=50)
+
+
+class MaterialIssueLineResponse(BaseModel):
+    material_issue_line_id: uuid.UUID
+    material_issue_id: uuid.UUID
+    mo_material_line_id: uuid.UUID
+    item_id: uuid.UUID
+    lot_id: uuid.UUID | None
+    qty_issued: Decimal
+    unit_cost: Decimal | None
+    line_value: Decimal
+    stock_ledger_id: uuid.UUID | None
+
+
+class MaterialIssueResponse(BaseModel):
+    material_issue_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    manufacturing_order_id: uuid.UUID
+    series: str
+    number: str
+    issue_date: datetime.date
+    narration: str | None
+    voucher_id: uuid.UUID | None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+    lines: list[MaterialIssueLineResponse]
+
+
+class MaterialIssueListResponse(BaseModel):
+    items: list[MaterialIssueResponse]
+    limit: int
+    offset: int
+    count: int
+    total_count: int
+
+
 __all__ = [
     "BomCreateRequest",
     "BomLineInput",
@@ -404,6 +470,11 @@ __all__ = [
     "DesignListResponse",
     "DesignResponse",
     "DesignUpdateRequest",
+    "MaterialIssueCreateRequest",
+    "MaterialIssueLineInput",
+    "MaterialIssueLineResponse",
+    "MaterialIssueListResponse",
+    "MaterialIssueResponse",
     "MoCreateRequest",
     "MoListItem",
     "MoListResponse",
