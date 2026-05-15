@@ -345,7 +345,11 @@ def test_post_journal_voucher_persists_lines_and_balanced_invariant(db_session: 
     """After flush, querying voucher_line rows for the JV shows DR == CR."""
     org_id, firm_id = _seed_org_with_coa(db_session)
     cash = _ledger_by_code(db_session, org_id=org_id, code="1000")
-    bank = _ledger_by_code(db_session, org_id=org_id, code="1100")
+    # C01 hardening (M1): the previous fixture used `1100` Bank Accounts,
+    # which is_control_account=True in the seed — now correctly rejected
+    # by `_resolve_journal_ledgers`. Substitute COGS (`5000`), a non-
+    # control expense ledger that's seeded alongside.
+    cogs = _ledger_by_code(db_session, org_id=org_id, code="5000")
     sales = _ledger_by_code(db_session, org_id=org_id, code="4000")
 
     voucher = accounting_service.post_journal_voucher(
@@ -361,7 +365,7 @@ def test_post_journal_voucher_persists_lines_and_balanced_invariant(db_session: 
                 amount=Decimal("700"),
             ),
             accounting_service.JournalLineInput(
-                ledger_id=bank.ledger_id,
+                ledger_id=cogs.ledger_id,
                 line_type=JournalLineType.DR,
                 amount=Decimal("300"),
             ),
@@ -389,3 +393,142 @@ def test_post_journal_voucher_persists_lines_and_balanced_invariant(db_session: 
     )
     assert drs == crs == Decimal("1000")
     assert len(lines) == 3
+
+
+# ──────────────────────────────────────────────────────────────────────
+# C01 hardening (M1 / M2 / M3) — additional service-level guards.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_post_journal_voucher_rejects_inactive_ledger(db_session: OrmSession) -> None:
+    """Soft-deactivating a ledger (`is_active = False`) must block JV posts
+    that reference it — same firm-scoped path that already validates ledger
+    ownership.
+    """
+    org_id, firm_id = _seed_org_with_coa(db_session)
+    cash = _ledger_by_code(db_session, org_id=org_id, code="1000")
+    sales = _ledger_by_code(db_session, org_id=org_id, code="4000")
+
+    # Deactivate the sales ledger.
+    sales.is_active = False
+    db_session.flush()
+
+    with pytest.raises(AppValidationError, match="is_active"):
+        accounting_service.post_journal_voucher(
+            session=db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            voucher_date=datetime.date(2026, 5, 1),
+            narration="inactive ledger",
+            lines=[
+                accounting_service.JournalLineInput(
+                    ledger_id=cash.ledger_id,
+                    line_type=JournalLineType.DR,
+                    amount=Decimal("100"),
+                ),
+                accounting_service.JournalLineInput(
+                    ledger_id=sales.ledger_id,
+                    line_type=JournalLineType.CR,
+                    amount=Decimal("100"),
+                ),
+            ],
+            created_by=None,
+        )
+
+
+def test_post_journal_voucher_rejects_control_account(db_session: OrmSession) -> None:
+    """Direct posts to control accounts (e.g. `1200` Sundry Debtors, `1100`
+    Bank Accounts, `2000` Sundry Creditors) must be rejected — postings
+    must reach them via a party / bank sub-ledger to keep party-control
+    reconciliation honest.
+    """
+    org_id, firm_id = _seed_org_with_coa(db_session)
+    ar_control = _ledger_by_code(db_session, org_id=org_id, code="1200")
+    sales = _ledger_by_code(db_session, org_id=org_id, code="4000")
+    assert ar_control.is_control_account is True  # seed precondition
+
+    with pytest.raises(AppValidationError, match=r"control account|sub-ledger"):
+        accounting_service.post_journal_voucher(
+            session=db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            voucher_date=datetime.date(2026, 5, 1),
+            narration="direct-to-control",
+            lines=[
+                accounting_service.JournalLineInput(
+                    ledger_id=ar_control.ledger_id,
+                    line_type=JournalLineType.DR,
+                    amount=Decimal("100"),
+                ),
+                accounting_service.JournalLineInput(
+                    ledger_id=sales.ledger_id,
+                    line_type=JournalLineType.CR,
+                    amount=Decimal("100"),
+                ),
+            ],
+            created_by=None,
+        )
+
+
+def test_post_journal_voucher_translates_voucher_number_race_to_422(
+    db_session: OrmSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent post that loses the unique (org,firm,voucher_type,series,
+    number) race must surface as a clean AppValidationError (HTTP 422), not
+    bubble an unhandled IntegrityError → 500.
+
+    Force the race by monkey-patching ``session.flush`` to raise
+    ``IntegrityError`` once with the voucher-number unique constraint name.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    org_id, firm_id = _seed_org_with_coa(db_session)
+    cash = _ledger_by_code(db_session, org_id=org_id, code="1000")
+    sales = _ledger_by_code(db_session, org_id=org_id, code="4000")
+
+    real_flush = db_session.flush
+    state = {"tripped": False}
+
+    def _flush_intercept(objects: object = None) -> None:
+        # Trip the race only on the FIRST explicit flush that contains a
+        # pending Voucher header (i.e. inside `post_journal_voucher`,
+        # not on autoflushes for the earlier ledger SELECTs). Match the
+        # constraint name in `exc.orig` so the service can narrow the
+        # catch to the JV-number race, not unrelated unique violations.
+        if not state["tripped"]:
+            pending_voucher = any(isinstance(obj, Voucher) for obj in db_session.new)
+            if pending_voucher:
+                state["tripped"] = True
+                raise IntegrityError(
+                    statement="INSERT INTO voucher ...",
+                    params={},
+                    orig=Exception(
+                        "duplicate key value violates unique constraint "
+                        '"voucher_org_id_firm_id_series_number_key"'
+                    ),
+                )
+        real_flush(objects)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(db_session, "flush", _flush_intercept)
+
+    with pytest.raises(AppValidationError, match=r"race|retry"):
+        accounting_service.post_journal_voucher(
+            session=db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            voucher_date=datetime.date(2026, 5, 1),
+            narration="race",
+            lines=[
+                accounting_service.JournalLineInput(
+                    ledger_id=cash.ledger_id,
+                    line_type=JournalLineType.DR,
+                    amount=Decimal("10"),
+                ),
+                accounting_service.JournalLineInput(
+                    ledger_id=sales.ledger_id,
+                    line_type=JournalLineType.CR,
+                    amount=Decimal("10"),
+                ),
+            ],
+            created_by=None,
+        )

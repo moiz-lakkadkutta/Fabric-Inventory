@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
@@ -293,6 +294,24 @@ def _resolve_journal_ledgers(
                 f"Ledger {ledger_id} belongs to a different firm; "
                 "journal voucher lines must stay within the active firm.",
             )
+        # C01 hardening (M1): refuse soft-deactivated ledgers up front so
+        # a stale dropdown selection can't sneak in. Note: `is_active` is
+        # nullable in the DDL (server_default 'true'); treat NULL as
+        # active, only False as inactive.
+        if ledger.is_active is False:
+            raise AppValidationError(
+                f"Ledger {ledger.code} ({ledger.name}) is_active=False; "
+                "reactivate it before posting to this ledger.",
+            )
+        # C01 hardening (M1): control accounts (AR, AP, Bank) must always
+        # be reached via a party / bank sub-ledger so party-control
+        # reconciliation stays honest. Direct journal posts here break
+        # the AR/AP aging reports.
+        if ledger.is_control_account is True:
+            raise AppValidationError(
+                f"Ledger {ledger.code} ({ledger.name}) is a control account; "
+                "post via a party / bank sub-ledger, not directly.",
+            )
     return by_id
 
 
@@ -349,7 +368,23 @@ def post_journal_voucher(
         created_by=created_by,
     )
     session.add(voucher)
-    session.flush()
+    try:
+        session.flush()  # mint voucher_id; tripping the unique on (org,firm,series,number) here
+    except IntegrityError as exc:
+        # C01 hardening (M3): `_allocate_voucher_number` races on
+        # concurrent JV posts within the same firm. The DB unique
+        # `voucher_org_id_firm_id_series_number_key` saves correctness;
+        # translate the loser's IntegrityError into a clean 422 retry
+        # instead of bubbling a 500. Mirrors the BOM pattern at
+        # `bom_service.py:307-313`. We match on the constraint-name string
+        # in `exc.orig` (rather than the SQLSTATE on `exc.orig.pgcode`)
+        # because it pinpoints THIS race and won't swallow unrelated
+        # unique violations on `voucher_line` etc.
+        if "voucher_org_id_firm_id_series_number_key" in str(exc.orig):
+            raise AppValidationError(
+                "Voucher number race detected — please retry.",
+            ) from exc
+        raise
 
     for seq, line in enumerate(lines, start=1):
         session.add(

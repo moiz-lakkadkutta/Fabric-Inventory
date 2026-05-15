@@ -440,3 +440,62 @@ def test_journal_voucher_non_positive_amount_rejected(
         },
     )
     assert resp.status_code == 422, resp.text
+
+
+# ──────────────────────────────────────────────────────────────────────
+# C01 hardening (M1 / M2) — router-level guards.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_post_journal_voucher_rejects_extra_decimals(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Amounts with > 2 decimal places must 422 at the schema boundary
+    before any DB write — otherwise Postgres silently rounds to 2dp and
+    the post-flush DR==CR recheck fails with a confusing imbalance.
+    """
+    me = _signup_owner(http_client)
+    by_code = _list_ledgers(http_client, me)
+    resp = http_client.post(
+        "/vouchers/journal",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "voucher_date": "2026-05-02",
+            "narration": "too-precise",
+            "lines": [
+                {"ledger_id": by_code["1000"], "line_type": "DR", "amount": "12.345"},
+                {"ledger_id": by_code["4000"], "line_type": "CR", "amount": "12.345"},
+            ],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    # Pydantic emits a `decimal_places` error type for over-precision.
+    assert "decimal_places" in resp.text.lower() or "decimal" in resp.text.lower()
+
+
+def test_post_journal_voucher_rejects_control_account(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A direct post to a control account (e.g. ledger code `1200` Sundry
+    Debtors AR, which is_control_account=True in the seed) must 422 with
+    a clear "control account / sub-ledger" message.
+    """
+    me = _signup_owner(http_client)
+    by_code = _list_ledgers(http_client, me)
+    resp = http_client.post(
+        "/vouchers/journal",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "voucher_date": "2026-05-02",
+            "narration": "direct-to-control",
+            "lines": [
+                {"ledger_id": by_code["1200"], "line_type": "DR", "amount": "100.00"},
+                {"ledger_id": by_code["4000"], "line_type": "CR", "amount": "100.00"},
+            ],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    body_str = resp.text.lower()
+    assert "control account" in body_str or "sub-ledger" in body_str
