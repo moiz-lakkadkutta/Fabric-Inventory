@@ -103,3 +103,48 @@ class LocationCreateRequest(BaseModel):
     code: Annotated[str, Field(min_length=1, max_length=32)]
     name: Annotated[str, Field(min_length=1, max_length=128)]
     location_type: LocationTypeLiteral = "WAREHOUSE"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Lots read endpoints (TASK-TR-B02). Read-only — lots are minted by GRN
+# / Receive-Back flows. The FE LotDetail screen reads the singular get;
+# the InventoryList page reads the list to show per-SKU lot counts.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class LotResponse(BaseModel):
+    """One Lot row with the eager-loaded item summary the FE needs.
+
+    `qty_on_hand` is the live aggregate across all `stock_position` rows
+    for this lot (sum over locations). It can be 0 for lots that have
+    fully dispatched.
+    """
+
+    lot_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    item_id: uuid.UUID
+    item_code: str
+    item_name: str
+    primary_uom: str
+    lot_number: str
+    supplier_lot_number: str | None
+    mfg_date: datetime.date | None
+    expiry_date: datetime.date | None
+    received_date: datetime.date | None
+    primary_cost: Decimal | None
+    currency: str | None
+    grn_id: uuid.UUID | None
+    qty_on_hand: Decimal
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class LotListResponse(BaseModel):
+    """Paginated list of lots — mirrors the BomListResponse shape."""
+
+    items: list[LotResponse]
+    limit: int
+    offset: int
+    count: int  # rows in this page
+    total_count: int  # total matching rows across all pages
