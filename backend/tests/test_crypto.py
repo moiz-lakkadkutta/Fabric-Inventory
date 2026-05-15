@@ -231,9 +231,10 @@ def test_master_key_invalid_base64_fails(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_master_key_dev_fallback_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Dev / test environments without PII_MASTER_KEY fall back to a
+    """A `dev` ENVIRONMENT without PII_MASTER_KEY falls back to a
     deterministic, documented test KEK so a freshly-cloned dev box can
-    still run the suite. Prod refuses to start (see test above)."""
+    still run the suite. Anything else (incl. prod / staging / unset /
+    typo / formerly-`test`) refuses to start — see tests below."""
     monkeypatch.delenv("PII_MASTER_KEY", raising=False)
     monkeypatch.setenv("ENVIRONMENT", "dev")
     crypto._reset_caches_for_tests()
@@ -251,10 +252,18 @@ def test_master_key_dev_fallback_when_unset(monkeypatch: pytest.MonkeyPatch) -> 
 # deterministic public dev KEK — so a misconfigured prod box booted
 # healthy and only failed when the first user signed up.
 #
-# The replacement allowlists ONLY `{"dev", "test"}` (case-insensitive,
+# The replacement allowlists ONLY `{"dev"}` (case-insensitive,
 # whitespace-trimmed) for the fallback; every other value raises
-# `PIIConfigError`. Dev/test additionally emit a WARNING log so a
+# `PIIConfigError`. Dev additionally emits a WARNING log so a
 # misconfigured "staging-but-spelled-staging" box shows it on boot.
+#
+# Issue #22 follow-up: the allowlist was previously `{"dev", "test"}`,
+# which diverged from `Settings.environment` Literal `{dev, staging, prod}`
+# (pydantic-settings rejects `test`). We've dropped `test` so the two
+# surfaces are symmetric — the test suite uses `ENVIRONMENT=dev`
+# (see `tests/conftest.py`), so this is a no-op for the live suite but
+# closes the door on the "crypto accepts ENVIRONMENT=test but Settings
+# refuses to construct" surprise.
 
 
 def test_master_key_missing_in_production_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -310,24 +319,24 @@ def test_master_key_typo_environment_fails(monkeypatch: pytest.MonkeyPatch) -> N
         crypto.get_master_kek()
 
 
-def test_dev_fallback_only_with_explicit_dev_or_test(
+def test_dev_fallback_only_with_explicit_dev(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Only `dev` / `test` (case-insensitive, trimmed) may take the
-    public KEK. Both paths must emit a WARNING log so a misconfigured
+    """Only `dev` (case-insensitive, trimmed) may take the public KEK.
+    The fallback path must emit a WARNING log so a misconfigured
     dev/staging shows it on every boot — silent fallback was the
     failure mode this guards against."""
     import logging
 
-    for env_value in ("dev", "DEV", " dev ", "test", "TEST"):
+    for env_value in ("dev", "DEV", " dev "):
         monkeypatch.delenv("PII_MASTER_KEY", raising=False)
         monkeypatch.setenv("ENVIRONMENT", env_value)
         crypto._reset_caches_for_tests()
         caplog.clear()
         with caplog.at_level(logging.WARNING):
             kek = crypto.get_master_kek()
-        assert len(kek) == 32, f"dev/test fallback returned a non-32-byte KEK for ENV={env_value!r}"
+        assert len(kek) == 32, f"dev fallback returned a non-32-byte KEK for ENV={env_value!r}"
         # The warning must fire EVERY boot — operators learn from the
         # log line that they're running on the public dev key.
         assert any(
@@ -337,6 +346,19 @@ def test_dev_fallback_only_with_explicit_dev_or_test(
             f"Expected a WARNING mentioning PII_MASTER_KEY when falling back; "
             f"got records: {[r.getMessage() for r in caplog.records]!r} (ENV={env_value!r})"
         )
+
+
+def test_dev_fallback_rejects_environment_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ENVIRONMENT=test` used to take the public KEK but `Settings`
+    rejects the value at construction (Literal `{dev, staging, prod}`),
+    so the two surfaces disagreed. Issue #22 follow-up: crypto now also
+    refuses `test`. Anyone setting ENVIRONMENT=test gets a clear failure
+    instead of a half-working app."""
+    monkeypatch.delenv("PII_MASTER_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    crypto._reset_caches_for_tests()
+    with pytest.raises(crypto.PIIConfigError):
+        crypto.get_master_kek()
 
 
 # ──────────────────────────────────────────────────────────────────────

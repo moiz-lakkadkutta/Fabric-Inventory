@@ -20,7 +20,11 @@ rots again.
 
 Other notes:
 - Encrypted fields (gstin, pan, cin, tan, mfa_secret, phone) are `BYTEA`.
-  Service layer handles AES-GCM envelope crypto (TASK-007+).
+  Service layer handles AES-GCM envelope crypto (TASK-TR-SEC1).
+  Today only ``firm.gstin`` (signup) and ``app_user.mfa_secret`` (MFA
+  enrolment) are written by the service layer; ``firm.pan/cin/tan`` are
+  declared but presently unused — when the firm-edit screen lands, it
+  MUST thread values through ``encrypt_pii`` like ``firm.gstin`` does.
 - `app_user` is `AppUser` in Python so a future `User` domain object
   doesn't shadow it.
 - All datetimes are `TIMESTAMPTZ` — every `mapped_column` for a datetime
