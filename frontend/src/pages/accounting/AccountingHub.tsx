@@ -116,9 +116,13 @@ export default function AccountingHub() {
     }
   };
 
+  // Bank statement reconciliation (match imported MT940/CSV against
+  // posted receipts/payments) is a v2 feature — the trial customer
+  // can reconcile manually via the cheques tab + bank-account ledger
+  // for now. Replace this stub when a real reconcile workflow lands.
   const reconcile = useComingSoon({
     feature: 'Bank reconciliation',
-    task: 'TASK-CUT-v2 (Bank statement match)',
+    task: 'v2 (Bank statement match — not in trial scope)',
   });
 
   let cta: React.ReactNode = null;

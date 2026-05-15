@@ -38,9 +38,13 @@ export default function AdminHub() {
   const users = useUsers();
   const roles = useRoles();
   const [inviteOpen, setInviteOpen] = React.useState(false);
+  // Custom-role CRUD is deferred to v2 — the 4 stock roles (Owner,
+  // Accountant, Sales, Production) cover dogfood + the manufacturer-
+  // trial customer per docs/implementation-plan-trial.md. Replace
+  // when a customer asks for tenant-defined roles.
   const newRole = useComingSoon({
     feature: 'Add custom role',
-    task: 'TASK-022 (Custom roles)',
+    task: 'v2 (Custom roles — not in trial scope)',
   });
 
   const usersList = users.data ?? [];
