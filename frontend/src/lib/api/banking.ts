@@ -223,6 +223,63 @@ export async function listVouchers(): Promise<BackendVoucherList> {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// Manual journal voucher (TASK-TR-C01)
+//
+// POST /vouchers/journal — posts a balanced bundle of DR/CR lines.
+// Wire shape uses Decimal-as-string for amounts (rupees) per house style.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface JournalLineInputBody {
+  ledger_id: string;
+  line_type: 'DR' | 'CR';
+  amount: string; // Decimal as string, rupees, > 0
+  description?: string | null;
+}
+
+export interface CreateJournalVoucherBody {
+  firm_id: string;
+  voucher_date: string; // YYYY-MM-DD
+  narration?: string | null;
+  lines: JournalLineInputBody[];
+}
+
+export interface BackendJournalVoucherLine {
+  voucher_line_id: string;
+  ledger_id: string;
+  line_type: 'DR' | 'CR';
+  amount: string;
+  description: string | null;
+  sequence: number | null;
+}
+
+export interface BackendJournalVoucher {
+  voucher_id: string;
+  org_id: string;
+  firm_id: string;
+  voucher_type: 'JOURNAL';
+  series: string;
+  number: string;
+  voucher_date: string;
+  narration: string | null;
+  status: string | null;
+  total_debit: string;
+  total_credit: string;
+  lines: BackendJournalVoucherLine[];
+  created_at: string;
+}
+
+export async function postJournalVoucher(
+  body: CreateJournalVoucherBody,
+  idempotencyKey: string,
+): Promise<BackendJournalVoucher> {
+  return await api<BackendJournalVoucher>('/vouchers/journal', {
+    method: 'POST',
+    idempotencyKey,
+    body,
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Parties (typeahead for the new-receipt dialog)
 //
 // The full /parties FE wiring lands in TASK-CUT-101; here we only

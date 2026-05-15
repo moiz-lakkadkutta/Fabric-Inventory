@@ -105,3 +105,51 @@ class LedgerListResponse(BaseModel):
     limit: int
     offset: int
     count: int
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Manual Journal Voucher (TASK-TR-C01)
+#
+# Mirrors the `JournalLineInput` dataclass on the service. The wire
+# format uses Decimal-as-string for `amount` (rupees) for consistency
+# with the rest of the API; the line description is optional.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class JournalLineInput(BaseModel):
+    ledger_id: uuid.UUID
+    line_type: Literal["DR", "CR"]
+    amount: Decimal = Field(gt=0)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class JournalVoucherCreateRequest(BaseModel):
+    firm_id: uuid.UUID
+    voucher_date: datetime.date
+    narration: str | None = Field(default=None, max_length=2000)
+    lines: list[JournalLineInput] = Field(min_length=2)
+
+
+class JournalVoucherLineResponse(BaseModel):
+    voucher_line_id: uuid.UUID
+    ledger_id: uuid.UUID
+    line_type: Literal["DR", "CR"]
+    amount: Decimal
+    description: str | None
+    sequence: int | None
+
+
+class JournalVoucherResponse(BaseModel):
+    voucher_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    voucher_type: Literal["JOURNAL"]
+    series: str
+    number: str
+    voucher_date: datetime.date
+    narration: str | None
+    status: str | None
+    total_debit: Decimal
+    total_credit: Decimal
+    lines: list[JournalVoucherLineResponse]
+    created_at: datetime.datetime

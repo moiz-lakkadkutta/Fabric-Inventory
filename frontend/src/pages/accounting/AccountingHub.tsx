@@ -26,6 +26,7 @@ import type {
 
 import { NewBankAccountDialog } from './NewBankAccountDialog';
 import { NewChequeDialog } from './NewChequeDialog';
+import { NewJournalVoucherDialog } from './NewJournalVoucherDialog';
 import { NewReceiptDialog } from './NewReceiptDialog';
 
 type Tab = 'receipts' | 'vouchers' | 'bank-accounts' | 'cheques';
@@ -61,6 +62,7 @@ const VOUCHER_TYPE_LABEL: Record<VoucherTypeRaw, string> = {
 export default function AccountingHub() {
   const [tab, setTab] = useState<Tab>('receipts');
   const [receiptOpen, setReceiptOpen] = useState(false);
+  const [voucherOpen, setVoucherOpen] = useState(false);
   const [bankAccountOpen, setBankAccountOpen] = useState(false);
   const [chequeOpen, setChequeOpen] = useState(false);
   const [selectedBankAccountId, setSelectedBankAccountId] = useState<string | null>(null);
@@ -118,12 +120,6 @@ export default function AccountingHub() {
     feature: 'Bank reconciliation',
     task: 'TASK-CUT-v2 (Bank statement match)',
   });
-  // "+ New voucher" stays a coming-soon. Voucher posting (journal entries)
-  // is deferred to v2 — we ship the read-only Vouchers tab in v1.
-  const newVoucher = useComingSoon({
-    feature: 'New journal voucher',
-    task: 'v2 — journal vouchers',
-  });
 
   let cta: React.ReactNode = null;
   if (tab === 'receipts') {
@@ -135,7 +131,7 @@ export default function AccountingHub() {
     );
   } else if (tab === 'vouchers') {
     cta = (
-      <Button {...newVoucher.triggerProps}>
+      <Button onClick={() => setVoucherOpen(true)}>
         <Plus />
         New voucher
       </Button>
@@ -191,7 +187,6 @@ export default function AccountingHub() {
         </div>
       </header>
       {reconcile.dialog}
-      {newVoucher.dialog}
       {exportError && (
         <div
           role="alert"
@@ -209,6 +204,7 @@ export default function AccountingHub() {
       )}
 
       <NewReceiptDialog open={receiptOpen} onClose={() => setReceiptOpen(false)} />
+      <NewJournalVoucherDialog open={voucherOpen} onClose={() => setVoucherOpen(false)} />
       <NewBankAccountDialog open={bankAccountOpen} onClose={() => setBankAccountOpen(false)} />
       <NewChequeDialog
         open={chequeOpen}

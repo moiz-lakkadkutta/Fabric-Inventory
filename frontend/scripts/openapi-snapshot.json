@@ -4261,6 +4261,253 @@
         "title": "JobWorkReceiveRequest",
         "type": "object"
       },
+      "JournalLineInput": {
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Amount"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "ledger_id": {
+            "format": "uuid",
+            "title": "Ledger Id",
+            "type": "string"
+          },
+          "line_type": {
+            "enum": [
+              "DR",
+              "CR"
+            ],
+            "title": "Line Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ledger_id",
+          "line_type",
+          "amount"
+        ],
+        "title": "JournalLineInput",
+        "type": "object"
+      },
+      "JournalVoucherCreateRequest": {
+        "properties": {
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/JournalLineInput"
+            },
+            "minItems": 2,
+            "title": "Lines",
+            "type": "array"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "voucher_date": {
+            "format": "date",
+            "title": "Voucher Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "firm_id",
+          "voucher_date",
+          "lines"
+        ],
+        "title": "JournalVoucherCreateRequest",
+        "type": "object"
+      },
+      "JournalVoucherLineResponse": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "ledger_id": {
+            "format": "uuid",
+            "title": "Ledger Id",
+            "type": "string"
+          },
+          "line_type": {
+            "enum": [
+              "DR",
+              "CR"
+            ],
+            "title": "Line Type",
+            "type": "string"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence"
+          },
+          "voucher_line_id": {
+            "format": "uuid",
+            "title": "Voucher Line Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voucher_line_id",
+          "ledger_id",
+          "line_type",
+          "amount",
+          "description",
+          "sequence"
+        ],
+        "title": "JournalVoucherLineResponse",
+        "type": "object"
+      },
+      "JournalVoucherResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/JournalVoucherLineResponse"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "total_credit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Credit",
+            "type": "string"
+          },
+          "total_debit": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Total Debit",
+            "type": "string"
+          },
+          "voucher_date": {
+            "format": "date",
+            "title": "Voucher Date",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          },
+          "voucher_type": {
+            "const": "JOURNAL",
+            "title": "Voucher Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "org_id",
+          "firm_id",
+          "voucher_type",
+          "series",
+          "number",
+          "voucher_date",
+          "narration",
+          "status",
+          "total_debit",
+          "total_credit",
+          "lines",
+          "created_at"
+        ],
+        "title": "JournalVoucherResponse",
+        "type": "object"
+      },
       "KpiListResponse": {
         "properties": {
           "items": {
@@ -18094,6 +18341,67 @@
           }
         },
         "summary": "List vouchers for the current firm (newest-first)",
+        "tags": [
+          "banking",
+          "accounting",
+          "voucher"
+        ]
+      }
+    },
+    "/vouchers/journal": {
+      "post": {
+        "operationId": "post_journal_voucher_vouchers_journal_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JournalVoucherCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JournalVoucherResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post a manual balanced journal voucher (TASK-TR-C01)",
         "tags": [
           "banking",
           "accounting",
