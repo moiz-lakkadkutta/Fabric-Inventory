@@ -16,6 +16,11 @@ function renderInventory(initial = '/inventory') {
         <Routes>
           <Route path="/inventory" element={<InventoryList />} />
           <Route path="/inventory/lots/:id" element={<LotDetail />} />
+          {/* TASK-TR-B05: "New GRN" routes to the real GRN create flow */}
+          <Route
+            path="/purchase/grns/new"
+            element={<div data-testid="grn-create-page">GRN create page</div>}
+          />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -46,5 +51,19 @@ describe('Inventory list + Lot detail', () => {
     });
     expect(screen.getByText('Kanchipuram Pattu')).toBeInTheDocument();
     expect(screen.queryByText('Silk Georgette 60"')).not.toBeInTheDocument();
+  });
+
+  it('routes "+ New GRN" to the real GRN create flow (TASK-TR-B05)', async () => {
+    renderInventory();
+    // Wait for the page to finish loading so the header is rendered.
+    await waitFor(() => expect(screen.getByText('Silk Georgette 60"')).toBeInTheDocument());
+
+    const newGrn = screen.getByRole('link', { name: /new grn/i });
+    expect(newGrn).toHaveAttribute('href', '/purchase/grns/new');
+
+    fireEvent.click(newGrn);
+    await waitFor(() => expect(screen.getByTestId('grn-create-page')).toBeInTheDocument());
+    // The old ComingSoon dialog should not appear.
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
   });
 });

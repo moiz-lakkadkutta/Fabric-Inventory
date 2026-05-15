@@ -3,7 +3,6 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
-import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useSkus } from '@/lib/queries/inventory';
 import { lots } from '@/lib/mock/inventory';
@@ -24,10 +23,6 @@ export default function InventoryList() {
   const skusQuery = useSkus();
   const [query, setQuery] = useState('');
   const [adjustOpen, setAdjustOpen] = useState(false);
-  const newGrn = useComingSoon({
-    feature: 'New GRN intake',
-    task: 'TASK-027 (GRN screen)',
-  });
 
   const rows = useMemo(() => {
     const all = skusQuery.data ?? [];
@@ -49,14 +44,15 @@ export default function InventoryList() {
           <Button variant="outline" onClick={() => setAdjustOpen(true)}>
             Adjust stock
           </Button>
-          <Button {...newGrn.triggerProps}>
-            <Plus />
-            New GRN
+          <Button asChild>
+            <Link to="/purchase/grns/new">
+              <Plus />
+              New GRN
+            </Link>
           </Button>
         </div>
       </header>
       <AdjustStockDialog open={adjustOpen} onClose={() => setAdjustOpen(false)} />
-      {newGrn.dialog}
 
       <div
         className="ml-auto inline-flex h-9 w-72 items-center gap-2 rounded-md px-3"
