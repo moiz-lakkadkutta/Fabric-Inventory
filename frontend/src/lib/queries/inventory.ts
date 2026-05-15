@@ -13,16 +13,18 @@
  *   - `mix`: stage-by-stage breakdown is a per-lot concept and there's
  *     no aggregated endpoint yet; left empty so `<StatusMixBar>` simply
  *     renders an empty bar.
- *   - `lots`: no `/lots` endpoint exists yet (see retro for TASK-TR-B02
- *     follow-up); carried as 0.
+ *   - `lots`: per-SKU lot count not in the stock-summary projection;
+ *     carried as 0 until that aggregate is added. The dedicated
+ *     `useLots()` hook below pulls lot rows for the LotDetail screen.
  *
  * Once those gaps land, this mapper extends — the InventoryList page
  * already reads from these fields and will surface them automatically.
  *
- * `useLots()` / `useLot(lotId)` stay on the mock path because the BE has
- * no lots endpoint today. The lot fixture continues to back the
- * click-dummy LotDetail screen; live-mode lot viewing is scoped to
- * TASK-TR-B02.
+ * `useLots()` / `useLot(lotId)` were mock-only through the click-dummy
+ * era; TASK-TR-B02 wires them to `GET /lots` and `GET /lots/{lot_id}`
+ * in live mode. The mock branch is kept so click-dummy builds continue
+ * to render the rich stages-timeline fixture (which the BE doesn't
+ * expose for v1).
  */
 
 import { useQuery } from '@tanstack/react-query';
@@ -31,10 +33,14 @@ import { api } from '@/lib/api/client';
 import { IS_LIVE } from '@/lib/api/mode';
 import { fakeFetch } from '@/lib/mock/api';
 import { findLot, lots, skuRows, type SkuRow } from '@/lib/mock/inventory';
+import { authStore } from '@/store/auth';
 import type { components } from '@/types/api';
 
 type BackendStockSummaryResponse = components['schemas']['StockSummaryResponse'];
 type BackendStockSummaryRow = components['schemas']['StockSummaryRow'];
+
+export type BackendLot = components['schemas']['LotResponse'];
+type BackendLotListResponse = components['schemas']['LotListResponse'];
 
 const SKU_ROW_UOMS = new Set<SkuRow['uom']>(['METER', 'PIECE', 'KG']);
 
@@ -59,11 +65,12 @@ export function mapStockRowToSku(b: BackendStockSummaryRow): SkuRow {
     // the row's reorder column in --text-tertiary when 0, so this
     // shows up as a neutral "no threshold" rather than a danger flag.
     reorder: 0,
-    // Status mix is a per-lot rollup that needs a lots endpoint to
-    // compute. Until TASK-TR-B02 ships /lots, leave empty.
+    // Status mix is a per-lot rollup that needs a richer per-stage
+    // aggregation than /lots exposes; leave empty until a future
+    // /stock-mix endpoint lands.
     mix: {},
-    // Lots count likewise depends on a lots endpoint; carry 0 until
-    // TR-B02 lands.
+    // Lots count requires a per-SKU rollup the stock-summary doesn't
+    // expose today; carried as 0 until that aggregate is added.
     lots: 0,
   };
 }
@@ -80,20 +87,61 @@ export function useSkus() {
   });
 }
 
-export function useLots() {
-  return useQuery({
-    queryKey: ['inventory', 'lots'],
-    // TASK-TR-B02: wire to GET /lots once the BE endpoint exists.
-    queryFn: () => fakeFetch([...lots]),
+// ──────────────────────────────────────────────────────────────────────
+// Lots (TASK-TR-B02) — live-mode hits GET /lots, mock-mode keeps the
+// click-dummy fixture so the rich stages timeline still demos.
+//
+// Live shape is the BE's LotResponse (lot_number, item_code, item_name,
+// primary_uom, qty_on_hand, dates, etc.). Click-dummy shape is the
+// fixture in `lib/mock/inventory.ts` (with stages + bin). Consumers
+// branch on `IS_LIVE` to pick the right renderer.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface ListLotsParams {
+  firm_id?: string;
+  item_id?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+async function liveListLots(params: ListLotsParams): Promise<BackendLot[]> {
+  const firm_id = params.firm_id ?? authStore.get().me?.firm_id;
+  if (!firm_id) {
+    throw new Error('No active firm in this session — switch to a firm first.');
+  }
+  const usp = new URLSearchParams();
+  usp.set('firm_id', firm_id);
+  if (params.item_id) usp.set('item_id', params.item_id);
+  if (params.search) usp.set('search', params.search);
+  usp.set('limit', String(params.limit ?? 50));
+  usp.set('offset', String(params.offset ?? 0));
+  const data = await api<BackendLotListResponse>(`/lots?${usp.toString()}`);
+  return data.items;
+}
+
+async function liveGetLot(lotId: string): Promise<BackendLot> {
+  return api<BackendLot>(`/lots/${lotId}`);
+}
+
+type LotForView = BackendLot | (typeof lots)[number];
+
+export function useLots(params: ListLotsParams = {}) {
+  return useQuery<LotForView[]>({
+    queryKey: ['inventory', 'lots', params],
+    queryFn: async (): Promise<LotForView[]> =>
+      IS_LIVE ? await liveListLots(params) : await fakeFetch<LotForView[]>([...lots]),
   });
 }
 
 export function useLot(lotId: string | undefined) {
-  return useQuery({
+  return useQuery<LotForView | null>({
     queryKey: ['inventory', 'lots', lotId],
     enabled: lotId !== undefined,
-    // TASK-TR-B02: wire to GET /lots/{id} once the BE endpoint exists.
-    queryFn: () => fakeFetch(() => (lotId ? (findLot(lotId) ?? null) : null)),
+    queryFn: async (): Promise<LotForView | null> =>
+      IS_LIVE
+        ? await liveGetLot(lotId as string)
+        : await fakeFetch(() => (lotId ? (findLot(lotId) ?? null) : null)),
   });
 }
 
