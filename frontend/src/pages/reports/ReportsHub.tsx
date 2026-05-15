@@ -131,9 +131,13 @@ export default function ReportsHub() {
   const [itc04Period, setItc04Period] = useState<string>(currentPeriod());
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  // CSV/Excel export is wired live (per-tab). PDF "Print" via WeasyPrint
+  // is a v2 polish — operators use browser-print (Cmd-P) today and the
+  // CSV/Excel exports are the system of record for filing. Replace
+  // when a customer asks for branded PDF report rendering.
   const print = useComingSoon({
     feature: 'Print report (PDF)',
-    task: 'TASK-046 (Reports → CSV/PDF)',
+    task: 'v2 (PDF report rendering — CSV/Excel already live)',
   });
   const exportEndpoint = reportExportEndpoint(tab, gstr1Period);
   const exportSupported = exportEndpoint !== null;

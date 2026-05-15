@@ -2,7 +2,6 @@ import { Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
-import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatINRCompact } from '@/lib/format';
@@ -29,10 +28,6 @@ export default function PurchaseOrderList() {
   const supplierLookup = new Map<string, string>(
     (partiesQuery.data ?? []).map((p) => [p.party_id, p.name]),
   );
-  const receiveGrn = useComingSoon({
-    feature: 'Receive GRN against PO',
-    task: 'TASK-CUT-202 (GRN FE wired live)',
-  });
 
   return (
     <div className="space-y-4">
@@ -44,7 +39,7 @@ export default function PurchaseOrderList() {
             : `${poQuery.data?.length ?? 0} POs · 3-way match status per row`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" {...receiveGrn.triggerProps}>
+          <Button variant="outline" onClick={() => navigate('/purchase/grns/new')}>
             Receive GRN
           </Button>
           <Button onClick={() => navigate('/purchase/new')}>
@@ -53,7 +48,6 @@ export default function PurchaseOrderList() {
           </Button>
         </div>
       </header>
-      {receiveGrn.dialog}
 
       <div
         className="overflow-x-auto"

@@ -9,13 +9,19 @@ import { KANBAN_COLUMNS, type ManufacturingOrder, type MoStage } from '@/lib/moc
 
 export default function ManufacturingPipeline() {
   const moQuery = useManufacturingOrders();
+  // MO backend shipped in TASK-TR-A05 (create + lifecycle). The MO FE
+  // create form + list view are not yet planned in the trial backlog —
+  // when an Manufacturing-UI task is added (likely a TR-A-series follow-
+  // up after A11 finished-goods receipt), wire these buttons to the
+  // real screens. Until then, keep the coming-soon affordance so the
+  // pipeline page doesn't lie about a working flow.
   const viewList = useComingSoon({
     feature: 'MO list view',
-    task: 'TASK-052 (MO list + filters)',
+    task: 'TASK-TR-A-FE (MO list + filters — not yet scheduled)',
   });
   const newMo = useComingSoon({
     feature: 'New manufacturing order',
-    task: 'TASK-050 (MO create + BOM)',
+    task: 'TASK-TR-A-FE (MO create form — not yet scheduled)',
   });
 
   const grouped = useMemo(() => {
