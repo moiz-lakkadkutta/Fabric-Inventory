@@ -1,4 +1,4 @@
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Lock, RefreshCw } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { ApiError } from '@/lib/api/errors';
@@ -19,6 +19,14 @@ interface QueryErrorProps {
    */
   error?: unknown;
   onRetry?: () => void;
+  /**
+   * Optional explicit permission key. When the BE returns
+   * PERMISSION_DENIED, this surfaces in the body as a concrete
+   * `permission.key` so the user/admin knows exactly what to grant.
+   * If omitted, the component falls back to `error.detail` (which the
+   * BE typically populates with the missing permission name).
+   */
+  permission?: string;
 }
 
 /*
@@ -37,12 +45,16 @@ interface QueryErrorProps {
   copy; in practice they should just pass `error` and let the component
   derive everything.
 */
-export function QueryError({ title, detail, error, onRetry }: QueryErrorProps) {
-  const derived = deriveCopy({ title, detail, error });
+export function QueryError({ title, detail, error, onRetry, permission }: QueryErrorProps) {
+  const derived = deriveCopy({ title, detail, error, permission });
+  const Icon = derived.kind === 'permission' ? Lock : AlertTriangle;
+  const iconBg = derived.kind === 'permission' ? 'var(--warning-subtle)' : 'var(--danger-subtle)';
+  const iconFg = derived.kind === 'permission' ? 'var(--warning-text)' : 'var(--danger)';
 
   return (
     <div
       role="alert"
+      data-testid={derived.kind === 'permission' ? 'query-error-permission' : 'query-error-generic'}
       className="mx-auto flex max-w-md flex-col items-center px-4 py-12 text-center"
     >
       <span
@@ -52,12 +64,12 @@ export function QueryError({ title, detail, error, onRetry }: QueryErrorProps) {
           width: 48,
           height: 48,
           borderRadius: 999,
-          background: 'var(--danger-subtle)',
-          color: 'var(--danger)',
+          background: iconBg,
+          color: iconFg,
           marginBottom: 14,
         }}
       >
-        <AlertTriangle size={20} />
+        <Icon size={20} />
       </span>
       <h3 className="m-0" style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
         {derived.title}
@@ -93,24 +105,43 @@ interface DerivedCopy {
   title: string;
   detail: string;
   requestId?: string;
+  kind: 'permission' | 'generic';
 }
 
 function deriveCopy({
   title,
   detail,
   error,
+  permission,
 }: {
   title?: string;
   detail?: string;
   error?: unknown;
+  permission?: string;
 }): DerivedCopy {
   if (error instanceof ApiError) {
+    // PERMISSION_DENIED gets a tailored, actionable message that tells
+    // the user what to ask an admin for. The BE typically encodes the
+    // missing permission key in `detail` (e.g. "inventory.lot.read");
+    // callers may also pass `permission` explicitly for pages that
+    // know which gate the endpoint sits behind.
+    if (error.code === 'PERMISSION_DENIED' || error.status === 403) {
+      const key = permission ?? extractPermissionKey(error.detail);
+      const keyClause = key ? ` "${key}"` : '';
+      return {
+        title: title ?? "You don't have permission to view this",
+        detail: detail ?? `Ask an admin to grant the${keyClause} permission and reload this page.`,
+        requestId: error.request_id,
+        kind: 'permission',
+      };
+    }
     const envelopeDetail =
       error.detail || error.title || 'The server returned an error without a description.';
     return {
       title: title ?? "Couldn't load this view",
       detail: detail ?? `${error.code}: ${envelopeDetail}`,
       requestId: error.request_id,
+      kind: 'generic',
     };
   }
 
@@ -119,6 +150,7 @@ function deriveCopy({
     return {
       title: title ?? 'Network error',
       detail: detail ?? "Couldn't reach the server. Try again.",
+      kind: 'generic',
     };
   }
 
@@ -127,5 +159,19 @@ function deriveCopy({
   return {
     title: title ?? "Couldn't load this view",
     detail: detail ?? 'Something went wrong. Try again, or refresh the page if it persists.',
+    kind: 'generic',
   };
+}
+
+/**
+ * Pull a `foo.bar.baz`-shaped permission key out of free-form BE detail
+ * text. The BE's permission_denied helper formats `detail` as e.g.
+ * "Requires permission: inventory.lot.read" — we extract the dotted
+ * token so the UI can show it verbatim. Returns undefined when the
+ * detail is empty or doesn't contain a dotted token.
+ */
+function extractPermissionKey(detail: string | undefined): string | undefined {
+  if (!detail) return undefined;
+  const match = detail.match(/[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+/);
+  return match ? match[0] : undefined;
 }

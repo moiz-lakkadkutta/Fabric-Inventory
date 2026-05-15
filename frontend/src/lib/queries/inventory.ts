@@ -9,7 +9,14 @@
  *
  * Fields that the BE doesn't yet expose on stock-summary:
  *   - `reorder`: no reorder-level column on `item` today; carried as 0
- *     until a future masters/items task adds it.
+ *     until a future masters/items task adds it. The InventoryList
+ *     page renders a "Low stock" pill when `on_hand < reorder` and
+ *     reorder > 0, so the pill stays dormant in live mode and lights
+ *     up in mock/click-dummy mode where the fixture has thresholds.
+ *     TASK-TR-B06 picked path (b) — FE-only signal, no schema change —
+ *     because adding a column requires Moiz sign-off per CLAUDE.md
+ *     Ask-vs-Decide. When the column lands, set `reorder` from the
+ *     BE row here and the visual signal flips on automatically.
  *   - `mix`: stage-by-stage breakdown is a per-lot concept and there's
  *     no aggregated endpoint yet; left empty so `<StatusMixBar>` simply
  *     renders an empty bar.
