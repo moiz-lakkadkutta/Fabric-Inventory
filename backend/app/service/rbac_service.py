@@ -120,6 +120,20 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
         "approve",
         "Approve migration uploads (commits parties + opening balances)",
     ),
+    # Manufacturing masters (TASK-TR-A02) — Design, Operation Master,
+    # Cost Centre CRUD. BOM + routing + MO permissions land in A03/A04+.
+    ("manufacturing.design", "create", "Create designs"),
+    ("manufacturing.design", "update", "Update designs"),
+    ("manufacturing.design", "read", "View designs"),
+    ("manufacturing.design", "delete", "Soft-delete designs"),
+    ("manufacturing.operation_master", "create", "Create operation masters"),
+    ("manufacturing.operation_master", "update", "Update operation masters"),
+    ("manufacturing.operation_master", "read", "View operation masters"),
+    ("manufacturing.operation_master", "delete", "Soft-delete operation masters"),
+    ("manufacturing.cost_centre", "create", "Create cost centres"),
+    ("manufacturing.cost_centre", "update", "Update cost centres"),
+    ("manufacturing.cost_centre", "read", "View cost centres"),
+    ("manufacturing.cost_centre", "delete", "Soft-delete cost centres"),
 )
 
 
@@ -162,6 +176,14 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "dashboard.read",
                 "jobwork.order.read",
                 "jobwork.report.read",
+                # Manufacturing masters — Accountants need read everywhere
+                # (cost-centre ties to GL postings) but no create/update.
+                "manufacturing.design.read",
+                "manufacturing.operation_master.read",
+                "manufacturing.cost_centre.read",
+                "manufacturing.cost_centre.create",
+                "manufacturing.cost_centre.update",
+                "manufacturing.cost_centre.delete",
             }
         ),
     ),
@@ -186,6 +208,11 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "inventory.stock.read",
                 "sales.order.read",
                 "dashboard.read",
+                # Manufacturing masters — Salesperson needs to look up
+                # designs + operations when quoting, but no write and no
+                # cost-centre visibility (financial classification).
+                "manufacturing.design.read",
+                "manufacturing.operation_master.read",
             }
         ),
     ),
@@ -226,6 +253,19 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "jobwork.order.create",
                 "jobwork.order.read",
                 "jobwork.report.read",
+                # Manufacturing masters — Production Manager runs the
+                # shop floor: create/update Designs + OperationMasters;
+                # cost-centre is read-only (Accountant / Owner edits the
+                # financial side).
+                "manufacturing.design.create",
+                "manufacturing.design.update",
+                "manufacturing.design.read",
+                "manufacturing.design.delete",
+                "manufacturing.operation_master.create",
+                "manufacturing.operation_master.update",
+                "manufacturing.operation_master.read",
+                "manufacturing.operation_master.delete",
+                "manufacturing.cost_centre.read",
             }
         ),
     ),
