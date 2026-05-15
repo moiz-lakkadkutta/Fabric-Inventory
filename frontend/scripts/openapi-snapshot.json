@@ -6214,6 +6214,525 @@
         "title": "MigrationResponse",
         "type": "object"
       },
+      "MoCreateRequest": {
+        "properties": {
+          "bom_id": {
+            "format": "uuid",
+            "title": "Bom Id",
+            "type": "string"
+          },
+          "design_id": {
+            "format": "uuid",
+            "title": "Design Id",
+            "type": "string"
+          },
+          "finished_item_id": {
+            "format": "uuid",
+            "title": "Finished Item Id",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "planned_end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned End Date"
+          },
+          "planned_start_date": {
+            "format": "date",
+            "title": "Planned Start Date",
+            "type": "string"
+          },
+          "qty_to_produce": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Qty To Produce"
+          },
+          "routing_id": {
+            "format": "uuid",
+            "title": "Routing Id",
+            "type": "string"
+          },
+          "series": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series"
+          }
+        },
+        "required": [
+          "firm_id",
+          "design_id",
+          "finished_item_id",
+          "bom_id",
+          "routing_id",
+          "qty_to_produce",
+          "planned_start_date"
+        ],
+        "title": "MoCreateRequest",
+        "type": "object"
+      },
+      "MoListItem": {
+        "description": "List view: lighter than ``MoResponse`` \u2014 no nested children.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "design_id": {
+            "format": "uuid",
+            "title": "Design Id",
+            "type": "string"
+          },
+          "finished_item_id": {
+            "format": "uuid",
+            "title": "Finished Item Id",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "manufacturing_order_id": {
+            "format": "uuid",
+            "title": "Manufacturing Order Id",
+            "type": "string"
+          },
+          "mo_date": {
+            "format": "date",
+            "title": "Mo Date",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "planned_qty": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Planned Qty",
+            "type": "string"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MoStatus"
+          }
+        },
+        "required": [
+          "manufacturing_order_id",
+          "org_id",
+          "firm_id",
+          "series",
+          "number",
+          "design_id",
+          "finished_item_id",
+          "status",
+          "mo_date",
+          "planned_qty",
+          "created_at"
+        ],
+        "title": "MoListItem",
+        "type": "object"
+      },
+      "MoListResponse": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MoListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset",
+          "count",
+          "total_count"
+        ],
+        "title": "MoListResponse",
+        "type": "object"
+      },
+      "MoMaterialLineResponse": {
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "manufacturing_order_id": {
+            "format": "uuid",
+            "title": "Manufacturing Order Id",
+            "type": "string"
+          },
+          "mo_material_line_id": {
+            "format": "uuid",
+            "title": "Mo Material Line Id",
+            "type": "string"
+          },
+          "qty_issued": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Issued",
+            "type": "string"
+          },
+          "qty_required": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Required",
+            "type": "string"
+          },
+          "qty_scrap": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Scrap",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mo_material_line_id",
+          "manufacturing_order_id",
+          "item_id",
+          "qty_required",
+          "qty_issued",
+          "qty_scrap"
+        ],
+        "title": "MoMaterialLineResponse",
+        "type": "object"
+      },
+      "MoOperationResponse": {
+        "properties": {
+          "executor": {
+            "title": "Executor",
+            "type": "string"
+          },
+          "manufacturing_order_id": {
+            "format": "uuid",
+            "title": "Manufacturing Order Id",
+            "type": "string"
+          },
+          "mo_operation_id": {
+            "format": "uuid",
+            "title": "Mo Operation Id",
+            "type": "string"
+          },
+          "operation_master_id": {
+            "format": "uuid",
+            "title": "Operation Master Id",
+            "type": "string"
+          },
+          "operation_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Sequence"
+          },
+          "qty_in": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qty In"
+          },
+          "qty_out": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qty Out"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MoOperationState"
+          }
+        },
+        "required": [
+          "mo_operation_id",
+          "manufacturing_order_id",
+          "operation_master_id",
+          "operation_sequence",
+          "state",
+          "executor",
+          "qty_in",
+          "qty_out"
+        ],
+        "title": "MoOperationResponse",
+        "type": "object"
+      },
+      "MoOperationState": {
+        "description": "Per-operation lifecycle \u2014 `mo_operation_state` Postgres enum.\n\nAdded by the forward `ALTER TABLE mo_operation` block; richer than the\nlegacy free-text `status` column, which is kept in parallel.",
+        "enum": [
+          "PENDING",
+          "READY",
+          "DISPATCHED",
+          "ACKNOWLEDGED",
+          "IN_PROGRESS",
+          "RECEIVED_PARTIAL",
+          "RECEIVED_FULL",
+          "QC_PENDING",
+          "REWORK",
+          "CLOSED",
+          "SKIPPED",
+          "CANCELLED"
+        ],
+        "title": "MoOperationState",
+        "type": "string"
+      },
+      "MoResponse": {
+        "properties": {
+          "bom_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bom Id"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "design_id": {
+            "format": "uuid",
+            "title": "Design Id",
+            "type": "string"
+          },
+          "finished_item_id": {
+            "format": "uuid",
+            "title": "Finished Item Id",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "manufacturing_order_id": {
+            "format": "uuid",
+            "title": "Manufacturing Order Id",
+            "type": "string"
+          },
+          "material_lines": {
+            "items": {
+              "$ref": "#/components/schemas/MoMaterialLineResponse"
+            },
+            "title": "Material Lines",
+            "type": "array"
+          },
+          "mo_date": {
+            "format": "date",
+            "title": "Mo Date",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/MoOperationResponse"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "planned_qty": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Planned Qty",
+            "type": "string"
+          },
+          "produced_qty": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Produced Qty"
+          },
+          "routing_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Routing Id"
+          },
+          "scrap_qty": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scrap Qty"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MoStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "manufacturing_order_id",
+          "org_id",
+          "firm_id",
+          "series",
+          "number",
+          "design_id",
+          "finished_item_id",
+          "bom_id",
+          "routing_id",
+          "status",
+          "mo_date",
+          "planned_qty",
+          "produced_qty",
+          "scrap_qty",
+          "closed_at",
+          "created_at",
+          "updated_at",
+          "deleted_at",
+          "material_lines",
+          "operations"
+        ],
+        "title": "MoResponse",
+        "type": "object"
+      },
+      "MoStatus": {
+        "description": "MO header lifecycle \u2014 `mo_status` Postgres enum.",
+        "enum": [
+          "DRAFT",
+          "RELEASED",
+          "IN_PROGRESS",
+          "COMPLETED",
+          "CLOSED"
+        ],
+        "title": "MoStatus",
+        "type": "string"
+      },
       "OperationMasterCreateRequest": {
         "properties": {
           "code": {
@@ -16254,6 +16773,455 @@
         "tags": [
           "inventory",
           "lot"
+        ]
+      }
+    },
+    "/manufacturing/mo": {
+      "get": {
+        "operationId": "list_mos_manufacturing_mo_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "firm_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Firm Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MoStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "design_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Design Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List manufacturing orders (RLS-scoped to current org)",
+        "tags": [
+          "manufacturing",
+          "mo"
+        ]
+      },
+      "post": {
+        "operationId": "create_mo_manufacturing_mo_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a manufacturing order (materializes lines from BOM + ops from routing)",
+        "tags": [
+          "manufacturing",
+          "mo"
+        ]
+      }
+    },
+    "/manufacturing/mo/{mo_id}": {
+      "get": {
+        "operationId": "get_mo_manufacturing_mo__mo_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get a manufacturing order by id (with material lines + operations)",
+        "tags": [
+          "manufacturing",
+          "mo"
+        ]
+      }
+    },
+    "/manufacturing/mo/{mo_id}/close": {
+      "post": {
+        "operationId": "close_mo_manufacturing_mo__mo_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close (COMPLETED \u2192 CLOSED) a manufacturing order \u2014 MO becomes immutable",
+        "tags": [
+          "manufacturing",
+          "mo"
+        ]
+      }
+    },
+    "/manufacturing/mo/{mo_id}/complete": {
+      "post": {
+        "operationId": "complete_mo_manufacturing_mo__mo_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete (IN_PROGRESS \u2192 COMPLETED) a manufacturing order",
+        "tags": [
+          "manufacturing",
+          "mo"
+        ]
+      }
+    },
+    "/manufacturing/mo/{mo_id}/release": {
+      "post": {
+        "operationId": "release_mo_manufacturing_mo__mo_id__release_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Release a DRAFT manufacturing order",
+        "tags": [
+          "manufacturing",
+          "mo"
+        ]
+      }
+    },
+    "/manufacturing/mo/{mo_id}/start": {
+      "post": {
+        "operationId": "start_mo_manufacturing_mo__mo_id__start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start (RELEASED \u2192 IN_PROGRESS) a manufacturing order",
+        "tags": [
+          "manufacturing",
+          "mo"
         ]
       }
     },

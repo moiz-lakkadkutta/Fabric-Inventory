@@ -1132,6 +1132,109 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/manufacturing/mo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List manufacturing orders (RLS-scoped to current org) */
+        get: operations["list_mos_manufacturing_mo_get"];
+        put?: never;
+        /** Create a manufacturing order (materializes lines from BOM + ops from routing) */
+        post: operations["create_mo_manufacturing_mo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo/{mo_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a manufacturing order by id (with material lines + operations) */
+        get: operations["get_mo_manufacturing_mo__mo_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo/{mo_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close (COMPLETED → CLOSED) a manufacturing order — MO becomes immutable */
+        post: operations["close_mo_manufacturing_mo__mo_id__close_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo/{mo_id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Complete (IN_PROGRESS → COMPLETED) a manufacturing order */
+        post: operations["complete_mo_manufacturing_mo__mo_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo/{mo_id}/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Release a DRAFT manufacturing order */
+        post: operations["release_mo_manufacturing_mo__mo_id__release_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo/{mo_id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start (RELEASED → IN_PROGRESS) a manufacturing order */
+        post: operations["start_mo_manufacturing_mo__mo_id__start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/operation-masters": {
         parameters: {
             query?: never;
@@ -4369,6 +4472,240 @@ export interface components {
             /** Uploaded By */
             uploaded_by: string | null;
         };
+        /** MoCreateRequest */
+        MoCreateRequest: {
+            /**
+             * Bom Id
+             * Format: uuid
+             */
+            bom_id: string;
+            /**
+             * Design Id
+             * Format: uuid
+             */
+            design_id: string;
+            /**
+             * Finished Item Id
+             * Format: uuid
+             */
+            finished_item_id: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
+            /** Planned End Date */
+            planned_end_date?: string | null;
+            /**
+             * Planned Start Date
+             * Format: date
+             */
+            planned_start_date: string;
+            /** Qty To Produce */
+            qty_to_produce: number | string;
+            /**
+             * Routing Id
+             * Format: uuid
+             */
+            routing_id: string;
+            /** Series */
+            series?: string | null;
+        };
+        /**
+         * MoListItem
+         * @description List view: lighter than ``MoResponse`` — no nested children.
+         */
+        MoListItem: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Design Id
+             * Format: uuid
+             */
+            design_id: string;
+            /**
+             * Finished Item Id
+             * Format: uuid
+             */
+            finished_item_id: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * Manufacturing Order Id
+             * Format: uuid
+             */
+            manufacturing_order_id: string;
+            /**
+             * Mo Date
+             * Format: date
+             */
+            mo_date: string;
+            /** Number */
+            number: string;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /** Planned Qty */
+            planned_qty: string;
+            /** Series */
+            series: string;
+            status: components["schemas"]["MoStatus"];
+        };
+        /** MoListResponse */
+        MoListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["MoListItem"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total Count */
+            total_count: number;
+        };
+        /** MoMaterialLineResponse */
+        MoMaterialLineResponse: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /**
+             * Manufacturing Order Id
+             * Format: uuid
+             */
+            manufacturing_order_id: string;
+            /**
+             * Mo Material Line Id
+             * Format: uuid
+             */
+            mo_material_line_id: string;
+            /** Qty Issued */
+            qty_issued: string;
+            /** Qty Required */
+            qty_required: string;
+            /** Qty Scrap */
+            qty_scrap: string;
+        };
+        /** MoOperationResponse */
+        MoOperationResponse: {
+            /** Executor */
+            executor: string;
+            /**
+             * Manufacturing Order Id
+             * Format: uuid
+             */
+            manufacturing_order_id: string;
+            /**
+             * Mo Operation Id
+             * Format: uuid
+             */
+            mo_operation_id: string;
+            /**
+             * Operation Master Id
+             * Format: uuid
+             */
+            operation_master_id: string;
+            /** Operation Sequence */
+            operation_sequence: number | null;
+            /** Qty In */
+            qty_in: string | null;
+            /** Qty Out */
+            qty_out: string | null;
+            state: components["schemas"]["MoOperationState"];
+        };
+        /**
+         * MoOperationState
+         * @description Per-operation lifecycle — `mo_operation_state` Postgres enum.
+         *
+         *     Added by the forward `ALTER TABLE mo_operation` block; richer than the
+         *     legacy free-text `status` column, which is kept in parallel.
+         * @enum {string}
+         */
+        MoOperationState: "PENDING" | "READY" | "DISPATCHED" | "ACKNOWLEDGED" | "IN_PROGRESS" | "RECEIVED_PARTIAL" | "RECEIVED_FULL" | "QC_PENDING" | "REWORK" | "CLOSED" | "SKIPPED" | "CANCELLED";
+        /** MoResponse */
+        MoResponse: {
+            /** Bom Id */
+            bom_id: string | null;
+            /** Closed At */
+            closed_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Deleted At */
+            deleted_at: string | null;
+            /**
+             * Design Id
+             * Format: uuid
+             */
+            design_id: string;
+            /**
+             * Finished Item Id
+             * Format: uuid
+             */
+            finished_item_id: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * Manufacturing Order Id
+             * Format: uuid
+             */
+            manufacturing_order_id: string;
+            /** Material Lines */
+            material_lines: components["schemas"]["MoMaterialLineResponse"][];
+            /**
+             * Mo Date
+             * Format: date
+             */
+            mo_date: string;
+            /** Number */
+            number: string;
+            /** Operations */
+            operations: components["schemas"]["MoOperationResponse"][];
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /** Planned Qty */
+            planned_qty: string;
+            /** Produced Qty */
+            produced_qty: string | null;
+            /** Routing Id */
+            routing_id: string | null;
+            /** Scrap Qty */
+            scrap_qty: string | null;
+            /** Series */
+            series: string;
+            status: components["schemas"]["MoStatus"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * MoStatus
+         * @description MO header lifecycle — `mo_status` Postgres enum.
+         * @enum {string}
+         */
+        MoStatus: "DRAFT" | "RELEASED" | "IN_PROGRESS" | "COMPLETED" | "CLOSED";
         /** OperationMasterCreateRequest */
         OperationMasterCreateRequest: {
             /** Code */
@@ -8927,6 +9264,239 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LotResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_mos_manufacturing_mo_get: {
+        parameters: {
+            query?: {
+                firm_id?: string | null;
+                status?: components["schemas"]["MoStatus"] | null;
+                design_id?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_mo_manufacturing_mo_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_mo_manufacturing_mo__mo_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_mo_manufacturing_mo__mo_id__close_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_mo_manufacturing_mo__mo_id__complete_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    release_mo_manufacturing_mo__mo_id__release_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_mo_manufacturing_mo__mo_id__start_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoResponse"];
                 };
             };
             /** @description Validation Error */

@@ -150,6 +150,17 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     # quoting + cost roll-up) without write access.
     ("manufacturing.routing", "write", "Create / update / soft-delete routings"),
     ("manufacturing.routing", "read", "View routings and their edges"),
+    # Manufacturing Order (TASK-TR-A05) — MO header lifecycle. Each
+    # mutation (create / release / start / complete / close) shares the
+    # ``write`` permission; ``read`` is split so Accountants /
+    # Salespeople can view MOs (for cost-roll-up + production-status
+    # visibility) without write access.
+    (
+        "manufacturing.mo",
+        "write",
+        "Create / release / start / complete / close manufacturing orders",
+    ),
+    ("manufacturing.mo", "read", "View manufacturing orders and their lines + operations"),
 )
 
 
@@ -209,6 +220,9 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # Routing (A04) — Accountant reads only; routing edges
                 # tie to per-operation cost accrual on the MO ledger.
                 "manufacturing.routing.read",
+                # MO (A05) — Accountant reads only; cost roll-up + WIP
+                # ledger drilldown need MO visibility, no editing.
+                "manufacturing.mo.read",
             }
         ),
     ),
@@ -313,6 +327,10 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # lifecycle (create / replace edges / soft-delete + read).
                 "manufacturing.routing.write",
                 "manufacturing.routing.read",
+                # MO (A05) — Production Manager owns the MO lifecycle:
+                # create / release / start / complete / close + read.
+                "manufacturing.mo.write",
+                "manufacturing.mo.read",
             }
         ),
     ),

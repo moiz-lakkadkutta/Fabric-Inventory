@@ -24,7 +24,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
-from app.models.manufacturing import OperationType, RoutingEdgeType
+from app.models.manufacturing import MoOperationState, MoStatus, OperationType, RoutingEdgeType
 from app.models.masters import CostCentreType, UomType
 
 # ──────────────────────────────────────────────────────────────────────
@@ -285,6 +285,97 @@ class RoutingListResponse(BaseModel):
     total_count: int
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Manufacturing Order (A05) — header + material lines + operations.
+# Created in DRAFT; lifecycle methods flip status through RELEASED →
+# IN_PROGRESS → COMPLETED → CLOSED. ``qty_to_produce`` is Decimal
+# (NUMERIC(15,4)); dates are plain ``date``.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class MoCreateRequest(BaseModel):
+    firm_id: uuid.UUID
+    design_id: uuid.UUID
+    finished_item_id: uuid.UUID
+    bom_id: uuid.UUID
+    routing_id: uuid.UUID
+    qty_to_produce: Decimal = Field(gt=Decimal("0"))
+    planned_start_date: datetime.date
+    planned_end_date: datetime.date | None = None
+    narration: str | None = Field(default=None, max_length=2000)
+    # ``series`` defaults to ``"MO"`` server-side; A future task can let
+    # the user select a per-firm fiscal-year-stamped series. Limit kept
+    # tight to avoid surprises in the DB unique key.
+    series: str | None = Field(default=None, max_length=50)
+
+
+class MoMaterialLineResponse(BaseModel):
+    mo_material_line_id: uuid.UUID
+    manufacturing_order_id: uuid.UUID
+    item_id: uuid.UUID
+    qty_required: Decimal
+    qty_issued: Decimal
+    qty_scrap: Decimal
+
+
+class MoOperationResponse(BaseModel):
+    mo_operation_id: uuid.UUID
+    manufacturing_order_id: uuid.UUID
+    operation_master_id: uuid.UUID
+    operation_sequence: int | None
+    state: MoOperationState
+    executor: str
+    qty_in: Decimal | None
+    qty_out: Decimal | None
+
+
+class MoResponse(BaseModel):
+    manufacturing_order_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    series: str
+    number: str
+    design_id: uuid.UUID
+    finished_item_id: uuid.UUID
+    bom_id: uuid.UUID | None
+    routing_id: uuid.UUID | None
+    status: MoStatus
+    mo_date: datetime.date
+    planned_qty: Decimal
+    produced_qty: Decimal | None
+    scrap_qty: Decimal | None
+    closed_at: datetime.datetime | None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+    deleted_at: datetime.datetime | None
+    material_lines: list[MoMaterialLineResponse]
+    operations: list[MoOperationResponse]
+
+
+class MoListItem(BaseModel):
+    """List view: lighter than ``MoResponse`` — no nested children."""
+
+    manufacturing_order_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    series: str
+    number: str
+    design_id: uuid.UUID
+    finished_item_id: uuid.UUID
+    status: MoStatus
+    mo_date: datetime.date
+    planned_qty: Decimal
+    created_at: datetime.datetime
+
+
+class MoListResponse(BaseModel):
+    items: list[MoListItem]
+    limit: int
+    offset: int
+    count: int
+    total_count: int
+
+
 __all__ = [
     "BomCreateRequest",
     "BomLineInput",
@@ -299,6 +390,12 @@ __all__ = [
     "DesignListResponse",
     "DesignResponse",
     "DesignUpdateRequest",
+    "MoCreateRequest",
+    "MoListItem",
+    "MoListResponse",
+    "MoMaterialLineResponse",
+    "MoOperationResponse",
+    "MoResponse",
     "OperationMasterCreateRequest",
     "OperationMasterListResponse",
     "OperationMasterResponse",
