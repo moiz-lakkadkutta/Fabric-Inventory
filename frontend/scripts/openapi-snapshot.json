@@ -5823,6 +5823,318 @@
         "title": "LotResponse",
         "type": "object"
       },
+      "MaterialIssueCreateRequest": {
+        "properties": {
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "issue_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue Date"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialIssueLineInput"
+            },
+            "minItems": 1,
+            "title": "Lines",
+            "type": "array"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "series": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series"
+          }
+        },
+        "required": [
+          "firm_id",
+          "lines"
+        ],
+        "title": "MaterialIssueCreateRequest",
+        "type": "object"
+      },
+      "MaterialIssueLineInput": {
+        "description": "One issue line in a ``POST /manufacturing/mo/{id}/issue-materials``\npayload. ``qty_to_issue`` is a positive Decimal in the item's\nprimary_uom; ``lot_id`` is optional and only enforced when the\nunderlying stock is lot-tracked.",
+        "properties": {
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "mo_material_line_id": {
+            "format": "uuid",
+            "title": "Mo Material Line Id",
+            "type": "string"
+          },
+          "qty_to_issue": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Qty To Issue"
+          }
+        },
+        "required": [
+          "mo_material_line_id",
+          "qty_to_issue"
+        ],
+        "title": "MaterialIssueLineInput",
+        "type": "object"
+      },
+      "MaterialIssueLineResponse": {
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "line_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Line Value",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "material_issue_id": {
+            "format": "uuid",
+            "title": "Material Issue Id",
+            "type": "string"
+          },
+          "material_issue_line_id": {
+            "format": "uuid",
+            "title": "Material Issue Line Id",
+            "type": "string"
+          },
+          "mo_material_line_id": {
+            "format": "uuid",
+            "title": "Mo Material Line Id",
+            "type": "string"
+          },
+          "qty_issued": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Issued",
+            "type": "string"
+          },
+          "stock_ledger_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Ledger Id"
+          },
+          "unit_cost": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Cost"
+          }
+        },
+        "required": [
+          "material_issue_line_id",
+          "material_issue_id",
+          "mo_material_line_id",
+          "item_id",
+          "lot_id",
+          "qty_issued",
+          "unit_cost",
+          "line_value",
+          "stock_ledger_id"
+        ],
+        "title": "MaterialIssueLineResponse",
+        "type": "object"
+      },
+      "MaterialIssueListResponse": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialIssueResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset",
+          "count",
+          "total_count"
+        ],
+        "title": "MaterialIssueListResponse",
+        "type": "object"
+      },
+      "MaterialIssueResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "issue_date": {
+            "format": "date",
+            "title": "Issue Date",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialIssueLineResponse"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "manufacturing_order_id": {
+            "format": "uuid",
+            "title": "Manufacturing Order Id",
+            "type": "string"
+          },
+          "material_issue_id": {
+            "format": "uuid",
+            "title": "Material Issue Id",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "voucher_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voucher Id"
+          }
+        },
+        "required": [
+          "material_issue_id",
+          "org_id",
+          "firm_id",
+          "manufacturing_order_id",
+          "series",
+          "number",
+          "issue_date",
+          "narration",
+          "voucher_id",
+          "created_at",
+          "updated_at",
+          "lines"
+        ],
+        "title": "MaterialIssueResponse",
+        "type": "object"
+      },
       "MeFirmRef": {
         "description": "Slim firm reference exposed via /auth/me for the firm switcher.",
         "properties": {
@@ -11703,7 +12015,8 @@
           "CONTRA",
           "DEBIT_NOTE",
           "CREDIT_NOTE",
-          "OPENING_BAL"
+          "OPENING_BAL",
+          "MATERIAL_ISSUE"
         ],
         "title": "VoucherType",
         "type": "string"
@@ -16769,6 +17082,50 @@
         ]
       }
     },
+    "/manufacturing/material-issues/{issue_id}": {
+      "get": {
+        "operationId": "get_material_issue_manufacturing_material_issues__issue_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "issue_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Issue Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialIssueResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get a single material issue by id (with per-component lines)",
+        "tags": [
+          "manufacturing",
+          "material_issue"
+        ]
+      }
+    },
     "/manufacturing/mo": {
       "get": {
         "operationId": "list_mos_manufacturing_mo_get",
@@ -17092,6 +17449,160 @@
           }
         },
         "summary": "Complete (IN_PROGRESS \u2192 COMPLETED) a manufacturing order",
+        "tags": [
+          "manufacturing",
+          "mo"
+        ]
+      }
+    },
+    "/manufacturing/mo/{mo_id}/issue-materials": {
+      "post": {
+        "operationId": "issue_materials_for_mo_manufacturing_mo__mo_id__issue_materials_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaterialIssueCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialIssueResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue raw materials from stock against a released MO (DR WIP / CR Inventory)",
+        "tags": [
+          "manufacturing",
+          "mo"
+        ]
+      }
+    },
+    "/manufacturing/mo/{mo_id}/material-issues": {
+      "get": {
+        "operationId": "list_material_issues_for_mo_manufacturing_mo__mo_id__material_issues_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "firm_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Firm Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialIssueListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List material issues against an MO",
         "tags": [
           "manufacturing",
           "mo"

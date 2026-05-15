@@ -1132,6 +1132,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/manufacturing/material-issues/{issue_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a single material issue by id (with per-component lines) */
+        get: operations["get_material_issue_manufacturing_material_issues__issue_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/manufacturing/mo": {
         parameters: {
             query?: never;
@@ -1195,6 +1212,40 @@ export interface paths {
         put?: never;
         /** Complete (IN_PROGRESS → COMPLETED) a manufacturing order */
         post: operations["complete_mo_manufacturing_mo__mo_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo/{mo_id}/issue-materials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Issue raw materials from stock against a released MO (DR WIP / CR Inventory) */
+        post: operations["issue_materials_for_mo_manufacturing_mo__mo_id__issue_materials_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo/{mo_id}/material-issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List material issues against an MO */
+        get: operations["list_material_issues_for_mo_manufacturing_mo__mo_id__material_issues_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4288,6 +4339,134 @@ export interface components {
              */
             updated_at: string;
         };
+        /** MaterialIssueCreateRequest */
+        MaterialIssueCreateRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Issue Date */
+            issue_date?: string | null;
+            /** Lines */
+            lines: components["schemas"]["MaterialIssueLineInput"][];
+            /** Narration */
+            narration?: string | null;
+            /** Series */
+            series?: string | null;
+        };
+        /**
+         * MaterialIssueLineInput
+         * @description One issue line in a ``POST /manufacturing/mo/{id}/issue-materials``
+         *     payload. ``qty_to_issue`` is a positive Decimal in the item's
+         *     primary_uom; ``lot_id`` is optional and only enforced when the
+         *     underlying stock is lot-tracked.
+         */
+        MaterialIssueLineInput: {
+            /** Lot Id */
+            lot_id?: string | null;
+            /**
+             * Mo Material Line Id
+             * Format: uuid
+             */
+            mo_material_line_id: string;
+            /** Qty To Issue */
+            qty_to_issue: number | string;
+        };
+        /** MaterialIssueLineResponse */
+        MaterialIssueLineResponse: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Line Value */
+            line_value: string;
+            /** Lot Id */
+            lot_id: string | null;
+            /**
+             * Material Issue Id
+             * Format: uuid
+             */
+            material_issue_id: string;
+            /**
+             * Material Issue Line Id
+             * Format: uuid
+             */
+            material_issue_line_id: string;
+            /**
+             * Mo Material Line Id
+             * Format: uuid
+             */
+            mo_material_line_id: string;
+            /** Qty Issued */
+            qty_issued: string;
+            /** Stock Ledger Id */
+            stock_ledger_id: string | null;
+            /** Unit Cost */
+            unit_cost: string | null;
+        };
+        /** MaterialIssueListResponse */
+        MaterialIssueListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["MaterialIssueResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total Count */
+            total_count: number;
+        };
+        /** MaterialIssueResponse */
+        MaterialIssueResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * Issue Date
+             * Format: date
+             */
+            issue_date: string;
+            /** Lines */
+            lines: components["schemas"]["MaterialIssueLineResponse"][];
+            /**
+             * Manufacturing Order Id
+             * Format: uuid
+             */
+            manufacturing_order_id: string;
+            /**
+             * Material Issue Id
+             * Format: uuid
+             */
+            material_issue_id: string;
+            /** Narration */
+            narration: string | null;
+            /** Number */
+            number: string;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /** Series */
+            series: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Voucher Id */
+            voucher_id: string | null;
+        };
         /**
          * MeFirmRef
          * @description Slim firm reference exposed via /auth/me for the firm switcher.
@@ -6560,7 +6739,7 @@ export interface components {
          * VoucherType
          * @enum {string}
          */
-        VoucherType: "SALES_INVOICE" | "PURCHASE_INVOICE" | "PAYMENT" | "RECEIPT" | "JOURNAL" | "CONTRA" | "DEBIT_NOTE" | "CREDIT_NOTE" | "OPENING_BAL";
+        VoucherType: "SALES_INVOICE" | "PURCHASE_INVOICE" | "PAYMENT" | "RECEIPT" | "JOURNAL" | "CONTRA" | "DEBIT_NOTE" | "CREDIT_NOTE" | "OPENING_BAL" | "MATERIAL_ISSUE";
     };
     responses: never;
     parameters: never;
@@ -9275,6 +9454,37 @@ export interface operations {
             };
         };
     };
+    get_material_issue_manufacturing_material_issues__issue_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialIssueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_mos_manufacturing_mo_get: {
         parameters: {
             query?: {
@@ -9429,6 +9639,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    issue_materials_for_mo_manufacturing_mo__mo_id__issue_materials_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MaterialIssueCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialIssueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_material_issues_for_mo_manufacturing_mo__mo_id__material_issues_get: {
+        parameters: {
+            query?: {
+                firm_id?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                mo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialIssueListResponse"];
                 };
             };
             /** @description Validation Error */

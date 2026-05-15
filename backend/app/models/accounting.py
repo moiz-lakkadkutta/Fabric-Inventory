@@ -57,6 +57,11 @@ class VoucherType(enum.StrEnum):
     DEBIT_NOTE = "DEBIT_NOTE"
     CREDIT_NOTE = "CREDIT_NOTE"
     OPENING_BAL = "OPENING_BAL"
+    # TR-A06: material issue from MO (DR WIP / CR Inventory). Added to
+    # the Postgres enum via the ``task_tr_a06_material_issue`` migration;
+    # ``ADD VALUE`` is forward-only so the migration's downgrade can't
+    # remove it (harmless after a downgrade — no rows reference it).
+    MATERIAL_ISSUE = "MATERIAL_ISSUE"
 
 
 class JournalLineType(enum.StrEnum):

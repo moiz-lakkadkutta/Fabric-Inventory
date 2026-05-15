@@ -161,6 +161,21 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
         "Create / release / start / complete / close manufacturing orders",
     ),
     ("manufacturing.mo", "read", "View manufacturing orders and their lines + operations"),
+    # Material issue (TASK-TR-A06) — money-touching outbound stock move
+    # against a released MO. ``write`` covers the POST that decrements
+    # stock + bumps ``qty_issued`` + posts the WIP voucher. Read is
+    # split so Accountants can drill into WIP postings without the write
+    # bit.
+    (
+        "manufacturing.material_issue",
+        "write",
+        "Issue raw materials from stock against a manufacturing order",
+    ),
+    (
+        "manufacturing.material_issue",
+        "read",
+        "View material issues posted against manufacturing orders",
+    ),
 )
 
 
@@ -223,6 +238,10 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # MO (A05) — Accountant reads only; cost roll-up + WIP
                 # ledger drilldown need MO visibility, no editing.
                 "manufacturing.mo.read",
+                # Material issue (A06) — Accountant reads only; needs to
+                # drill into the DR WIP / CR Inventory voucher's source
+                # MI document. No write.
+                "manufacturing.material_issue.read",
             }
         ),
     ),
@@ -331,6 +350,10 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # create / release / start / complete / close + read.
                 "manufacturing.mo.write",
                 "manufacturing.mo.read",
+                # Material issue (A06) — Production Manager owns
+                # stock-issue against MOs (drives the shop floor).
+                "manufacturing.material_issue.write",
+                "manufacturing.material_issue.read",
             }
         ),
     ),
