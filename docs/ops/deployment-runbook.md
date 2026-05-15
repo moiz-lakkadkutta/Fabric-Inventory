@@ -19,6 +19,37 @@ Run BEFORE pushing the `v0.1.0` tag. Each item is single-decision; do not skip.
 - [ ] Mailgun domain verified (SPF + DKIM live; sender test mail received).
 - [ ] Sentry project `fabric-prod` exists; DSN saved in repo secrets.
 - [ ] On-box `/opt/fabric/.env.production` populated from `ops/.env.production.example` and verified read-only to the deploy user.
+- [ ] Read **PII encryption status** below — no env var is required for v0.1.0, but you should know what the stub means before you ship.
+
+### PII encryption status (v0.1.0)
+
+`backend/app/utils/crypto.py` is a **deliberate stub** for the MVP.
+`encrypt_pii` / `decrypt_pii` UTF-8 encode/decode only — there is no
+AES-GCM, no per-org data key, no master key. PII columns (`party.gstin`,
+`party.pan`, `party.phone`, `bank_account.account_number`,
+`mfa_secret`, …) are `BYTEA` so the column shape is final, and every
+service-layer read/write already routes through these helpers (grep
+`encrypt_pii\|decrypt_pii` to verify). When the real implementation
+lands (TASK-Phase-2 per `app/utils/crypto.py` docstring), no callers
+need to change — the swap is internal to `crypto.py`.
+
+What this means for ops:
+
+- **No env var to set for v0.1.0.** There is no `PII_MASTER_KEY` /
+  `KMS_KEY_ID` / etc. in `ops/.env.production.example` because the
+  stub doesn't read one. Adding a placeholder env var now would be
+  misleading.
+- **At-rest protection comes from Postgres + the encrypted off-box
+  backup, not from this code path** in v0.1.0. The `pgdata` volume
+  lives on the CX22's encrypted disk, the daily dump
+  (`ops/backup.sh`) is `gpg --symmetric AES256`-encrypted before
+  upload to B2 (CUT-501c hardening enforces this in prod via
+  `BACKUP_FAIL_PLAINTEXT=1`), and Postgres-to-app traffic stays on
+  the docker bridge network.
+- **When Phase-2 lands**, `ops/.env.production.example` will gain a
+  `PII_MASTER_KEY` (or similar) line and this runbook section grows
+  a "rotate the key" entry. Until then, treat any claim that
+  "field-level PII encryption is on" as aspirational, not factual.
 
 ---
 
@@ -128,15 +159,21 @@ SSH in as `moiz`. Run each step deliberately; do not script-glob.
    #   - SENTRY_DSN:        from Sentry dashboard
    nano /opt/fabric/.env.production
    ```
-5. Bring up the stack manually for the first time (the deploy workflow takes over from the next push):
-   ```bash
-   cd /opt/fabric/repo
-   export ENV_FILE=/opt/fabric/.env.production
-   docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production pull
-   docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production --profile migrate run --rm migrate
-   docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production up -d
-   ```
-6. Watch Caddy provision the LE cert (~30s):
+5. **The first deploy MUST come from GitHub Actions, not from this box.** The `docker compose pull` step below depends on `ghcr.io/<owner>/fabric-api:<tag>` and `fabric-web:<tag>` already existing in GHCR, which only happens after the `Deploy` workflow's `build-api` + `build-web` jobs run. On a brand-new box those tags don't exist yet, so a manual `pull` here fails with `manifest unknown`.
+
+   Cold-start sequence:
+   1. Push the `v0.1.0` tag from your dev box (Section 6) — this triggers the workflow, which builds both images and pushes them to GHCR. The same workflow will then deploy them onto this box automatically. **Stop here for the cold start.** Skip the manual commands below — they're documented for re-bootstrap scenarios (DR / re-imaging the box) only, when the images already exist in GHCR.
+   2. Re-bootstrap path (images already in GHCR — e.g. recovering a wiped CX22):
+      ```bash
+      cd /opt/fabric/repo
+      export ENV_FILE=/opt/fabric/.env.production
+      # Optionally pin to a known-good tag instead of `latest` before pulling:
+      #   sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=v0.1.0/' /opt/fabric/.env.production
+      docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production pull
+      docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production --profile migrate run --rm migrate
+      docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production up -d
+      ```
+6. After the workflow finishes (cold-start path) or after the manual `up -d` (re-bootstrap path), watch Caddy provision the LE cert (~30s):
    ```bash
    docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production logs -f caddy
    # Look for: "certificate obtained successfully"
@@ -229,28 +266,100 @@ Two cases.
 
 ## 9a. Scheduled jobs (cron)
 
-The MVP runs sync FastAPI only — no Celery, no scheduler daemon. The
-single recurring chore is `make cleanup`, which prunes
-`password_reset_token` rows (`used > 7d` or `expires < now - 1d`) so
-the table doesn't grow unbounded. CUT-501a.
+The MVP runs sync FastAPI only — no Celery, no scheduler daemon. Two
+recurring chores:
+
+1. **`make cleanup`** — prunes `password_reset_token` rows
+   (`used > 7d` or `expires < now - 1d`) so the table doesn't grow
+   unbounded. CUT-501a.
+2. **`ops/backup.sh`** — encrypted Postgres dump → local + B2 (CUT-404).
+   Requires the host→container connectivity choice in §9b below
+   (option (a) is the documented default — the cron line uses
+   `docker compose exec`).
 
 Install on the box as a system crontab line for the deploying user:
 
 ```cron
 # m h dom mon dow  command
-30 4 * * * cd /opt/fabric && make cleanup >> /var/log/fabric-cleanup.log 2>&1
+
+# 04:30 IST — token cleanup
+30 4 * * * cd /opt/fabric/repo && make cleanup >> /var/log/fabric-cleanup.log 2>&1
+
+# 03:00 IST — encrypted Postgres dump + B2 upload (option (a), see §9b).
+# Requires ops/.env.backup to exist on the box (chmod 600) and the
+# postgres service in docker-compose.prod.yml to be up.
+0 3 * * * cd /opt/fabric/repo && ./ops/backup.sh >> /var/log/fabric-backup.log 2>&1
 ```
 
-Runs at 04:30 IST (off-peak). Idempotent — re-running deletes nothing
-on the second invocation. The log line carries the deleted-row count
-so a `tail -n 20 /var/log/fabric-cleanup.log` shows the trend at a
-glance.
+`make cleanup` runs at 04:30 IST (off-peak). Idempotent — re-running
+deletes nothing on the second invocation. The log line carries the
+deleted-row count so a `tail -n 20 /var/log/fabric-cleanup.log` shows
+the trend at a glance.
+
+`ops/backup.sh` runs at 03:00 IST so the artefact is on the box BEFORE
+the morning's first user activity. It's gated on
+`BACKUP_GPG_PASSPHRASE` (refuses to write plaintext when
+`BACKUP_FAIL_PLAINTEXT=1` per `ops/.env.production.example` — CUT-501c).
 
 To add a job here later (e.g. an e-way bill cancellation reaper when
 that feature lands): add a new `make <thing>` target + a crontab line
 + a doc entry in this section. Resist adding Celery until the first
 job has fan-out / retry needs the Makefile can't model — see CLAUDE.md
 "Manufacturing / mobile / WhatsApp" deferral note.
+
+---
+
+## 9b. Backup host→container connectivity (CUT-404 follow-up)
+
+`ops/backup.sh` shells out to `pg_dump`, which needs a route to the
+Postgres server. The `postgres` service in `docker-compose.prod.yml`
+deliberately does NOT publish a host port (line 34: "No host port
+published — only fastapi reaches it on the docker network"), so the
+default `POSTGRES_HOST=localhost` in `ops/.env.backup.example` cannot
+reach the DB from the host.
+
+Two viable fixes were considered; **the runbook uses option (a)**:
+
+**(a) Run pg_dump inside the docker network via `compose exec` — CHOSEN.**
+
+Keep Postgres unpublished (no attack surface on the host's loopback
+either, which matters once monitoring agents like node_exporter run as
+non-root with localhost binds). The cron line invokes `pg_dump`
+through `docker compose exec -T postgres`, which talks over the docker
+bridge network. The `ops/backup.sh` script keeps working as written —
+the only adjustment is to wrap the cron invocation so the script's
+`pg_dump` shells out via `docker compose exec` instead of running on
+the host. The simplest expression of this is the cron line in §9a:
+the script runs from inside `/opt/fabric/repo`, where it can see
+`docker-compose.prod.yml`; if you swap the `pg_dump` invocation for
+`docker compose exec -T postgres pg_dump …` in a thin wrapper (a
+follow-up task), no host-side `postgresql-client` install is needed
+either.
+
+**(b) Publish `127.0.0.1:5432:5432` on the postgres service. NOT USED.**
+
+Would mean adding `ports: ["127.0.0.1:5432:5432"]` to the `postgres`
+service in `docker-compose.prod.yml`. Localhost-only (no public
+exposure) — but it adds a redundant network path purely for one cron
+job. Rejected because it muddies the "DB is internal" invariant for
+no measurable gain over option (a).
+
+### Operator action for fix-up
+
+Until the thin `ops/backup-in-container.sh` wrapper lands (small
+follow-up), invoke `pg_dump` over the docker network manually if
+running `ops/backup.sh` end-to-end on the host fails with
+`could not connect to server: Connection refused`. The simplest test:
+
+```bash
+cd /opt/fabric/repo
+docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production \
+  exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
+  | gzip -9 > /opt/fabric/backups/manual_$(date -u +%Y%m%dT%H%M%SZ).sql.gz
+```
+
+This proves the in-network path works before the cron line takes
+over.
 
 ---
 
@@ -405,7 +514,6 @@ the service layer).
 
 ## What's deliberately deferred (post-v0.1.0)
 
-- S3 / B2 off-box backup. CUT-404 lands local-disk `pg_dump`; off-box upload is a v2 task.
 - Hot standby / multi-region. Single CX22 only until paying customer #1.
 - Sentry Replay. Free-tier errors + tracing only until paying customer.
 - Blue/green deploys. Compose `up -d` does a rolling restart per service; ~5s downtime per deploy is acceptable for dogfood.
