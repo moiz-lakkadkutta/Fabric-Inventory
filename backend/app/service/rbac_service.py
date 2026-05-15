@@ -134,6 +134,14 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("manufacturing.cost_centre", "update", "Update cost centres"),
     ("manufacturing.cost_centre", "read", "View cost centres"),
     ("manufacturing.cost_centre", "delete", "Soft-delete cost centres"),
+    # BOM (TASK-TR-A03) — versioned bill of materials per (design,
+    # finished_item). Edits flow through "create new version" (A03b will
+    # add header / line PATCH); these permissions cover create / read /
+    # activate / soft-delete.
+    ("manufacturing.bom", "create", "Create BOMs (auto-bumps version per finished item)"),
+    ("manufacturing.bom", "update", "Activate a BOM (demotes prior actives)"),
+    ("manufacturing.bom", "read", "View BOMs and their lines"),
+    ("manufacturing.bom", "delete", "Soft-delete BOMs"),
 )
 
 
@@ -184,6 +192,9 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "manufacturing.cost_centre.create",
                 "manufacturing.cost_centre.update",
                 "manufacturing.cost_centre.delete",
+                # BOM (A03) — Accountant reads only; cost-centre-tied
+                # GL postings need BOM visibility, no editing.
+                "manufacturing.bom.read",
             }
         ),
     ),
@@ -213,6 +224,10 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # cost-centre visibility (financial classification).
                 "manufacturing.design.read",
                 "manufacturing.operation_master.read",
+                # BOM (A03) — Salesperson reads only; quoting needs to
+                # know which BOM (and therefore which components / cost)
+                # backs a finished item. No write.
+                "manufacturing.bom.read",
             }
         ),
     ),
@@ -266,6 +281,12 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "manufacturing.operation_master.read",
                 "manufacturing.operation_master.delete",
                 "manufacturing.cost_centre.read",
+                # BOM (A03) — Production Manager owns BOM lifecycle:
+                # create new versions, activate, soft-delete, read.
+                "manufacturing.bom.create",
+                "manufacturing.bom.update",
+                "manufacturing.bom.read",
+                "manufacturing.bom.delete",
             }
         ),
     ),

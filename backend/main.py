@@ -159,6 +159,7 @@ def create_app() -> FastAPI:
     app.include_router(manufacturing_router.designs_router)
     app.include_router(manufacturing_router.operation_masters_router)
     app.include_router(manufacturing_router.cost_centres_router)
+    app.include_router(manufacturing_router.boms_router)
 
     @app.get("/live")
     async def live() -> dict[str, str]:
