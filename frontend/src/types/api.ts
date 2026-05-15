@@ -466,6 +466,59 @@ export interface paths {
         patch: operations["update_bank_account_bank_accounts__bank_account_id__patch"];
         trace?: never;
     };
+    "/boms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List BOMs (RLS-scoped to current org) */
+        get: operations["list_boms_boms_get"];
+        put?: never;
+        /** Create a BOM (auto-bumps version per finished item) */
+        post: operations["create_bom_boms_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/boms/{bom_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a BOM by id (with lines) */
+        get: operations["get_bom_boms__bom_id__get"];
+        put?: never;
+        post?: never;
+        /** Soft-delete a BOM (promotes next version if the deleted one was active) */
+        delete: operations["delete_bom_boms__bom_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/boms/{bom_id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate a BOM (demotes other versions in the same partition) */
+        post: operations["activate_bom_boms__bom_id__activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cheques": {
         parameters: {
             query?: never;
@@ -1937,6 +1990,133 @@ export interface components {
              * @description The Vyapar Excel export (.xlsx).
              */
             file: string;
+        };
+        /** BomCreateRequest */
+        BomCreateRequest: {
+            /**
+             * Design Id
+             * Format: uuid
+             */
+            design_id: string;
+            /**
+             * Finished Item Id
+             * Format: uuid
+             */
+            finished_item_id: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Lines */
+            lines: components["schemas"]["BomLineInput"][];
+        };
+        /**
+         * BomLineInput
+         * @description Request component for a single BOM line.
+         */
+        BomLineInput: {
+            /**
+             * Is Optional
+             * @default false
+             */
+            is_optional: boolean;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Part Role */
+            part_role?: string | null;
+            /** Qty Required */
+            qty_required: number | string;
+            /** Sequence */
+            sequence?: number | null;
+            uom: components["schemas"]["UomType"];
+        };
+        /** BomLineResponse */
+        BomLineResponse: {
+            /**
+             * Bom Id
+             * Format: uuid
+             */
+            bom_id: string;
+            /**
+             * Bom Line Id
+             * Format: uuid
+             */
+            bom_line_id: string;
+            /** Is Optional */
+            is_optional: boolean | null;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Part Role */
+            part_role: string | null;
+            /** Qty Required */
+            qty_required: string;
+            /** Sequence */
+            sequence: number | null;
+            uom: components["schemas"]["UomType"];
+        };
+        /** BomListResponse */
+        BomListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["BomResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** BomResponse */
+        BomResponse: {
+            /**
+             * Bom Id
+             * Format: uuid
+             */
+            bom_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Deleted At */
+            deleted_at: string | null;
+            /**
+             * Design Id
+             * Format: uuid
+             */
+            design_id: string;
+            /**
+             * Finished Item Id
+             * Format: uuid
+             */
+            finished_item_id: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Is Active */
+            is_active: boolean | null;
+            /** Lines */
+            lines: components["schemas"]["BomLineResponse"][];
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version Number */
+            version_number: number | null;
         };
         /** ChequeCreateRequest */
         ChequeCreateRequest: {
@@ -6427,6 +6607,172 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BankAccountResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_boms_boms_get: {
+        parameters: {
+            query?: {
+                firm_id?: string | null;
+                design_id?: string | null;
+                finished_item_id?: string | null;
+                active_only?: boolean;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BomListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_bom_boms_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BomCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BomResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_bom_boms__bom_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bom_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BomResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_bom_boms__bom_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                bom_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    activate_bom_boms__bom_id__activate_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                bom_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BomResponse"];
                 };
             };
             /** @description Validation Error */

@@ -1,12 +1,13 @@
 """Manufacturing routers — Design / OperationMaster / CostCentre CRUD
-(TASK-TR-A02).
+(TASK-TR-A02) + BOM lifecycle (TASK-TR-A03).
 
-Three sibling routers exported from this module so OpenAPI groups each
-master cleanly:
+Sibling routers exported from this module so OpenAPI groups each
+resource cleanly:
 
   - ``designs_router``           — ``/designs``
   - ``operation_masters_router`` — ``/operation-masters``
   - ``cost_centres_router``      — ``/cost-centres``
+  - ``boms_router``              — ``/boms``
 
 Permission gates per the rbac_service catalog:
 ``manufacturing.<entity>.{create,update,read,delete}``.
@@ -24,9 +25,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
-from app.models.manufacturing import Design, OperationMaster, OperationType
+from app.models.manufacturing import Bom, BomLine, Design, OperationMaster, OperationType
 from app.models.masters import CostCentre, CostCentreType
 from app.schemas.manufacturing import (
+    BomCreateRequest,
+    BomLineResponse,
+    BomListResponse,
+    BomResponse,
     CostCentreCreateRequest,
     CostCentreListResponse,
     CostCentreResponse,
@@ -40,7 +45,7 @@ from app.schemas.manufacturing import (
     OperationMasterResponse,
     OperationMasterUpdateRequest,
 )
-from app.service import manufacturing_masters_service
+from app.service import bom_service, manufacturing_masters_service
 from app.service.identity_service import TokenPayload
 
 designs_router = APIRouter(prefix="/designs", tags=["manufacturing", "design"])
@@ -48,6 +53,7 @@ operation_masters_router = APIRouter(
     prefix="/operation-masters", tags=["manufacturing", "operation_master"]
 )
 cost_centres_router = APIRouter(prefix="/cost-centres", tags=["manufacturing", "cost_centre"])
+boms_router = APIRouter(prefix="/boms", tags=["manufacturing", "bom"])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -100,6 +106,35 @@ def _cc_to_response(cc: CostCentre) -> CostCentreResponse:
         created_at=cc.created_at,
         updated_at=cc.updated_at,
         deleted_at=cc.deleted_at,
+    )
+
+
+def _bom_line_to_response(line: BomLine) -> BomLineResponse:
+    return BomLineResponse(
+        bom_line_id=line.bom_line_id,
+        bom_id=line.bom_id,
+        item_id=line.item_id,
+        qty_required=line.qty_required,
+        uom=line.uom,
+        is_optional=line.is_optional,
+        part_role=line.part_role,
+        sequence=line.sequence,
+    )
+
+
+def _bom_to_response(bom: Bom) -> BomResponse:
+    return BomResponse(
+        bom_id=bom.bom_id,
+        org_id=bom.org_id,
+        firm_id=bom.firm_id,
+        design_id=bom.design_id,
+        finished_item_id=bom.finished_item_id,
+        version_number=bom.version_number,
+        is_active=bom.is_active,
+        created_at=bom.created_at,
+        updated_at=bom.updated_at,
+        deleted_at=bom.deleted_at,
+        lines=[_bom_line_to_response(line) for line in bom.lines],
     )
 
 
@@ -497,4 +532,130 @@ def delete_cost_centre(
         org_id=current_user.org_id,
         cost_centre_id=cost_centre_id,
         deleted_by=current_user.user_id,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BOM endpoints (TASK-TR-A03)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@boms_router.post(
+    "",
+    response_model=BomResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a BOM (auto-bumps version per finished item)",
+)
+def create_bom(
+    body: BomCreateRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.bom.create"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> BomResponse:
+    service_lines = [
+        bom_service.BomLineInput(
+            item_id=line.item_id,
+            qty_required=line.qty_required,
+            uom=line.uom,
+            is_optional=line.is_optional,
+            part_role=line.part_role,
+            sequence=line.sequence,
+        )
+        for line in body.lines
+    ]
+    bom = bom_service.create_bom(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        design_id=body.design_id,
+        finished_item_id=body.finished_item_id,
+        lines=service_lines,
+        created_by=current_user.user_id,
+    )
+    return _bom_to_response(bom)
+
+
+@boms_router.get(
+    "",
+    response_model=BomListResponse,
+    summary="List BOMs (RLS-scoped to current org)",
+)
+def list_boms(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.bom.read"))],
+    firm_id: Annotated[uuid.UUID | None, Query()] = None,
+    design_id: Annotated[uuid.UUID | None, Query()] = None,
+    finished_item_id: Annotated[uuid.UUID | None, Query()] = None,
+    active_only: Annotated[bool, Query()] = False,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> BomListResponse:
+    items, _total = bom_service.list_boms(
+        db,
+        org_id=current_user.org_id,
+        firm_id=firm_id,
+        design_id=design_id,
+        finished_item_id=finished_item_id,
+        active_only=active_only,
+        limit=limit,
+        offset=offset,
+    )
+    return BomListResponse(
+        items=[_bom_to_response(b) for b in items],
+        limit=limit,
+        offset=offset,
+        count=len(items),
+    )
+
+
+@boms_router.get(
+    "/{bom_id}",
+    response_model=BomResponse,
+    summary="Get a BOM by id (with lines)",
+)
+def get_bom(
+    bom_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.bom.read"))],
+) -> BomResponse:
+    bom = bom_service.get_bom(db, org_id=current_user.org_id, bom_id=bom_id)
+    return _bom_to_response(bom)
+
+
+@boms_router.post(
+    "/{bom_id}/activate",
+    response_model=BomResponse,
+    summary="Activate a BOM (demotes other versions in the same partition)",
+)
+def activate_bom(
+    bom_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.bom.update"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> BomResponse:
+    bom = bom_service.activate_bom(
+        db,
+        org_id=current_user.org_id,
+        bom_id=bom_id,
+        actor_user_id=current_user.user_id,
+    )
+    return _bom_to_response(bom)
+
+
+@boms_router.delete(
+    "/{bom_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Soft-delete a BOM (promotes next version if the deleted one was active)",
+)
+def delete_bom(
+    bom_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.bom.delete"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> None:
+    bom_service.delete_bom(
+        db,
+        org_id=current_user.org_id,
+        bom_id=bom_id,
+        actor_user_id=current_user.user_id,
     )

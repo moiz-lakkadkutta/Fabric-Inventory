@@ -1,14 +1,19 @@
-"""Manufacturing-domain request/response schemas (TASK-TR-A02).
+"""Manufacturing-domain request/response schemas.
 
-Three masters share this module:
+A02 — three masters:
 
   - ``Design``           — designed product (suit / fabric pattern).
   - ``OperationMaster``  — reusable shop-floor operation definition.
   - ``CostCentre``       — financial-grouping bucket (model lives in masters.py;
                            CRUD lives here under the Manufacturing umbrella).
 
-Routing / BOM / MO schemas are out of scope for A02 — they ship with the
-service layer in A03+ once their state machines exist.
+A03 — BOM (Bill of Materials):
+
+  - ``BomLineInput``     — request component for a single BOM line.
+  - ``BomCreateRequest`` — header + lines for ``POST /boms``.
+  - ``BomLineResponse`` / ``BomResponse`` / ``BomListResponse``.
+
+Routing / MO schemas remain out of scope until A04+.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from decimal import Decimal
 from pydantic import BaseModel, Field
 
 from app.models.manufacturing import OperationType
-from app.models.masters import CostCentreType
+from app.models.masters import CostCentreType, UomType
 
 # ──────────────────────────────────────────────────────────────────────
 # Design
@@ -150,7 +155,69 @@ class CostCentreListResponse(BaseModel):
     count: int
 
 
+# ──────────────────────────────────────────────────────────────────────
+# BOM (A03) — versioned per (firm, design, finished_item) with auto-bump.
+# Edits flow through "create a new version"; PATCH on header / lines is
+# deferred to A03b. Decimal for qty_required (NUMERIC(15,4)).
+# ──────────────────────────────────────────────────────────────────────
+
+
+class BomLineInput(BaseModel):
+    """Request component for a single BOM line."""
+
+    item_id: uuid.UUID
+    qty_required: Decimal = Field(gt=Decimal("0"))
+    uom: UomType
+    is_optional: bool = False
+    part_role: str | None = Field(default=None, max_length=50)
+    sequence: int | None = None
+
+
+class BomLineResponse(BaseModel):
+    bom_line_id: uuid.UUID
+    bom_id: uuid.UUID
+    item_id: uuid.UUID
+    qty_required: Decimal
+    uom: UomType
+    is_optional: bool | None
+    part_role: str | None
+    sequence: int | None
+
+
+class BomCreateRequest(BaseModel):
+    firm_id: uuid.UUID
+    design_id: uuid.UUID
+    finished_item_id: uuid.UUID
+    lines: list[BomLineInput] = Field(min_length=1)
+
+
+class BomResponse(BaseModel):
+    bom_id: uuid.UUID
+    org_id: uuid.UUID
+    firm_id: uuid.UUID
+    design_id: uuid.UUID
+    finished_item_id: uuid.UUID
+    version_number: int | None
+    is_active: bool | None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+    deleted_at: datetime.datetime | None
+    lines: list[BomLineResponse]
+
+
+class BomListResponse(BaseModel):
+    items: list[BomResponse]
+    limit: int
+    offset: int
+    count: int
+
+
 __all__ = [
+    "BomCreateRequest",
+    "BomLineInput",
+    "BomLineResponse",
+    "BomListResponse",
+    "BomResponse",
     "CostCentreCreateRequest",
     "CostCentreListResponse",
     "CostCentreResponse",
