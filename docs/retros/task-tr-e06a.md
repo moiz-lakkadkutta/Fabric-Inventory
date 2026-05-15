@@ -70,3 +70,54 @@ replacing it with a realistic (unbalanced) fixture or in-test generation.
 - No Alembic migration — `_SYSTEM_LEDGERS` is application-seeded at signup, not DDL.
 - Branch `task/tr-e06a-ob-suspense` has the work; PR open, **not merged** (money-logic
   gate — awaiting Moiz review per the Ask-vs-Decide table).
+
+## Follow-up: orphan-OB Major (review pass)
+
+PR #105 review (2026-05-15) flagged a Major: the `OB_DIFFERENCE_PARKED` warn-row
+that `approve()` writes into `reconciliation_json` was sized from the **pre-skip**
+`_sum_ob_sides(obs_intermediate)` totals, while the suspense voucher line
+`_post_opening_balance_voucher` actually posted was sized from the **post-skip**
+totals (the loop drops OB rows whose `party_source_id` isn't in `party_id_by_source`).
+These agree under the Vyapar adapter today (its `extract_parties` and
+`extract_opening_balances` share a single iterator so parties ⊇ OB parents by
+construction), but the `MigrationAdapter` Protocol allows future Tally / generic-
+Excel adapters to break that invariant — and the worst-case shape is "every OB
+orphaned" → no suspense line + a misleading message claiming N parked + a
+zero-line voucher with no DB constraint to stop it.
+
+### Fix
+
+- Added a frozen dataclass `_OpeningVoucherPostResult(voucher_id, parked_amount,
+  parked_side)` returned by `_post_opening_balance_voucher`. The voucher loop
+  tracks the actually-posted suspense `diff` and `line_type.value` and ships them
+  back to `approve()`.
+- `approve()` now reads `post_result.parked_amount` / `post_result.parked_side`
+  for both the conditional (`if parked_amount > 0`) and the warn-row text. The
+  pre-skip `dr_total` / `cr_total` are still computed (kept on `CommitResult.tb_*`
+  for the audit trail and consumed by callers) but no longer drive the warn-row.
+- Corrected the misleading "(Validate flagged this.)" aside in the orphan-skip
+  comment — Vyapar's `validate()` does NOT flag orphan OBs (its iterator-shared
+  construction makes them impossible). Replaced with a note explaining the
+  empty-name skip + the Protocol's looser future-adapter contract.
+
+### TDD
+
+New test `test_approve_uses_actually_posted_amount_for_parked_warn_row` in
+`tests/test_migrations_router.py` constructs a `_DivergentOrphanAdapter` stub
+that diverges from `extract_parties` to `extract_opening_balances` (1 valid
+party + 2 balanced OBs on it + 1 orphan OB referencing PARTY-MISSING). Pre-skip
+sums DR=55000 CR=5000 (gap 50000); post-skip sums DR=5000 CR=5000 (gap 0). The
+test asserts no `OB_DIFFERENCE_PARKED` row is written and no `3200` line is
+posted. RED before the fix (warn-row claimed "50000 CR parked" while the books
+carried zero parked), GREEN after.
+
+### Test count
+
+- Before: 16 migration tests (8 router + 7 protocol + 1 smoke).
+- After: 17 migration tests (9 router + 7 protocol + 1 smoke). Full suite 831 / 831.
+
+### Out of scope (deferred)
+
+- Audit field for the parked amount on `user_migration` (separate task).
+- Idempotent-re-approve test for an unbalanced source (separate task).
+- Replacing the hand-balanced `vyapar-sample.xlsx` fixture (still tracked above).

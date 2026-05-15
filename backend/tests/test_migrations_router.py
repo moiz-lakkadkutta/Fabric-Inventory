@@ -551,3 +551,208 @@ def test_empty_file_rejected(http_client: TestClient, sync_engine: Engine) -> No
     )
     assert resp.status_code == 422
     assert "empty" in resp.json().get("detail", "").lower()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Orphan-OB parked-amount divergence (review Major follow-up)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _DivergentOrphanAdapter:
+    """Stub MigrationAdapter that yields an OB whose party_source_id has no party.
+
+    The Vyapar adapter's ``extract_parties`` and ``extract_opening_balances``
+    share a single iterator so parties ⊇ OB parents by construction, but
+    the ``MigrationAdapter`` Protocol allows future adapters (Tally, generic
+    Excel) to break that invariant. This stub exercises the divergence:
+
+      • One legitimate party (PARTY-A) with a balanced pair of OB rows
+        (5000 DR + 5000 CR) — these post normally.
+      • One orphan OB row referencing PARTY-MISSING (50000 DR) — the
+        commit step skips it (party_id_by_source has no entry), so it
+        does NOT post.
+
+    Pre-skip sum: DR=55000, CR=5000 → gap 50000.
+    Post-skip sum: DR=5000, CR=5000 → gap 0 (nothing to park).
+
+    The bug: ``approve()`` reads the pre-skip gap (50000) for the
+    ``OB_DIFFERENCE_PARKED`` warn-row even though the actually-posted
+    suspense amount is 0. After the fix, the warn-row reports the
+    actually-posted amount (the row should be absent here since nothing
+    was parked).
+    """
+
+    def extract_parties(self, source: object) -> object:
+        from app.service.migration import IntermediateParty
+
+        return iter(
+            (
+                IntermediateParty(
+                    source_id="PARTY-A",
+                    name="Anita Fashions",
+                    code="ANITAFASH",
+                    kinds=("CUSTOMER",),
+                ),
+            )
+        )
+
+    def extract_opening_balances(self, source: object) -> object:
+        from app.service.migration import IntermediateOpeningBalance
+
+        return iter(
+            (
+                # Legitimate pair on the known party — balanced.
+                IntermediateOpeningBalance(
+                    source_id="OB-1",
+                    party_source_id="PARTY-A",
+                    ledger_kind="SUNDRY_DEBTORS",
+                    amount=Decimal("5000"),
+                    side="DR",
+                ),
+                IntermediateOpeningBalance(
+                    source_id="OB-2",
+                    party_source_id="PARTY-A",
+                    ledger_kind="SUNDRY_CREDITORS",
+                    amount=Decimal("5000"),
+                    side="CR",
+                ),
+                # Orphan: references a party the adapter never emitted.
+                # Commit step skips it. Pre-skip totals include it; post-
+                # skip totals don't.
+                IntermediateOpeningBalance(
+                    source_id="OB-3",
+                    party_source_id="PARTY-MISSING",
+                    ledger_kind="SUNDRY_DEBTORS",
+                    amount=Decimal("50000"),
+                    side="DR",
+                ),
+            )
+        )
+
+    def validate(self, source: object) -> object:
+        from app.service.migration import MigrationValidationReport
+
+        return MigrationValidationReport(
+            total_parties=1,
+            total_opening_balances=3,
+            errors=0,
+            warnings=0,
+            rows=(),
+        )
+
+
+def test_approve_uses_actually_posted_amount_for_parked_warn_row(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Regression: warn-row sized from POST-skip totals, not pre-skip.
+
+    When an adapter emits OB rows whose ``party_source_id`` has no
+    matching party (orphan), ``_post_opening_balance_voucher`` skips
+    those rows before posting and sizes the suspense balancing line
+    from the post-skip DR/CR totals. The ``OB_DIFFERENCE_PARKED``
+    warn-row that ``approve()`` writes into ``reconciliation_json``
+    MUST report the same actually-posted amount, not the pre-skip
+    ``_sum_ob_sides`` sum, otherwise the FE reads "parked 50000" while
+    the books show zero parked.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy.orm import Session as _OrmSession
+
+    from app.models import UserMigration
+    from app.service.migration import migration_service as ms
+
+    body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    org_id = _uuid.UUID(body["org_id"])
+    firm_id = _uuid.UUID(body["firm_id"])
+    user_id = _uuid.UUID(body["user_id"])
+
+    adapter = _DivergentOrphanAdapter()
+
+    # Drive the service layer directly (bypasses the router's adapter
+    # registry, which only knows the Vyapar adapter today). RLS GUC is
+    # set so the inserted row is visible to the same session.
+    with _OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+
+        migration = ms.upload_and_reconcile(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            uploaded_by=user_id,
+            source_bytes=b"stub-source",
+            source_filename="divergent-orphan.xlsx",
+            adapter=adapter,
+            source_format="vyapar_excel",
+        )
+        migration_id = migration.migration_id
+        session.commit()
+
+    with _OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        result = ms.approve(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            migration_id=migration_id,
+            approver_user_id=user_id,
+            source_bytes=b"stub-source",
+            adapter=adapter,
+        )
+        session.commit()
+
+    # Post-skip the OB voucher posts only the balanced PARTY-A pair —
+    # no suspense line should exist on ledger 3200.
+    with _OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        suspense_rows = s.execute(
+            text(
+                """
+                SELECT vl.line_type, vl.amount
+                FROM voucher_line vl
+                JOIN ledger l ON l.ledger_id = vl.ledger_id
+                JOIN voucher v ON v.voucher_id = vl.voucher_id
+                WHERE l.code = '3200' AND v.org_id = :o AND v.firm_id = :f
+                  AND v.status = 'POSTED' AND v.reference_id = :m
+                """
+            ),
+            {"o": str(org_id), "f": str(firm_id), "m": str(migration_id)},
+        ).all()
+
+    # The voucher posted exactly the two balanced PARTY-A lines; nothing
+    # was parked because the orphan was skipped before the balancing
+    # check fired.
+    assert suspense_rows == [], (
+        f"expected no suspense line (post-skip totals balance), got {suspense_rows}"
+    )
+    # The CommitResult agrees: ``tb_debits`` / ``tb_credits`` from the
+    # service still report pre-skip totals (kept for audit), but the
+    # posted voucher matches the post-skip totals.
+    assert result.tb_debits == Decimal("55000")  # pre-skip DR
+    assert result.tb_credits == Decimal("5000")  # pre-skip CR
+
+    # Re-fetch the migration row's reconciliation_json. The warn-row,
+    # if present, must reflect the ACTUALLY-POSTED parked amount (0 →
+    # absent), NOT the pre-skip gap (50000).
+    with _OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        row = s.execute(
+            text("SELECT reconciliation_json FROM user_migration WHERE migration_id = :m"),
+            {"m": str(migration_id)},
+        ).scalar_one()
+    _ = UserMigration  # imported for type intent; row is the raw JSONB
+
+    parked_rows = [r for r in (row.get("rows") or []) if r.get("code") == "OB_DIFFERENCE_PARKED"]
+    # Nothing was actually parked, so no parked warn-row should be
+    # emitted. Before the fix, approve() reads the pre-skip gap (50000)
+    # and writes a misleading row claiming the books carry 50000 in
+    # suspense when they carry 0.
+    assert parked_rows == [], (
+        f"expected no OB_DIFFERENCE_PARKED row (actually-posted parked = 0), "
+        f"but found {parked_rows}"
+    )

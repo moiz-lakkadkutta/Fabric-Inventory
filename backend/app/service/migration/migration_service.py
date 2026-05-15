@@ -109,6 +109,24 @@ class CommitResult:
     tb_credits: Decimal
 
 
+@dataclass(frozen=True)
+class _OpeningVoucherPostResult:
+    """Result of ``_post_opening_balance_voucher``.
+
+    Carries the actually-posted suspense amount + side so ``approve()``
+    can size the ``OB_DIFFERENCE_PARKED`` warn-row from the same totals
+    the voucher used, not from the pre-skip ``_sum_ob_sides`` totals
+    (which may include orphan OB rows the voucher dropped).
+
+    ``parked_side`` is ``None`` iff ``parked_amount == 0`` — i.e. the
+    post-skip OBs self-balanced and no suspense line was posted.
+    """
+
+    voucher_id: uuid.UUID
+    parked_amount: Decimal
+    parked_side: str | None
+
+
 def _now_utc() -> datetime.datetime:
     return datetime.datetime.now(tz=datetime.UTC)
 
@@ -354,9 +372,11 @@ def approve(
 
     # Post the compound opening-balance voucher. One header, N lines.
     opening_voucher_id: uuid.UUID | None = None
+    parked_amount = Decimal("0")
+    parked_side: str | None = None
     voucher_date = opening_date or _previous_day_in_kolkata()
     if obs_intermediate:
-        opening_voucher_id = _post_opening_balance_voucher(
+        post_result = _post_opening_balance_voucher(
             session,
             org_id=org_id,
             firm_id=firm_id,
@@ -366,13 +386,21 @@ def approve(
             voucher_date=voucher_date,
             migration_id=migration_id,
         )
+        opening_voucher_id = post_result.voucher_id
+        parked_amount = post_result.parked_amount
+        parked_side = post_result.parked_side
 
     # Surface the parked suspense amount prominently in the report the
-    # FE preview pane renders. tb_reconciles stays False — honest: the
-    # *source* did not reconcile; we parked the gap, we didn't fix it.
-    if opening_voucher_id is not None and dr_total != cr_total:
-        parked = abs(dr_total - cr_total)
-        side = "CR" if dr_total > cr_total else "DR"
+    # FE preview pane renders. We size the message from the
+    # actually-posted parked amount + side (returned by
+    # _post_opening_balance_voucher), NOT from the pre-skip
+    # _sum_ob_sides(obs_intermediate) totals. The two can diverge if the
+    # voucher loop drops orphan OB rows whose party_source_id isn't in
+    # party_id_by_source — using the pre-skip totals here would print a
+    # parked amount the books don't actually carry. tb_reconciles stays
+    # False — honest: the *source* did not reconcile; we parked the gap,
+    # we didn't fix it.
+    if parked_amount > 0:
         recon = dict(row.reconciliation_json or {})
         recon_rows = list(recon.get("rows", []))
         recon_rows.append(
@@ -380,9 +408,9 @@ def approve(
                 "severity": "warn",
                 "code": "OB_DIFFERENCE_PARKED",
                 "message": (
-                    f"Opening balances differed by {parked} ({side}). Parked in "
-                    "'3200 Opening Balance Difference'. Reclassify to capital / "
-                    "cash / stock via Accounting -> New voucher."
+                    f"Opening balances differed by {parked_amount} ({parked_side}). "
+                    "Parked in '3200 Opening Balance Difference'. Reclassify to "
+                    "capital / cash / stock via Accounting -> New voucher."
                 ),
                 "source_ref": None,
             }
@@ -587,7 +615,7 @@ def _post_opening_balance_voucher(
     posted_by: uuid.UUID,
     voucher_date: datetime.date,
     migration_id: uuid.UUID,
-) -> uuid.UUID:
+) -> _OpeningVoucherPostResult:
     """Create one compound OPENING_BAL voucher with all opening lines.
 
     Lines:
@@ -603,6 +631,14 @@ def _post_opening_balance_voucher(
     The voucher is therefore always internally balanced; the accountant
     reclassifies the suspense amount to capital / cash / stock
     post-cutover via /accounting → New voucher.
+
+    Returns an ``_OpeningVoucherPostResult`` carrying the voucher id
+    plus the actually-posted suspense amount + side. The caller uses
+    those values (NOT the pre-skip ``_sum_ob_sides`` totals computed
+    over the raw adapter output) to size the user-facing
+    ``OB_DIFFERENCE_PARKED`` warn-row, so the two stay consistent even
+    if the loop below drops orphan OB rows whose party didn't come
+    through.
 
     Invariant: after the suspense line, ``Σ DR == Σ CR`` — still
     asserted before flush as a loud safety net.
@@ -632,9 +668,12 @@ def _post_opening_balance_voucher(
     for ob in obs:
         if ob.party_source_id is not None and ob.party_source_id not in party_id_by_source:
             # An OB row references a party that didn't make it into the
-            # parties dict — typically because party row had an empty
-            # name and we skipped it. Drop the OB row too; we'd produce
-            # a dangling reference otherwise. (Validate flagged this.)
+            # parties dict — typically because the party row had an empty
+            # name and we skipped it, or (per the Protocol's looser
+            # contract for future Tally / generic-Excel adapters) the
+            # adapter emitted an OB referencing a party it never yielded.
+            # Drop the OB row too; we'd produce a dangling reference
+            # otherwise.
             continue
         ledger = _resolve_ledger_for_kind(session, org_id=org_id, kind=ob.ledger_kind)
         amount = Decimal(ob.amount)
@@ -658,10 +697,14 @@ def _post_opening_balance_voucher(
         )
         seq += 1
 
-    # Park the DR/CR gap in the suspense ledger. A parties-only source
-    # never self-balances; the remainder is the firm's capital / cash /
-    # stock, which the parties export doesn't carry. One balancing line
-    # keeps the voucher internally balanced.
+    # Park the post-skip DR/CR gap in the suspense ledger. A parties-only
+    # source never self-balances; the remainder is the firm's capital /
+    # cash / stock, which the parties export doesn't carry. One balancing
+    # line keeps the voucher internally balanced. We track the parked
+    # amount + side and return them so approve()'s reconciliation row
+    # sees the same number that hit the books.
+    parked_amount = Decimal("0")
+    parked_side: str | None = None
     if total_dr != total_cr:
         suspense = _resolve_ledger_by_code(
             session, org_id=org_id, code=_OPENING_DIFFERENCE_LEDGER_CODE
@@ -673,6 +716,8 @@ def _post_opening_balance_voucher(
         else:
             suspense_line_type = JournalLineType.DR
             total_dr += diff
+        parked_amount = diff
+        parked_side = suspense_line_type.value  # "DR" / "CR"
         session.add(
             VoucherLine(
                 org_id=org_id,
@@ -702,7 +747,11 @@ def _post_opening_balance_voucher(
     voucher.total_debit = total_dr
     voucher.total_credit = total_cr
     session.flush()
-    return voucher.voucher_id
+    return _OpeningVoucherPostResult(
+        voucher_id=voucher.voucher_id,
+        parked_amount=parked_amount,
+        parked_side=parked_side,
+    )
 
 
 def _allocate_opening_voucher_number(
