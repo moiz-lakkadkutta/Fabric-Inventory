@@ -84,7 +84,7 @@ _PII_MASTER_KEY_ENV: str = "PII_MASTER_KEY"
 
 # Deterministic dev fallback. The byte pattern is documented so the
 # value is obvious if it ever shows up in a leaked log — it is NOT a
-# secret. Every non-dev/test ENVIRONMENT refuses to boot without a real
+# secret. Every non-dev ENVIRONMENT refuses to boot without a real
 # PII_MASTER_KEY (see `get_master_kek`); see `ops/.env.production.example`.
 _DEV_FALLBACK_KEK: bytes = bytes(range(32))
 _DEV_FALLBACK_KEK_DOC: str = (
@@ -95,7 +95,18 @@ _DEV_FALLBACK_KEK_DOC: str = (
 # Anything else — including unset, blank, typos like "prdo", "staging",
 # or the long form "production" — fails fast in `get_master_kek`.
 # B3 fix: previously only the literal "prod" was rejected.
-_FALLBACK_ALLOWED_ENVIRONMENTS: frozenset[str] = frozenset({"dev", "test"})
+#
+# Issue #22 follow-up: this allowlist used to include ``test``, but
+# ``Settings.environment`` (``app.config``) is a Literal of
+# ``{"dev", "staging", "prod"}`` — pydantic-settings rejects any other
+# value at Settings construction. Allowing ``test`` here only worked
+# because crypto reads ``os.environ`` directly, side-stepping Settings;
+# nothing in the codebase actually sets ``ENVIRONMENT=test`` (the test
+# suite uses ``ENVIRONMENT=dev`` — see ``tests/conftest.py``). Keeping
+# the two surfaces in lockstep prevents the surprise where the app
+# refuses to boot under ``ENVIRONMENT=test`` while crypto silently
+# accepts it.
+_FALLBACK_ALLOWED_ENVIRONMENTS: frozenset[str] = frozenset({"dev"})
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -138,7 +149,7 @@ def get_master_kek() -> bytes:
     """Resolve the 32-byte master KEK. Memoised per process.
 
     Raises:
-        PIIConfigError: when the env var is unset (and we're not in dev/test),
+        PIIConfigError: when the env var is unset (and we're not in dev),
             when base64 decoding fails, or when the decoded key is not
             exactly 32 bytes.
     """
@@ -150,20 +161,22 @@ def get_master_kek() -> bytes:
     environment = os.environ.get("ENVIRONMENT", "").strip().lower()
 
     if not raw:
-        # B3 fix: strict allowlist. Only the explicit values 'dev' / 'test'
-        # may use the public dev fallback. Everything else — unset, blank,
+        # B3 fix: strict allowlist. Only the explicit value 'dev' may
+        # use the public dev fallback. Everything else — unset, blank,
         # 'staging', 'production', the long form, or a typo like 'prdo' —
         # must fail fast at boot so a misconfigured deploy can't run on
         # the public KEK without anyone noticing. The previous check was
         # `environment == "prod"` which let every other spelling through.
+        # Issue #22 follow-up: dropped 'test' from the allowlist so this
+        # matches `Settings.environment` Literal `{dev, staging, prod}`.
         if environment not in _FALLBACK_ALLOWED_ENVIRONMENTS:
             raise PIIConfigError(
                 f"{_PII_MASTER_KEY_ENV} is required when ENVIRONMENT is not "
-                f"'dev' or 'test' (got {environment!r}). "
+                f"'dev' (got {environment!r}). "
                 "Generate one with `openssl rand -base64 32` and store it in "
                 "the prod secret store. See docs/ops/deployment-runbook.md."
             )
-        # Dev / test fallback — explicit, deterministic, documented. Loud
+        # Dev fallback — explicit, deterministic, documented. Loud
         # WARNING every boot so a misconfigured non-prod box (e.g. someone
         # ran it with ENVIRONMENT=dev on a staging machine) shows up in
         # the logs instead of silently using the public KEK.
@@ -269,8 +282,10 @@ def get_org_dek(session: Session, *, org_id: uuid.UUID) -> bytes:
     has set it.
 
     Raises:
-        PIIConfigError: organization row is missing or has no DEK
-            (would be a bootstrap bug — signup must mint one).
+        PIIConfigError: organization row is missing, soft-deleted
+            (``deleted_at IS NOT NULL`` — see M4 follow-up below), or
+            has no DEK (would be a bootstrap bug — signup must mint
+            one).
         PIIDecryptionError: the stored DEK fails to unwrap.
     """
     cached = _DEK_CACHE.get(org_id)
@@ -279,14 +294,24 @@ def get_org_dek(session: Session, *, org_id: uuid.UUID) -> bytes:
 
     from sqlalchemy import text  # local import — keep module import-time cheap
 
+    # M4 follow-up: filter `deleted_at IS NULL` so a soft-deleted org is
+    # opaque at the crypto layer. Without this, every downstream call site
+    # that resolves a DEK by org_id would happily decrypt PII for a tenant
+    # that's logically gone — making the soft-delete convention a polite
+    # suggestion rather than a security boundary. RLS hides soft-deleted
+    # rows at the policy layer; this filter is belt-and-braces for the
+    # paths (signup, migrations, future tools) that bypass RLS.
     row = session.execute(
-        text("SELECT encrypted_dek FROM organization WHERE org_id = :org_id"),
+        text(
+            "SELECT encrypted_dek FROM organization WHERE org_id = :org_id AND deleted_at IS NULL"
+        ),
         {"org_id": org_id},
     ).first()
     if row is None or row[0] is None:
         raise PIIConfigError(
             f"organization {org_id} has no encrypted_dek — every org must have one "
-            "minted at signup. See identity_service.create_org_with_dek."
+            "minted at signup, and soft-deleted orgs are intentionally opaque. "
+            "See identity_service.create_org_with_dek."
         )
     dek = unwrap_dek(row[0], org_id=org_id)
     _DEK_CACHE[org_id] = dek

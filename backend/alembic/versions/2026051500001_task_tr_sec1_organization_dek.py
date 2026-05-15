@@ -2,9 +2,22 @@
 
 The new field-encryption path (AES-256-GCM with per-org Data Encryption
 Keys, wrapped by a master KEK) requires every organization to carry a
-DEK on its row. The DEK is the symmetric key used to encrypt PII
-columns (party.gstin / pan / phone, bank_account.account_number,
-firm.gstin / pan / cin / tan, app_user.mfa_secret).
+DEK on its row. The DEK is the symmetric key used to encrypt the PII
+columns that are actually written through the service layer today:
+``party.gstin``, ``party.pan``, ``party.phone``,
+``bank_account.account_number``, ``firm.gstin``, and
+``app_user.mfa_secret``.
+
+NOTE on ``firm.pan`` / ``firm.cin`` / ``firm.tan``: these columns exist
+in the schema as ``LargeBinary`` and are intended for the same envelope
+encryption, BUT no current write path populates them — signup
+(``routers/auth.py``) only writes ``firm.gstin``, and there is no
+firm-update endpoint yet. The audit for issue #22 confirmed zero
+cleartext writes to these fields. When the firm-edit screen lands, the
+service layer must thread the value through
+``encrypt_pii(value, dek=dek, org_id=org_id)`` exactly like
+``firm.gstin`` does — the column type is already BYTEA, so the wiring
+is symmetric.
 
 This migration:
 
@@ -46,6 +59,17 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Idempotency note (issue #22 follow-up): this migration is NOT safe
+    # to re-run on a database where it has already applied successfully —
+    # the backfill would mint a FRESH DEK per existing org and overwrite
+    # ``organization.encrypted_dek``, stranding every previously-written
+    # ciphertext under the old (now-discarded) DEK. We rely on Alembic's
+    # ``alembic_version`` row to ensure this `upgrade()` body runs exactly
+    # once per database; the bootstrap `op.add_column(...)` would also
+    # fail loud on a second invocation because the column already exists.
+    # Re-keying (true rotation) is a separate, future code path with its
+    # own version-byte bump — see ``app.utils.crypto.VERSION_AESGCM_V1``.
+
     # 1. Add the column nullable — existing rows have no DEK yet.
     op.add_column(
         "organization",

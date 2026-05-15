@@ -50,7 +50,28 @@ from app import models  # noqa: E402 -- must run after path setup above.
 target_metadata = models.Base.metadata
 
 
+def _ensure_kek_loaded() -> None:
+    """Fail-fast the master KEK before any migration runs.
+
+    M5 review fix: the TR-SEC1 migration backfills a wrapped DEK per
+    existing org row, which depends on `PII_MASTER_KEY`. If it's missing
+    in a non-dev environment we want the failure here (no schema drift,
+    no half-applied migration) instead of mid-backfill. In dev the
+    public fallback fires + warns; migrations proceed.
+
+    Issue #22 follow-up: previously only `run_migrations_online` ran
+    this check, so `alembic upgrade head --sql` (offline mode, used
+    to generate a SQL file dump for ops review) would skip the guard
+    and silently emit a migration script with the wrong assumption.
+    Calling this from both paths keeps the invariant uniform.
+    """
+    from app.utils.crypto import get_master_kek
+
+    get_master_kek()
+
+
 def run_migrations_offline() -> None:
+    _ensure_kek_loaded()
     context.configure(
         url=config.get_main_option("sqlalchemy.url"),
         target_metadata=target_metadata,
@@ -62,15 +83,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    # M5 review fix: resolve the master KEK *before* running migrations.
-    # TR-SEC1's migration backfills a wrapped DEK per existing org row,
-    # which depends on `PII_MASTER_KEY`. If it's missing in a non-dev
-    # environment we want the failure here (no schema drift, clear
-    # message) instead of mid-backfill. In dev/test the public fallback
-    # fires + warns; migrations proceed.
-    from app.utils.crypto import get_master_kek
-
-    get_master_kek()
+    _ensure_kek_loaded()
 
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
