@@ -1,4 +1,4 @@
-.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed deploy backup restore restore-test e2e-setup openapi-snapshot cleanup help
+.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed seed-demo deploy backup restore restore-test e2e-setup openapi-snapshot cleanup help
 
 # Prefer "docker compose" (v2 plugin); fall back to legacy "docker-compose" binary.
 COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
@@ -16,6 +16,7 @@ help:
 	@echo "  make e2e-setup    Install Playwright browsers (opt-in, ~400MB)"
 	@echo "  make migrate      Run alembic upgrade head (MIGRATION_DATABASE_URL or DATABASE_URL must be set)"
 	@echo "  make migrate-create M=\"msg\"  Generate a new alembic revision"
+	@echo "  make seed-demo    Load synthetic textile demo dataset (idempotent; TASK-TR-Q04a)"
 	@echo "  make openapi-snapshot  Re-dump openapi snapshot + regen FE types (CUT-106)"
 	@echo "  make backup       Dump Postgres → gzip → gpg → S3-compatible bucket (CUT-404)"
 	@echo "  make restore date=YYYY-MM-DD [target_db=NAME] [dry_run=1]  Restore from a backup (CUT-404)"
@@ -69,6 +70,15 @@ seed:
 	@echo "System catalog (UOM/HSN/COA) auto-seeds on /auth/signup; nothing to do here."
 	@echo "To re-seed an existing org by id, run:"
 	@echo "  cd backend && uv run python -m app.cli.seed --org-id <UUID>"
+
+# Load a synthetic textile-trade demo dataset (parties + items + opening
+# stock + ~3 POs + ~5 SIs + 1 JWO) so Moiz can dogfood without waiting on
+# the Vyapar adapter migration fix. Idempotent — re-runs are safe.
+# Defaults to a demo@example.com / "Demo Co" / "Demo Firm" tenant; pass
+# overrides through ARGS, e.g.:
+#   make seed-demo ARGS="--email me@example.com --org-name 'Moiz Trading'"
+seed-demo:
+	cd backend && uv run python -m app.cli.seed_demo $(ARGS)
 
 deploy:
 	@echo "Implement in TASK-005 (GitHub Actions deploy workflow)."
