@@ -30,6 +30,43 @@ from app.models.masters import CostCentre, CostCentreType
 from app.service import audit_service
 
 # ──────────────────────────────────────────────────────────────────────
+# Internal helpers
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _assert_cost_centre_in_scope(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    cost_centre_id: uuid.UUID,
+) -> None:
+    """Verify ``cost_centre_id`` belongs to ``(org_id, firm_id)`` before it
+    lands on a Design / OperationMaster row.
+
+    Cost centres are firm-scoped (``cost_centre.firm_id`` is NOT NULL with
+    a UNIQUE(firm_id, code) constraint), so a Design in firm A must not be
+    able to point at a CC in firm B — even within the same org. RLS pins
+    org-isolation at the DB layer; this check enforces firm-isolation at
+    the service layer and turns what would otherwise be an opaque FK
+    insert (passing RLS but breaking the firm invariant) into a clean
+    422 the UI can display.
+    """
+    cc = session.execute(
+        select(CostCentre).where(
+            CostCentre.cost_centre_id == cost_centre_id,
+            CostCentre.org_id == org_id,
+            CostCentre.firm_id == firm_id,
+            CostCentre.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if cc is None:
+        raise AppValidationError(
+            f"Cost centre {cost_centre_id} not found or belongs to a different org/firm."
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Design CRUD
 # ──────────────────────────────────────────────────────────────────────
 
@@ -64,6 +101,11 @@ def create_design(
     ).scalar_one_or_none()
     if existing is not None:
         raise AppValidationError(f"Design with code {code!r} already exists in this firm scope")
+
+    if cost_centre_id is not None:
+        _assert_cost_centre_in_scope(
+            session, org_id=org_id, firm_id=firm_id, cost_centre_id=cost_centre_id
+        )
 
     design = Design(
         org_id=org_id,
@@ -149,6 +191,12 @@ def patch_design(
     if description is not None:
         design.description = description
     if cost_centre_id is not None:
+        _assert_cost_centre_in_scope(
+            session,
+            org_id=org_id,
+            firm_id=design.firm_id,
+            cost_centre_id=cost_centre_id,
+        )
         design.cost_centre_id = cost_centre_id
 
     design.updated_at = datetime.now(tz=UTC)
@@ -216,6 +264,11 @@ def create_operation_master(
     ).scalar_one_or_none()
     if existing is not None:
         raise AppValidationError(f"Operation with code {code!r} already exists in this firm scope")
+
+    if cost_centre_id is not None:
+        _assert_cost_centre_in_scope(
+            session, org_id=org_id, firm_id=firm_id, cost_centre_id=cost_centre_id
+        )
 
     op = OperationMaster(
         org_id=org_id,
@@ -313,6 +366,12 @@ def patch_operation_master(
             raise AppValidationError("default_duration_mins cannot be negative")
         op.default_duration_mins = default_duration_mins
     if cost_centre_id is not None:
+        _assert_cost_centre_in_scope(
+            session,
+            org_id=org_id,
+            firm_id=op.firm_id,
+            cost_centre_id=cost_centre_id,
+        )
         op.cost_centre_id = cost_centre_id
     if is_active is not None:
         op.is_active = is_active
@@ -385,20 +444,24 @@ def create_cost_centre(
             f"Cost centre with code {code!r} already exists in this firm scope"
         )
 
-    # If a parent was supplied, verify it belongs to the same org (defense in
-    # depth — RLS already enforces this, but a typo from the UI deserves a
-    # clean 422 rather than a downstream FK error).
+    # If a parent was supplied, verify it belongs to the same org AND firm
+    # (defense in depth — RLS already enforces org, but cost centres are
+    # firm-scoped so a sibling firm's CC must not become a parent of this
+    # row). A typo from the UI deserves a clean 422 rather than a downstream
+    # FK error or an orphan tree across firm boundaries.
     if parent_cost_centre_id is not None:
         parent = session.execute(
             select(CostCentre).where(
                 CostCentre.cost_centre_id == parent_cost_centre_id,
                 CostCentre.org_id == org_id,
+                CostCentre.firm_id == firm_id,
                 CostCentre.deleted_at.is_(None),
             )
         ).scalar_one_or_none()
         if parent is None:
             raise AppValidationError(
-                f"parent_cost_centre_id {parent_cost_centre_id} not found in this org"
+                f"parent_cost_centre_id {parent_cost_centre_id} "
+                "not found or belongs to a different org/firm."
             )
 
     cc = CostCentre(
@@ -491,16 +554,21 @@ def patch_cost_centre(
     if parent_cost_centre_id is not None:
         if parent_cost_centre_id == cost_centre_id:
             raise AppValidationError("cost centre cannot be its own parent")
+        # Pin parent to the SAME firm as the child (A02 hardening) — cost
+        # centres are firm-scoped, so a sibling firm's CC must not become
+        # the parent of this row.
         parent = session.execute(
             select(CostCentre).where(
                 CostCentre.cost_centre_id == parent_cost_centre_id,
                 CostCentre.org_id == org_id,
+                CostCentre.firm_id == cc.firm_id,
                 CostCentre.deleted_at.is_(None),
             )
         ).scalar_one_or_none()
         if parent is None:
             raise AppValidationError(
-                f"parent_cost_centre_id {parent_cost_centre_id} not found in this org"
+                f"parent_cost_centre_id {parent_cost_centre_id} "
+                "not found or belongs to a different org/firm."
             )
         cc.parent_cost_centre_id = parent_cost_centre_id
     if is_active is not None:

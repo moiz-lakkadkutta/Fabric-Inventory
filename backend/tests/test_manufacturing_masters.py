@@ -41,6 +41,34 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _create_second_firm_in_org(
+    sync_engine: Engine,
+    *,
+    org_id: uuid.UUID,
+    code: str = "SECOND",
+    name: str = "Second Firm",
+) -> str:
+    """Insert a SECOND firm in the SAME org so cross-firm scope checks
+    can be exercised (mirrors the helper in test_bom / test_routing).
+    """
+    from app.models import Firm
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        firm = Firm(
+            org_id=org_id,
+            code=code,
+            name=name,
+            has_gst=False,
+            state_code="MH",
+        )
+        session.add(firm)
+        session.flush()
+        firm_id = str(firm.firm_id)
+        session.commit()
+    return firm_id
+
+
 def _make_salesperson(
     sync_engine: Engine,
     *,
@@ -498,3 +526,279 @@ def test_salesperson_cannot_create_design(http_client: TestClient, sync_engine: 
     )
     assert resp.status_code == 403
     assert resp.json()["code"] == "PERMISSION_DENIED"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A02 hardening — cost_centre_id cross-org / cross-firm validation
+# ──────────────────────────────────────────────────────────────────────
+#
+# Originally the service blindly accepted whatever `cost_centre_id` the
+# caller supplied. A user in org A could pass a cost_centre_id belonging
+# to org B (or to a different firm inside the same org) and have it land
+# on their Design / OperationMaster row, breaking RLS semantics on every
+# subsequent read.
+#
+# These tests pin the org-membership + firm-scope validation on every
+# create / patch path that accepts an FK to `cost_centre`.
+
+
+def test_create_design_rejects_cost_centre_from_different_org(
+    http_client: TestClient,
+) -> None:
+    """Caller in org A supplies a cost_centre_id from org B → 422."""
+    me_a = _signup_owner(http_client)
+    me_b = _signup_owner(http_client)
+
+    # Org B creates a cost centre.
+    cc_b = http_client.post(
+        "/cost-centres",
+        headers=_auth(me_b["access_token"]),
+        json={"code": "CC-B-XORG", "name": "B-only", "firm_id": me_b["firm_id"]},
+    ).json()
+
+    # Org A tries to attach B's cost centre to a new design.
+    resp = http_client.post(
+        "/designs",
+        headers=_auth(me_a["access_token"]),
+        json={
+            "code": "D-XORG",
+            "name": "X",
+            "firm_id": me_a["firm_id"],
+            "cost_centre_id": cc_b["cost_centre_id"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_create_design_rejects_cost_centre_from_different_firm(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Same org, different firm: cost centres are firm-scoped, so the
+    create must reject a CC that lives in a sibling firm."""
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    firm_b_id = _create_second_firm_in_org(sync_engine, org_id=org_id, code="DESIGN-XF1")
+
+    # CC lives in firm B.
+    cc_b = http_client.post(
+        "/cost-centres",
+        headers=_auth(me["access_token"]),
+        json={"code": "CC-FIRM-B", "name": "Firm B CC", "firm_id": firm_b_id},
+    ).json()
+
+    # Try to create a design in firm A pointing at firm B's CC.
+    resp = http_client.post(
+        "/designs",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": "D-XFIRM",
+            "name": "X",
+            "firm_id": me["firm_id"],
+            "cost_centre_id": cc_b["cost_centre_id"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_create_operation_master_rejects_cost_centre_from_different_org(
+    http_client: TestClient,
+) -> None:
+    me_a = _signup_owner(http_client)
+    me_b = _signup_owner(http_client)
+    cc_b = http_client.post(
+        "/cost-centres",
+        headers=_auth(me_b["access_token"]),
+        json={"code": "CC-B-OP", "name": "B-only", "firm_id": me_b["firm_id"]},
+    ).json()
+    resp = http_client.post(
+        "/operation-masters",
+        headers=_auth(me_a["access_token"]),
+        json={
+            "code": "OP-XORG",
+            "name": "X",
+            "firm_id": me_a["firm_id"],
+            "cost_centre_id": cc_b["cost_centre_id"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_create_operation_master_rejects_cost_centre_from_different_firm(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    firm_b_id = _create_second_firm_in_org(sync_engine, org_id=org_id, code="OP-XF1")
+    cc_b = http_client.post(
+        "/cost-centres",
+        headers=_auth(me["access_token"]),
+        json={"code": "CC-FB-OP", "name": "Firm B CC", "firm_id": firm_b_id},
+    ).json()
+    resp = http_client.post(
+        "/operation-masters",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": "OP-XFIRM",
+            "name": "X",
+            "firm_id": me["firm_id"],
+            "cost_centre_id": cc_b["cost_centre_id"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_patch_design_rejects_cost_centre_from_different_org(
+    http_client: TestClient,
+) -> None:
+    """PATCH path must reapply the same FK ownership check as create."""
+    me_a = _signup_owner(http_client)
+    me_b = _signup_owner(http_client)
+    design_a = http_client.post(
+        "/designs",
+        headers=_auth(me_a["access_token"]),
+        json={"code": "D-PATCH-XORG", "name": "X", "firm_id": me_a["firm_id"]},
+    ).json()
+    cc_b = http_client.post(
+        "/cost-centres",
+        headers=_auth(me_b["access_token"]),
+        json={"code": "CC-B-PD", "name": "B-only", "firm_id": me_b["firm_id"]},
+    ).json()
+    resp = http_client.patch(
+        f"/designs/{design_a['design_id']}",
+        headers=_auth(me_a["access_token"]),
+        json={"cost_centre_id": cc_b["cost_centre_id"]},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_patch_design_rejects_cost_centre_from_different_firm(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    firm_b_id = _create_second_firm_in_org(sync_engine, org_id=org_id, code="PD-XF1")
+    design_a = http_client.post(
+        "/designs",
+        headers=_auth(me["access_token"]),
+        json={"code": "D-PATCH-XFIRM", "name": "X", "firm_id": me["firm_id"]},
+    ).json()
+    cc_b = http_client.post(
+        "/cost-centres",
+        headers=_auth(me["access_token"]),
+        json={"code": "CC-FB-PD", "name": "Firm B CC", "firm_id": firm_b_id},
+    ).json()
+    resp = http_client.patch(
+        f"/designs/{design_a['design_id']}",
+        headers=_auth(me["access_token"]),
+        json={"cost_centre_id": cc_b["cost_centre_id"]},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_patch_operation_master_rejects_cost_centre_from_different_org(
+    http_client: TestClient,
+) -> None:
+    me_a = _signup_owner(http_client)
+    me_b = _signup_owner(http_client)
+    op_a = http_client.post(
+        "/operation-masters",
+        headers=_auth(me_a["access_token"]),
+        json={"code": "OP-PATCH-XORG", "name": "X", "firm_id": me_a["firm_id"]},
+    ).json()
+    cc_b = http_client.post(
+        "/cost-centres",
+        headers=_auth(me_b["access_token"]),
+        json={"code": "CC-B-POP", "name": "B-only", "firm_id": me_b["firm_id"]},
+    ).json()
+    resp = http_client.patch(
+        f"/operation-masters/{op_a['operation_master_id']}",
+        headers=_auth(me_a["access_token"]),
+        json={"cost_centre_id": cc_b["cost_centre_id"]},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_patch_operation_master_rejects_cost_centre_from_different_firm(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    firm_b_id = _create_second_firm_in_org(sync_engine, org_id=org_id, code="POP-XF1")
+    op_a = http_client.post(
+        "/operation-masters",
+        headers=_auth(me["access_token"]),
+        json={"code": "OP-PATCH-XFIRM", "name": "X", "firm_id": me["firm_id"]},
+    ).json()
+    cc_b = http_client.post(
+        "/cost-centres",
+        headers=_auth(me["access_token"]),
+        json={"code": "CC-FB-POP", "name": "Firm B CC", "firm_id": firm_b_id},
+    ).json()
+    resp = http_client.patch(
+        f"/operation-masters/{op_a['operation_master_id']}",
+        headers=_auth(me["access_token"]),
+        json={"cost_centre_id": cc_b["cost_centre_id"]},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+# `patch_cost_centre` already validates `parent_cost_centre_id` org-scope
+# (see service code in `manufacturing_masters_service.patch_cost_centre`)
+# but the firm-scope check was missing — a sibling firm's CC could be
+# adopted as parent. Pin that here.
+def test_patch_cost_centre_rejects_parent_from_different_firm(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    firm_b_id = _create_second_firm_in_org(sync_engine, org_id=org_id, code="CC-PAR-X")
+    cc_a = http_client.post(
+        "/cost-centres",
+        headers=_auth(me["access_token"]),
+        json={"code": "CC-A-CHILD", "name": "A child", "firm_id": me["firm_id"]},
+    ).json()
+    cc_b = http_client.post(
+        "/cost-centres",
+        headers=_auth(me["access_token"]),
+        json={"code": "CC-B-PARENT", "name": "B parent", "firm_id": firm_b_id},
+    ).json()
+    resp = http_client.patch(
+        f"/cost-centres/{cc_a['cost_centre_id']}",
+        headers=_auth(me["access_token"]),
+        json={"parent_cost_centre_id": cc_b["cost_centre_id"]},
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_create_cost_centre_rejects_parent_from_different_firm(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    firm_b_id = _create_second_firm_in_org(sync_engine, org_id=org_id, code="CC-CRE-X")
+    parent_b = http_client.post(
+        "/cost-centres",
+        headers=_auth(me["access_token"]),
+        json={"code": "CC-B-PCC", "name": "B parent", "firm_id": firm_b_id},
+    ).json()
+    resp = http_client.post(
+        "/cost-centres",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": "CC-CHILD-XFIRM",
+            "name": "Child",
+            "firm_id": me["firm_id"],
+            "parent_cost_centre_id": parent_b["cost_centre_id"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
