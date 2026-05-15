@@ -160,9 +160,7 @@ def _allocate_voucher_number(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _resolve_system_ledger(
-    session: Session, *, org_id: uuid.UUID, code: str
-) -> Ledger:
+def _resolve_system_ledger(session: Session, *, org_id: uuid.UUID, code: str) -> Ledger:
     """Look up a firm-agnostic system ledger by code. Same shape as
     ``accounting_service._resolve_ledger`` but inlined to avoid a service
     import cycle. Refuses inactive / control / soft-deleted rows per the
@@ -241,9 +239,7 @@ def issue_materials(
     for idx, line in enumerate(lines, start=1):
         qty = Decimal(line.qty_to_issue)
         if qty <= Decimal("0"):
-            raise AppValidationError(
-                f"Line {idx}: qty_to_issue must be positive (got {qty})."
-            )
+            raise AppValidationError(f"Line {idx}: qty_to_issue must be positive (got {qty}).")
     if not series:
         raise AppValidationError("series is required (default 'MI').")
 
@@ -252,9 +248,7 @@ def issue_materials(
     # eager-loads material lines (we need them for per-line validation).
     mo = mo_service.get_mo(session, org_id=org_id, mo_id=mo_id)
     if mo.firm_id != firm_id:
-        raise AppValidationError(
-            f"MO {mo_id} does not belong to firm {firm_id}."
-        )
+        raise AppValidationError(f"MO {mo_id} does not belong to firm {firm_id}.")
     if mo.status not in {MoStatus.RELEASED, MoStatus.IN_PROGRESS}:
         raise AppValidationError(
             f"Cannot issue materials against MO in status {mo.status}; "
@@ -266,9 +260,7 @@ def issue_materials(
     # deleted_at IS NULL is defensive — get_mo already filters at the MO
     # header, but each line row carries its own soft-delete column.
     mml_by_id: dict[uuid.UUID, MoMaterialLine] = {
-        mml.mo_material_line_id: mml
-        for mml in mo.material_lines
-        if mml.deleted_at is None
+        mml.mo_material_line_id: mml for mml in mo.material_lines if mml.deleted_at is None
     }
 
     # ── Phase 2: per-line MO + stock validation (gather, don't write
@@ -327,9 +319,7 @@ def issue_materials(
         if ln.lot_id is not None:
             stock_where.append(StockPosition.lot_id == ln.lot_id)
         on_hand = session.execute(
-            select(func.coalesce(func.sum(StockPosition.on_hand_qty), 0)).where(
-                *stock_where
-            )
+            select(func.coalesce(func.sum(StockPosition.on_hand_qty), 0)).where(*stock_where)
         ).scalar_one()
         on_hand_dec = Decimal(on_hand or 0)
         qty = Decimal(ln.qty_to_issue)
@@ -381,15 +371,11 @@ def issue_materials(
     # WIP ledger (existing org pre-A06 seed change) rather than mid-
     # transaction.
     wip_ledger = _resolve_system_ledger(session, org_id=org_id, code=_WIP_LEDGER_CODE)
-    inventory_ledger = _resolve_system_ledger(
-        session, org_id=org_id, code=_INVENTORY_LEDGER_CODE
-    )
+    inventory_ledger = _resolve_system_ledger(session, org_id=org_id, code=_INVENTORY_LEDGER_CODE)
 
     # ── Phase 4: mint MI number + header.
     _advisory_lock_mi_partition(session, org_id=org_id, firm_id=firm_id, series=series)
-    mi_number = _allocate_mi_number(
-        session, org_id=org_id, firm_id=firm_id, series=series
-    )
+    mi_number = _allocate_mi_number(session, org_id=org_id, firm_id=firm_id, series=series)
 
     issue_date = issue_date or datetime.date.today()
     mi = MaterialIssue(
@@ -477,8 +463,7 @@ def issue_materials(
         reference_type="material_issue",
         reference_id=mi.material_issue_id,
         narration=(
-            narration
-            or f"Material issue {series}/{mi_number} against MO {mo.series}/{mo.number}"
+            narration or f"Material issue {series}/{mi_number} against MO {mo.series}/{mo.number}"
         ),
         status=VoucherStatus.POSTED,
         total_debit=total_value,
@@ -526,9 +511,7 @@ def issue_materials(
     # this would require the caller to POST /start before the FE could
     # show the IN_PROGRESS UI — confusing on first issue.
     if mo.status == MoStatus.RELEASED:
-        mo_service.start_mo(
-            session, org_id=org_id, mo_id=mo_id, started_by=issued_by
-        )
+        mo_service.start_mo(session, org_id=org_id, mo_id=mo_id, started_by=issued_by)
 
     session.flush()
 
@@ -548,8 +531,7 @@ def issue_materials(
     )
     if drs != crs:
         raise AppValidationError(
-            f"Material-issue voucher {voucher.voucher_id} persisted unbalanced: "
-            f"DR={drs}, CR={crs}"
+            f"Material-issue voucher {voucher.voucher_id} persisted unbalanced: DR={drs}, CR={crs}"
         )
 
     # ── Phase 9: audit.

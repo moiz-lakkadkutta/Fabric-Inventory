@@ -808,9 +808,7 @@ class MaterialIssueLine(Base, TimestampMixin, SoftDeleteMixin):
     qty_issued: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
     unit_cost: Mapped[Any | None] = mapped_column(Numeric(15, 6), nullable=True)
     line_value: Mapped[Any] = mapped_column(Numeric(18, 2), nullable=False)
-    stock_ledger_id: Mapped[uuid.UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=True
-    )
+    stock_ledger_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
 
     material_issue: Mapped[MaterialIssue] = relationship(back_populates="lines")
 

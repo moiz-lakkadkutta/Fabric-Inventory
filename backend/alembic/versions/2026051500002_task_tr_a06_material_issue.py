@@ -83,9 +83,7 @@ def _create_material_issue() -> None:
         sa.Column(
             "manufacturing_order_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(
-                "manufacturing_order.manufacturing_order_id", ondelete="RESTRICT"
-            ),
+            sa.ForeignKey("manufacturing_order.manufacturing_order_id", ondelete="RESTRICT"),
             nullable=False,
         ),
         # Issue number allocated per (org, firm, series). Series stays
@@ -174,9 +172,7 @@ def _create_material_issue_line() -> None:
         sa.Column(
             "mo_material_line_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(
-                "mo_material_line.mo_material_line_id", ondelete="RESTRICT"
-            ),
+            sa.ForeignKey("mo_material_line.mo_material_line_id", ondelete="RESTRICT"),
             nullable=False,
         ),
         # Denormalised for the issue printout + audit drilldown so the

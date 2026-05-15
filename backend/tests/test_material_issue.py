@@ -215,9 +215,7 @@ def _seed_full_world(
     """
     me = _signup_owner(http_client)
     design_id = _create_design(http_client, me, code=f"D-{uuid.uuid4().hex[:6]}")
-    finished = _create_item(
-        http_client, me, code=f"F-{uuid.uuid4().hex[:6]}", item_type="FINISHED"
-    )
+    finished = _create_item(http_client, me, code=f"F-{uuid.uuid4().hex[:6]}", item_type="FINISHED")
     raws = [_create_item(http_client, me, code=f"R{i}-{uuid.uuid4().hex[:5]}") for i in range(3)]
     bom = _create_bom(
         http_client,
@@ -256,9 +254,7 @@ def _seed_full_world(
 
 
 def _release_mo(http_client: TestClient, *, owner: dict[str, str], mo_id: str) -> None:
-    r = http_client.post(
-        f"/manufacturing/mo/{mo_id}/release", headers=_auth(owner["access_token"])
-    )
+    r = http_client.post(f"/manufacturing/mo/{mo_id}/release", headers=_auth(owner["access_token"]))
     assert r.status_code == 200, r.text
 
 
@@ -321,11 +317,11 @@ def _make_salesperson(sync_engine: Engine, *, org_id: uuid.UUID, firm_id: uuid.U
 
 def test_issue_materials_happy_path(http_client: TestClient, sync_engine: Engine) -> None:
     """Full issue of all 3 BOM lines. Asserts:
-      - 201 with material_issue id + voucher_id + 3 lines.
-      - qty_issued on each mo_material_line equals qty_required.
-      - MO auto-starts (RELEASED → IN_PROGRESS).
-      - stock_position.on_hand_qty drops by the issued qty per item.
-      - Voucher is balanced (DR WIP == CR Inventory).
+    - 201 with material_issue id + voucher_id + 3 lines.
+    - qty_issued on each mo_material_line equals qty_required.
+    - MO auto-starts (RELEASED → IN_PROGRESS).
+    - stock_position.on_hand_qty drops by the issued qty per item.
+    - Voucher is balanced (DR WIP == CR Inventory).
     """
     me, mo_id, _bom, _routing, _fin = _seed_full_world(http_client, sync_engine)
     _release_mo(http_client, owner=me, mo_id=mo_id)
@@ -362,9 +358,13 @@ def test_issue_materials_happy_path(http_client: TestClient, sync_engine: Engine
 
     with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
-        positions = session.execute(
-            select(StockPosition).where(StockPosition.firm_id == uuid.UUID(me["firm_id"]))
-        ).scalars().all()
+        positions = (
+            session.execute(
+                select(StockPosition).where(StockPosition.firm_id == uuid.UUID(me["firm_id"]))
+            )
+            .scalars()
+            .all()
+        )
         by_item = {pos.item_id: Decimal(pos.on_hand_qty) for pos in positions}
         # 100 - 20 = 80 ; 100 - 15 = 85 ; 100 - 5 = 95.
         expected = {Decimal("80.0000"), Decimal("85.0000"), Decimal("95.0000")}
@@ -379,9 +379,11 @@ def test_issue_materials_happy_path(http_client: TestClient, sync_engine: Engine
         voucher = session.execute(
             select(Voucher).where(Voucher.voucher_id == uuid.UUID(body["voucher_id"]))
         ).scalar_one()
-        lines = session.execute(
-            select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id)
-        ).scalars().all()
+        lines = (
+            session.execute(select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id))
+            .scalars()
+            .all()
+        )
         drs = sum(
             (Decimal(ln.amount) for ln in lines if ln.line_type == JournalLineType.DR),
             Decimal(0),
@@ -400,9 +402,7 @@ def test_issue_materials_happy_path(http_client: TestClient, sync_engine: Engine
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_partial_issue_then_remainder(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_partial_issue_then_remainder(http_client: TestClient, sync_engine: Engine) -> None:
     """Issue half the first line, then issue the remaining qty in a
     second MI. Both must succeed; qty_issued cumulates.
     """
@@ -484,9 +484,7 @@ def test_over_issue_rejected(http_client: TestClient, sync_engine: Engine) -> No
 def test_insufficient_stock_rejected(http_client: TestClient, sync_engine: Engine) -> None:
     """Stock 5m but BOM requires 20m of the first line — must reject."""
     # raw_qty=5 so each item has 5m on-hand; line 1 needs 20m.
-    me, mo_id, _b, _r, _f = _seed_full_world(
-        http_client, sync_engine, raw_qty=Decimal("5.0000")
-    )
+    me, mo_id, _b, _r, _f = _seed_full_world(http_client, sync_engine, raw_qty=Decimal("5.0000"))
     _release_mo(http_client, owner=me, mo_id=mo_id)
     mo = _get_mo(http_client, owner=me, mo_id=mo_id)
     big_line = next(
@@ -620,9 +618,7 @@ def test_cross_mo_line_rejected(http_client: TestClient, sync_engine: Engine) ->
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_cross_org_cannot_get_material_issue(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_cross_org_cannot_get_material_issue(http_client: TestClient, sync_engine: Engine) -> None:
     me_a, mo_a, _b, _r, _f = _seed_full_world(http_client, sync_engine)
     _release_mo(http_client, owner=me_a, mo_id=mo_a)
     mo = _get_mo(http_client, owner=me_a, mo_id=mo_a)
@@ -690,9 +686,7 @@ def test_idempotency_key_replay_returns_same_issue_id(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_salesperson_cannot_issue_materials(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_salesperson_cannot_issue_materials(http_client: TestClient, sync_engine: Engine) -> None:
     me, mo_id, _b, _r, _f = _seed_full_world(http_client, sync_engine)
     _release_mo(http_client, owner=me, mo_id=mo_id)
     mo = _get_mo(http_client, owner=me, mo_id=mo_id)
@@ -722,9 +716,7 @@ def test_salesperson_cannot_issue_materials(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_list_material_issues_for_mo(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_list_material_issues_for_mo(http_client: TestClient, sync_engine: Engine) -> None:
     me, mo_id, _b, _r, _f = _seed_full_world(http_client, sync_engine)
     _release_mo(http_client, owner=me, mo_id=mo_id)
     mo = _get_mo(http_client, owner=me, mo_id=mo_id)
@@ -756,9 +748,7 @@ def test_list_material_issues_for_mo(
     assert body["count"] == 2
 
 
-def test_audit_log_emitted_on_issue(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_audit_log_emitted_on_issue(http_client: TestClient, sync_engine: Engine) -> None:
     me, mo_id, _b, _r, _f = _seed_full_world(http_client, sync_engine)
     _release_mo(http_client, owner=me, mo_id=mo_id)
     mo = _get_mo(http_client, owner=me, mo_id=mo_id)
@@ -798,9 +788,7 @@ def test_audit_log_emitted_on_issue(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_cannot_issue_with_zero_total_value(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_cannot_issue_with_zero_total_value(http_client: TestClient, sync_engine: Engine) -> None:
     """If every position's current_cost is zero, the GL voucher would be
     a ₹0 / ₹0 row which violates the post-flush balance invariant. The
     service short-circuits with a clearer 422 so the user fixes the
