@@ -52,6 +52,15 @@ type BackendGstr1Response = components['schemas']['Gstr1Response'];
 type BackendGstr1InvoiceRow = components['schemas']['Gstr1InvoiceRow'];
 type BackendGstr1B2csRow = components['schemas']['Gstr1B2csRow'];
 type BackendGstr1HsnRow = components['schemas']['Gstr1HsnRow'];
+type BackendAgeingResponse = components['schemas']['AgeingResponse'];
+type BackendAgeingRow = components['schemas']['AgeingRow'];
+type BackendLedgerStatementResponse = components['schemas']['LedgerStatementResponse'];
+type BackendLedgerStatementRow = components['schemas']['LedgerStatementRow'];
+type BackendPartyStatementResponse = components['schemas']['PartyStatementResponse'];
+type BackendPartyStatementRow = components['schemas']['PartyStatementRow'];
+type BackendItc04Report = components['schemas']['ITC04Report'];
+type BackendItc04SendOutRow = components['schemas']['ITC04SendOutRow'];
+type BackendItc04ReceiveRow = components['schemas']['ITC04ReceiveRow'];
 
 // ──────────────────────────────────────────────────────────────────────
 // Money helpers — rupees-decimal-string → integer paise.
@@ -465,6 +474,416 @@ export function useDaybook() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// Ageing report (TASK-TR-B04)
+//
+// BE envelope:
+//   { as_of: 'YYYY-MM-DD', total_outstanding: '<rupees>',
+//     rows: [{ party_id, party_name, outstanding,
+//              current, bucket_1_30, bucket_31_60,
+//              bucket_61_90, bucket_over_90 }] }
+//
+// The five buckets sum exactly to `outstanding` per row, and the row
+// outstandings sum to `total_outstanding`. The panel renders party-name
+// + the five buckets (₹) + total per party + the page-level grand total.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface AgeingRowVM {
+  party_id: string;
+  party_name: string;
+  outstanding: number; // paise
+  current: number; // paise
+  bucket_1_30: number; // paise
+  bucket_31_60: number; // paise
+  bucket_61_90: number; // paise
+  bucket_over_90: number; // paise
+}
+
+export interface AgeingVM {
+  as_of: string;
+  total_outstanding: number; // paise
+  rows: AgeingRowVM[];
+}
+
+function mapAgeingRow(b: BackendAgeingRow): AgeingRowVM {
+  return {
+    party_id: b.party_id,
+    party_name: b.party_name,
+    outstanding: rupeesToPaise(b.outstanding),
+    current: rupeesToPaise(b.current),
+    bucket_1_30: rupeesToPaise(b.bucket_1_30),
+    bucket_31_60: rupeesToPaise(b.bucket_31_60),
+    bucket_61_90: rupeesToPaise(b.bucket_61_90),
+    bucket_over_90: rupeesToPaise(b.bucket_over_90),
+  };
+}
+
+function mapAgeingResponse(r: BackendAgeingResponse): AgeingVM {
+  return {
+    as_of: r.as_of,
+    total_outstanding: rupeesToPaise(r.total_outstanding),
+    rows: r.rows.map(mapAgeingRow),
+  };
+}
+
+async function liveListAgeing(asOf?: string): Promise<AgeingVM> {
+  const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+  const data = await api<BackendAgeingResponse>(`/reports/ageing${qs}`);
+  return mapAgeingResponse(data);
+}
+
+/**
+ * Mock-mode ageing fixture. The BE owns the real numbers; this just
+ * keeps the click-dummy alive so devs can flip between modes.
+ */
+function mockAgeingViewModel(asOf?: string): AgeingVM {
+  return {
+    as_of: asOf ?? new Date().toISOString().slice(0, 10),
+    total_outstanding: 0,
+    rows: [],
+  };
+}
+
+export function useAgeing(asOf?: string) {
+  return useQuery({
+    queryKey: ['reports', 'ageing', asOf ?? 'default'],
+    queryFn: () => (IS_LIVE ? liveListAgeing(asOf) : mockResolve(mockAgeingViewModel(asOf))),
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Ledger statement (TASK-TR-B04)
+//
+// Path: GET /reports/ledger/{ledger_id}?from=YYYY-MM-DD&to=YYYY-MM-DD
+// The BE query params are `from` / `to`, not `from_date` / `to_date`
+// (see operations.get_ledger_statement_…). Both are nullable; omitting
+// either defaults server-side.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface LedgerStatementRowVM {
+  voucher_id: string;
+  voucher_type: string;
+  voucher_date: string;
+  series: string;
+  number: string;
+  description: string | null;
+  narration: string | null;
+  debit: number; // paise
+  credit: number; // paise
+  balance: number; // paise (DR-positive signed)
+}
+
+export interface LedgerStatementVM {
+  ledger_id: string;
+  ledger_code: string;
+  ledger_name: string;
+  group_code: string | null;
+  from_date: string;
+  to_date: string;
+  opening_balance: number; // paise (signed)
+  closing_balance: number; // paise (signed)
+  total_debits: number; // paise
+  total_credits: number; // paise
+  rows: LedgerStatementRowVM[];
+}
+
+/**
+ * Signed-rupees parse — for opening/closing/balance fields. The BE
+ * serialises a Decimal which may start with "-" for credit balances;
+ * `rupeesToPaise` already routes through `parseFloat`, which handles
+ * the sign correctly, so we just delegate.
+ */
+function signedRupeesToPaise(s: string | null | undefined): number {
+  return rupeesToPaise(s);
+}
+
+function mapLedgerStatementRow(b: BackendLedgerStatementRow): LedgerStatementRowVM {
+  return {
+    voucher_id: b.voucher_id,
+    voucher_type: b.voucher_type,
+    voucher_date: b.voucher_date,
+    series: b.series,
+    number: b.number,
+    description: b.description,
+    narration: b.narration,
+    debit: rupeesToPaise(b.debit),
+    credit: rupeesToPaise(b.credit),
+    balance: signedRupeesToPaise(b.balance),
+  };
+}
+
+function mapLedgerStatementResponse(r: BackendLedgerStatementResponse): LedgerStatementVM {
+  return {
+    ledger_id: r.ledger_id,
+    ledger_code: r.ledger_code,
+    ledger_name: r.ledger_name,
+    group_code: r.group_code,
+    from_date: r.from_date,
+    to_date: r.to_date,
+    opening_balance: signedRupeesToPaise(r.opening_balance),
+    closing_balance: signedRupeesToPaise(r.closing_balance),
+    total_debits: rupeesToPaise(r.total_debits),
+    total_credits: rupeesToPaise(r.total_credits),
+    rows: r.rows.map(mapLedgerStatementRow),
+  };
+}
+
+async function liveListLedgerStatement(
+  ledgerId: string,
+  fromDate?: string,
+  toDate?: string,
+): Promise<LedgerStatementVM> {
+  const params: string[] = [];
+  if (fromDate) params.push(`from=${encodeURIComponent(fromDate)}`);
+  if (toDate) params.push(`to=${encodeURIComponent(toDate)}`);
+  const qs = params.length ? `?${params.join('&')}` : '';
+  const data = await api<BackendLedgerStatementResponse>(
+    `/reports/ledger/${encodeURIComponent(ledgerId)}${qs}`,
+  );
+  return mapLedgerStatementResponse(data);
+}
+
+export function useLedgerStatement(
+  ledgerId: string | null | undefined,
+  fromDate?: string,
+  toDate?: string,
+) {
+  return useQuery({
+    queryKey: ['reports', 'ledger-statement', ledgerId ?? null, fromDate ?? null, toDate ?? null],
+    // Only fire once the user has selected a ledger — until then the
+    // panel renders a "pick a ledger" empty-state instead of issuing a
+    // 422-bound request with an undefined path segment.
+    enabled: Boolean(ledgerId),
+    queryFn: () => liveListLedgerStatement(ledgerId as string, fromDate, toDate),
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Party statement (TASK-TR-B04)
+//
+// Path: GET /reports/party-statement/{party_id}?from=…&to=…
+// Same shape as ledger statement, party-scoped. `period_change` =
+// total_debits - total_credits (positive = party owes more by EOP).
+// ──────────────────────────────────────────────────────────────────────
+
+export interface PartyStatementRowVM {
+  voucher_id: string;
+  voucher_type: string;
+  voucher_date: string;
+  series: string;
+  number: string;
+  narration: string | null;
+  reference_type: string | null;
+  reference_id: string | null;
+  debit: number; // paise
+  credit: number; // paise
+  balance: number; // paise (DR-positive signed)
+}
+
+export interface PartyStatementVM {
+  party_id: string;
+  party_name: string;
+  from_date: string;
+  to_date: string;
+  opening_balance: number; // paise
+  closing_balance: number; // paise
+  period_change: number; // paise (signed)
+  total_debits: number; // paise
+  total_credits: number; // paise
+  rows: PartyStatementRowVM[];
+}
+
+function mapPartyStatementRow(b: BackendPartyStatementRow): PartyStatementRowVM {
+  return {
+    voucher_id: b.voucher_id,
+    voucher_type: b.voucher_type,
+    voucher_date: b.voucher_date,
+    series: b.series,
+    number: b.number,
+    narration: b.narration,
+    reference_type: b.reference_type,
+    reference_id: b.reference_id,
+    debit: rupeesToPaise(b.debit),
+    credit: rupeesToPaise(b.credit),
+    balance: signedRupeesToPaise(b.balance),
+  };
+}
+
+function mapPartyStatementResponse(r: BackendPartyStatementResponse): PartyStatementVM {
+  return {
+    party_id: r.party_id,
+    party_name: r.party_name,
+    from_date: r.from_date,
+    to_date: r.to_date,
+    opening_balance: signedRupeesToPaise(r.opening_balance),
+    closing_balance: signedRupeesToPaise(r.closing_balance),
+    period_change: signedRupeesToPaise(r.period_change),
+    total_debits: rupeesToPaise(r.total_debits),
+    total_credits: rupeesToPaise(r.total_credits),
+    rows: r.rows.map(mapPartyStatementRow),
+  };
+}
+
+async function liveListPartyStatement(
+  partyId: string,
+  fromDate?: string,
+  toDate?: string,
+): Promise<PartyStatementVM> {
+  const params: string[] = [];
+  if (fromDate) params.push(`from=${encodeURIComponent(fromDate)}`);
+  if (toDate) params.push(`to=${encodeURIComponent(toDate)}`);
+  const qs = params.length ? `?${params.join('&')}` : '';
+  const data = await api<BackendPartyStatementResponse>(
+    `/reports/party-statement/${encodeURIComponent(partyId)}${qs}`,
+  );
+  return mapPartyStatementResponse(data);
+}
+
+export function usePartyStatement(
+  partyId: string | null | undefined,
+  fromDate?: string,
+  toDate?: string,
+) {
+  return useQuery({
+    queryKey: ['reports', 'party-statement', partyId ?? null, fromDate ?? null, toDate ?? null],
+    enabled: Boolean(partyId),
+    queryFn: () => liveListPartyStatement(partyId as string, fromDate, toDate),
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// ITC-04 (TASK-TR-B04)
+//
+// Path: GET /reports/itc04?firm_id=…&period=YYYY-MM (or YYYY-QN).
+// firm_id is REQUIRED on this endpoint (unlike the other reports which
+// derive firm from the JWT). The FE pulls the current firm from the
+// auth store and passes it explicitly.
+//
+// Note on `total_send_outs` / `total_receipts`: per the response schema
+// these are integer COUNTS (not money). Don't paise-convert them.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface Itc04SendOutRowVM {
+  job_work_order_id: string;
+  challan_no: string;
+  challan_date: string;
+  karigar_party_id: string;
+  karigar_name: string;
+  karigar_gstin: string | null;
+  item_id: string;
+  item_name: string;
+  hsn: string | null;
+  qty_sent: number; // bare count (qty, not money)
+  uom: string;
+  nature_of_job: string | null;
+}
+
+export interface Itc04ReceiveRowVM {
+  job_work_receipt_id: string;
+  original_challan_no: string;
+  original_challan_date: string;
+  receipt_date: string;
+  karigar_party_id: string;
+  karigar_name: string;
+  karigar_gstin: string | null;
+  item_id: string;
+  item_name: string;
+  hsn: string | null;
+  qty_received: number; // bare count
+  qty_wastage: number; // bare count
+  uom: string;
+}
+
+export interface Itc04VM {
+  firm_id: string;
+  period: string;
+  from_date: string;
+  to_date: string;
+  total_send_outs: number; // row count, NOT money
+  total_receipts: number; // row count, NOT money
+  send_outs: Itc04SendOutRowVM[];
+  receipts: Itc04ReceiveRowVM[];
+}
+
+function mapItc04SendOut(b: BackendItc04SendOutRow): Itc04SendOutRowVM {
+  return {
+    job_work_order_id: b.job_work_order_id,
+    challan_no: b.challan_no,
+    challan_date: b.challan_date,
+    karigar_party_id: b.karigar_party_id,
+    karigar_name: b.karigar_name,
+    karigar_gstin: b.karigar_gstin,
+    item_id: b.item_id,
+    item_name: b.item_name,
+    hsn: b.hsn,
+    qty_sent: parseFloat(b.qty_sent || '0'),
+    uom: b.uom,
+    nature_of_job: b.nature_of_job,
+  };
+}
+
+function mapItc04Receive(b: BackendItc04ReceiveRow): Itc04ReceiveRowVM {
+  return {
+    job_work_receipt_id: b.job_work_receipt_id,
+    original_challan_no: b.original_challan_no,
+    original_challan_date: b.original_challan_date,
+    receipt_date: b.receipt_date,
+    karigar_party_id: b.karigar_party_id,
+    karigar_name: b.karigar_name,
+    karigar_gstin: b.karigar_gstin,
+    item_id: b.item_id,
+    item_name: b.item_name,
+    hsn: b.hsn,
+    qty_received: parseFloat(b.qty_received || '0'),
+    qty_wastage: parseFloat(b.qty_wastage || '0'),
+    uom: b.uom,
+  };
+}
+
+function mapItc04Response(r: BackendItc04Report): Itc04VM {
+  return {
+    firm_id: r.firm_id,
+    period: r.period,
+    from_date: r.from_date,
+    to_date: r.to_date,
+    total_send_outs: r.total_send_outs ?? 0,
+    total_receipts: r.total_receipts ?? 0,
+    send_outs: (r.send_outs ?? []).map(mapItc04SendOut),
+    receipts: (r.receipts ?? []).map(mapItc04Receive),
+  };
+}
+
+async function liveListItc04(firmId: string, period: string): Promise<Itc04VM> {
+  const data = await api<BackendItc04Report>(
+    `/reports/itc04?firm_id=${encodeURIComponent(firmId)}&period=${encodeURIComponent(period)}`,
+  );
+  return mapItc04Response(data);
+}
+
+function mockItc04ViewModel(firmId: string, period: string): Itc04VM {
+  return {
+    firm_id: firmId,
+    period,
+    from_date: `${period}-01`,
+    to_date: `${period}-30`,
+    total_send_outs: 0,
+    total_receipts: 0,
+    send_outs: [],
+    receipts: [],
+  };
+}
+
+export function useItc04(firmId: string | null | undefined, period: string) {
+  return useQuery({
+    queryKey: ['reports', 'itc04', firmId ?? null, period],
+    enabled: Boolean(firmId) && Boolean(period),
+    queryFn: () =>
+      IS_LIVE
+        ? liveListItc04(firmId as string, period)
+        : mockResolve(mockItc04ViewModel(firmId as string, period)),
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Test-only exports
 // ──────────────────────────────────────────────────────────────────────
 
@@ -478,4 +897,13 @@ export const _internal = {
   mapGstr1Invoice,
   mapGstr1B2cs,
   mapGstr1Hsn,
+  mapAgeingResponse,
+  mapAgeingRow,
+  mapLedgerStatementResponse,
+  mapLedgerStatementRow,
+  mapPartyStatementResponse,
+  mapPartyStatementRow,
+  mapItc04Response,
+  mapItc04SendOut,
+  mapItc04Receive,
 };
