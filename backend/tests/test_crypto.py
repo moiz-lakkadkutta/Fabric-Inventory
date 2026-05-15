@@ -242,6 +242,104 @@ def test_master_key_dev_fallback_when_unset(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 # ──────────────────────────────────────────────────────────────────────
+# B3 — strict ENVIRONMENT matching for the dev-fallback KEK
+# ──────────────────────────────────────────────────────────────────────
+#
+# The first cut of `get_master_kek` only failed fast when
+# `ENVIRONMENT == "prod"`. Everything else (including `"production"`,
+# `"prdo"`, unset, blank, `"staging"`) silently fell through to the
+# deterministic public dev KEK — so a misconfigured prod box booted
+# healthy and only failed when the first user signed up.
+#
+# The replacement allowlists ONLY `{"dev", "test"}` (case-insensitive,
+# whitespace-trimmed) for the fallback; every other value raises
+# `PIIConfigError`. Dev/test additionally emit a WARNING log so a
+# misconfigured "staging-but-spelled-staging" box shows it on boot.
+
+
+def test_master_key_missing_in_production_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Long-form `production` was previously not caught — only the exact
+    string `prod` triggered fail-fast. Bug B3: a deploy that set
+    ENVIRONMENT=production silently picked up the public dev KEK."""
+    monkeypatch.delenv("PII_MASTER_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    crypto._reset_caches_for_tests()
+    with pytest.raises(crypto.PIIConfigError):
+        crypto.get_master_kek()
+
+
+def test_master_key_missing_in_staging_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Staging is NOT dev/test — must also refuse to boot without a real
+    KEK. Otherwise a staging box runs with the public dev KEK and PII
+    written there is decryptable by anyone with the source code."""
+    monkeypatch.delenv("PII_MASTER_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "staging")
+    crypto._reset_caches_for_tests()
+    with pytest.raises(crypto.PIIConfigError):
+        crypto.get_master_kek()
+
+
+def test_master_key_missing_in_unset_env_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unset ENVIRONMENT must NOT default to "safe to use the dev
+    fallback". An operator who forgot to set ENVIRONMENT in prod would
+    otherwise get the public KEK without warning."""
+    monkeypatch.delenv("PII_MASTER_KEY", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    crypto._reset_caches_for_tests()
+    with pytest.raises(crypto.PIIConfigError):
+        crypto.get_master_kek()
+
+
+def test_master_key_blank_env_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ENVIRONMENT set to the empty string is no better than unset."""
+    monkeypatch.delenv("PII_MASTER_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "   ")
+    crypto._reset_caches_for_tests()
+    with pytest.raises(crypto.PIIConfigError):
+        crypto.get_master_kek()
+
+
+def test_master_key_typo_environment_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo'd env value (`prdo`) used to pass — anything that wasn't
+    exactly `prod` was treated as safe. With the allowlist the typo is
+    rejected at boot."""
+    monkeypatch.delenv("PII_MASTER_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "prdo")
+    crypto._reset_caches_for_tests()
+    with pytest.raises(crypto.PIIConfigError):
+        crypto.get_master_kek()
+
+
+def test_dev_fallback_only_with_explicit_dev_or_test(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only `dev` / `test` (case-insensitive, trimmed) may take the
+    public KEK. Both paths must emit a WARNING log so a misconfigured
+    dev/staging shows it on every boot — silent fallback was the
+    failure mode this guards against."""
+    import logging
+
+    for env_value in ("dev", "DEV", " dev ", "test", "TEST"):
+        monkeypatch.delenv("PII_MASTER_KEY", raising=False)
+        monkeypatch.setenv("ENVIRONMENT", env_value)
+        crypto._reset_caches_for_tests()
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            kek = crypto.get_master_kek()
+        assert len(kek) == 32, f"dev/test fallback returned a non-32-byte KEK for ENV={env_value!r}"
+        # The warning must fire EVERY boot — operators learn from the
+        # log line that they're running on the public dev key.
+        assert any(
+            record.levelno >= logging.WARNING and "PII_MASTER_KEY" in record.getMessage()
+            for record in caplog.records
+        ), (
+            f"Expected a WARNING mentioning PII_MASTER_KEY when falling back; "
+            f"got records: {[r.getMessage() for r in caplog.records]!r} (ENV={env_value!r})"
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Backward-compatible top-level API: encrypt_pii / decrypt_pii
 # ──────────────────────────────────────────────────────────────────────
 

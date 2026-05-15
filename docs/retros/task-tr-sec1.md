@@ -64,6 +64,34 @@ Pattern: column is `BYTEA NULL` (or `NOT NULL` if mandatory), service write goes
 ## Open flags carried over
 
 - **DEK rotation is out of scope.** The version-byte format makes it forward-compatible: a `0x02` could mean "re-wrap of an existing DEK with the new KEK" or "fresh DEK after rotation". Concrete rotation steps belong to TASK-TR-SEC2 (not yet filed). The shape: decrypt every wrapped DEK with the old KEK, re-wrap with the new KEK, flip `PII_MASTER_KEY` env var; field ciphertexts written by the old DEK remain readable until next write re-encrypts under the new DEK. Bust `app.utils.crypto._DEK_CACHE` on KEK swap.
-- **`app_user.mfa_secret` is still plaintext bytes.** The `identity_service` MFA flow stores the TOTP shared secret without going through `encrypt_pii`. Fixing this is a small follow-up — same DEK, same call shape — but it's a separate surface from TR-SEC1's scope (parties + bank accounts + firm GSTIN on signup). Track as TASK-TR-SEC1b.
-- **`firm.pan / cin / tan` PII columns are technically encrypted bytes per the DDL** but no service path writes them today. When the firm-management UI (TASK-TR-A04 or similar) adds writes, they MUST go through `encrypt_pii(..., dek=..., org_id=...)`.
+- **`app_user.mfa_secret` is still plaintext bytes.** ~~Fixing this is a small follow-up~~ Resolved in the review fix-pass below (M1). The `identity_service` enable_mfa / verify_totp paths now thread through `encrypt_pii` / `decrypt_pii` with the org's DEK.
+- **`firm.pan / cin / tan` PII columns are technically encrypted bytes per the DDL** but no service path writes them today. When the firm-management UI (TASK-TR-A04 or similar) adds writes, they MUST go through `encrypt_pii(..., dek=..., org_id=...)`. (Re-confirmed during the M2 deferral below — still no writes today.)
 - **PDF generation calls `decrypt_pii` on `firm.gstin`.** That field is only ever written by the signup path (`routers/auth.py`) where it now goes through real encryption. If anyone ever bulk-imports firms via SQL (not through the service layer), the version-byte fallback will read those rows as legacy UTF-8 — which is the intended behaviour, but worth knowing.
+
+## Follow-up: review fix-pass (B1/B2/B3/M1/M3/M5)
+
+Reviewer flagged three blockers + three majors on PR #112. Single follow-up commit pushed to the same branch; PR not merged. TDD on each fix (failing test landed first).
+
+### Blockers
+
+- **B1 — `sales_service.create_draft_invoice` compared GSTIN ciphertexts.** Lines 843/845 hex-encoded the AES-GCM ciphertext and fed it to `gst_service.determine_place_of_supply`. Under per-call random IV, two encryptions of the same plaintext produce different ciphertexts, so the same-GSTIN branch-transfer detection (Scenario 22 → `NIL_NOT_A_SUPPLY` + `DELIVERY_CHALLAN`) never fired — branch transfers were misclassified as taxable supplies. Fix: resolve the org DEK once in the service entry-point, decrypt both sides before the engine call. New test `test_create_draft_invoice_branch_transfer_same_gstin_is_not_a_supply` in `tests/test_sales_invoice_service.py`.
+- **B2 — `reports_service.compute_gstr1` emitted `hex(ciphertext)` as the B2B GSTIN.** Same cause as B1 plus this broke GSTR-1 filings (GSTN rejects non-15-char values) and B2B aggregation across same-plaintext-GSTIN parties. Fix: resolve DEK once at the top of `compute_gstr1`, decrypt each row's `party_gstin` before bucketing. New test `test_gstr1_b2b_returns_plaintext_gstin_not_ciphertext_hex` in `tests/test_reports_gstr1.py`.
+- **B3 — permissive env-var matching for the dev KEK fallback.** Only the literal string `"prod"` failed fast; `"production"`, `"prdo"`, unset, blank, and `"staging"` all silently used the public dev KEK. Fix: strict allowlist (`{"dev", "test"}`, case-insensitive, whitespace-trimmed) — every other value raises `PIIConfigError`. Dev/test additionally fire a loud `WARNING` on every boot so a misconfigured non-prod box can't hide. Six new tests in `tests/test_crypto.py` (`test_master_key_missing_in_production_fails`, `_staging_fails`, `_unset_env_fails`, `_blank_env_fails`, `_typo_environment_fails`, `test_dev_fallback_only_with_explicit_dev_or_test`).
+
+### Majors
+
+- **M1 — `app_user.mfa_secret` stored as plaintext UTF-8.** TOTP secrets bypass passwords entirely, so a DB-only leak became a forgery primitive. Fix: `enable_mfa` encrypts under the org DEK via `encrypt_pii`; `verify_totp` decrypts on the read side. The legacy plaintext-bytes path remains decoded by the version-byte fallback in `crypto.decrypt_field`, so existing enrolments keep authenticating until the next re-enable. Three new tests in `tests/test_identity_service.py`: `test_enable_mfa_stored_secret_is_encrypted_not_plaintext` (raw bytes are AES-GCM, not UTF-8 of the secret), `test_verify_totp_round_trip_through_encryption` (write→read round-trip authenticates), `test_mfa_secret_does_not_decrypt_under_other_org_dek` (cross-tenant AAD isolation). Updated `test_enable_mfa_returns_provisioning_uri_and_persists_secret` to assert the round-trip via `decrypt_pii` instead of the old `decode("utf-8")` plaintext check.
+- **M3 — `downgrade()` silently destroyed encrypted data.** `drop_column("organization", "encrypted_dek")` would strand every encrypted PII row in the DB — even possession of `PII_MASTER_KEY` cannot recover, because the per-org DEK is gone. Fix: `downgrade()` raises `NotImplementedError` with a message pointing at the backup pipeline. The migration is forward-only by design.
+- **M5 — KEK loaded lazily on first PII op.** Under the new strict B3 check, a misconfigured prod box used to boot healthy and only fail when the first user signed up. Fix: `main.py`'s lifespan and `alembic/env.py`'s `run_migrations_online` both eagerly call `get_master_kek()` at boot. Misconfigured prod/staging now crashes the container immediately with a clear `PIIConfigError`. Three new tests in `tests/test_main_startup.py`.
+
+### Out of scope (deferred to follow-up tasks)
+
+- **M2 — `firm.pan / cin / tan` write paths.** No service writes these fields today (re-confirmed during this fix-pass; the firm-management UI hasn't shipped). When TASK-TR-A04 or similar adds writes, they must go through `encrypt_pii(..., dek=..., org_id=...)`. Track as a separate follow-up; not part of this PR.
+- **M4 — `get_org_dek` raw SQL is missing `deleted_at IS NULL`.** A soft-deleted org would still return its DEK; this is consistent with the rest of the codebase (RLS does not filter soft-deletes) but worth a separate audit. Not in scope here.
+- **m2 docs only — `docs/ops/deployment-runbook.md`** had a paragraph claiming "PII encryption is aspirational" that contradicted the new required `PII_MASTER_KEY` instructions. Rewritten to describe the actual envelope encryption design, the strict ENVIRONMENT allowlist, and the operational consequence of losing the KEK. Pre-deploy checklist now requires generating + storing the KEK in 1Password BEFORE the first deploy.
+
+### Verification
+
+- `uv run pytest -q` — 881 passed, no skips on the worktree.
+- `uv run ruff check . && uv run ruff format --check . && uv run mypy .` — clean.
+- Each new test landed RED first, then GREEN after the matching fix.

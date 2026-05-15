@@ -73,4 +73,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("organization", "encrypted_dek")
+    # M3 review fix: downgrading would `DROP COLUMN organization.encrypted_dek`,
+    # which strands every encrypted PII row in the database (party.gstin,
+    # party.pan, party.phone, bank_account.account_number, app_user.mfa_secret,
+    # firm.gstin, …). Each row is sealed under that org's DEK; with the DEK
+    # gone, even possession of `PII_MASTER_KEY` does not recover the data.
+    # The migration is forward-only by design. Roll back via a restore from
+    # a pre-upgrade pg_dump backup, NOT via alembic downgrade.
+    raise NotImplementedError(
+        "TR-SEC1 is forward-only: dropping organization.encrypted_dek would "
+        "permanently strand every encrypted PII row (per-org DEK destroyed, "
+        "cannot decrypt even with PII_MASTER_KEY). To roll back, restore from "
+        "a pre-upgrade backup (ops/backup.sh dumps)."
+    )

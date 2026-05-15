@@ -47,6 +47,7 @@ from app.service import (
     inventory_service,
 )
 from app.service.gst_service import BuyerStatus, TaxType
+from app.utils import crypto
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -838,11 +839,26 @@ def create_draft_invoice(
 
     invoice_total = total_subtotal + total_gst
 
+    # B1 fix: decrypt both GSTINs back to plaintext before handing them
+    # to the PoS engine. The previous code emitted `hex(ciphertext)`,
+    # which under AES-GCM's per-call random IV makes two encryptions of
+    # the same plaintext always-different — so the engine's same-GSTIN
+    # branch-transfer check (Scenario 22 → NIL_NOT_A_SUPPLY + DC) never
+    # fired. The DEK lookup is a single SELECT + memoised, cheap on the
+    # hot path. Decrypt only happens here; the column stays encrypted at
+    # rest and over the wire.
+    dek = crypto.get_org_dek(session, org_id=org_id)
+    seller_gstin_plain = (
+        crypto.decrypt_pii(firm.gstin, dek=dek, org_id=org_id) if firm.gstin else None
+    )
+    buyer_gstin_plain = (
+        crypto.decrypt_pii(party.gstin, dek=dek, org_id=org_id) if party.gstin else None
+    )
     pos_decision = gst_service.determine_place_of_supply(
         seller_state=firm.state_code or "",
-        seller_gstin=None if firm.gstin is None else firm.gstin.hex(),
+        seller_gstin=seller_gstin_plain,
         buyer_state=party.state_code,
-        buyer_gstin=None if party.gstin is None else party.gstin.hex(),
+        buyer_gstin=buyer_gstin_plain,
         buyer_status=_classify_buyer(party),
         ship_to_state=ship_to_state or party.state_code,
         invoice_value=invoice_total,

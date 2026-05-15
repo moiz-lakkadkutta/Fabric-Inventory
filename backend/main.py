@@ -35,6 +35,7 @@ from app.routers import reports as reports_router
 from app.routers import sales as sales_router
 from app.service import email_adapter as email_adapter_module
 from app.service.email_adapter import MailgunEmailAdapter
+from app.utils import crypto as _crypto
 
 
 def _probe_weasyprint() -> None:
@@ -78,6 +79,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(level=settings.log_level)
     init_sentry(settings.sentry_dsn, settings.environment)
+    # M5 review fix: resolve the master KEK at boot. With B3's strict
+    # ENVIRONMENT allowlist, a deploy that forgets to populate
+    # PII_MASTER_KEY in a staging/prod box used to boot healthy and
+    # only fail when the first user signed up (since the first crypto
+    # call lazy-loaded the KEK). Eagerly calling it here turns the
+    # latent misconfiguration into a fast container crash with a clear
+    # message. In dev/test the public fallback fires + warns; boot
+    # still succeeds.
+    _crypto.get_master_kek()
     # CUT-QA-04: fail fast if WeasyPrint can't dlopen its native deps —
     # otherwise the /invoices/{id}/pdf endpoint silently 500s on every
     # request (Bug B7, 2026-05-12). Probe BEFORE swapping the email

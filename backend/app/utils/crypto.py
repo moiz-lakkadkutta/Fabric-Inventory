@@ -48,6 +48,7 @@ var moves out of `.env` and into a real secret store at the same time.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import secrets
 import uuid
@@ -58,6 +59,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+
+_logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────
 # Constants
@@ -80,12 +84,18 @@ _PII_MASTER_KEY_ENV: str = "PII_MASTER_KEY"
 
 # Deterministic dev fallback. The byte pattern is documented so the
 # value is obvious if it ever shows up in a leaked log — it is NOT a
-# secret. Prod refuses to boot without a real PII_MASTER_KEY (see
-# `get_master_kek`); see `ops/.env.production.example`.
+# secret. Every non-dev/test ENVIRONMENT refuses to boot without a real
+# PII_MASTER_KEY (see `get_master_kek`); see `ops/.env.production.example`.
 _DEV_FALLBACK_KEK: bytes = bytes(range(32))
 _DEV_FALLBACK_KEK_DOC: str = (
     "deterministic dev KEK (bytes(range(32))) — set PII_MASTER_KEY for any non-dev environment"
 )
+
+# Only these ENVIRONMENT values may use the public dev fallback KEK.
+# Anything else — including unset, blank, typos like "prdo", "staging",
+# or the long form "production" — fails fast in `get_master_kek`.
+# B3 fix: previously only the literal "prod" was rejected.
+_FALLBACK_ALLOWED_ENVIRONMENTS: frozenset[str] = frozenset({"dev", "test"})
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -128,7 +138,7 @@ def get_master_kek() -> bytes:
     """Resolve the 32-byte master KEK. Memoised per process.
 
     Raises:
-        PIIConfigError: when the env var is unset (and we're not in dev),
+        PIIConfigError: when the env var is unset (and we're not in dev/test),
             when base64 decoding fails, or when the decoded key is not
             exactly 32 bytes.
     """
@@ -137,16 +147,34 @@ def get_master_kek() -> bytes:
         return _MASTER_KEK_CACHE
 
     raw = os.environ.get(_PII_MASTER_KEY_ENV, "").strip()
-    environment = os.environ.get("ENVIRONMENT", "dev").strip().lower()
+    environment = os.environ.get("ENVIRONMENT", "").strip().lower()
 
     if not raw:
-        if environment == "prod":
+        # B3 fix: strict allowlist. Only the explicit values 'dev' / 'test'
+        # may use the public dev fallback. Everything else — unset, blank,
+        # 'staging', 'production', the long form, or a typo like 'prdo' —
+        # must fail fast at boot so a misconfigured deploy can't run on
+        # the public KEK without anyone noticing. The previous check was
+        # `environment == "prod"` which let every other spelling through.
+        if environment not in _FALLBACK_ALLOWED_ENVIRONMENTS:
             raise PIIConfigError(
-                f"{_PII_MASTER_KEY_ENV} is required when ENVIRONMENT=prod. "
+                f"{_PII_MASTER_KEY_ENV} is required when ENVIRONMENT is not "
+                f"'dev' or 'test' (got {environment!r}). "
                 "Generate one with `openssl rand -base64 32` and store it in "
                 "the prod secret store. See docs/ops/deployment-runbook.md."
             )
-        # dev / staging fallback — explicit, deterministic, documented.
+        # Dev / test fallback — explicit, deterministic, documented. Loud
+        # WARNING every boot so a misconfigured non-prod box (e.g. someone
+        # ran it with ENVIRONMENT=dev on a staging machine) shows up in
+        # the logs instead of silently using the public KEK.
+        _logger.warning(
+            "%s is unset; falling back to the public dev KEK because ENVIRONMENT=%r. "
+            "This MUST NOT happen in any environment that handles real PII. "
+            "Set %s to a base64-encoded 32-byte value from a secret store.",
+            _PII_MASTER_KEY_ENV,
+            environment,
+            _PII_MASTER_KEY_ENV,
+        )
         _MASTER_KEK_CACHE = _DEV_FALLBACK_KEK
         return _MASTER_KEK_CACHE
 
