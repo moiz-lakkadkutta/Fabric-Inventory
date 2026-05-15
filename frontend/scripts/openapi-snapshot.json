@@ -687,6 +687,7 @@
             "items": {
               "$ref": "#/components/schemas/BomLineInput"
             },
+            "maxItems": 200,
             "minItems": 1,
             "title": "Lines",
             "type": "array"
@@ -775,15 +776,8 @@
             "type": "string"
           },
           "is_optional": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Is Optional"
+            "title": "Is Optional",
+            "type": "boolean"
           },
           "item_id": {
             "format": "uuid",
@@ -854,13 +848,18 @@
           "offset": {
             "title": "Offset",
             "type": "integer"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
           }
         },
         "required": [
           "items",
           "limit",
           "offset",
-          "count"
+          "count",
+          "total_count"
         ],
         "title": "BomListResponse",
         "type": "object"
@@ -905,15 +904,8 @@
             "type": "string"
           },
           "is_active": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Is Active"
+            "title": "Is Active",
+            "type": "boolean"
           },
           "lines": {
             "items": {
@@ -933,15 +925,8 @@
             "type": "string"
           },
           "version_number": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Version Number"
+            "title": "Version Number",
+            "type": "integer"
           }
         },
         "required": [

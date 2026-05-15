@@ -2047,7 +2047,7 @@ export interface components {
              */
             bom_line_id: string;
             /** Is Optional */
-            is_optional: boolean | null;
+            is_optional: boolean;
             /**
              * Item Id
              * Format: uuid
@@ -2071,6 +2071,8 @@ export interface components {
             limit: number;
             /** Offset */
             offset: number;
+            /** Total Count */
+            total_count: number;
         };
         /** BomResponse */
         BomResponse: {
@@ -2102,7 +2104,7 @@ export interface components {
              */
             firm_id: string;
             /** Is Active */
-            is_active: boolean | null;
+            is_active: boolean;
             /** Lines */
             lines: components["schemas"]["BomLineResponse"][];
             /**
@@ -2116,7 +2118,7 @@ export interface components {
              */
             updated_at: string;
             /** Version Number */
-            version_number: number | null;
+            version_number: number;
         };
         /** ChequeCreateRequest */
         ChequeCreateRequest: {

@@ -110,27 +110,33 @@ def _cc_to_response(cc: CostCentre) -> CostCentreResponse:
 
 
 def _bom_line_to_response(line: BomLine) -> BomLineResponse:
+    # The model column `is_optional` is `bool | None` (DB default FALSE),
+    # but the service always sets it on create. Coerce defensively so
+    # the response shape can advertise a non-nullable `bool`.
     return BomLineResponse(
         bom_line_id=line.bom_line_id,
         bom_id=line.bom_id,
         item_id=line.item_id,
         qty_required=line.qty_required,
         uom=line.uom,
-        is_optional=line.is_optional,
+        is_optional=bool(line.is_optional),
         part_role=line.part_role,
         sequence=line.sequence,
     )
 
 
 def _bom_to_response(bom: Bom) -> BomResponse:
+    # `version_number` and `is_active` are nullable on the ORM model
+    # (server defaults 1 / TRUE), but the service always sets them on
+    # create. Coerce defensively so the response can advertise non-null.
     return BomResponse(
         bom_id=bom.bom_id,
         org_id=bom.org_id,
         firm_id=bom.firm_id,
         design_id=bom.design_id,
         finished_item_id=bom.finished_item_id,
-        version_number=bom.version_number,
-        is_active=bom.is_active,
+        version_number=bom.version_number if bom.version_number is not None else 1,
+        is_active=bool(bom.is_active),
         created_at=bom.created_at,
         updated_at=bom.updated_at,
         deleted_at=bom.deleted_at,
@@ -590,7 +596,7 @@ def list_boms(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> BomListResponse:
-    items, _total = bom_service.list_boms(
+    items, total = bom_service.list_boms(
         db,
         org_id=current_user.org_id,
         firm_id=firm_id,
@@ -605,6 +611,7 @@ def list_boms(
         limit=limit,
         offset=offset,
         count=len(items),
+        total_count=total,
     )
 
 

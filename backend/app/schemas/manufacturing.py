@@ -179,7 +179,7 @@ class BomLineResponse(BaseModel):
     item_id: uuid.UUID
     qty_required: Decimal
     uom: UomType
-    is_optional: bool | None
+    is_optional: bool
     part_role: str | None
     sequence: int | None
 
@@ -188,7 +188,11 @@ class BomCreateRequest(BaseModel):
     firm_id: uuid.UUID
     design_id: uuid.UUID
     finished_item_id: uuid.UUID
-    lines: list[BomLineInput] = Field(min_length=1)
+    # ``max_length=200`` matches a sane upper-bound for a textile BOM
+    # (shells + linings + trims + buttons + threads + labels rarely
+    # exceeds a few dozen lines). Acts as a cheap DoS guard against a
+    # buggy or malicious caller submitting an unbounded list.
+    lines: list[BomLineInput] = Field(min_length=1, max_length=200)
 
 
 class BomResponse(BaseModel):
@@ -197,8 +201,8 @@ class BomResponse(BaseModel):
     firm_id: uuid.UUID
     design_id: uuid.UUID
     finished_item_id: uuid.UUID
-    version_number: int | None
-    is_active: bool | None
+    version_number: int
+    is_active: bool
     created_at: datetime.datetime
     updated_at: datetime.datetime
     deleted_at: datetime.datetime | None
@@ -209,7 +213,8 @@ class BomListResponse(BaseModel):
     items: list[BomResponse]
     limit: int
     offset: int
-    count: int
+    count: int  # rows in this page
+    total_count: int  # total matching rows across all pages
 
 
 __all__ = [
