@@ -119,7 +119,11 @@ class LedgerListResponse(BaseModel):
 class JournalLineInput(BaseModel):
     ledger_id: uuid.UUID
     line_type: Literal["DR", "CR"]
-    amount: Decimal = Field(gt=0)
+    # C01 hardening (M2): bound `amount` to NUMERIC(15,2) — the column
+    # definition in `voucher_line.amount`. Without `decimal_places`,
+    # Postgres silently rounds 3dp inputs and the post-flush DR==CR
+    # invariant fails with a confusing imbalance instead of a clear 422.
+    amount: Decimal = Field(gt=0, max_digits=15, decimal_places=2)
     description: str | None = Field(default=None, max_length=500)
 
 
