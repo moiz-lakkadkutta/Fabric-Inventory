@@ -33,11 +33,18 @@ describe('ReportsHub', () => {
     expect(screen.getByText(/sundry debtors/i)).toBeInTheDocument();
   });
 
-  it('switches to GSTR-1 and shows the validation summary', async () => {
+  it('switches to GSTR-1 and shows the four-bucket panel', async () => {
     renderReports();
     fireEvent.click(screen.getByRole('tab', { name: /GSTR-1/i }));
-    await waitFor(() => expect(screen.getAllByText(/B2B/i).length).toBeGreaterThan(0));
-    expect(screen.getByText(/to review|all OK/i)).toBeInTheDocument();
+    // The four required buckets render as section headings (B2B / B2CL /
+    // B2CS / HSN). In mock mode, the panel renders an empty-state for
+    // every bucket except B2B (the click-dummy fixture only has B2B rows).
+    await waitFor(() => expect(screen.getByRole('heading', { name: /B2B/i })).toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: /B2CL/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /B2CS/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /HSN/i })).toBeInTheDocument();
+    // The period picker is wired so the user can change month.
+    expect(screen.getByLabelText(/GSTR-1 period/i)).toBeInTheDocument();
   });
 
   it('switches to Stock and shows the total stock value', async () => {
