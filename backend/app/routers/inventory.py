@@ -1,14 +1,17 @@
-"""Inventory router — stock adjustment + location endpoints.
+"""Inventory router — stock adjustment + location + lot endpoints.
 
 Endpoints:
   POST /stock-adjustments        — create an adjustment           (TASK-023)
   GET  /stock-adjustments        — list adjustments with filters  (TASK-023)
   GET  /stock-adjustments/{id}   — get a single adjustment        (TASK-023)
   GET  /locations                — list firm locations            (TASK-CUT-204)
+  GET  /lots                     — paginated list of lots         (TASK-TR-B02)
+  GET  /lots/{lot_id}            — single lot with qty_on_hand    (TASK-TR-B02)
 
 Permissions:
   inventory.adjustment.create  — create adjustment
   inventory.stock.read         — list + get adjustments + list locations
+  inventory.lot.read           — list + get lots
 """
 
 from __future__ import annotations
@@ -20,21 +23,24 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.dependencies import SyncDBSession, require_permission
-from app.models import Location, StockAdjustment
+from app.models import Item, Location, Lot, StockAdjustment
 from app.models.inventory import LocationType
 from app.schemas.inventory import (
     LocationCreateRequest,
     LocationListResponse,
     LocationResponse,
+    LotListResponse,
+    LotResponse,
     StockAdjustmentListResponse,
     StockAdjustmentRequest,
     StockAdjustmentResponse,
 )
-from app.service import inventory_service, stock_service
+from app.service import inventory_lots_service, inventory_service, stock_service
 from app.service.identity_service import TokenPayload
 
 router = APIRouter(prefix="/stock-adjustments", tags=["inventory", "stock-adjustment"])
 locations_router = APIRouter(prefix="/locations", tags=["inventory", "location"])
+lots_router = APIRouter(prefix="/lots", tags=["inventory", "lot"])
 
 
 def _adj_to_response(adj: StockAdjustment) -> StockAdjustmentResponse:
@@ -232,3 +238,95 @@ def create_location(
         location_type=LocationType(body.location_type),
     )
     return _location_to_response(loc)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Lots — read endpoints (TASK-TR-B02)
+#
+# The FE LotDetail screen and the InventoryList lots-count column have
+# lived on the mock `frontend/src/lib/mock/inventory.ts` fixture since
+# the click-dummy era. This pair of GETs is the BE foundation; lot
+# creation already happens inside GRN / Receive-Back so there is no
+# POST/PATCH here.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _lot_to_response(lot: Lot, item: Item, qty_on_hand: object) -> LotResponse:
+    from decimal import Decimal
+
+    return LotResponse(
+        lot_id=lot.lot_id,
+        org_id=lot.org_id,
+        firm_id=lot.firm_id,
+        item_id=lot.item_id,
+        item_code=item.code,
+        item_name=item.name,
+        primary_uom=str(item.primary_uom.value),
+        lot_number=lot.lot_number,
+        supplier_lot_number=lot.supplier_lot_number,
+        mfg_date=lot.mfg_date,
+        expiry_date=lot.expiry_date,
+        received_date=lot.received_date,
+        primary_cost=Decimal(lot.primary_cost) if lot.primary_cost is not None else None,
+        currency=lot.currency,
+        grn_id=lot.grn_id,
+        qty_on_hand=Decimal(qty_on_hand or 0),  # type: ignore[arg-type]
+        created_at=lot.created_at,
+        updated_at=lot.updated_at,
+    )
+
+
+@lots_router.get(
+    "",
+    response_model=LotListResponse,
+    summary="List lots (paginated, RLS-scoped to current org)",
+)
+def list_lots(
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("inventory.lot.read"))],
+    firm_id: Annotated[uuid.UUID, Query(description="Filter by firm")],
+    item_id: Annotated[uuid.UUID | None, Query()] = None,
+    search: Annotated[str | None, Query(description="Substring match on lot_number")] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> LotListResponse:
+    """List lots for one firm. `firm_id` is required so an org with
+    multiple firms doesn't accidentally pull cross-firm lots."""
+    rows, total = inventory_lots_service.list_lots(
+        db,
+        org_id=current_user.org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    items = [_lot_to_response(lot, item, qty) for lot, item, qty in rows]
+    return LotListResponse(
+        items=items,
+        limit=limit,
+        offset=offset,
+        count=len(items),
+        total_count=total,
+    )
+
+
+@lots_router.get(
+    "/{lot_id}",
+    response_model=LotResponse,
+    summary="Get a lot by id (with item summary + live qty_on_hand)",
+)
+def get_lot(
+    lot_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("inventory.lot.read"))],
+) -> LotResponse:
+    """Fetch a single lot. Returns 404 if the lot is missing or belongs
+    to a different org (RLS also blocks the query — the explicit
+    `org_id` check is a belt-and-braces second line)."""
+    lot, item, qty = inventory_lots_service.get_lot(
+        db,
+        org_id=current_user.org_id,
+        lot_id=lot_id,
+    )
+    return _lot_to_response(lot, item, qty)

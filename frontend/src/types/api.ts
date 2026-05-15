@@ -1089,6 +1089,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/lots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List lots (paginated, RLS-scoped to current org)
+         * @description List lots for one firm. `firm_id` is required so an org with
+         *     multiple firms doesn't accidentally pull cross-firm lots.
+         */
+        get: operations["list_lots_lots_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/lots/{lot_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a lot by id (with item summary + live qty_on_hand)
+         * @description Fetch a single lot. Returns 404 if the lot is missing or belongs
+         *     to a different org (RLS also blocks the query — the explicit
+         *     `org_id` check is a belt-and-braces second line).
+         */
+        get: operations["get_lot_lots__lot_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/operation-masters": {
         parameters: {
             query?: never;
@@ -4008,6 +4051,86 @@ export interface components {
         LogoutResponse: {
             /** Revoked */
             revoked: boolean;
+        };
+        /**
+         * LotListResponse
+         * @description Paginated list of lots — mirrors the BomListResponse shape.
+         */
+        LotListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["LotResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total Count */
+            total_count: number;
+        };
+        /**
+         * LotResponse
+         * @description One Lot row with the eager-loaded item summary the FE needs.
+         *
+         *     `qty_on_hand` is the live aggregate across all `stock_position` rows
+         *     for this lot (sum over locations). It can be 0 for lots that have
+         *     fully dispatched.
+         */
+        LotResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Currency */
+            currency: string | null;
+            /** Expiry Date */
+            expiry_date: string | null;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Grn Id */
+            grn_id: string | null;
+            /** Item Code */
+            item_code: string;
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Item Name */
+            item_name: string;
+            /**
+             * Lot Id
+             * Format: uuid
+             */
+            lot_id: string;
+            /** Lot Number */
+            lot_number: string;
+            /** Mfg Date */
+            mfg_date: string | null;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /** Primary Cost */
+            primary_cost: string | null;
+            /** Primary Uom */
+            primary_uom: string;
+            /** Qty On Hand */
+            qty_on_hand: string;
+            /** Received Date */
+            received_date: string | null;
+            /** Supplier Lot Number */
+            supplier_lot_number: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /**
          * MeFirmRef
@@ -8544,6 +8667,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LocationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_lots_lots_get: {
+        parameters: {
+            query: {
+                /** @description Filter by firm */
+                firm_id: string;
+                item_id?: string | null;
+                /** @description Substring match on lot_number */
+                search?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LotListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_lot_lots__lot_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                lot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LotResponse"];
                 };
             };
             /** @description Validation Error */

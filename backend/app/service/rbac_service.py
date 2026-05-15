@@ -173,6 +173,9 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "purchase.invoice.read",
                 "purchase.invoice.post",
                 "inventory.stock.read",
+                # TR-B02: Accountant needs lot read access for stock-valuation
+                # drilldown (per-lot cost basis x on-hand qty).
+                "inventory.lot.read",
                 "accounting.voucher.post",
                 "accounting.voucher.read",
                 "accounting.report.view",
@@ -217,6 +220,9 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "sales.invoice.read",
                 "sales.return.create",
                 "inventory.stock.read",
+                # TR-B02: Salespeople need to see which lot is going out
+                # of a DC/invoice — same read class as inventory.stock.
+                "inventory.lot.read",
                 "sales.order.read",
                 "dashboard.read",
                 # Manufacturing masters — Salesperson needs to look up

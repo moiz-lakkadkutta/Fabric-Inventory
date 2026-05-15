@@ -5626,6 +5626,203 @@
         "title": "LogoutResponse",
         "type": "object"
       },
+      "LotListResponse": {
+        "description": "Paginated list of lots \u2014 mirrors the BomListResponse shape.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LotResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset",
+          "count",
+          "total_count"
+        ],
+        "title": "LotListResponse",
+        "type": "object"
+      },
+      "LotResponse": {
+        "description": "One Lot row with the eager-loaded item summary the FE needs.\n\n`qty_on_hand` is the live aggregate across all `stock_position` rows\nfor this lot (sum over locations). It can be 0 for lots that have\nfully dispatched.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "expiry_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiry Date"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "grn_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grn Id"
+          },
+          "item_code": {
+            "title": "Item Code",
+            "type": "string"
+          },
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "item_name": {
+            "title": "Item Name",
+            "type": "string"
+          },
+          "lot_id": {
+            "format": "uuid",
+            "title": "Lot Id",
+            "type": "string"
+          },
+          "lot_number": {
+            "title": "Lot Number",
+            "type": "string"
+          },
+          "mfg_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mfg Date"
+          },
+          "org_id": {
+            "format": "uuid",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "primary_cost": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Cost"
+          },
+          "primary_uom": {
+            "title": "Primary Uom",
+            "type": "string"
+          },
+          "qty_on_hand": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty On Hand",
+            "type": "string"
+          },
+          "received_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Date"
+          },
+          "supplier_lot_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Lot Number"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lot_id",
+          "org_id",
+          "firm_id",
+          "item_id",
+          "item_code",
+          "item_name",
+          "primary_uom",
+          "lot_number",
+          "supplier_lot_number",
+          "mfg_date",
+          "expiry_date",
+          "received_date",
+          "primary_cost",
+          "currency",
+          "grn_id",
+          "qty_on_hand",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "LotResponse",
+        "type": "object"
+      },
       "MeFirmRef": {
         "description": "Slim firm reference exposed via /auth/me for the firm switcher.",
         "properties": {
@@ -15579,6 +15776,156 @@
         "tags": [
           "inventory",
           "location"
+        ]
+      }
+    },
+    "/lots": {
+      "get": {
+        "description": "List lots for one firm. `firm_id` is required so an org with\nmultiple firms doesn't accidentally pull cross-firm lots.",
+        "operationId": "list_lots_lots_get",
+        "parameters": [
+          {
+            "description": "Filter by firm",
+            "in": "query",
+            "name": "firm_id",
+            "required": true,
+            "schema": {
+              "description": "Filter by firm",
+              "format": "uuid",
+              "title": "Firm Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "item_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Item Id"
+            }
+          },
+          {
+            "description": "Substring match on lot_number",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Substring match on lot_number",
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LotListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List lots (paginated, RLS-scoped to current org)",
+        "tags": [
+          "inventory",
+          "lot"
+        ]
+      }
+    },
+    "/lots/{lot_id}": {
+      "get": {
+        "description": "Fetch a single lot. Returns 404 if the lot is missing or belongs\nto a different org (RLS also blocks the query \u2014 the explicit\n`org_id` check is a belt-and-braces second line).",
+        "operationId": "get_lot_lots__lot_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LotResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get a lot by id (with item summary + live qty_on_hand)",
+        "tags": [
+          "inventory",
+          "lot"
         ]
       }
     },
