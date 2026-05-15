@@ -26,13 +26,18 @@ from app.service.seed_service import seed_coa
 @pytest.fixture
 def seeded_org(db_session: OrmSession) -> uuid.UUID:
     """Create a fresh org, seed COA, set RLS GUC, return org_id."""
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_id = uuid.uuid4()
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
     org = Organization(
+        org_id=org_id,
         name=f"coa-org-{uuid.uuid4().hex[:8]}",
         admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
     )
     db_session.add(org)
     db_session.flush()
-    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
     seed_coa(db_session, org_id=org.org_id)
     return org.org_id
 
@@ -114,12 +119,20 @@ def test_create_coa_group_cross_org_isolation(
     db_session: OrmSession, seeded_org: uuid.UUID
 ) -> None:
     """A group created in org A should not appear in org B's list."""
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_b_id = uuid.uuid4()
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_b_id}'"))
     org_b = Organization(
+        org_id=org_b_id,
         name=f"org-b-{uuid.uuid4().hex[:8]}",
         admin_email=f"b-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_b_id),
     )
     db_session.add(org_b)
     db_session.flush()
+    # Restore the original GUC so the rest of the test runs as seeded_org.
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{seeded_org}'"))
 
     coa_service.create_coa_group(db_session, org_id=seeded_org, code="ONLY-A", name="Org A only")
 

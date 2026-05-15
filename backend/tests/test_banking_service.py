@@ -18,7 +18,7 @@ from app.models import Firm
 from app.models.banking import BankAccount, ChequeStatus
 from app.models.masters import CoaGroup, Ledger
 from app.service import banking_service
-from app.utils.crypto import decrypt_pii
+from app.utils.crypto import decrypt_pii, get_org_dek
 
 # ──────────────────────────────────────────────────────────────────────
 # Fixtures / helpers
@@ -99,9 +99,10 @@ def test_create_bank_account_happy_path(db_session: OrmSession, fresh_org_id: uu
     assert account.bank_account_id is not None
     assert account.org_id == fresh_org_id
     assert account.bank_name == "HDFC Bank"
-    # account_number is PII — stored as bytes.
+    # account_number is PII — stored as AES-GCM ciphertext bytes.
     assert isinstance(account.account_number, bytes)
-    assert decrypt_pii(account.account_number) == "00123456789012"
+    dek = get_org_dek(db_session, org_id=fresh_org_id)
+    assert decrypt_pii(account.account_number, dek=dek, org_id=fresh_org_id) == "00123456789012"
     assert account.ifsc_code == "HDFC0001234"
     assert account.account_type == "CURRENT"
     assert account.balance == Decimal("50000.00")
@@ -187,7 +188,8 @@ def test_update_bank_account_patches_fields(
         account_number="999888777666",
     )
     assert updated.bank_name == "ICICI Bank"
-    assert decrypt_pii(updated.account_number) == "999888777666"
+    dek = get_org_dek(db_session, org_id=fresh_org_id)
+    assert decrypt_pii(updated.account_number, dek=dek, org_id=fresh_org_id) == "999888777666"
 
 
 def test_update_bank_account_wrong_org_raises(

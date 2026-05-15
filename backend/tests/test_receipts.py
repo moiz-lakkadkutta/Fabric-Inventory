@@ -28,13 +28,18 @@ def _seed_org_with_coa_and_party(
     session: OrmSession, *, party_name: str
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     """Seed an org + COA + firm + a customer with the requested name."""
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
     org = Organization(
+        org_id=org_id,
         name=f"rct-org-{uuid.uuid4().hex[:8]}",
         admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
     )
     session.add(org)
     session.flush()
-    session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
 
     rbac_service.seed_system_roles(session, org_id=org.org_id)
     seed_service.seed_system_catalog(session, org_id=org.org_id)

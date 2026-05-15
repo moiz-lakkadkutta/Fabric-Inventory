@@ -154,6 +154,11 @@ SSH in as `moiz`. Run each step deliberately; do not script-glob.
    # Edit /opt/fabric/.env.production — set:
    #   - POSTGRES_PASSWORD: openssl rand -base64 32
    #   - JWT_SECRET:        openssl rand -base64 32
+   #   - PII_MASTER_KEY:    openssl rand -base64 32   (REQUIRED in prod —
+   #     the app's PII envelope encryption refuses to boot without it;
+   #     save the value to 1Password "Fabric ERP — Prod" vault
+   #     immediately. Rotating this later is a manual re-wrap of every
+   #     org's encrypted_dek — do not rotate casually.)
    #   - MAILGUN_API_KEY:   from Mailgun dashboard (key-...)
    #   - MAILGUN_DOMAIN:    mg.taana.in (or whatever you set up)
    #   - SENTRY_DSN:        from Sentry dashboard

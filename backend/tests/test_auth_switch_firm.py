@@ -115,12 +115,15 @@ def test_switch_firm_to_other_org_returns_404(
 
         # Pre-mint org_b's id and SET the GUC so WITH CHECK passes at INSERT
         # under fabric_app — same pattern as the signup bootstrap path.
+        from app.utils.crypto import generate_dek, wrap_dek
+
         org_b_id = uuid.uuid4()
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_b_id}'"))
         org_b = Organization(
             org_id=org_b_id,
             name=f"Other Org {uuid.uuid4().hex[:8]}",
             admin_email=f"otheradmin-{uuid.uuid4().hex[:6]}@example.com",
+            encrypted_dek=wrap_dek(generate_dek(), org_id=org_b_id),
         )
         session.add(org_b)
         session.flush()

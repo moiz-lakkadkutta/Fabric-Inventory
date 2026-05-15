@@ -31,14 +31,18 @@ from app.service.export_service import (
     to_xlsx,
 )
 from app.service.identity_service import TokenPayload
-from app.utils.crypto import decrypt_pii
+from app.utils.crypto import decrypt_pii, get_org_dek
 
 router = APIRouter(prefix="/parties", tags=["masters", "party"])
 
 
-def _to_response(party: Party) -> PartyResponse:
+def _to_response(party: Party, *, dek: bytes) -> PartyResponse:
     """Decrypt PII columns + serialize. The model holds bytes; the API
     contract is plaintext. `decrypt_pii` handles None and memoryview safely.
+
+    The caller resolves the org's DEK once and threads it through —
+    `dek` is keyword-only so a no-op refactor that forgets it fails
+    type-checks immediately rather than passing a bare positional arg.
     """
     return PartyResponse(
         party_id=party.party_id,
@@ -52,9 +56,9 @@ def _to_response(party: Party) -> PartyResponse:
         is_karigar=party.is_karigar,
         is_transporter=party.is_transporter,
         tax_status=party.tax_status,
-        gstin=decrypt_pii(party.gstin),
-        pan=decrypt_pii(party.pan),
-        phone=decrypt_pii(party.phone),
+        gstin=decrypt_pii(party.gstin, dek=dek, org_id=party.org_id),
+        pan=decrypt_pii(party.pan, dek=dek, org_id=party.org_id),
+        phone=decrypt_pii(party.phone, dek=dek, org_id=party.org_id),
         email=party.email,
         state_code=party.state_code,
         contact_person=party.contact_person,
@@ -101,7 +105,7 @@ def create_party(
         notes=body.notes,
         created_by=current_user.user_id,
     )
-    return _to_response(party)
+    return _to_response(party, dek=get_org_dek(db, org_id=current_user.org_id))
 
 
 @router.get(
@@ -142,7 +146,8 @@ def list_parties(
     # _to_response decrypts the GSTIN / PAN / phone PII columns; the
     # export must use the decrypted payload (anything else exfiltrates
     # cipher-text into a user-visible spreadsheet).
-    responses = [_to_response(p) for p in items]
+    dek = get_org_dek(db, org_id=current_user.org_id)
+    responses = [_to_response(p, dek=dek) for p in items]
     if export_format is not None:
         rows = party_export_rows(responses)
         if export_format == "csv":
@@ -179,7 +184,7 @@ def get_party(
     current_user: Annotated[TokenPayload, Depends(require_permission("masters.party.read"))],
 ) -> PartyResponse:
     party = masters_service.get_party(db, org_id=current_user.org_id, party_id=party_id)
-    return _to_response(party)
+    return _to_response(party, dek=get_org_dek(db, org_id=current_user.org_id))
 
 
 @router.patch(
@@ -216,7 +221,7 @@ def update_party(
         is_active=body.is_active,
         updated_by=current_user.user_id,
     )
-    return _to_response(party)
+    return _to_response(party, dek=get_org_dek(db, org_id=current_user.org_id))
 
 
 @router.delete(

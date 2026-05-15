@@ -58,6 +58,7 @@ from app.service import (
     rbac_service,
     seed_service,
 )
+from app.utils.crypto import encrypt_pii, generate_dek, wrap_dek
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -177,7 +178,16 @@ def signup(
     new_org_id = uuid.uuid4()
     db.execute(text(f"SET LOCAL app.current_org_id = '{new_org_id}'"))
 
-    org = Organization(org_id=new_org_id, name=body.org_name, admin_email=body.email)
+    # TASK-TR-SEC1: every org owns a Data Encryption Key, minted here
+    # and wrapped with the master KEK before INSERT. Same row format
+    # `crypto.wrap_dek` produces — interchangeable with backfill rows.
+    dek = generate_dek()
+    org = Organization(
+        org_id=new_org_id,
+        name=body.org_name,
+        admin_email=body.email,
+        encrypted_dek=wrap_dek(dek, org_id=new_org_id),
+    )
     db.add(org)
     db.flush()
 
@@ -187,7 +197,10 @@ def signup(
         name=body.firm_name,
         has_gst=body.gstin is not None,
         state_code=body.state_code.upper(),
-        gstin=body.gstin.encode("utf-8") if body.gstin else None,
+        # Real AES-GCM encryption now — was a UTF-8 stub before
+        # TASK-TR-SEC1. The DEK was minted on the line above, no DB
+        # round-trip needed.
+        gstin=encrypt_pii(body.gstin, dek=dek, org_id=new_org_id) if body.gstin else None,
     )
     db.add(firm)
     db.flush()

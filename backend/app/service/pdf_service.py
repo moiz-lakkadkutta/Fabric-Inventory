@@ -42,7 +42,7 @@ from app.models import Firm, Item, Party, SalesInvoice
 from app.models.sales import InvoiceLifecycleStatus
 from app.service import gst_service, sales_service
 from app.service.gst_service import TaxType
-from app.utils.crypto import decrypt_pii
+from app.utils.crypto import decrypt_pii, get_org_dek
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
 _TEMPLATE_DIR = os.path.abspath(_TEMPLATE_DIR)
@@ -306,8 +306,9 @@ def _build_context(
     grand_total = Decimal(invoice.invoice_amount or 0)
     gst_total = Decimal(invoice.gst_amount or 0)
 
-    seller_gstin = decrypt_pii(firm.gstin) if firm.gstin else None
-    buyer_gstin = decrypt_pii(party.gstin) if party.gstin else None
+    dek = get_org_dek(session, org_id=invoice.org_id)
+    seller_gstin = decrypt_pii(firm.gstin, dek=dek, org_id=invoice.org_id) if firm.gstin else None
+    buyer_gstin = decrypt_pii(party.gstin, dek=dek, org_id=invoice.org_id) if party.gstin else None
 
     seller_state_code = firm.state_code or ""
     buyer_state_code = party.state_code or ""

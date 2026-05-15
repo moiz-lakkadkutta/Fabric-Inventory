@@ -21,13 +21,18 @@ from app.service import dashboard_service
 
 
 def _seed_org_firm(session: OrmSession) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
     org = Organization(
+        org_id=org_id,
         name=f"db-org-{uuid.uuid4().hex[:8]}",
         admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
     )
     session.add(org)
     session.flush()
-    session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
 
     firm = Firm(
         org_id=org.org_id,

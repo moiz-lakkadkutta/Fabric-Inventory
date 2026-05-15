@@ -43,12 +43,15 @@ def org_user(db_session: OrmSession) -> tuple[uuid.UUID, uuid.UUID]:
     """Seed a fresh org + a single user for the cleanup tests; rolled
     back at the end of each test by the ``db_session`` transactional
     fixture."""
+    from app.utils.crypto import generate_dek, wrap_dek
+
     org_id = uuid.uuid4()
     db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
     org = Organization(
         org_id=org_id,
         name=f"cleanup-org-{uuid.uuid4().hex[:8]}",
         admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
     )
     db_session.add(org)
     db_session.flush()
