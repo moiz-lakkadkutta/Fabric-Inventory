@@ -519,6 +519,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cost-centres": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List cost centres (RLS-scoped to current org) */
+        get: operations["list_cost_centres_cost_centres_get"];
+        put?: never;
+        /** Create a cost centre */
+        post: operations["create_cost_centre_cost_centres_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cost-centres/{cost_centre_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a cost centre by id */
+        get: operations["get_cost_centre_cost_centres__cost_centre_id__get"];
+        put?: never;
+        post?: never;
+        /** Soft-delete a cost centre */
+        delete: operations["delete_cost_centre_cost_centres__cost_centre_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update a cost centre (PATCH — partial) */
+        patch: operations["patch_cost_centre_cost_centres__cost_centre_id__patch"];
+        trace?: never;
+    };
     "/dashboard/kpis": {
         parameters: {
             query?: never;
@@ -587,6 +624,43 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/designs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List designs (RLS-scoped to current org) */
+        get: operations["list_designs_designs_get"];
+        put?: never;
+        /** Create a design */
+        post: operations["create_design_designs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/designs/{design_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a design by id */
+        get: operations["get_design_designs__design_id__get"];
+        put?: never;
+        post?: never;
+        /** Soft-delete a design */
+        delete: operations["delete_design_designs__design_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update a design (PATCH — partial) */
+        patch: operations["patch_design_designs__design_id__patch"];
         trace?: never;
     };
     "/grns": {
@@ -960,6 +1034,43 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/operation-masters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List operation masters (RLS-scoped to current org) */
+        get: operations["list_operation_masters_operation_masters_get"];
+        put?: never;
+        /** Create an operation master */
+        post: operations["create_operation_master_operation_masters_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/operation-masters/{operation_master_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get an operation master by id */
+        get: operations["get_operation_master_operation_masters__operation_master_id__get"];
+        put?: never;
+        post?: never;
+        /** Soft-delete an operation master */
+        delete: operations["delete_operation_master_operation_masters__operation_master_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update an operation master (PATCH — partial) */
+        patch: operations["patch_operation_master_operation_masters__operation_master_id__patch"];
         trace?: never;
     };
     "/parties": {
@@ -1974,6 +2085,91 @@ export interface components {
              */
             updated_at: string;
         };
+        /** CostCentreCreateRequest */
+        CostCentreCreateRequest: {
+            /** Code */
+            code: string;
+            cost_centre_type?: components["schemas"]["CostCentreType"] | null;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /** Name */
+            name: string;
+            /** Parent Cost Centre Id */
+            parent_cost_centre_id?: string | null;
+        };
+        /** CostCentreListResponse */
+        CostCentreListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["CostCentreResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** CostCentreResponse */
+        CostCentreResponse: {
+            /** Code */
+            code: string;
+            /**
+             * Cost Centre Id
+             * Format: uuid
+             */
+            cost_centre_id: string;
+            cost_centre_type: components["schemas"]["CostCentreType"] | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Deleted At */
+            deleted_at: string | null;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Is Active */
+            is_active: boolean | null;
+            /** Name */
+            name: string;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /** Parent Cost Centre Id */
+            parent_cost_centre_id: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * CostCentreType
+         * @enum {string}
+         */
+        CostCentreType: "OUTLET" | "CHANNEL" | "SEASON" | "DESIGNER" | "SALESPERSON" | "DEPARTMENT";
+        /** CostCentreUpdateRequest */
+        CostCentreUpdateRequest: {
+            cost_centre_type?: components["schemas"]["CostCentreType"] | null;
+            /** Is Active */
+            is_active?: boolean | null;
+            /** Name */
+            name?: string | null;
+            /** Parent Cost Centre Id */
+            parent_cost_centre_id?: string | null;
+        };
         /** DCCreateRequest */
         DCCreateRequest: {
             /** Bill To Address */
@@ -2159,6 +2355,83 @@ export interface components {
             voucher_id: string;
             /** Voucher Type */
             voucher_type: string;
+        };
+        /** DesignCreateRequest */
+        DesignCreateRequest: {
+            /** Code */
+            code: string;
+            /** Cost Centre Id */
+            cost_centre_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Name */
+            name: string;
+        };
+        /** DesignListResponse */
+        DesignListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["DesignResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** DesignResponse */
+        DesignResponse: {
+            /** Code */
+            code: string;
+            /** Cost Centre Id */
+            cost_centre_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Deleted At */
+            deleted_at: string | null;
+            /** Description */
+            description: string | null;
+            /**
+             * Design Id
+             * Format: uuid
+             */
+            design_id: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Name */
+            name: string;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * DesignUpdateRequest
+         * @description All fields optional. PATCH semantics. ``code`` is immutable.
+         */
+        DesignUpdateRequest: {
+            /** Cost Centre Id */
+            cost_centre_id?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name?: string | null;
         };
         /**
          * ForgotPasswordRequest
@@ -3616,6 +3889,101 @@ export interface components {
             /** Uploaded By */
             uploaded_by: string | null;
         };
+        /** OperationMasterCreateRequest */
+        OperationMasterCreateRequest: {
+            /** Code */
+            code: string;
+            /** Cost Centre Id */
+            cost_centre_id?: string | null;
+            /** Default Duration Mins */
+            default_duration_mins?: number | string | null;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            /** Name */
+            name: string;
+            operation_type?: components["schemas"]["OperationType"] | null;
+        };
+        /** OperationMasterListResponse */
+        OperationMasterListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["OperationMasterResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** OperationMasterResponse */
+        OperationMasterResponse: {
+            /** Code */
+            code: string;
+            /** Cost Centre Id */
+            cost_centre_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Default Duration Mins */
+            default_duration_mins: string | null;
+            /** Deleted At */
+            deleted_at: string | null;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Is Active */
+            is_active: boolean | null;
+            /** Name */
+            name: string;
+            /**
+             * Operation Master Id
+             * Format: uuid
+             */
+            operation_master_id: string;
+            operation_type: components["schemas"]["OperationType"] | null;
+            /**
+             * Org Id
+             * Format: uuid
+             */
+            org_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** OperationMasterUpdateRequest */
+        OperationMasterUpdateRequest: {
+            /** Cost Centre Id */
+            cost_centre_id?: string | null;
+            /** Default Duration Mins */
+            default_duration_mins?: number | string | null;
+            /** Is Active */
+            is_active?: boolean | null;
+            /** Name */
+            name?: string | null;
+            operation_type?: components["schemas"]["OperationType"] | null;
+        };
+        /**
+         * OperationType
+         * @description Shop-floor operation category — `operation_type` Postgres enum.
+         *
+         *     Not modelled elsewhere; defined here because `operation_master`
+         *     references it.
+         * @enum {string}
+         */
+        OperationType: "WEAVING" | "DYEING" | "EMBROIDERY" | "STITCHING" | "QC" | "PACKING" | "OTHER";
         /** PICreateRequest */
         PICreateRequest: {
             /** Due Date */
@@ -6244,6 +6612,176 @@ export interface operations {
             };
         };
     };
+    list_cost_centres_cost_centres_get: {
+        parameters: {
+            query?: {
+                firm_id?: string | null;
+                cost_centre_type?: components["schemas"]["CostCentreType"] | null;
+                is_active?: boolean | null;
+                search?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCentreListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_cost_centre_cost_centres_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostCentreCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCentreResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_cost_centre_cost_centres__cost_centre_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cost_centre_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCentreResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_cost_centre_cost_centres__cost_centre_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                cost_centre_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_cost_centre_cost_centres__cost_centre_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                cost_centre_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostCentreUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCentreResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_kpis_dashboard_kpis_get: {
         parameters: {
             query?: never;
@@ -6416,6 +6954,174 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DCResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_designs_designs_get: {
+        parameters: {
+            query?: {
+                firm_id?: string | null;
+                search?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DesignListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_design_designs_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DesignCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DesignResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_design_designs__design_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                design_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DesignResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_design_designs__design_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                design_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_design_designs__design_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                design_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DesignUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DesignResponse"];
                 };
             };
             /** @description Validation Error */
@@ -7368,6 +8074,176 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LocationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_operation_masters_operation_masters_get: {
+        parameters: {
+            query?: {
+                firm_id?: string | null;
+                operation_type?: components["schemas"]["OperationType"] | null;
+                is_active?: boolean | null;
+                search?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationMasterListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_operation_master_operation_masters_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationMasterCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationMasterResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_operation_master_operation_masters__operation_master_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operation_master_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationMasterResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_operation_master_operation_masters__operation_master_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                operation_master_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_operation_master_operation_masters__operation_master_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                operation_master_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationMasterUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationMasterResponse"];
                 };
             };
             /** @description Validation Error */
