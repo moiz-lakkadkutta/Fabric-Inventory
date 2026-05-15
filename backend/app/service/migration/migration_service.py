@@ -84,6 +84,14 @@ _LEDGER_CODE_FOR_KIND: dict[OpeningLedgerKind, str] = {
     # isn't named explicitly. Re-classify later in the UI.
 }
 
+# Suspense ledger for the cutover. A parties-only source export never
+# self-balances — the firm's capital / cash / stock live in other
+# sheets we don't ingest in v1. Rather than reject the migration, the
+# commit step posts the DR/CR gap to this ledger so the OB voucher
+# balances; the accountant reclassifies it post-cutover. Seeded by
+# ``seed_service._SYSTEM_LEDGERS``.
+_OPENING_DIFFERENCE_LEDGER_CODE = "3200"
+
 
 @dataclass(frozen=True)
 class CommitResult:
@@ -99,6 +107,24 @@ class CommitResult:
     opening_voucher_id: uuid.UUID | None
     tb_debits: Decimal
     tb_credits: Decimal
+
+
+@dataclass(frozen=True)
+class _OpeningVoucherPostResult:
+    """Result of ``_post_opening_balance_voucher``.
+
+    Carries the actually-posted suspense amount + side so ``approve()``
+    can size the ``OB_DIFFERENCE_PARKED`` warn-row from the same totals
+    the voucher used, not from the pre-skip ``_sum_ob_sides`` totals
+    (which may include orphan OB rows the voucher dropped).
+
+    ``parked_side`` is ``None`` iff ``parked_amount == 0`` — i.e. the
+    post-skip OBs self-balanced and no suspense line was posted.
+    """
+
+    voucher_id: uuid.UUID
+    parked_amount: Decimal
+    parked_side: str | None
 
 
 def _now_utc() -> datetime.datetime:
@@ -299,13 +325,13 @@ def approve(
     parties_intermediate = list(adapter.extract_parties(source_bytes))
     obs_intermediate = list(adapter.extract_opening_balances(source_bytes))
 
-    # Defense-in-depth TB check (the upload step computed this too).
+    # Party-scoped opening balances almost never self-balance — a
+    # parties-only source export carries debtors/creditors but not the
+    # firm's capital/cash/stock. The DR/CR gap is expected; it's posted
+    # to the '3200 Opening Balance Difference' suspense ledger by
+    # _post_opening_balance_voucher so the OB voucher still balances.
+    # We keep the sums for the audit trail + the parked-difference report.
     dr_total, cr_total = _sum_ob_sides(obs_intermediate)
-    if dr_total != cr_total:
-        raise AppValidationError(
-            f"Opening balances are not balanced (DR {dr_total} vs CR {cr_total}). "
-            "Refusing to post an unbalanced voucher. Fix the source and re-upload."
-        )
 
     # Create parties (idempotent on code uniqueness). Skip rows whose
     # code already exists — typical re-upload scenario where the user
@@ -346,9 +372,11 @@ def approve(
 
     # Post the compound opening-balance voucher. One header, N lines.
     opening_voucher_id: uuid.UUID | None = None
+    parked_amount = Decimal("0")
+    parked_side: str | None = None
     voucher_date = opening_date or _previous_day_in_kolkata()
     if obs_intermediate:
-        opening_voucher_id = _post_opening_balance_voucher(
+        post_result = _post_opening_balance_voucher(
             session,
             org_id=org_id,
             firm_id=firm_id,
@@ -358,6 +386,38 @@ def approve(
             voucher_date=voucher_date,
             migration_id=migration_id,
         )
+        opening_voucher_id = post_result.voucher_id
+        parked_amount = post_result.parked_amount
+        parked_side = post_result.parked_side
+
+    # Surface the parked suspense amount prominently in the report the
+    # FE preview pane renders. We size the message from the
+    # actually-posted parked amount + side (returned by
+    # _post_opening_balance_voucher), NOT from the pre-skip
+    # _sum_ob_sides(obs_intermediate) totals. The two can diverge if the
+    # voucher loop drops orphan OB rows whose party_source_id isn't in
+    # party_id_by_source — using the pre-skip totals here would print a
+    # parked amount the books don't actually carry. tb_reconciles stays
+    # False — honest: the *source* did not reconcile; we parked the gap,
+    # we didn't fix it.
+    if parked_amount > 0:
+        recon = dict(row.reconciliation_json or {})
+        recon_rows = list(recon.get("rows", []))
+        recon_rows.append(
+            {
+                "severity": "warn",
+                "code": "OB_DIFFERENCE_PARKED",
+                "message": (
+                    f"Opening balances differed by {parked_amount} ({parked_side}). "
+                    "Parked in '3200 Opening Balance Difference'. Reclassify to "
+                    "capital / cash / stock via Accounting -> New voucher."
+                ),
+                "source_ref": None,
+            }
+        )
+        recon["rows"] = recon_rows
+        recon["warnings"] = int(recon.get("warnings", 0)) + 1
+        row.reconciliation_json = recon
 
     row.status = STATUS_APPROVED
     row.approved_by = approver_user_id
@@ -509,17 +569,13 @@ def _previous_day_in_kolkata() -> datetime.date:
     return ist.date() - datetime.timedelta(days=1)
 
 
-def _resolve_ledger_for_kind(
-    session: Session, *, org_id: uuid.UUID, kind: OpeningLedgerKind
-) -> Ledger:
-    """Resolve a seeded system ledger by intermediate-format kind.
+def _resolve_ledger_by_code(session: Session, *, org_id: uuid.UUID, code: str) -> Ledger:
+    """Resolve a seeded firm-scoped-NULL system ledger by its COA code.
 
-    The seed_service plants firm-scoped-NULL ledgers per org at signup
-    time. Opening balances post against those (control accounts for AR
-    / AP, plain ledgers for cash / capital). A future Wave-2 enhancement
-    can let users override which ledger each kind maps to.
+    The seed_service plants these per org at signup time. Raises a
+    clear AppValidationError if the code is absent (an org seeded
+    before the ledger was added to ``_SYSTEM_LEDGERS``).
     """
-    code = _LEDGER_CODE_FOR_KIND[kind]
     ledger = session.execute(
         select(Ledger).where(
             Ledger.org_id == org_id,
@@ -536,6 +592,19 @@ def _resolve_ledger_for_kind(
     return ledger
 
 
+def _resolve_ledger_for_kind(
+    session: Session, *, org_id: uuid.UUID, kind: OpeningLedgerKind
+) -> Ledger:
+    """Resolve a seeded system ledger by intermediate-format kind.
+
+    Opening balances post against the seeded firm-scoped-NULL ledgers
+    (control accounts for AR / AP, plain ledgers for cash / capital).
+    A future Wave-2 enhancement can let users override which ledger
+    each kind maps to.
+    """
+    return _resolve_ledger_by_code(session, org_id=org_id, code=_LEDGER_CODE_FOR_KIND[kind])
+
+
 def _post_opening_balance_voucher(
     session: Session,
     *,
@@ -546,22 +615,33 @@ def _post_opening_balance_voucher(
     posted_by: uuid.UUID,
     voucher_date: datetime.date,
     migration_id: uuid.UUID,
-) -> uuid.UUID:
+) -> _OpeningVoucherPostResult:
     """Create one compound OPENING_BAL voucher with all opening lines.
 
     Lines:
-        DR Sundry Debtors      Σ customer receivables (per-party)
-        CR Sundry Creditors    Σ supplier payables (per-party)
-        DR Cash / Bank / etc.  Σ firm-level openings (none in v1)
-        CR Sundry Creditors    Σ supplier payables (per-party)
+        DR Sundry Debtors            Σ customer receivables (per-party)
+        CR Sundry Creditors          Σ supplier payables (per-party)
+        DR/CR Opening Balance Diff   the balancing suspense line (see below)
 
     For v1, only party-scoped sundry-debtor / sundry-creditor balances
-    appear in the source. Cash / capital / bank rows (party_source_id
-    is None) are skipped with a NOTE — if the user wants those, they
-    enter them manually via /accounting → New voucher.
+    appear in the source — a parties-only export carries no firm-level
+    cash / capital / bank rows. That makes the per-party lines almost
+    always lopsided, so we add ONE balancing line to the
+    '3200 Opening Balance Difference' suspense ledger for the DR/CR gap.
+    The voucher is therefore always internally balanced; the accountant
+    reclassifies the suspense amount to capital / cash / stock
+    post-cutover via /accounting → New voucher.
 
-    Invariant: ``Σ DR == Σ CR`` is asserted before flush. If it ever
-    fails we want a loud test crash, not a silent imbalance.
+    Returns an ``_OpeningVoucherPostResult`` carrying the voucher id
+    plus the actually-posted suspense amount + side. The caller uses
+    those values (NOT the pre-skip ``_sum_ob_sides`` totals computed
+    over the raw adapter output) to size the user-facing
+    ``OB_DIFFERENCE_PARKED`` warn-row, so the two stay consistent even
+    if the loop below drops orphan OB rows whose party didn't come
+    through.
+
+    Invariant: after the suspense line, ``Σ DR == Σ CR`` — still
+    asserted before flush as a loud safety net.
     """
     series = "OB"
     number = _allocate_opening_voucher_number(session, org_id=org_id, firm_id=firm_id)
@@ -588,9 +668,12 @@ def _post_opening_balance_voucher(
     for ob in obs:
         if ob.party_source_id is not None and ob.party_source_id not in party_id_by_source:
             # An OB row references a party that didn't make it into the
-            # parties dict — typically because party row had an empty
-            # name and we skipped it. Drop the OB row too; we'd produce
-            # a dangling reference otherwise. (Validate flagged this.)
+            # parties dict — typically because the party row had an empty
+            # name and we skipped it, or (per the Protocol's looser
+            # contract for future Tally / generic-Excel adapters) the
+            # adapter emitted an OB referencing a party it never yielded.
+            # Drop the OB row too; we'd produce a dangling reference
+            # otherwise.
             continue
         ledger = _resolve_ledger_for_kind(session, org_id=org_id, kind=ob.ledger_kind)
         amount = Decimal(ob.amount)
@@ -613,9 +696,49 @@ def _post_opening_balance_voucher(
             )
         )
         seq += 1
+
+    # Park the post-skip DR/CR gap in the suspense ledger. A parties-only
+    # source never self-balances; the remainder is the firm's capital /
+    # cash / stock, which the parties export doesn't carry. One balancing
+    # line keeps the voucher internally balanced. We track the parked
+    # amount + side and return them so approve()'s reconciliation row
+    # sees the same number that hit the books.
+    parked_amount = Decimal("0")
+    parked_side: str | None = None
+    if total_dr != total_cr:
+        suspense = _resolve_ledger_by_code(
+            session, org_id=org_id, code=_OPENING_DIFFERENCE_LEDGER_CODE
+        )
+        diff = abs(total_dr - total_cr)
+        if total_dr > total_cr:
+            suspense_line_type = JournalLineType.CR
+            total_cr += diff
+        else:
+            suspense_line_type = JournalLineType.DR
+            total_dr += diff
+        parked_amount = diff
+        parked_side = suspense_line_type.value  # "DR" / "CR"
+        session.add(
+            VoucherLine(
+                org_id=org_id,
+                voucher_id=voucher.voucher_id,
+                ledger_id=suspense.ledger_id,
+                line_type=suspense_line_type,
+                amount=diff,
+                description=(
+                    "Opening balance difference — parties-only import gap; "
+                    "reclassify to capital / cash / stock"
+                ),
+                sequence=seq,
+            )
+        )
+        seq += 1
+
     session.flush()
 
     if total_dr != total_cr:
+        # Unreachable after the suspense line above — kept as a loud
+        # safety net against a future regression in the balancing logic.
         raise AppValidationError(
             f"Opening-balance voucher unbalanced after post: DR {total_dr} vs CR {total_cr}. "
             "Rolling back."
@@ -624,7 +747,11 @@ def _post_opening_balance_voucher(
     voucher.total_debit = total_dr
     voucher.total_credit = total_cr
     session.flush()
-    return voucher.voucher_id
+    return _OpeningVoucherPostResult(
+        voucher_id=voucher.voucher_id,
+        parked_amount=parked_amount,
+        parked_side=parked_side,
+    )
 
 
 def _allocate_opening_voucher_number(
