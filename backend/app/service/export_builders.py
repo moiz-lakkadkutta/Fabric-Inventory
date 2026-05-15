@@ -459,17 +459,24 @@ def stock_export_rows(rows: Sequence[Any]) -> list[dict[str, Any]]:
 # ──────────────────────────────────────────────────────────────────────
 
 
+# NOTE: column ``key`` must match the field name on the row dataclass
+# (`_Gstr1InvoiceRow` / `_Gstr1B2csRow` / `_Gstr1HsnRow` in
+# reports_service, mirrored by the Pydantic models in schemas.reports).
+# ``_as_dict`` below does `getattr(row, c.key, None)`, so any drift
+# silently renders empty cells in the CSV / XLSX. The headers ("GSTIN",
+# "Invoice #", "Qty", "CGST", "SGST", "IGST") stay human-friendly —
+# only the lookup ``key`` is constrained.
 GSTR1_INVOICE_COLUMNS: Sequence[Column] = (
-    Column("invoice_number", "Invoice #"),
+    Column("number", "Invoice #"),
     Column("invoice_date", "Date", "date"),
     Column("party_name", "Party"),
-    Column("party_gstin", "GSTIN"),
+    Column("gstin", "GSTIN"),
     Column("place_of_supply_state", "POS"),
     Column("invoice_value", "Total", "money"),
     Column("taxable_value", "Taxable", "money"),
-    Column("igst_amount", "IGST", "money"),
-    Column("cgst_amount", "CGST", "money"),
-    Column("sgst_amount", "SGST", "money"),
+    Column("igst", "IGST", "money"),
+    Column("cgst", "CGST", "money"),
+    Column("sgst", "SGST", "money"),
     Column("gst_rate", "GST rate %", "number"),
 )
 
@@ -478,9 +485,9 @@ GSTR1_B2CS_COLUMNS: Sequence[Column] = (
     Column("place_of_supply_state", "POS"),
     Column("gst_rate", "GST rate %", "number"),
     Column("taxable_value", "Taxable", "money"),
-    Column("igst_amount", "IGST", "money"),
-    Column("cgst_amount", "CGST", "money"),
-    Column("sgst_amount", "SGST", "money"),
+    Column("igst", "IGST", "money"),
+    Column("cgst", "CGST", "money"),
+    Column("sgst", "SGST", "money"),
 )
 
 
@@ -488,12 +495,12 @@ GSTR1_HSN_COLUMNS: Sequence[Column] = (
     Column("hsn_code", "HSN"),
     Column("description", "Description"),
     Column("uom", "UOM"),
-    Column("total_quantity", "Qty", "number"),
+    Column("total_qty", "Qty", "number"),
     Column("total_value", "Total", "money"),
     Column("taxable_value", "Taxable", "money"),
-    Column("igst_amount", "IGST", "money"),
-    Column("cgst_amount", "CGST", "money"),
-    Column("sgst_amount", "SGST", "money"),
+    Column("igst", "IGST", "money"),
+    Column("cgst", "CGST", "money"),
+    Column("sgst", "SGST", "money"),
 )
 
 

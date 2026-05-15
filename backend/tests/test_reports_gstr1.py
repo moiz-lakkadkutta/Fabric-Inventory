@@ -10,10 +10,12 @@ Buckets exercised:
 
 from __future__ import annotations
 
+import io
 import uuid
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
@@ -468,3 +470,233 @@ def test_gstr1_requires_report_view_permission(
     )
     assert resp.status_code == 403, resp.text
     assert resp.json()["code"] == "PERMISSION_DENIED"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TASK-TR-Q05a — XLSX export column-name mismatch regressions
+#
+# `export_builders.GSTR1_*_COLUMNS` declared keys like ``party_gstin`` /
+# ``invoice_number`` / ``total_quantity`` / ``cgst_amount`` etc, but the
+# row dataclasses (`_Gstr1InvoiceRow`, `_Gstr1HsnRow`, `_Gstr1B2csRow`)
+# expose ``gstin`` / ``number`` / ``total_qty`` / ``cgst`` etc. The
+# `_as_dict(row, columns)` helper does ``getattr(row, c.key, None)`` so
+# the cells silently rendered empty. JSON API was unaffected (router
+# maps dataclasses to pydantic models with the short names).
+#
+# These tests open the XLSX bytes with openpyxl and assert each affected
+# cell carries the *seeded* value, not None.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _header_index(ws: object, header: str) -> int:
+    """1-based column index for the given header text, or fail loudly."""
+    headers = [c.value for c in ws[1]]  # type: ignore[index]
+    assert header in headers, f"{header!r} missing from sheet headers {headers!r}"
+    return headers.index(header) + 1
+
+
+def test_gstr1_xlsx_b2b_sheet_contains_party_gstin(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """B2B sheet's GSTIN column must carry the plaintext GSTIN, not blank.
+
+    Pre-fix: `Column("party_gstin", ...)` mismatched `_Gstr1InvoiceRow.gstin`,
+    so every B2B row's GSTIN cell was empty in the exported workbook.
+    """
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_gstin = "27ABCDE1234F1Z5"
+    party_id = _seed_b2b_party_with_real_gstin(
+        sync_engine, org_id=org_id, gstin=party_gstin, state_code="MH"
+    )
+    item_id = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    _create_and_finalize_invoice(
+        http_client,
+        me,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date="2026-04-15",
+        qty="2",
+        price="500",
+        gst_rate="5",
+    )
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-04&format=xlsx",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    wb = load_workbook(io.BytesIO(resp.content))
+    assert "B2B" in wb.sheetnames, wb.sheetnames
+    ws = wb["B2B"]
+    gstin_col = _header_index(ws, "GSTIN")
+    gstin_cell = ws.cell(row=2, column=gstin_col).value
+    assert gstin_cell == party_gstin, (
+        f"B2B sheet GSTIN cell must be plaintext GSTIN {party_gstin!r}, "
+        f"got {gstin_cell!r} — column-key mismatch is back."
+    )
+
+
+def test_gstr1_xlsx_b2b_sheet_contains_invoice_number(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """B2B sheet's Invoice # column must carry the source invoice number.
+
+    Pre-fix: `Column("invoice_number", ...)` mismatched
+    `_Gstr1InvoiceRow.number`, so every Invoice # cell was empty.
+    """
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_id = _seed_b2b_party_with_real_gstin(
+        sync_engine, org_id=org_id, gstin="27ABCDE1234F1Z5", state_code="MH"
+    )
+    item_id = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    _create_and_finalize_invoice(
+        http_client,
+        me,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date="2026-04-15",
+        qty="2",
+        price="500",
+        gst_rate="5",
+    )
+
+    json_resp = http_client.get(
+        "/reports/gstr1?period=2026-04",
+        headers=_auth(me["access_token"]),
+    )
+    assert json_resp.status_code == 200, json_resp.text
+    expected_number = json_resp.json()["b2b"][0]["number"]
+
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-04&format=xlsx",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    wb = load_workbook(io.BytesIO(resp.content))
+    ws = wb["B2B"]
+    inv_col = _header_index(ws, "Invoice #")
+    inv_cell = ws.cell(row=2, column=inv_col).value
+    assert inv_cell, f"Invoice # cell is empty: {inv_cell!r}"
+    assert str(inv_cell) == str(expected_number), (
+        f"Expected Invoice # {expected_number!r}, got {inv_cell!r}"
+    )
+
+
+def test_gstr1_xlsx_hsn_sheet_contains_total_quantity(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """HSN sheet's Qty column must carry the summed quantity.
+
+    Pre-fix: `Column("total_quantity", ...)` mismatched
+    `_Gstr1HsnRow.total_qty`, so every Qty cell was empty.
+    """
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_id = _seed_b2b_party_with_real_gstin(
+        sync_engine, org_id=org_id, gstin="27ABCDE1234F1Z5", state_code="MH"
+    )
+    item_id = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    _create_and_finalize_invoice(
+        http_client,
+        me,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date="2026-04-15",
+        qty="2",
+        price="500",
+        gst_rate="5",
+    )
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-04&format=xlsx",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    wb = load_workbook(io.BytesIO(resp.content))
+    assert "HSN" in wb.sheetnames, wb.sheetnames
+    ws = wb["HSN"]
+    qty_col = _header_index(ws, "Qty")
+    qty_cell = ws.cell(row=2, column=qty_col).value
+    assert qty_cell is not None, "HSN Qty cell is empty"
+    assert Decimal(str(qty_cell)) == Decimal("2"), f"Expected total qty 2, got {qty_cell!r}"
+
+
+def test_gstr1_xlsx_b2b_sheet_contains_tax_amounts(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """B2B sheet's CGST/SGST/IGST columns must carry the tax amounts.
+
+    Pre-fix: `Column("cgst_amount", ...)` / `sgst_amount` / `igst_amount`
+    all mismatched `_Gstr1InvoiceRow.cgst`/`.sgst`/`.igst`, so every tax
+    cell was empty in the workbook. Same pattern as the GSTIN / number /
+    total_qty bugs.
+    """
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_id = _seed_b2b_party_with_real_gstin(
+        sync_engine, org_id=org_id, gstin="27ABCDE1234F1Z5", state_code="MH"
+    )
+    item_id = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    _create_and_finalize_invoice(
+        http_client,
+        me,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date="2026-04-15",
+        qty="2",
+        price="500",
+        gst_rate="5",
+    )
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-04&format=xlsx",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    wb = load_workbook(io.BytesIO(resp.content))
+    ws = wb["B2B"]
+    cgst_col = _header_index(ws, "CGST")
+    sgst_col = _header_index(ws, "SGST")
+    igst_col = _header_index(ws, "IGST")
+    cgst_cell = ws.cell(row=2, column=cgst_col).value
+    sgst_cell = ws.cell(row=2, column=sgst_col).value
+    igst_cell = ws.cell(row=2, column=igst_col).value
+    # MH→MH intra-state: CGST 2.5% + SGST 2.5% on ₹1000 = ₹25 each;
+    # IGST is 0.
+    assert cgst_cell is not None and Decimal(str(cgst_cell)) == Decimal("25.00"), cgst_cell
+    assert sgst_cell is not None and Decimal(str(sgst_cell)) == Decimal("25.00"), sgst_cell
+    assert igst_cell is not None and Decimal(str(igst_cell)) == Decimal("0"), igst_cell
+
+
+def test_gstr1_csv_b2b_contains_party_gstin_and_number(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """CSV export of the B2B sheet must contain the plaintext GSTIN and
+    invoice number — same column-key mismatch affected CSV. The CSV
+    branch flattens the B2B sheet only.
+    """
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_gstin = "27ABCDE1234F1Z5"
+    party_id = _seed_b2b_party_with_real_gstin(
+        sync_engine, org_id=org_id, gstin=party_gstin, state_code="MH"
+    )
+    item_id = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    _create_and_finalize_invoice(
+        http_client,
+        me,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date="2026-04-15",
+        qty="2",
+        price="500",
+        gst_rate="5",
+    )
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-04&format=csv",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    text_body = resp.content.decode("utf-8")
+    assert party_gstin in text_body, (
+        f"Plaintext GSTIN {party_gstin!r} missing from CSV body — column-key mismatch is back."
+    )
