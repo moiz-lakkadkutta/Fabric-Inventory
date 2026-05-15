@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     mailgun_api_key: str | None = None
     mailgun_domain: str | None = None
     mailgun_sender: str | None = None
+    # TASK-TR-SEC1: master KEK for PII envelope encryption (32 bytes,
+    # base64). The actual loading happens lazily in
+    # `app.utils.crypto.get_master_kek` because the value is needed
+    # outside the FastAPI request lifecycle too (signup, migrations,
+    # tests). We declare it here so a missing value surfaces in the
+    # `make sure I'm configured` audit but the fail-fast check that
+    # rejects an unset value in prod lives in `crypto.get_master_kek`.
+    pii_master_key: str | None = None
 
     @field_validator("cors_origins", mode="before")
     @classmethod

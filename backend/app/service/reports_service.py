@@ -50,6 +50,7 @@ from app.models.accounting import JournalLineType, VoucherStatus
 from app.models.sales import InvoiceLifecycleStatus, SiLine
 from app.service import gst_service
 from app.service.gst_service import TaxType
+from app.utils import crypto
 
 # Indian fiscal year starts April 1.
 _FY_START_MONTH = 4
@@ -1320,6 +1321,14 @@ def compute_gstr1(
         )
     seller_state = firm.state_code or ""
 
+    # B2 fix: GSTR-1 must surface the *plaintext* GSTIN — the value
+    # GSTN expects on the filed return and the key downstream B2B
+    # aggregation uses to dedupe multi-branch customers. The previous
+    # implementation rendered `hex(ciphertext)` which is per-encryption
+    # unique under AES-GCM. Resolve the org's DEK once here (one SELECT
+    # + memoised) and decrypt each row below.
+    dek = crypto.get_org_dek(session, org_id=org_id)
+
     inv_stmt = (
         select(
             SalesInvoice.sales_invoice_id,
@@ -1400,11 +1409,15 @@ def compute_gstr1(
             bucket_row["invoice_count"] += 1
             continue
 
-        # GSTIN ciphertext is bytes; render as hex so the FE has *something*
-        # to display without leaking plaintext. Real-filing flow (Wave 5)
-        # will decrypt for the IRN payload; reporting just needs a stable
-        # opaque identifier.
-        gstin_str = r.party_gstin.hex() if r.party_gstin is not None else None
+        # B2 fix: decrypt the stored GSTIN ciphertext back to its
+        # plaintext form. GSTR-1 filings + B2B aggregation both depend
+        # on the real GSTIN; hex(ciphertext) was breaking both. The DEK
+        # was resolved once above for the whole period.
+        gstin_str = (
+            crypto.decrypt_pii(r.party_gstin, dek=dek, org_id=org_id)
+            if r.party_gstin is not None
+            else None
+        )
         derived_rate = (
             (gst_total / taxable_value * Decimal("100")).quantize(Decimal("0.01"))
             if taxable_value > 0

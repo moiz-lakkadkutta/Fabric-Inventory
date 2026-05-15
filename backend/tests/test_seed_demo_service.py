@@ -48,12 +48,15 @@ def demo_firm(db_session: OrmSession) -> tuple[uuid.UUID, uuid.UUID]:
     Mirrors what /auth/signup does so seed_demo can run against a "fresh"
     tenant just like the CLI does.
     """
+    from app.utils.crypto import generate_dek, wrap_dek
+
     org_id = uuid.uuid4()
     db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
     org = Organization(
         org_id=org_id,
         name=f"demo-org-{uuid.uuid4().hex[:8]}",
         admin_email=f"demo-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
     )
     db_session.add(org)
     db_session.flush()

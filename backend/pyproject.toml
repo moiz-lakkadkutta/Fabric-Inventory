@@ -36,6 +36,7 @@ dependencies = [
   # CUT-402: reads Vyapar's Excel export (source format chosen in
   # docs/spikes/vyapar-source-format.md). Pure-Python, MIT, no native deps.
   "openpyxl>=3.1",
+  "cryptography>=48.0.0",
 ]
 
 [dependency-groups]

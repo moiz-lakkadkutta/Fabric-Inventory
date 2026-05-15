@@ -211,8 +211,14 @@ def fresh_org_id(db_session: OrmSession) -> uuid.UUID:
     `current_setting('app.current_org_id')` at INSERT time. The GUC must
     be SET to the new org_id BEFORE the INSERT or psql raises
     `unrecognized configuration parameter`. We pre-mint the UUID,
-    set the GUC, then insert with the same id."""
+    set the GUC, then insert with the same id.
+
+    TASK-TR-SEC1: also mint and wrap a Data Encryption Key so the
+    `encrypted_dek NOT NULL` column is satisfied. Tests using the
+    crypto path then hit the same code path as production signup.
+    """
     from app.models import Organization
+    from app.utils.crypto import generate_dek, wrap_dek
 
     org_id = uuid.uuid4()
     db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
@@ -220,6 +226,7 @@ def fresh_org_id(db_session: OrmSession) -> uuid.UUID:
         org_id=org_id,
         name=f"test-org-{uuid.uuid4().hex[:10]}",
         admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
     )
     db_session.add(org)
     db_session.flush()

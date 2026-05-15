@@ -84,6 +84,8 @@ def admin_engine() -> Iterator[Engine]:
 
 def _seed_two_orgs(admin_engine: Engine) -> tuple[uuid.UUID, uuid.UUID]:
     """Create two orgs as the superuser. Returns (org_a, org_b)."""
+    from app.utils.crypto import generate_dek, wrap_dek
+
     org_a = uuid.uuid4()
     org_b = uuid.uuid4()
     with admin_engine.begin() as conn:
@@ -91,10 +93,17 @@ def _seed_two_orgs(admin_engine: Engine) -> tuple[uuid.UUID, uuid.UUID]:
             conn.execute(
                 text(
                     "INSERT INTO organization (org_id, name, admin_email, country, "
-                    "timezone, has_foreign_txns, is_exporter, feature_flags) VALUES "
-                    "(:id, :name, :email, 'IN', 'Asia/Kolkata', false, false, '{}'::jsonb)"
+                    "timezone, has_foreign_txns, is_exporter, feature_flags, "
+                    "encrypted_dek) VALUES "
+                    "(:id, :name, :email, 'IN', 'Asia/Kolkata', false, false, '{}'::jsonb, :dek)"
                 ),
-                {"id": org_id, "name": f"{name}-{uuid.uuid4().hex[:6]}", "email": f"{name}@x.com"},
+                {
+                    "id": org_id,
+                    "name": f"{name}-{uuid.uuid4().hex[:6]}",
+                    "email": f"{name}@x.com",
+                    # TASK-TR-SEC1: every org row carries a wrapped DEK.
+                    "dek": wrap_dek(generate_dek(), org_id=org_id),
+                },
             )
     return org_a, org_b
 

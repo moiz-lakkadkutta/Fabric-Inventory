@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
 from app.models.banking import BankAccount, Cheque, ChequeStatus
-from app.utils.crypto import encrypt_pii
+from app.utils.crypto import encrypt_pii, get_org_dek
 
 # ──────────────────────────────────────────────────────────────────────
 # BankAccount
@@ -46,12 +46,13 @@ def create_bank_account(
     Cross-org defense: caller must pass `org_id` from the authenticated
     JWT; the DB RLS policy enforces the same constraint at query time.
     """
+    dek = get_org_dek(session, org_id=org_id)
     account = BankAccount(
         org_id=org_id,
         firm_id=firm_id,
         ledger_id=ledger_id,
         bank_name=bank_name,
-        account_number=encrypt_pii(account_number),
+        account_number=encrypt_pii(account_number, dek=dek, org_id=org_id),
         ifsc_code=ifsc_code,
         account_type=account_type,
         balance=balance,
@@ -124,7 +125,8 @@ def update_bank_account(
     if bank_name is not None:
         account.bank_name = bank_name
     if account_number is not None:
-        account.account_number = encrypt_pii(account_number)
+        dek = get_org_dek(session, org_id=org_id)
+        account.account_number = encrypt_pii(account_number, dek=dek, org_id=org_id)
     if ifsc_code is not None:
         account.ifsc_code = ifsc_code
     if account_type is not None:

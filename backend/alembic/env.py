@@ -62,6 +62,16 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    # M5 review fix: resolve the master KEK *before* running migrations.
+    # TR-SEC1's migration backfills a wrapped DEK per existing org row,
+    # which depends on `PII_MASTER_KEY`. If it's missing in a non-dev
+    # environment we want the failure here (no schema drift, clear
+    # message) instead of mid-backfill. In dev/test the public fallback
+    # fires + warns; migrations proceed.
+    from app.utils.crypto import get_master_kek
+
+    get_master_kek()
+
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

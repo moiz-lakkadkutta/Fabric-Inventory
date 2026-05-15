@@ -14,9 +14,11 @@ Tokens:
 Crypto:
 - Passwords: bcrypt cost factor 12.
 - JWT: HS256 with `settings.jwt_secret`. RS256 + key rotation lands later.
-- MFA: pyotp TOTP. Secret stored as plaintext bytes in
-  `app_user.mfa_secret` BYTEA today; AES-GCM envelope encryption
-  (architecture §5.4) is a future task — schema column doesn't change.
+- MFA: pyotp TOTP. Secret is AES-256-GCM-encrypted at rest under the
+  org's DEK (same envelope as `party.gstin` / `bank_account.account_number`)
+  via `app.utils.crypto.encrypt_pii`. Legacy plaintext-bytes rows written
+  before TR-SEC1's review fix-pass are read transparently via the
+  version-byte fallback and upgrade on the next write.
 
 Out of scope (per the grand plan):
 - Redis-backed refresh-token rotation + denylist → TASK-017.
@@ -47,6 +49,7 @@ from app.exceptions import (
 from app.models import AppUser
 from app.models import Session as DbSession
 from app.service import rbac_service
+from app.utils import crypto
 
 # ──────────────────────────────────────────────────────────────────────
 # Constants
@@ -354,6 +357,11 @@ def enable_mfa(session: Session, *, user_id: uuid.UUID) -> MfaEnrollment:
     UI calls this at "enable MFA" → renders the URI as a QR. User scans
     with Google Authenticator / 1Password / etc. → next time they log in,
     the router calls `verify_totp` with the 6-digit code.
+
+    M1 fix: the TOTP shared secret is encrypted at rest via the org's
+    DEK (AES-256-GCM, same envelope used for `party.gstin` etc.). The
+    previous implementation persisted it as bare UTF-8 bytes, which
+    made a DB-only read into a TOTP-forgery primitive.
     """
     user = session.execute(
         select(AppUser).where(AppUser.user_id == user_id, AppUser.deleted_at.is_(None))
@@ -362,7 +370,8 @@ def enable_mfa(session: Session, *, user_id: uuid.UUID) -> MfaEnrollment:
         raise AppValidationError(f"User {user_id} not found")
 
     secret = pyotp.random_base32()
-    user.mfa_secret = secret.encode("utf-8")
+    dek = crypto.get_org_dek(session, org_id=user.org_id)
+    user.mfa_secret = crypto.encrypt_pii(secret, dek=dek, org_id=user.org_id)
     user.mfa_enabled = True
 
     totp = pyotp.TOTP(secret)
@@ -377,13 +386,21 @@ def verify_totp(session: Session, *, user_id: uuid.UUID, code: str) -> bool:
 
     Uses `valid_window=1` to accept the previous + next 30s slot, which is
     standard for TOTP and forgives small clock skew between server + phone.
+
+    M1 fix: the persisted `mfa_secret` bytes are AES-GCM ciphertext under
+    the org's DEK; decrypt before passing to pyotp. The legacy
+    plaintext-bytes path is handled transparently by `decrypt_pii` (the
+    version-byte discriminator falls back to UTF-8 decode for pre-fix
+    rows), so existing enrolments keep working.
     """
     user = session.execute(
         select(AppUser).where(AppUser.user_id == user_id, AppUser.deleted_at.is_(None))
     ).scalar_one_or_none()
     if user is None or user.mfa_secret is None:
         return False
-    secret_raw = user.mfa_secret
-    secret = secret_raw.decode("utf-8") if isinstance(secret_raw, bytes) else str(secret_raw)
+    dek = crypto.get_org_dek(session, org_id=user.org_id)
+    secret = crypto.decrypt_pii(user.mfa_secret, dek=dek, org_id=user.org_id)
+    if secret is None:
+        return False
     totp = pyotp.TOTP(secret)
     return bool(totp.verify(code, valid_window=1))

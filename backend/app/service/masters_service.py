@@ -26,7 +26,7 @@ from app.exceptions import AppValidationError
 from app.models import Party
 from app.models.masters import TaxStatus
 from app.service import audit_service
-from app.utils.crypto import encrypt_pii
+from app.utils.crypto import encrypt_pii, get_org_dek
 
 # Format check only — full GSTIN validation (state-code lookup, checksum
 # digit, etc.) lives in TASK-047 GST engine. Here we just keep obvious
@@ -91,6 +91,10 @@ def create_party(
     _validate_gstin(gstin)
     _validate_pan(pan)
 
+    # Resolve the org's DEK once — subsequent encrypts hit the in-process
+    # cache (`app.utils.crypto._DEK_CACHE`).
+    dek = get_org_dek(session, org_id=org_id)
+
     existing = session.execute(
         select(Party).where(
             Party.org_id == org_id,
@@ -113,9 +117,9 @@ def create_party(
         is_karigar=is_karigar,
         is_transporter=is_transporter,
         tax_status=tax_status,
-        gstin=encrypt_pii(gstin),
-        pan=encrypt_pii(pan),
-        phone=encrypt_pii(phone),
+        gstin=encrypt_pii(gstin, dek=dek, org_id=org_id),
+        pan=encrypt_pii(pan, dek=dek, org_id=org_id),
+        phone=encrypt_pii(phone, dek=dek, org_id=org_id),
         email=email,
         state_code=state_code,
         contact_person=contact_person,
@@ -262,6 +266,12 @@ def update_party(
     """
     party = get_party(session, org_id=org_id, party_id=party_id)
 
+    # Only resolve the DEK if a PII column is actually being touched —
+    # most PATCHes (e.g. credit_limit change) skip it entirely.
+    dek: bytes | None = None
+    if gstin is not None or pan is not None or phone is not None:
+        dek = get_org_dek(session, org_id=org_id)
+
     if name is not None:
         if not name:
             raise AppValidationError("name cannot be empty")
@@ -279,13 +289,16 @@ def update_party(
     if tax_status is not None:
         party.tax_status = tax_status
     if gstin is not None:
+        assert dek is not None  # narrow type for mypy
         _validate_gstin(gstin if gstin != "" else None)
-        party.gstin = encrypt_pii(gstin if gstin != "" else None)
+        party.gstin = encrypt_pii(gstin if gstin != "" else None, dek=dek, org_id=org_id)
     if pan is not None:
+        assert dek is not None
         _validate_pan(pan if pan != "" else None)
-        party.pan = encrypt_pii(pan if pan != "" else None)
+        party.pan = encrypt_pii(pan if pan != "" else None, dek=dek, org_id=org_id)
     if phone is not None:
-        party.phone = encrypt_pii(phone if phone != "" else None)
+        assert dek is not None
+        party.phone = encrypt_pii(phone if phone != "" else None, dek=dek, org_id=org_id)
     if email is not None:
         party.email = email if email != "" else None
     if state_code is not None:

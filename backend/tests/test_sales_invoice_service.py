@@ -23,13 +23,18 @@ from app.service import sales_service
 
 def _seed_org(session: OrmSession) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
     """Create org + firm + customer + item; return their ids."""
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
     org = Organization(
+        org_id=org_id,
         name=f"si-org-{uuid.uuid4().hex[:8]}",
         admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
     )
     session.add(org)
     session.flush()
-    session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
 
     firm = Firm(
         org_id=org.org_id,
@@ -237,3 +242,124 @@ def test_get_sales_invoice_cross_org_returns_404(db_session: OrmSession) -> None
     except NotFoundError:
         return
     raise AssertionError("Expected NotFoundError for cross-org lookup")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# B1 — sales_service must decrypt GSTINs before the PoS engine compares
+# ──────────────────────────────────────────────────────────────────────
+#
+# Scenario 22 (branch transfer, same GSTIN on both sides) → NIL_NOT_A_SUPPLY
+# + DELIVERY_CHALLAN. Before the fix, sales_service was hex-encoding the
+# AES-GCM ciphertext on both sides; AES-GCM uses a random IV, so two
+# encryptions of the same plaintext produce different ciphertexts and
+# the `seller_gstin == buyer_gstin` check in gst_service ALWAYS returned
+# false — branch transfers were misclassified as taxable supplies.
+
+
+def test_create_draft_invoice_branch_transfer_same_gstin_is_not_a_supply(
+    db_session: OrmSession,
+) -> None:
+    """Scenario 22 via the real service entry-point.
+
+    Seller firm and buyer party both carry the *same* plaintext GSTIN,
+    but stored as independent AES-GCM ciphertexts (per-call random IV).
+    The PoS engine must still recognize the equality after the service
+    decrypts both sides — otherwise the invoice gets a taxable tax_type
+    instead of NIL_NOT_A_SUPPLY.
+    """
+    from app.service.gst_service import DocumentType, TaxType
+    from app.utils.crypto import encrypt_pii, generate_dek, get_org_dek, wrap_dek
+
+    # Bootstrap: org with a real DEK on the row.
+    org_id = uuid.uuid4()
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+    dek = generate_dek()
+    org = Organization(
+        org_id=org_id,
+        name=f"branch-org-{uuid.uuid4().hex[:6]}",
+        admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(dek, org_id=org_id),
+    )
+    db_session.add(org)
+    db_session.flush()
+
+    same_gstin = "27AAAAA1234A1Z5"
+
+    firm = Firm(
+        org_id=org_id,
+        code=f"F{uuid.uuid4().hex[:6].upper()}",
+        name="Source Branch",
+        state_code="MH",
+        has_gst=True,
+        gstin=encrypt_pii(same_gstin, dek=dek, org_id=org_id),
+    )
+    db_session.add(firm)
+
+    # Encrypt the party GSTIN with a SECOND call so the IV (and therefore
+    # the ciphertext) differs from the firm's — proves the fix decrypts
+    # before comparing, not just compares ciphertexts byte-for-byte.
+    other_branch_party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="Destination Branch",
+        is_customer=True,
+        state_code="KA",
+        gstin=encrypt_pii(same_gstin, dek=dek, org_id=org_id),
+    )
+    db_session.add(other_branch_party)
+
+    item = Item(
+        org_id=org_id,
+        code=f"I{uuid.uuid4().hex[:6].upper()}",
+        name='Cotton 44"',
+        item_type=ItemType.FINISHED,
+        tracking=TrackingType.NONE,
+        primary_uom=UomType.METER,
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    # Sanity: the two ciphertexts MUST differ (otherwise the test would
+    # accidentally pass against the broken hex-compare implementation).
+    assert firm.gstin != other_branch_party.gstin, (
+        "Test setup is broken — same-IV ciphertexts would mask the B1 bug"
+    )
+    # And the post-fix path must be able to decrypt both back to the same
+    # plaintext via the DB-backed DEK lookup (which is what sales_service
+    # will do at runtime).
+    org_dek = get_org_dek(db_session, org_id=org_id)
+    from app.utils.crypto import decrypt_pii
+
+    assert decrypt_pii(firm.gstin, dek=org_dek, org_id=org_id) == same_gstin
+    assert decrypt_pii(other_branch_party.gstin, dek=org_dek, org_id=org_id) == same_gstin
+
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        party_id=other_branch_party.party_id,
+        invoice_date=datetime.date(2026, 4, 30),
+        lines=[
+            {
+                "item_id": item.item_id,
+                "qty": Decimal("10"),
+                "price": Decimal("100"),
+                "gst_rate": Decimal("18"),
+                "sequence": 1,
+            }
+        ],
+    )
+
+    # The whole point of B1: same-GSTIN branch transfer → not a supply.
+    assert invoice.tax_type == TaxType.NIL_NOT_A_SUPPLY.value, (
+        f"Branch transfer (same GSTIN) must classify as NIL_NOT_A_SUPPLY, "
+        f"got {invoice.tax_type!r} — sales_service is comparing ciphertexts "
+        f"instead of plaintext."
+    )
+    assert invoice.invoice_type == DocumentType.DELIVERY_CHALLAN.value, (
+        f"Branch transfer must use a Delivery Challan, got {invoice.invoice_type!r}"
+    )
+    # And no tax is charged on a non-supply: gst_amount should stay zero
+    # at the header level. (Lines may still carry gst_rate in storage but
+    # the header tax_type is the authoritative classifier.)
+    assert invoice.tax_type == "NIL_NOT_A_SUPPLY"

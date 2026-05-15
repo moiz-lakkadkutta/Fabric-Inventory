@@ -46,6 +46,7 @@ from app.service import (
     seed_service,
 )
 from app.service.seed_demo_service import seed_demo
+from app.utils.crypto import generate_dek, wrap_dek
 
 _DEFAULT_EMAIL = "demo@example.com"
 # Demo-only dev password; rotated when a paying customer ever ships near
@@ -117,7 +118,9 @@ def _ensure_org_and_firm(
     # Fresh signup path. Mirrors routers/auth.py::signup.
     new_org_id = uuid.uuid4()
     session.execute(text(f"SET LOCAL app.current_org_id = '{new_org_id}'"))
-    org = Organization(org_id=new_org_id, name=org_name, admin_email=email)
+    # Per TASK-TR-SEC1, every org owns a DEK for PII envelope encryption.
+    dek_blob = wrap_dek(generate_dek(), org_id=new_org_id)
+    org = Organization(org_id=new_org_id, name=org_name, admin_email=email, encrypted_dek=dek_blob)
     session.add(org)
     session.flush()
 

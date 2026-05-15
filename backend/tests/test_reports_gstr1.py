@@ -138,6 +138,85 @@ def test_gstr1_empty_for_fresh_firm(http_client: TestClient, sync_engine: Engine
     assert body["hsn"] == []
 
 
+def _seed_b2b_party_with_real_gstin(
+    sync_engine: Engine,
+    *,
+    org_id: uuid.UUID,
+    gstin: str,
+    state_code: str = "MH",
+) -> uuid.UUID:
+    """Seed a B2B party whose GSTIN is REAL plaintext run through the
+    production encryption path (so the DB row holds AES-GCM ciphertext).
+
+    Used by the B2 regression test that proves GSTR-1 reports plaintext,
+    not `hex(ciphertext)`.
+    """
+    from app.models import Party
+    from app.utils.crypto import encrypt_pii, get_org_dek
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        dek = get_org_dek(session, org_id=org_id)
+        party = Party(
+            org_id=org_id,
+            code=f"B2B{uuid.uuid4().hex[:6].upper()}",
+            name=f"B2B {uuid.uuid4().hex[:4]}",
+            is_customer=True,
+            state_code=state_code,
+            gstin=encrypt_pii(gstin, dek=dek, org_id=org_id),
+        )
+        session.add(party)
+        session.commit()
+        return party.party_id
+
+
+def test_gstr1_b2b_returns_plaintext_gstin_not_ciphertext_hex(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """B2 fix: the B2B bucket's `gstin` field must be the *plaintext*
+    GSTIN as filed to GSTN, not `hex(ciphertext)`.
+
+    Before the fix, `compute_gstr1` rendered `r.party_gstin.hex()` —
+    which is hex of an AES-GCM ciphertext that's per-encryption unique.
+    That breaks both filing (GSTN rejects non-15-char values) and B2B
+    aggregation across parties that share a plaintext GSTIN (e.g. multi-
+    branch customers).
+    """
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_gstin = "27ABCDE1234F1Z5"  # realistic MH GSTIN — 15 chars
+    party_id = _seed_b2b_party_with_real_gstin(
+        sync_engine, org_id=org_id, gstin=party_gstin, state_code="MH"
+    )
+    item_id = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    _create_and_finalize_invoice(
+        http_client,
+        me,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date="2026-04-15",
+        qty="2",
+        price="500",
+        gst_rate="5",
+    )
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-04",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["b2b"]) == 1
+    inv = body["b2b"][0]
+    # The whole point of B2: GSTR-1 must surface the plaintext, never
+    # the ciphertext hex. Anything other than the exact filed GSTIN is
+    # a regression — GSTN would reject it, and downstream B2B aggregation
+    # (multiple invoices to the same registered party) would split rows.
+    assert inv["gstin"] == party_gstin, (
+        f"GSTR-1 must return plaintext GSTIN {party_gstin!r}, got {inv['gstin']!r} — "
+        f"reports_service is still emitting hex(ciphertext) instead of decrypting."
+    )
+
+
 def test_gstr1_b2b_bucket_for_registered_party(
     http_client: TestClient, sync_engine: Engine
 ) -> None:

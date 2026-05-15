@@ -265,14 +265,21 @@ def test_relationships_are_bidirectional() -> None:
 
 def _make_org(session: OrmSession, suffix: str = "") -> Organization:
     """Insert a fresh org + return it, with all NOT-NULLs satisfied."""
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    # Pre-mint the id so we can wrap a DEK against it before INSERT.
+    org_id = uuid.uuid4()
+    # Set RLS GUC FIRST — the WITH CHECK clause on `organization` reads
+    # it at INSERT time under the fabric_app (NOBYPASSRLS) role.
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
     org = Organization(
+        org_id=org_id,
         name=f"test-org-{uuid.uuid4().hex[:8]}{suffix}",
         admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
     )
     session.add(org)
     session.flush()
-    # Set RLS GUC so RLS-enabled tables accept inserts in this txn.
-    session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
     return org
 
 

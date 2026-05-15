@@ -77,3 +77,99 @@ def test_app_starts_normally_when_weasyprint_works() -> None:
             resp = client.get("/live")
             assert resp.status_code == 200
             assert resp.json() == {"status": "live"}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# M5 — fail-fast for PII_MASTER_KEY at boot
+# ──────────────────────────────────────────────────────────────────────
+#
+# `config.py` accepts an unset `pii_master_key` but `main.py` never
+# eagerly calls `get_master_kek`. With B3's stricter check, a deploy
+# that forgets the env var boots healthy and only fails when the first
+# user signs up. Pulling the resolve into the lifespan means a
+# misconfigured prod box never accepts traffic — the container crashes
+# at boot with a clear error.
+
+
+def test_app_startup_fails_when_kek_missing_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In a non-dev/test environment without `PII_MASTER_KEY`, the
+    lifespan must raise `PIIConfigError` (subclass of `RuntimeError`)
+    BEFORE serving any request. Container restarts on crash; the
+    operator sees the failure in 1 boot, not 6 hours later.
+
+    Uses ENVIRONMENT=prod (Settings-valid value — its Literal is
+    {dev, staging, prod}). The crypto allowlist is independently
+    {dev, test}, so `prod` triggers fail-fast there.
+    """
+    from app.config import reset_settings
+    from app.utils import crypto
+    from main import create_app
+
+    monkeypatch.delenv("PII_MASTER_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    # CORS_ORIGINS is required in non-dev environments by the Settings
+    # validator; supply a placeholder so we don't trip THAT failure
+    # before we even reach the KEK check.
+    monkeypatch.setenv("CORS_ORIGINS", "https://example.com")
+    reset_settings()
+    crypto._reset_caches_for_tests()
+
+    # Keep WeasyPrint happy so its probe doesn't mask the KEK failure.
+    with patch("weasyprint.HTML.write_pdf", return_value=b"%PDF-1.4\n%%EOF\n"):
+        app = create_app()
+        with pytest.raises(crypto.PIIConfigError) as exc_info, TestClient(app):
+            pass  # pragma: no cover — lifespan should raise before yield
+
+    msg = str(exc_info.value)
+    assert "PII_MASTER_KEY" in msg, (
+        f"Startup error must name PII_MASTER_KEY so operators know which env "
+        f"var to set; got: {msg!r}"
+    )
+
+
+def test_app_startup_fails_when_kek_missing_in_staging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Staging is treated identically — anything outside the {dev, test}
+    allowlist must refuse to boot without a real KEK."""
+    from app.config import reset_settings
+    from app.utils import crypto
+    from main import create_app
+
+    monkeypatch.delenv("PII_MASTER_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "staging")
+    monkeypatch.setenv("CORS_ORIGINS", "https://example.com")
+    reset_settings()
+    crypto._reset_caches_for_tests()
+
+    with patch("weasyprint.HTML.write_pdf", return_value=b"%PDF-1.4\n%%EOF\n"):
+        app = create_app()
+        with pytest.raises(crypto.PIIConfigError), TestClient(app):
+            pass  # pragma: no cover
+
+
+def test_app_startup_succeeds_in_dev_with_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ENVIRONMENT=dev with no KEK → the lifespan resolves the public
+    dev fallback and the app boots. The fallback fires a WARNING log
+    (B3 behaviour) — but boot still succeeds, otherwise the dev loop
+    would be impossible.
+    """
+    from app.config import reset_settings
+    from app.utils import crypto
+    from main import create_app
+
+    monkeypatch.delenv("PII_MASTER_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "dev")
+    reset_settings()
+    crypto._reset_caches_for_tests()
+
+    with patch("weasyprint.HTML.write_pdf", return_value=b"%PDF-1.4\n%%EOF\n"):
+        app = create_app()
+        with TestClient(app) as client:
+            resp = client.get("/live")
+            assert resp.status_code == 200
+            assert resp.json() == {"status": "live"}

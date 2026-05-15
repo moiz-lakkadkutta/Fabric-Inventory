@@ -18,7 +18,7 @@ from app.exceptions import AppValidationError
 from app.models import Organization
 from app.models.masters import TaxStatus
 from app.service import masters_service
-from app.utils.crypto import decrypt_pii
+from app.utils.crypto import decrypt_pii, get_org_dek
 
 # A valid GSTIN for Maharashtra (state code 27). Format only — not a
 # real number; the checksum check is a TASK-047 concern.
@@ -68,11 +68,13 @@ def test_create_party_happy_path(db_session: OrmSession, fresh_org_id: uuid.UUID
     assert party.party_id is not None
     assert party.org_id == fresh_org_id
     assert party.code == "SUP-001"
-    # PII columns are bytes (stub encryption is UTF-8 round-trip).
+    # PII columns are AES-GCM ciphertext (1B version + 12B IV + ct+tag).
+    # Round-trip through decrypt_pii under the org's DEK.
     assert isinstance(party.gstin, bytes)
-    assert decrypt_pii(party.gstin) == VALID_GSTIN
-    assert decrypt_pii(party.pan) == VALID_PAN
-    assert decrypt_pii(party.phone) == "+91-9999999999"
+    dek = get_org_dek(db_session, org_id=fresh_org_id)
+    assert decrypt_pii(party.gstin, dek=dek, org_id=fresh_org_id) == VALID_GSTIN
+    assert decrypt_pii(party.pan, dek=dek, org_id=fresh_org_id) == VALID_PAN
+    assert decrypt_pii(party.phone, dek=dek, org_id=fresh_org_id) == "+91-9999999999"
 
 
 def test_create_party_requires_at_least_one_type_flag(
@@ -348,17 +350,21 @@ def test_rls_blocks_cross_org_party_reads(admin_engine: Engine) -> None:
     insert_conn = admin_engine.connect()
     try:
         insert_session = OrmSession(bind=insert_conn)
+        from app.utils.crypto import generate_dek, wrap_dek
+
         insert_session.add_all(
             [
                 Organization(
                     org_id=org_a_id,
                     name=f"RLS-A-{uuid.uuid4().hex[:6]}",
                     admin_email=f"a-{uuid.uuid4().hex[:6]}@example.com",
+                    encrypted_dek=wrap_dek(generate_dek(), org_id=org_a_id),
                 ),
                 Organization(
                     org_id=org_b_id,
                     name=f"RLS-B-{uuid.uuid4().hex[:6]}",
                     admin_email=f"b-{uuid.uuid4().hex[:6]}@example.com",
+                    encrypted_dek=wrap_dek(generate_dek(), org_id=org_b_id),
                 ),
             ]
         )
@@ -438,3 +444,112 @@ def test_rls_blocks_cross_org_party_reads(admin_engine: Engine) -> None:
             cleanup_conn.commit()
         finally:
             cleanup_conn.close()
+
+
+def test_pii_ciphertext_does_not_decrypt_under_other_org_dek(
+    db_session: OrmSession,
+) -> None:
+    """TASK-TR-SEC1: defense in depth on top of RLS.
+
+    Even if RLS were ever bypassed and a ciphertext blob were read
+    out of one tenant's row, decrypting it with another tenant's DEK
+    must fail loudly. AES-GCM's authenticated encryption with the
+    org_id as AAD is what enforces that — this test asserts the
+    invariant directly so a regression in `crypto._aad_for_org` or
+    the encrypt/decrypt path is caught immediately.
+
+    Runs in the savepoint-rollback ``db_session`` fixture so the two
+    orgs disappear at teardown — no manual cleanup needed.
+    """
+    from app.utils.crypto import (
+        PIIDecryptionError,
+        decrypt_pii,
+        generate_dek,
+        wrap_dek,
+    )
+
+    org_a_id = uuid.uuid4()
+    org_b_id = uuid.uuid4()
+    dek_a_plain = generate_dek()
+    dek_b_plain = generate_dek()
+
+    # WITH CHECK on `organization_rls` reads
+    # `current_setting('app.current_org_id')` at INSERT time under
+    # the fabric_app (NOBYPASSRLS) role, so the GUC must be set per
+    # org BEFORE its INSERT.
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_a_id}'"))
+    db_session.add(
+        Organization(
+            org_id=org_a_id,
+            name=f"PII-A-{uuid.uuid4().hex[:6]}",
+            admin_email=f"a-{uuid.uuid4().hex[:6]}@example.com",
+            encrypted_dek=wrap_dek(dek_a_plain, org_id=org_a_id),
+        )
+    )
+    db_session.flush()
+
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_b_id}'"))
+    db_session.add(
+        Organization(
+            org_id=org_b_id,
+            name=f"PII-B-{uuid.uuid4().hex[:6]}",
+            admin_email=f"b-{uuid.uuid4().hex[:6]}@example.com",
+            encrypted_dek=wrap_dek(dek_b_plain, org_id=org_b_id),
+        )
+    )
+    db_session.flush()
+
+    # Create party under org A.
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_a_id}'"))
+    party_a = masters_service.create_party(
+        db_session,
+        org_id=org_a_id,
+        firm_id=None,
+        code=f"PA-{uuid.uuid4().hex[:6]}",
+        name="A",
+        is_supplier=True,
+        gstin=VALID_GSTIN,
+    )
+
+    # Sanity: correct DEK + correct AAD round-trips.
+    assert decrypt_pii(party_a.gstin, dek=dek_a_plain, org_id=org_a_id) == VALID_GSTIN
+    # Wrong DEK → AES-GCM auth fails.
+    with pytest.raises(PIIDecryptionError):
+        decrypt_pii(party_a.gstin, dek=dek_b_plain, org_id=org_a_id)
+    # Correct DEK + wrong AAD (org_b) → AES-GCM auth fails. This is the
+    # invariant that stops a ciphertext copied between tenants from
+    # decrypting under the wrong org's DEK.
+    with pytest.raises(PIIDecryptionError):
+        decrypt_pii(party_a.gstin, dek=dek_a_plain, org_id=org_b_id)
+
+
+def test_legacy_utf8_pii_still_readable_after_cutover(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """TASK-TR-SEC1: a row written by the previous stub must still
+    decrypt to its plaintext after the cut-over. The stub stored bare
+    UTF-8 bytes; the new ``decrypt_pii`` falls back to ``.decode()``
+    when the leading version byte is missing.
+    """
+    from app.utils.crypto import decrypt_pii, get_org_dek
+
+    # Insert a party then forcibly rewrite its gstin column to the
+    # legacy stub format (bare UTF-8 bytes, no version byte).
+    party = _make_party(db_session, org_id=fresh_org_id, code=f"L-{uuid.uuid4().hex[:6]}")
+    legacy_gstin = b"27ABCDE1234F1Z5"
+    db_session.execute(
+        text("UPDATE party SET gstin = :g WHERE party_id = :p"),
+        {"g": legacy_gstin, "p": str(party.party_id)},  # type: ignore[attr-defined]
+    )
+    db_session.flush()
+    db_session.refresh(party)
+
+    dek = get_org_dek(db_session, org_id=fresh_org_id)
+    assert (
+        decrypt_pii(
+            party.gstin,  # type: ignore[attr-defined]
+            dek=dek,
+            org_id=fresh_org_id,
+        )
+        == "27ABCDE1234F1Z5"
+    )

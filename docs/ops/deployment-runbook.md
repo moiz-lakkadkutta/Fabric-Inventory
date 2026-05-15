@@ -19,37 +19,43 @@ Run BEFORE pushing the `v0.1.0` tag. Each item is single-decision; do not skip.
 - [ ] Mailgun domain verified (SPF + DKIM live; sender test mail received).
 - [ ] Sentry project `fabric-prod` exists; DSN saved in repo secrets.
 - [ ] On-box `/opt/fabric/.env.production` populated from `ops/.env.production.example` and verified read-only to the deploy user.
-- [ ] Read **PII encryption status** below — no env var is required for v0.1.0, but you should know what the stub means before you ship.
+- [ ] **Generate `PII_MASTER_KEY` (`openssl rand -base64 32`) and save it in 1Password "Fabric ERP — Prod" BEFORE the first deploy.** The app refuses to boot in any non-dev/test environment without it. See **PII encryption** below for the why.
 
-### PII encryption status (v0.1.0)
+### PII encryption (TASK-TR-SEC1 onward)
 
-`backend/app/utils/crypto.py` is a **deliberate stub** for the MVP.
-`encrypt_pii` / `decrypt_pii` UTF-8 encode/decode only — there is no
-AES-GCM, no per-org data key, no master key. PII columns (`party.gstin`,
-`party.pan`, `party.phone`, `bank_account.account_number`,
-`mfa_secret`, …) are `BYTEA` so the column shape is final, and every
-service-layer read/write already routes through these helpers (grep
-`encrypt_pii\|decrypt_pii` to verify). When the real implementation
-lands (TASK-Phase-2 per `app/utils/crypto.py` docstring), no callers
-need to change — the swap is internal to `crypto.py`.
+`backend/app/utils/crypto.py` implements AES-256-GCM envelope encryption:
+
+- A **master KEK** (32 bytes, base64-encoded in `PII_MASTER_KEY`)
+  decrypts each org's per-row **DEK** stored at
+  `organization.encrypted_dek`. The DEK encrypts every PII column:
+  `party.gstin / pan / phone`, `bank_account.account_number`,
+  `firm.gstin`, `app_user.mfa_secret`, …
+- AAD = `org_id.bytes` on both the DEK wrap and every field encryption,
+  so a ciphertext exfiltrated from one tenant cannot be decrypted
+  under another tenant's DEK even if RLS is bypassed.
 
 What this means for ops:
 
-- **No env var to set for v0.1.0.** There is no `PII_MASTER_KEY` /
-  `KMS_KEY_ID` / etc. in `ops/.env.production.example` because the
-  stub doesn't read one. Adding a placeholder env var now would be
-  misleading.
-- **At-rest protection comes from Postgres + the encrypted off-box
-  backup, not from this code path** in v0.1.0. The `pgdata` volume
-  lives on the CX22's encrypted disk, the daily dump
+- **`PII_MASTER_KEY` is mandatory** in any `ENVIRONMENT` other than
+  `dev` / `test`. The lifespan (`backend/main.py`) and the alembic
+  `env.py` both call `get_master_kek()` at boot — a misconfigured prod
+  box crashes immediately with a clear `PIIConfigError` instead of
+  silently using the public dev fallback. Allowed values for the
+  fallback are exactly `dev` and `test` (case-insensitive); everything
+  else, including unset, blank, `staging`, `production`, or typos like
+  `prdo`, fails fast.
+- **Losing `PII_MASTER_KEY` = losing every PII column in every backup.**
+  The KEK lives in the same 1Password vault as `JWT_SECRET` + DB
+  credentials. Rotation is a manual re-wrap of every org's
+  `encrypted_dek` (out of scope for v0.1.0; TASK-TR-SEC2).
+- **At-rest protection now comes from this code path** in addition to
+  Postgres + the encrypted off-box backup. The `pgdata` volume still
+  lives on the CX22's encrypted disk and the daily dump
   (`ops/backup.sh`) is `gpg --symmetric AES256`-encrypted before
   upload to B2 (CUT-501c hardening enforces this in prod via
-  `BACKUP_FAIL_PLAINTEXT=1`), and Postgres-to-app traffic stays on
-  the docker bridge network.
-- **When Phase-2 lands**, `ops/.env.production.example` will gain a
-  `PII_MASTER_KEY` (or similar) line and this runbook section grows
-  a "rotate the key" entry. Until then, treat any claim that
-  "field-level PII encryption is on" as aspirational, not factual.
+  `BACKUP_FAIL_PLAINTEXT=1`), but a leaked DB dump alone no longer
+  reveals GSTINs / PANs / TOTP secrets — they remain AES-GCM
+  ciphertext until paired with `PII_MASTER_KEY`.
 
 ---
 
@@ -154,6 +160,11 @@ SSH in as `moiz`. Run each step deliberately; do not script-glob.
    # Edit /opt/fabric/.env.production — set:
    #   - POSTGRES_PASSWORD: openssl rand -base64 32
    #   - JWT_SECRET:        openssl rand -base64 32
+   #   - PII_MASTER_KEY:    openssl rand -base64 32   (REQUIRED in prod —
+   #     the app's PII envelope encryption refuses to boot without it;
+   #     save the value to 1Password "Fabric ERP — Prod" vault
+   #     immediately. Rotating this later is a manual re-wrap of every
+   #     org's encrypted_dek — do not rotate casually.)
    #   - MAILGUN_API_KEY:   from Mailgun dashboard (key-...)
    #   - MAILGUN_DOMAIN:    mg.taana.in (or whatever you set up)
    #   - SENTRY_DSN:        from Sentry dashboard

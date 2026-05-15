@@ -71,6 +71,9 @@ CREATE TABLE organization (
     deleted_at TIMESTAMPTZ,
     prev_hash BYTEA,
     this_hash BYTEA
+    -- TASK-TR-SEC1 adds `encrypted_dek BYTEA NOT NULL` via a follow-up
+    -- migration so existing deployments backfill in place; the
+    -- baseline does NOT carry the column.
 );
 CREATE INDEX idx_organization_admin_email ON organization(admin_email);
 CREATE INDEX idx_organization_deleted ON organization(deleted_at);

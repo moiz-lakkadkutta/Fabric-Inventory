@@ -278,14 +278,18 @@ def test_create_sku_rejects_when_item_in_other_org(
     db_session: OrmSession, fresh_org_id: uuid.UUID
 ) -> None:
     # Create a second org and an item under it.
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    other_org_id = uuid.uuid4()
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{other_org_id}'"))
     other_org = Organization(
+        org_id=other_org_id,
         name=f"other-org-{uuid.uuid4().hex[:8]}",
         admin_email=f"other-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=other_org_id),
     )
     db_session.add(other_org)
     db_session.flush()
-
-    db_session.execute(text(f"SET LOCAL app.current_org_id = '{other_org.org_id}'"))
     other_item = items_service.create_item(
         db_session,
         org_id=other_org.org_id,
@@ -531,17 +535,21 @@ def test_rls_blocks_cross_org_item_reads(admin_engine: Engine) -> None:
     insert_conn = admin_engine.connect()
     try:
         insert_session = OrmSession(bind=insert_conn)
+        from app.utils.crypto import generate_dek, wrap_dek
+
         insert_session.add_all(
             [
                 Organization(
                     org_id=org_a_id,
                     name=f"RLS-A-{uuid.uuid4().hex[:6]}",
                     admin_email=f"a-{uuid.uuid4().hex[:6]}@example.com",
+                    encrypted_dek=wrap_dek(generate_dek(), org_id=org_a_id),
                 ),
                 Organization(
                     org_id=org_b_id,
                     name=f"RLS-B-{uuid.uuid4().hex[:6]}",
                     admin_email=f"b-{uuid.uuid4().hex[:6]}@example.com",
+                    encrypted_dek=wrap_dek(generate_dek(), org_id=org_b_id),
                 ),
             ]
         )

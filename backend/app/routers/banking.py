@@ -55,7 +55,7 @@ from app.service.export_service import (
     to_xlsx,
 )
 from app.service.identity_service import TokenPayload
-from app.utils.crypto import decrypt_pii
+from app.utils.crypto import decrypt_pii, get_org_dek
 
 router = APIRouter(tags=["banking"])
 
@@ -69,15 +69,16 @@ _voucher_router = APIRouter(prefix="/vouchers", tags=["accounting", "voucher"])
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _to_bank_response(account: BankAccount) -> BankAccountResponse:
-    """Decrypt PII columns + serialize."""
+def _to_bank_response(account: BankAccount, *, dek: bytes) -> BankAccountResponse:
+    """Decrypt PII columns + serialize. Caller threads the org's DEK
+    so list endpoints don't re-resolve it per row."""
     return BankAccountResponse(
         bank_account_id=account.bank_account_id,
         org_id=account.org_id,
         firm_id=account.firm_id,
         ledger_id=account.ledger_id,
         bank_name=account.bank_name,
-        account_number=decrypt_pii(account.account_number),
+        account_number=decrypt_pii(account.account_number, dek=dek, org_id=account.org_id),
         ifsc_code=account.ifsc_code,
         account_type=account.account_type,
         balance=account.balance,
@@ -135,7 +136,7 @@ def create_bank_account(
         balance=body.balance,
         last_reconciled_date=body.last_reconciled_date,
     )
-    return _to_bank_response(account)
+    return _to_bank_response(account, dek=get_org_dek(db, org_id=current_user.org_id))
 
 
 @_bank_router.get(
@@ -173,7 +174,8 @@ def list_bank_accounts(
         limit=effective_limit,
         offset=offset,
     )
-    responses = [_to_bank_response(a) for a in accounts]
+    dek = get_org_dek(db, org_id=current_user.org_id)
+    responses = [_to_bank_response(a, dek=dek) for a in accounts]
     if export_format is not None:
         rows = bank_account_export_rows(responses)
         if export_format == "csv":
@@ -216,7 +218,7 @@ def get_bank_account(
         org_id=current_user.org_id,
         bank_account_id=bank_account_id,
     )
-    return _to_bank_response(account)
+    return _to_bank_response(account, dek=get_org_dek(db, org_id=current_user.org_id))
 
 
 @_bank_router.patch(
@@ -242,7 +244,7 @@ def update_bank_account(
         balance=body.balance,
         last_reconciled_date=body.last_reconciled_date,
     )
-    return _to_bank_response(account)
+    return _to_bank_response(account, dek=get_org_dek(db, org_id=current_user.org_id))
 
 
 @_bank_router.delete(

@@ -9,7 +9,7 @@ import uuid
 import jwt as pyjwt
 import pyotp
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session as OrmSession
 
 from app.config import get_settings
@@ -328,7 +328,7 @@ def test_refresh_token_unknown_token_raises(db_session: OrmSession) -> None:
 def test_enable_mfa_returns_provisioning_uri_and_persists_secret(
     db_session: OrmSession, signed_up_user: tuple[AppUser, uuid.UUID, str]
 ) -> None:
-    user, _, _ = signed_up_user
+    user, org_id, _ = signed_up_user
     enrollment = identity_service.enable_mfa(db_session, user_id=user.user_id)
     assert enrollment.provisioning_uri.startswith("otpauth://totp/")
     assert (
@@ -337,8 +337,12 @@ def test_enable_mfa_returns_provisioning_uri_and_persists_secret(
     db_session.refresh(user)
     assert user.mfa_enabled is True
     assert user.mfa_secret is not None
-    # Stored secret matches what was returned.
-    assert user.mfa_secret.decode("utf-8") == enrollment.secret
+    # M1 fix: stored bytes are AES-GCM ciphertext, not plaintext UTF-8.
+    # Verify the round-trip via decrypt_pii (the same path verify_totp uses).
+    from app.utils.crypto import decrypt_pii, get_org_dek
+
+    dek = get_org_dek(db_session, org_id=org_id)
+    assert decrypt_pii(user.mfa_secret, dek=dek, org_id=org_id) == enrollment.secret
 
 
 def test_verify_totp_valid_code_returns_true(
@@ -356,6 +360,135 @@ def test_verify_totp_wrong_code_returns_false(
     user, _, _ = signed_up_user
     identity_service.enable_mfa(db_session, user_id=user.user_id)
     assert identity_service.verify_totp(db_session, user_id=user.user_id, code="000000") is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# M1 — MFA secret must be encrypted at rest, not stored as plaintext bytes
+# ──────────────────────────────────────────────────────────────────────
+#
+# `app_user.mfa_secret` is in the PII encryption scope per the TR-SEC1
+# migration docstring, but the original commit still UTF-8-encoded the
+# TOTP secret on write and UTF-8-decoded on read. TOTP secrets bypass
+# passwords entirely, so leaking them is strictly worse than leaking
+# a GSTIN — anyone with a DB dump becomes the user.
+
+
+def test_enable_mfa_stored_secret_is_encrypted_not_plaintext(
+    db_session: OrmSession, signed_up_user: tuple[AppUser, uuid.UUID, str]
+) -> None:
+    """The raw bytes persisted to `app_user.mfa_secret` must NOT be the
+    UTF-8 encoding of the original TOTP secret. They must be AES-GCM
+    ciphertext (version byte 0x01 + IV + ct + tag) — proving the data
+    is sealed under the org's DEK and not readable from a DB dump.
+    """
+    user, _, _ = signed_up_user
+    enrollment = identity_service.enable_mfa(db_session, user_id=user.user_id)
+    db_session.refresh(user)
+    assert user.mfa_secret is not None
+
+    raw_bytes = bytes(user.mfa_secret)
+    # Anti-regression: stored bytes must not equal the UTF-8 encoding of
+    # the plaintext secret. A failure here means the encryption fix was
+    # reverted and we're back to storing the raw TOTP shared secret.
+    assert raw_bytes != enrollment.secret.encode("utf-8"), (
+        "mfa_secret bytes equal the plaintext UTF-8 of the TOTP secret — "
+        "M1 regression: secrets are stored unencrypted, anyone with DB read "
+        "access can forge TOTP codes."
+    )
+    # Positive shape check: AES-GCM ciphertexts start with the v1
+    # version byte 0x01 and carry at least IV(12)+tag(16) = 28 trailer bytes.
+    from app.utils import crypto
+
+    assert raw_bytes[0:1] == crypto.VERSION_AESGCM_V1, (
+        f"mfa_secret first byte {raw_bytes[0:1]!r} is not the v1 marker; "
+        "the field is not going through encrypt_pii."
+    )
+    assert len(raw_bytes) >= 1 + 12 + 16, "mfa_secret is too short to be a v1 ciphertext"
+
+
+def test_verify_totp_round_trip_through_encryption(
+    db_session: OrmSession, signed_up_user: tuple[AppUser, uuid.UUID, str]
+) -> None:
+    """Even with encryption on the column, a freshly-generated TOTP code
+    must still authenticate. Proves the decrypt path is wired correctly
+    on the read side — not just the encrypt path on the write side.
+    """
+    user, _, _ = signed_up_user
+    enrollment = identity_service.enable_mfa(db_session, user_id=user.user_id)
+    db_session.flush()
+    # Fresh code from the plaintext secret returned to the caller.
+    code = pyotp.TOTP(enrollment.secret).now()
+    assert identity_service.verify_totp(db_session, user_id=user.user_id, code=code) is True, (
+        "verify_totp returned False after the encrypted-at-rest fix — "
+        "the read path is failing to decrypt the stored secret."
+    )
+
+
+def test_mfa_secret_does_not_decrypt_under_other_org_dek(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """Cross-tenant isolation: a TOTP secret encrypted under org A's
+    DEK must NOT be decryptable under org B's DEK. AES-GCM's AAD
+    binding (`org_id.bytes`) plus the per-org DEK is the whole point —
+    a row exfiltrated from org A's mfa_secret column cannot be re-used
+    to forge codes in org B.
+    """
+    from sqlalchemy import select
+
+    from app.models import Role
+    from app.service import rbac_service
+    from app.utils.crypto import (
+        PIIDecryptionError,
+        decrypt_pii,
+        generate_dek,
+        get_org_dek,
+        wrap_dek,
+    )
+
+    # Org A — set up like signed_up_user and enable MFA.
+    rbac_service.seed_system_roles(db_session, org_id=fresh_org_id)
+    roles_a = {
+        r.code: r
+        for r in db_session.execute(select(Role).where(Role.org_id == fresh_org_id)).scalars()
+    }
+    user_a = identity_service.register_user(
+        db_session,
+        email=f"a-{uuid.uuid4().hex[:6]}@example.com",
+        password="strong-password-x",
+        org_id=fresh_org_id,
+    )
+    rbac_service.assign_role(
+        db_session,
+        user_id=user_a.user_id,
+        role_id=roles_a["OWNER"].role_id,
+        firm_id=None,
+        org_id=fresh_org_id,
+    )
+    identity_service.enable_mfa(db_session, user_id=user_a.user_id)
+    db_session.refresh(user_a)
+    assert user_a.mfa_secret is not None
+    ciphertext_a = bytes(user_a.mfa_secret)
+
+    # Org B — independent org with its own DEK.
+    from app.models import Organization
+
+    org_b_id = uuid.uuid4()
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_b_id}'"))
+    db_session.add(
+        Organization(
+            org_id=org_b_id,
+            name=f"crossorg-{uuid.uuid4().hex[:6]}",
+            admin_email=f"adm-{uuid.uuid4().hex[:6]}@example.com",
+            encrypted_dek=wrap_dek(generate_dek(), org_id=org_b_id),
+        )
+    )
+    db_session.flush()
+    dek_b = get_org_dek(db_session, org_id=org_b_id)
+
+    # The attack: use org B's DEK to try to decrypt org A's mfa_secret.
+    # Must raise — AAD = org_id.bytes binds the ciphertext to org A.
+    with pytest.raises(PIIDecryptionError):
+        decrypt_pii(ciphertext_a, dek=dek_b, org_id=org_b_id)
 
 
 def test_verify_totp_for_user_without_mfa_returns_false(

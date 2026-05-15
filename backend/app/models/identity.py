@@ -87,6 +87,11 @@ class Organization(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     )
     prev_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     this_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # TASK-TR-SEC1: per-org Data Encryption Key, wrapped by the master KEK.
+    # Stored as AES-256-GCM(version_byte || iv || ciphertext+tag) — the
+    # exact blob `app.utils.crypto.wrap_dek` produces. Minted at signup
+    # and never rewritten (rotation is a future task).
+    encrypted_dek: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
 
     firms: Mapped[list[Firm]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"
