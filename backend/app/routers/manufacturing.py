@@ -39,6 +39,7 @@ from app.models.manufacturing import (
     MoStatus,
     OperationMaster,
     OperationType,
+    ProductionEvent,
     Routing,
     RoutingEdge,
     RoutingEdgeType,
@@ -67,10 +68,18 @@ from app.schemas.manufacturing import (
     MoMaterialLineResponse,
     MoOperationResponse,
     MoResponse,
+    OperationCompleteRequest,
+    OperationDetailResponse,
     OperationMasterCreateRequest,
     OperationMasterListResponse,
     OperationMasterResponse,
     OperationMasterUpdateRequest,
+    OperationProgressListResponse,
+    OperationProgressResponse,
+    OperationQtyInRequest,
+    OperationQtyOutRequest,
+    OperationStartRequest,
+    ProductionEventResponse,
     RoutingCreateRequest,
     RoutingEdgeResponse,
     RoutingEdgesUpdateRequest,
@@ -82,6 +91,7 @@ from app.service import (
     manufacturing_masters_service,
     material_issue_service,
     mo_service,
+    operation_progress_service,
     routing_service,
 )
 from app.service.identity_service import TokenPayload
@@ -1278,3 +1288,231 @@ def get_material_issue(
         db, org_id=current_user.org_id, issue_id=issue_id
     )
     return _mi_to_response(mi)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Operation progress (TASK-TR-A07) — in-house operation lifecycle
+# ──────────────────────────────────────────────────────────────────────
+#
+# Per-MO operation state machine: PENDING → IN_PROGRESS → CLOSED. POST
+# endpoints carry ``firm_id`` for defense-in-depth on top of RLS; reads
+# scope by ``current_user.org_id``. Idempotency-Key flows via the global
+# ``IdempotencyMiddleware`` (no per-endpoint handling).
+
+operation_progress_router = APIRouter(
+    prefix="/manufacturing", tags=["manufacturing", "operation_progress"]
+)
+
+
+def _to_progress_response(op: MoOperation) -> OperationProgressResponse:
+    """Render a ``MoOperation`` ORM row as the API-facing progress shape.
+
+    Schema declares ``qty_in`` etc as non-optional ``Decimal`` (the
+    column defaults are ``0`` once the MO is created so this is safe
+    in practice), so coerce ``None`` → ``Decimal(0)`` defensively.
+    """
+    from decimal import Decimal
+
+    return OperationProgressResponse(
+        mo_operation_id=op.mo_operation_id,
+        manufacturing_order_id=op.manufacturing_order_id,
+        operation_master_id=op.operation_master_id,
+        operation_sequence=op.operation_sequence,
+        state=op.state,
+        executor=op.executor,
+        qty_in=Decimal(op.qty_in) if op.qty_in is not None else Decimal("0"),
+        qty_out=Decimal(op.qty_out) if op.qty_out is not None else Decimal("0"),
+        qty_rejected=Decimal(op.qty_rejected) if op.qty_rejected is not None else Decimal("0"),
+        qty_byproduct=Decimal(op.qty_byproduct) if op.qty_byproduct is not None else Decimal("0"),
+        qty_wastage=Decimal(op.qty_wastage) if op.qty_wastage is not None else Decimal("0"),
+        start_date=op.start_date,
+        end_date=op.end_date,
+        created_at=op.created_at,
+        updated_at=op.updated_at,
+    )
+
+
+def _to_event_response(ev: ProductionEvent) -> ProductionEventResponse:
+    return ProductionEventResponse(
+        event_id=ev.event_id,
+        event_type=ev.event_type,
+        mo_operation_id=ev.mo_operation_id,
+        manufacturing_order_id=ev.manufacturing_order_id,
+        payload=dict(ev.payload) if ev.payload is not None else {},
+        actor_user_id=ev.actor_user_id,
+        occurred_at=ev.occurred_at,
+    )
+
+
+@operation_progress_router.post(
+    "/mo-operations/{mo_operation_id}/start",
+    response_model=OperationProgressResponse,
+    summary="Start an in-house MO operation (PENDING → IN_PROGRESS)",
+)
+def start_operation(
+    mo_operation_id: uuid.UUID,
+    body: OperationStartRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.operation.progress"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> OperationProgressResponse:
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = operation_progress_service.start_operation(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        started_by=current_user.user_id,
+        narration=body.narration,
+    )
+    return _to_progress_response(op)
+
+
+@operation_progress_router.post(
+    "/mo-operations/{mo_operation_id}/qty-in",
+    response_model=OperationProgressResponse,
+    summary="Record qty_in (units received) on an in-progress MO operation",
+)
+def record_qty_in(
+    mo_operation_id: uuid.UUID,
+    body: OperationQtyInRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.operation.progress"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> OperationProgressResponse:
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = operation_progress_service.record_qty_in(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        qty_in=body.qty_in,
+        recorded_by=current_user.user_id,
+        narration=body.narration,
+    )
+    return _to_progress_response(op)
+
+
+@operation_progress_router.post(
+    "/mo-operations/{mo_operation_id}/qty-out",
+    response_model=OperationProgressResponse,
+    summary="Record qty_out / scrap / byproduct / wastage on an in-progress MO operation",
+)
+def record_qty_out(
+    mo_operation_id: uuid.UUID,
+    body: OperationQtyOutRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.operation.progress"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> OperationProgressResponse:
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = operation_progress_service.record_qty_out(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        qty_out=body.qty_out,
+        qty_scrap=body.qty_scrap,
+        qty_byproduct=body.qty_byproduct,
+        qty_wastage=body.qty_wastage,
+        recorded_by=current_user.user_id,
+        narration=body.narration,
+    )
+    return _to_progress_response(op)
+
+
+@operation_progress_router.post(
+    "/mo-operations/{mo_operation_id}/complete",
+    response_model=OperationProgressResponse,
+    summary="Close an in-house MO operation (IN_PROGRESS → CLOSED)",
+)
+def complete_operation(
+    mo_operation_id: uuid.UUID,
+    body: OperationCompleteRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.operation.progress"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> OperationProgressResponse:
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = operation_progress_service.complete_operation(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        completed_by=current_user.user_id,
+        narration=body.narration,
+    )
+    return _to_progress_response(op)
+
+
+@operation_progress_router.get(
+    "/mo/{mo_id}/operations",
+    response_model=OperationProgressListResponse,
+    summary="List operations on an MO, ordered by sequence",
+)
+def list_mo_operations(
+    mo_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.operation.read"))
+    ],
+    firm_id: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> OperationProgressListResponse:
+    effective_firm_id = firm_id if firm_id is not None else current_user.firm_id
+    if effective_firm_id is None:
+        raise AppValidationError(
+            "firm_id query param is required when the session is not firm-scoped."
+        )
+    items, total = operation_progress_service.list_operations(
+        db,
+        org_id=current_user.org_id,
+        firm_id=effective_firm_id,
+        mo_id=mo_id,
+        limit=limit,
+        offset=offset,
+    )
+    return OperationProgressListResponse(
+        items=[_to_progress_response(op) for op in items],
+        limit=limit,
+        offset=offset,
+        count=len(items),
+        total_count=total,
+    )
+
+
+@operation_progress_router.get(
+    "/mo-operations/{mo_operation_id}",
+    response_model=OperationDetailResponse,
+    summary="Get one MO operation + its append-only production event log",
+)
+def get_mo_operation(
+    mo_operation_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.operation.read"))
+    ],
+) -> OperationDetailResponse:
+    op = operation_progress_service.get_operation(
+        db, org_id=current_user.org_id, mo_operation_id=mo_operation_id
+    )
+    events = operation_progress_service.list_events_for_operation(
+        db, org_id=current_user.org_id, mo_operation_id=mo_operation_id
+    )
+    return OperationDetailResponse(
+        operation=_to_progress_response(op),
+        events=[_to_event_response(ev) for ev in events],
+    )

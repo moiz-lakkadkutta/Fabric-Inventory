@@ -176,6 +176,20 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
         "read",
         "View material issues posted against manufacturing orders",
     ),
+    # Operation progress (TASK-TR-A07) — per-MO operation lifecycle
+    # (start / qty-in / qty-out / complete). ``progress`` covers every
+    # mutating endpoint; ``read`` is split so Accountants can drill into
+    # the production-event log for cost-roll-up without write access.
+    (
+        "manufacturing.operation",
+        "progress",
+        "Start / record qty in/out / complete in-house operations on an MO",
+    ),
+    (
+        "manufacturing.operation",
+        "read",
+        "View MO operations + their production event log",
+    ),
 )
 
 
@@ -242,6 +256,10 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # drill into the DR WIP / CR Inventory voucher's source
                 # MI document. No write.
                 "manufacturing.material_issue.read",
+                # Operation progress (A07) — Accountant reads only; the
+                # production_event log is the audit trail for WIP cost
+                # accrual. No write.
+                "manufacturing.operation.read",
             }
         ),
     ),
@@ -354,6 +372,11 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # stock-issue against MOs (drives the shop floor).
                 "manufacturing.material_issue.write",
                 "manufacturing.material_issue.read",
+                # Operation progress (A07) — Production Manager drives
+                # the shop floor: start / record qty / complete per-op
+                # progress for in-house operations.
+                "manufacturing.operation.progress",
+                "manufacturing.operation.read",
             }
         ),
     ),

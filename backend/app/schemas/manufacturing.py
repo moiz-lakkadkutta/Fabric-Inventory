@@ -456,6 +456,112 @@ class MaterialIssueListResponse(BaseModel):
     total_count: int
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Operation progress (TASK-TR-A07) — in-house operation lifecycle
+#
+# State machine: PENDING → IN_PROGRESS → CLOSED. Each transition + qty
+# record emits an append-only ProductionEvent so a future projection
+# can replay shop-floor history. Karigar / job-work operations use the
+# same enum (richer subset) and ship in A08.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class OperationStartRequest(BaseModel):
+    """POST /manufacturing/mo-operations/{id}/start. firm_id is
+    defense-in-depth on top of RLS — when the session carries a firm
+    scope the body must match (see router).
+    """
+
+    firm_id: uuid.UUID
+    narration: str | None = Field(default=None, max_length=2000)
+
+
+class OperationQtyInRequest(BaseModel):
+    """POST /manufacturing/mo-operations/{id}/qty-in. qty_in is a
+    delta (added to the cumulative running total)."""
+
+    firm_id: uuid.UUID
+    qty_in: Decimal = Field(ge=Decimal("0"))
+    narration: str | None = Field(default=None, max_length=2000)
+
+
+class OperationQtyOutRequest(BaseModel):
+    """POST /manufacturing/mo-operations/{id}/qty-out. Every qty is a
+    delta added to the corresponding cumulative running total on the
+    mo_operation row. At least one of (qty_out, qty_scrap, qty_byproduct,
+    qty_wastage) must be > 0; the service enforces this.
+    """
+
+    firm_id: uuid.UUID
+    qty_out: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    qty_scrap: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    qty_byproduct: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    qty_wastage: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    narration: str | None = Field(default=None, max_length=2000)
+
+
+class OperationCompleteRequest(BaseModel):
+    """POST /manufacturing/mo-operations/{id}/complete. Requires
+    qty_in == qty_out + qty_scrap + qty_byproduct + qty_wastage."""
+
+    firm_id: uuid.UUID
+    narration: str | None = Field(default=None, max_length=2000)
+
+
+class OperationProgressResponse(BaseModel):
+    """Detailed shape returned by every progress mutation + GET. Wider
+    than ``MoOperationResponse`` (which is used inside MoResponse) —
+    surfaces the scrap/wastage/byproduct counters and the state column
+    that the FE shop-floor view needs.
+    """
+
+    mo_operation_id: uuid.UUID
+    manufacturing_order_id: uuid.UUID
+    operation_master_id: uuid.UUID
+    operation_sequence: int | None
+    state: MoOperationState
+    executor: str
+    qty_in: Decimal
+    qty_out: Decimal
+    qty_rejected: Decimal
+    qty_byproduct: Decimal
+    qty_wastage: Decimal
+    start_date: datetime.datetime | None
+    end_date: datetime.datetime | None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class OperationProgressListResponse(BaseModel):
+    items: list[OperationProgressResponse]
+    limit: int
+    offset: int
+    count: int
+    total_count: int
+
+
+class ProductionEventResponse(BaseModel):
+    """One row from production_event. Payload is a JSON object whose
+    shape varies by event_type."""
+
+    event_id: uuid.UUID
+    event_type: str
+    mo_operation_id: uuid.UUID | None
+    manufacturing_order_id: uuid.UUID | None
+    payload: dict[str, object]
+    actor_user_id: uuid.UUID | None
+    occurred_at: datetime.datetime
+
+
+class OperationDetailResponse(BaseModel):
+    """GET /manufacturing/mo-operations/{id} — operation + its event
+    log. Events ordered oldest first.
+    """
+
+    operation: OperationProgressResponse
+    events: list[ProductionEventResponse]
+
+
 __all__ = [
     "BomCreateRequest",
     "BomLineInput",
@@ -481,10 +587,18 @@ __all__ = [
     "MoMaterialLineResponse",
     "MoOperationResponse",
     "MoResponse",
+    "OperationCompleteRequest",
+    "OperationDetailResponse",
     "OperationMasterCreateRequest",
     "OperationMasterListResponse",
     "OperationMasterResponse",
     "OperationMasterUpdateRequest",
+    "OperationProgressListResponse",
+    "OperationProgressResponse",
+    "OperationQtyInRequest",
+    "OperationQtyOutRequest",
+    "OperationStartRequest",
+    "ProductionEventResponse",
     "RoutingCreateRequest",
     "RoutingEdgeInput",
     "RoutingEdgeResponse",
