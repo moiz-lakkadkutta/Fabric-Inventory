@@ -306,21 +306,29 @@ class MoCreateRequest(BaseModel):
     routing_id: uuid.UUID
     qty_to_produce: Decimal = Field(gt=Decimal("0"))
     planned_start_date: datetime.date
-    # ``planned_end_date`` is accepted on the wire for forward
-    # compatibility but is **not persisted** today — the A01
-    # ``manufacturing_order`` schema has only ``mo_date``. The previous
-    # service-level ``end < start`` check was removed because validating
-    # a value the request layer then throws away is more misleading than
-    # not validating: a 201 implied the dates were saved. Will be
-    # re-introduced (alongside the actual persistence) when a schema add
-    # for ``planned_end_date`` lands — see the A05 retro under
-    # "Open follow-ups".
+    # A05 followups (M2): both planned dates are now persisted on
+    # ``manufacturing_order``. The service validates ``end >= start`` when
+    # both are present (raises 422 otherwise); ``end`` alone is invalid
+    # — supply ``start`` if you want to record either.
     planned_end_date: datetime.date | None = None
     narration: str | None = Field(default=None, max_length=2000)
     # ``series`` defaults to ``"MO"`` server-side; A future task can let
     # the user select a per-firm fiscal-year-stamped series. Limit kept
     # tight to avoid surprises in the DB unique key.
     series: str | None = Field(default=None, max_length=50)
+
+
+class MoTransitionRequest(BaseModel):
+    """Optional body for the four MO transition endpoints
+    (``release`` / ``start`` / ``complete`` / ``close``). Only carries
+    ``narration`` today — the API verb itself encodes the transition.
+
+    A05 followups (M3): narration is piped through to ``audit_log.reason``
+    so the activity feed captures operator intent on every transition,
+    not just create.
+    """
+
+    narration: str | None = Field(default=None, max_length=2000)
 
 
 class MoMaterialLineResponse(BaseModel):
@@ -330,6 +338,10 @@ class MoMaterialLineResponse(BaseModel):
     qty_required: Decimal
     qty_issued: Decimal
     qty_scrap: Decimal
+    # A05 followups (M1): propagated from the BOM line at materialization
+    # time. False for legacy rows that pre-date the column (server default
+    # backfills as ``false``).
+    is_optional: bool
 
 
 class MoOperationResponse(BaseModel):
@@ -358,6 +370,10 @@ class MoResponse(BaseModel):
     planned_qty: Decimal
     produced_qty: Decimal | None
     scrap_qty: Decimal | None
+    # A05 followups (M2): persisted on the MO from this task onwards.
+    # NULL for MOs created before the followup migration.
+    planned_start_date: datetime.date | None
+    planned_end_date: datetime.date | None
     closed_at: datetime.datetime | None
     created_at: datetime.datetime
     updated_at: datetime.datetime
@@ -587,6 +603,7 @@ __all__ = [
     "MoMaterialLineResponse",
     "MoOperationResponse",
     "MoResponse",
+    "MoTransitionRequest",
     "OperationCompleteRequest",
     "OperationDetailResponse",
     "OperationMasterCreateRequest",

@@ -522,15 +522,12 @@ def test_create_mo_rejects_non_positive_qty(http_client: TestClient) -> None:
     assert resp.status_code == 422, resp.text
 
 
-def test_create_mo_accepts_end_before_start_silently(http_client: TestClient) -> None:
-    """``planned_end_date`` has no persisted column on ``manufacturing_order``
-    today (A01 schema ships only ``mo_date``). A05 used to reject
-    ``planned_end_date < planned_start_date`` at the service boundary,
-    but rejecting a value the request layer is about to throw away was
-    worse than not validating: callers assume a 201 implies their dates
-    were saved. Until the schema add lands the wire field is purely
-    informational, so any combination must be accepted. This regression
-    test pins the new behaviour."""
+def test_create_mo_rejects_planned_end_before_planned_start(http_client: TestClient) -> None:
+    """A05 followups (M2): both planned dates are persisted now. When the
+    end is before the start the service rejects at 422. Previously this
+    test asserted the silent-accept behaviour, because validating-and-
+    throwing-away the value was misleading — now that the value is saved,
+    a strict check is the right move."""
     me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
     resp = http_client.post(
         "/manufacturing/mo",
@@ -545,7 +542,10 @@ def test_create_mo_accepts_end_before_start_silently(http_client: TestClient) ->
             planned_end_date="2026-06-01",
         ),
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 422, resp.text
+    detail_lower = resp.json()["detail"].lower()
+    assert "planned_end_date" in detail_lower
+    assert "planned_start_date" in detail_lower
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -807,14 +807,17 @@ def test_cross_org_cannot_see_mo_by_direct_id(http_client: TestClient) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_create_mo_skips_optional_bom_lines(http_client: TestClient) -> None:
-    """M1: ``bom_line.is_optional`` must NOT silently materialize as a
-    required ``mo_material_line``.
+def test_create_mo_propagates_is_optional_from_bom_line(http_client: TestClient) -> None:
+    """A05 followups (M1): ``bom_line.is_optional`` is now PERSISTED on
+    the materialized ``mo_material_line`` instead of being silently
+    skipped.
 
-    The A01 ``mo_material_line`` table has no ``is_optional`` column, so
-    we can't persist the flag — the next-best behaviour is to skip
-    optional lines entirely (documented trade-off in the A05 retro). A06
-    will only issue against rows the service actually wrote.
+    Before this followup, ``create_mo`` skipped optional BOM lines
+    entirely (the column didn't exist on ``mo_material_line``, so the
+    only safe default was to leave them off the MO). Now both required
+    and optional lines are materialized, and ``is_optional`` rides
+    along so A06 (material issue) and the UI can branch per-row without
+    re-walking the BOM.
     """
     me = _signup_owner(http_client)
     design_id = _create_design(http_client, me, code=f"D-{uuid.uuid4().hex[:6]}")
@@ -866,9 +869,129 @@ def test_create_mo_skips_optional_bom_lines(http_client: TestClient) -> None:
     )
     assert resp.status_code == 201, resp.text
     lines = resp.json()["material_lines"]
-    # Only the required line is materialized — the optional one is skipped.
-    assert len(lines) == 1
-    assert lines[0]["item_id"] == raw_required
+    # Both required and optional are materialized; is_optional rides
+    # along on each line.
+    assert len(lines) == 2
+    by_item = {line["item_id"]: line for line in lines}
+    assert raw_required in by_item
+    assert raw_optional in by_item
+    assert by_item[raw_required]["is_optional"] is False
+    assert by_item[raw_optional]["is_optional"] is True
+
+
+def test_create_mo_rejects_bom_with_all_lines_optional(
+    http_client: TestClient,
+) -> None:
+    """A05 followups (M1+M4): an all-optional BOM still fails the
+    "no active required lines" guard. We refuse rather than land an MO
+    that has only optional materials — A06 + WIP cost rollup assume at
+    least one required component.
+    """
+    me = _signup_owner(http_client)
+    design_id = _create_design(http_client, me, code=f"D-{uuid.uuid4().hex[:6]}")
+    finished = _create_item(http_client, me, code=f"F-{uuid.uuid4().hex[:6]}", item_type="FINISHED")
+    raw_opt_a = _create_item(http_client, me, code=f"R-OA-{uuid.uuid4().hex[:5]}")
+    raw_opt_b = _create_item(http_client, me, code=f"R-OB-{uuid.uuid4().hex[:5]}")
+
+    bom_payload = {
+        "firm_id": me["firm_id"],
+        "design_id": design_id,
+        "finished_item_id": finished,
+        "lines": [
+            {
+                "item_id": raw_opt_a,
+                "qty_required": "2.0000",
+                "uom": "METER",
+                "is_optional": True,
+                "part_role": "TRIM",
+                "sequence": 1,
+            },
+            {
+                "item_id": raw_opt_b,
+                "qty_required": "1.0000",
+                "uom": "METER",
+                "is_optional": True,
+                "part_role": "TRIM",
+                "sequence": 2,
+            },
+        ],
+    }
+    bom_resp = http_client.post("/boms", headers=_auth(me["access_token"]), json=bom_payload)
+    assert bom_resp.status_code == 201, bom_resp.text
+    bom = bom_resp.json()
+
+    ops = [_create_op(http_client, me, code=f"OP{i}-{uuid.uuid4().hex[:4]}") for i in range(2)]
+    routing = _create_routing(http_client, me, design_id=design_id, ops=ops)
+
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+        ),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "no active required lines" in resp.json()["detail"].lower()
+
+
+def test_create_mo_persists_planned_dates(http_client: TestClient) -> None:
+    """A05 followups (M2): ``planned_start_date`` / ``planned_end_date``
+    now persist on ``manufacturing_order`` and round-trip through the
+    response. The previous behaviour silently dropped both fields."""
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+            planned_start_date="2026-06-01",
+            planned_end_date="2026-06-15",
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["planned_start_date"] == "2026-06-01"
+    assert body["planned_end_date"] == "2026-06-15"
+
+    # And a GET round-trips the same values.
+    mo_id = body["manufacturing_order_id"]
+    got = http_client.get(f"/manufacturing/mo/{mo_id}", headers=_auth(me["access_token"]))
+    assert got.status_code == 200, got.text
+    got_body = got.json()
+    assert got_body["planned_start_date"] == "2026-06-01"
+    assert got_body["planned_end_date"] == "2026-06-15"
+
+
+def test_create_mo_accepts_only_planned_start(http_client: TestClient) -> None:
+    """A05 followups (M2): ``planned_end_date`` is optional. Supplying
+    only ``planned_start_date`` must succeed and leave end NULL on the
+    response."""
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+            planned_start_date="2026-06-01",
+            planned_end_date=None,
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["planned_start_date"] == "2026-06-01"
+    assert body["planned_end_date"] is None
 
 
 def test_create_mo_translates_number_race_to_422(
@@ -1230,3 +1353,109 @@ def test_create_mo_emits_audit_log_on_each_state_transition(
     actions = [row.action for row in rows]
     # 1 create + 4 transitions = 5.
     assert actions == ["create", "release", "start", "complete", "close"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# M3: per-transition narration → audit_log.reason
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "action_path,narration_text",
+    [
+        ("release", "cutting starts tomorrow"),
+        ("start", "first shift begins"),
+        ("complete", "all pieces stitched + QC pass"),
+        ("close", "final close after rework"),
+    ],
+)
+def test_transition_records_narration_in_audit_log(
+    http_client: TestClient,
+    sync_engine: Engine,
+    action_path: str,
+    narration_text: str,
+) -> None:
+    """A05 followups (M3): each transition endpoint accepts an optional
+    ``narration`` in the body and pipes it through to ``audit_log.reason``.
+    Before this followup, only ``create_mo`` carried narration; the four
+    transitions silently dropped any operator intent."""
+    me, mo_id = _create_one_mo(http_client)
+
+    # Walk the state machine to the predecessor of the action under test.
+    predecessors: dict[str, list[str]] = {
+        "release": [],
+        "start": ["release"],
+        "complete": ["release", "start"],
+        "close": ["release", "start", "complete"],
+    }
+    for prev in predecessors[action_path]:
+        r = http_client.post(
+            f"/manufacturing/mo/{mo_id}/{prev}",
+            headers=_auth(me["access_token"]),
+        )
+        assert r.status_code == 200, r.text
+
+    # Fire the transition under test with a narration body.
+    resp = http_client.post(
+        f"/manufacturing/mo/{mo_id}/{action_path}",
+        headers=_auth(me["access_token"]),
+        json={"narration": narration_text},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # The most recent audit row for this MO must carry our narration in
+    # ``reason``. We sort by created_at DESC and take the first row.
+    from sqlalchemy import select
+
+    from app.models.identity import AuditLog
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        row = session.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.org_id == uuid.UUID(me["org_id"]),
+                AuditLog.entity_type == "manufacturing.mo",
+                AuditLog.entity_id == uuid.UUID(mo_id),
+                AuditLog.action == action_path,
+            )
+            .order_by(AuditLog.created_at.desc())
+            .limit(1)
+        ).scalar_one()
+
+    assert row.reason == narration_text
+
+
+def test_transition_without_narration_leaves_reason_null(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A05 followups (M3): omitting the body (or sending narration=None)
+    must leave ``audit_log.reason`` NULL — backwards-compatible with
+    pre-followup callers that POST with no body."""
+    me, mo_id = _create_one_mo(http_client)
+
+    resp = http_client.post(
+        f"/manufacturing/mo/{mo_id}/release",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+
+    from sqlalchemy import select
+
+    from app.models.identity import AuditLog
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        row = session.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.org_id == uuid.UUID(me["org_id"]),
+                AuditLog.entity_type == "manufacturing.mo",
+                AuditLog.entity_id == uuid.UUID(mo_id),
+                AuditLog.action == "release",
+            )
+            .order_by(AuditLog.created_at.desc())
+            .limit(1)
+        ).scalar_one()
+
+    assert row.reason is None

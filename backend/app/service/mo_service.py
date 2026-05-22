@@ -34,10 +34,8 @@ Invariants this module guarantees:
    - Routing is soft-deleted.
    - ``qty_to_produce`` ≤ 0.
    - ``finished_item_id`` not firm-scoped.
-
-   ``planned_end_date`` is accepted but neither validated nor persisted
-   today (no column on the A01 ``manufacturing_order``); see the A05
-   retro under "Open follow-ups".
+   - ``planned_end_date < planned_start_date`` when both supplied
+     (A05 followups M2).
 
 3. **MO number allocation** is per ``(org_id, firm_id, series)``: the
    service computes ``max(number_int) + 1`` and zero-pads to four digits
@@ -292,20 +290,19 @@ def create_mo(
         non-deleted, non-optional line (M4).
       - Routing belongs to ``(org, firm)``, references the same
         ``design_id``, and is non-deleted.
-
-    ``planned_end_date`` is accepted on the signature for forward
-    compatibility but is neither validated nor persisted today (no
-    column in the A01 ``manufacturing_order`` schema). See the A05
-    retro for the open follow-up.
+      - ``planned_end_date >= planned_start_date`` when both are
+        supplied (A05 followups M2). When only ``planned_start_date`` is
+        supplied, the end is left NULL.
 
     Materializes:
 
-      - ``mo_material_line`` per non-deleted, non-optional ``bom_line``
-        with ``qty_required = bom_line.qty_required * qty_to_produce``.
-        Optional lines (M1) are silently skipped — ``mo_material_line``
-        has no ``is_optional`` column today, so we cannot record the
-        flag, and materializing them as required would over-issue at
-        A06.
+      - ``mo_material_line`` per non-deleted ``bom_line`` with
+        ``qty_required = bom_line.qty_required * qty_to_produce`` and
+        ``is_optional = bom_line.is_optional`` (A05 followups M1).
+        Previously this method SKIPPED optional BOM lines entirely
+        because ``mo_material_line`` had no column to record the flag;
+        now we persist both required and optional lines and A06 (or the
+        UI) can branch on ``is_optional`` per row.
       - ``mo_operation`` per operation referenced by routing edges,
         topologically ordered (deterministic on diamond DAGs — M3).
         Empty-routing case: zero operations (caller will surface a
@@ -316,14 +313,15 @@ def create_mo(
         raise AppValidationError("qty_to_produce must be > 0")
     qty_to_produce = Decimal(qty_to_produce)
 
-    # A05 review follow-up: ``planned_end_date`` has no persisted column
-    # on ``manufacturing_order`` today (A01 schema ships only
-    # ``mo_date``). The wire field is purely informational at the
-    # request layer; validating-and-then-throwing-away the value was
-    # misleading (a 201 implied "your dates are saved"). When a schema
-    # add lands (open flag in the retro), this check should come back —
-    # accompanied by the actual persistence.
-    _ = planned_end_date  # explicit non-use for the typechecker
+    # A05 followups (M2): ``planned_end_date`` is now persisted on
+    # ``manufacturing_order``. When both dates are supplied, the end
+    # must be >= start (same day is fine — single-day MO). When only
+    # ``planned_start_date`` is supplied, end stays NULL.
+    if planned_end_date is not None and planned_end_date < planned_start_date:
+        raise AppValidationError(
+            f"planned_end_date {planned_end_date} cannot be before "
+            f"planned_start_date {planned_start_date}"
+        )
 
     if not series:
         raise AppValidationError("MO number series is required")
@@ -374,6 +372,12 @@ def create_mo(
         status=MoStatus.DRAFT,
         mo_date=planned_start_date,
         planned_qty=qty_to_produce,
+        # A05 followups (M2): persist both planned dates. ``mo_date`` stays
+        # in sync with ``planned_start_date`` for back-compat with the
+        # existing list / report views; the typed planned_* columns are
+        # the canonical place new readers should look.
+        planned_start_date=planned_start_date,
+        planned_end_date=planned_end_date,
         created_by=created_by,
         updated_by=created_by,
     )
@@ -395,21 +399,18 @@ def create_mo(
     # 6. Materialize material lines from the BOM. Eager-loaded by
     # ``bom_service.get_bom`` so this is N=0 queries.
     #
-    # A05 review (M1): ``bom_line.is_optional=True`` lines are SKIPPED
-    # entirely. ``mo_material_line`` has no ``is_optional`` column in
-    # the A01 schema, so we can't persist the flag — and silently
-    # materializing optional components as REQUIRED would over-issue at
-    # A06 (material issue). The right long-term fix is a schema add on
-    # ``mo_material_line.is_optional`` so A06 can branch; tracked in the
-    # A05 retro under "Open follow-ups". Until then, skip-as-default is
-    # the conservative behaviour: an MO will fail to fully consume the
-    # BOM rather than over-consume it.
-    material_line_count = 0
+    # A05 followups (M1): we now persist ``bom_line.is_optional`` onto
+    # ``mo_material_line.is_optional`` instead of skipping optional rows
+    # entirely. Both required and optional components show up on the MO
+    # so downstream A06 (material issue) and the UI can render them
+    # with appropriate treatment (optional = doesn't block "fully
+    # issued" rollups, doesn't fail required-coverage checks).
+    required_line_count = 0
+    total_line_count = 0
     for line in bom.lines:
         if line.deleted_at is not None:
             continue
-        if line.is_optional:
-            continue
+        line_is_optional = bool(line.is_optional)
         session.add(
             MoMaterialLine(
                 org_id=org_id,
@@ -418,17 +419,22 @@ def create_mo(
                 qty_required=Decimal(line.qty_required) * qty_to_produce,
                 qty_issued=Decimal("0"),
                 qty_scrap=Decimal("0"),
+                is_optional=line_is_optional,
                 created_by=created_by,
                 updated_by=created_by,
             )
         )
-        material_line_count += 1
+        total_line_count += 1
+        if not line_is_optional:
+            required_line_count += 1
 
-    # A05 review (M4): if every BOM line was soft-deleted (or marked
-    # optional, post-M1), the MO would silently land with zero material
-    # lines and A06 would happily issue nothing. Fail-fast instead so
-    # the caller fixes the BOM or picks a different one.
-    if material_line_count == 0:
+    # A05 review (M4): a BOM whose every non-deleted line is optional
+    # would silently land an MO with zero REQUIRED material lines, and
+    # A06 would happily issue nothing. Fail-fast instead so the caller
+    # fixes the BOM or picks a different one. (A05 followups M1: this
+    # check now runs against ``required_line_count``, not the total —
+    # all-optional BOMs are still rejected.)
+    if required_line_count == 0:
         raise AppValidationError(
             f"BOM {bom_id} has no active required lines; cannot materialize MO."
         )
@@ -475,7 +481,11 @@ def create_mo(
                 "bom_id": str(bom_id),
                 "routing_id": str(routing_id),
                 "qty_to_produce": str(qty_to_produce),
-                "material_line_count": material_line_count,
+                # A05 followups (M1): both totals are emitted so audit
+                # consumers can see the optional-line count without
+                # rejoining ``mo_material_line``.
+                "material_line_count": total_line_count,
+                "required_material_line_count": required_line_count,
                 "operation_count": len(op_order),
             }
         },
@@ -568,6 +578,7 @@ def _transition(
     to_status: MoStatus,
     action: str,
     actor_user_id: uuid.UUID | None,
+    narration: str | None = None,
     set_closed_at: bool = False,
 ) -> ManufacturingOrder:
     """Shared state-machine helper.
@@ -576,6 +587,11 @@ def _transition(
     writes the new status + updated timestamp, emits an audit log row.
     ``set_closed_at`` writes ``closed_at = now()`` (used by ``close_mo``
     so the AccountingHub can sort closed MOs by close time).
+
+    ``narration`` (A05 followups M3) is piped through to
+    ``audit_log.reason`` so the activity feed can show operator intent
+    on every state change — previously only ``create_mo`` accepted a
+    narration kwarg and the four transition methods silently dropped it.
     """
     mo = get_mo(session, org_id=org_id, mo_id=mo_id)
     if mo.status != from_status:
@@ -600,6 +616,7 @@ def _transition(
         entity_id=mo.manufacturing_order_id,
         action=action,
         changes={"before": {"status": from_status.value}, "after": {"status": to_status.value}},
+        reason=narration,
     )
     return mo
 
@@ -610,6 +627,7 @@ def release_mo(
     org_id: uuid.UUID,
     mo_id: uuid.UUID,
     released_by: uuid.UUID | None = None,
+    narration: str | None = None,
 ) -> ManufacturingOrder:
     """``DRAFT → RELEASED``. Gates the lifecycle; material issue + per-
     op progress happen in later tasks (A06 / A07).
@@ -622,6 +640,7 @@ def release_mo(
         to_status=MoStatus.RELEASED,
         action="release",
         actor_user_id=released_by,
+        narration=narration,
     )
 
 
@@ -631,6 +650,7 @@ def start_mo(
     org_id: uuid.UUID,
     mo_id: uuid.UUID,
     started_by: uuid.UUID | None = None,
+    narration: str | None = None,
 ) -> ManufacturingOrder:
     """``RELEASED → IN_PROGRESS``."""
     return _transition(
@@ -641,6 +661,7 @@ def start_mo(
         to_status=MoStatus.IN_PROGRESS,
         action="start",
         actor_user_id=started_by,
+        narration=narration,
     )
 
 
@@ -650,6 +671,7 @@ def complete_mo(
     org_id: uuid.UUID,
     mo_id: uuid.UUID,
     completed_by: uuid.UUID | None = None,
+    narration: str | None = None,
 ) -> ManufacturingOrder:
     """``IN_PROGRESS → COMPLETED``. Finished-goods receipt + WIP cost
     settlement happens in A11; this just flips the header status."""
@@ -661,6 +683,7 @@ def complete_mo(
         to_status=MoStatus.COMPLETED,
         action="complete",
         actor_user_id=completed_by,
+        narration=narration,
     )
 
 
@@ -670,6 +693,7 @@ def close_mo(
     org_id: uuid.UUID,
     mo_id: uuid.UUID,
     closed_by: uuid.UUID | None = None,
+    narration: str | None = None,
 ) -> ManufacturingOrder:
     """``COMPLETED → CLOSED``. After close the MO is immutable; further
     state methods will reject it (their ``from_status`` won't match)."""
@@ -681,6 +705,7 @@ def close_mo(
         to_status=MoStatus.CLOSED,
         action="close",
         actor_user_id=closed_by,
+        narration=narration,
         set_closed_at=True,
     )
 

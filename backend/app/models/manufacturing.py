@@ -533,6 +533,12 @@ class ManufacturingOrder(Base, TimestampMixin, SoftDeleteMixin):
         ForeignKey("cost_centre.cost_centre_id", ondelete="SET NULL"),
         nullable=True,
     )
+    # A05 followups (M2): planned start / end DATEs, both nullable. Pre-
+    # existing MOs (created before the followup migration) have NULL for
+    # both; new MOs MAY populate either or both, and the service-layer
+    # ``create_mo`` validates ``end >= start`` when both are present.
+    planned_start_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
+    planned_end_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("app_user.user_id", ondelete="SET NULL"),
@@ -584,6 +590,12 @@ class MoMaterialLine(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         ForeignKey("lot.lot_id", ondelete="SET NULL"),
         nullable=True,
     )
+    # A05 followups (M1): propagated from ``bom_line.is_optional`` at MO
+    # materialization time. Before this column existed, ``create_mo``
+    # SKIPPED optional BOM lines entirely; now we persist the flag so
+    # A06 (material issue) and the UI can branch on it without
+    # re-walking the BOM.
+    is_optional: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
     manufacturing_order: Mapped[ManufacturingOrder] = relationship(back_populates="material_lines")
 
