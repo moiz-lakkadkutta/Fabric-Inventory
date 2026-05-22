@@ -1167,6 +1167,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/manufacturing/mo-operations/{mo_operation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one MO operation + its append-only production event log */
+        get: operations["get_mo_operation_manufacturing_mo_operations__mo_operation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo-operations/{mo_operation_id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close an in-house MO operation (IN_PROGRESS → CLOSED) */
+        post: operations["complete_operation_manufacturing_mo_operations__mo_operation_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo-operations/{mo_operation_id}/qty-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record qty_in (units received) on an in-progress MO operation */
+        post: operations["record_qty_in_manufacturing_mo_operations__mo_operation_id__qty_in_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo-operations/{mo_operation_id}/qty-out": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record qty_out / scrap / byproduct / wastage on an in-progress MO operation */
+        post: operations["record_qty_out_manufacturing_mo_operations__mo_operation_id__qty_out_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo-operations/{mo_operation_id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start an in-house MO operation (PENDING → IN_PROGRESS) */
+        post: operations["start_operation_manufacturing_mo_operations__mo_operation_id__start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/manufacturing/mo/{mo_id}": {
         parameters: {
             query?: never;
@@ -1244,6 +1329,23 @@ export interface paths {
         };
         /** List material issues against an MO */
         get: operations["list_material_issues_for_mo_manufacturing_mo__mo_id__material_issues_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo/{mo_id}/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List operations on an MO, ordered by sequence */
+        get: operations["list_mo_operations_manufacturing_mo__mo_id__operations_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4885,6 +4987,30 @@ export interface components {
          * @enum {string}
          */
         MoStatus: "DRAFT" | "RELEASED" | "IN_PROGRESS" | "COMPLETED" | "CLOSED";
+        /**
+         * OperationCompleteRequest
+         * @description POST /manufacturing/mo-operations/{id}/complete. Requires
+         *     qty_in == qty_out + qty_scrap + qty_byproduct + qty_wastage.
+         */
+        OperationCompleteRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
+        };
+        /**
+         * OperationDetailResponse
+         * @description GET /manufacturing/mo-operations/{id} — operation + its event
+         *     log. Events ordered oldest first.
+         */
+        OperationDetailResponse: {
+            /** Events */
+            events: components["schemas"]["ProductionEventResponse"][];
+            operation: components["schemas"]["OperationProgressResponse"];
+        };
         /** OperationMasterCreateRequest */
         OperationMasterCreateRequest: {
             /** Code */
@@ -4970,6 +5096,139 @@ export interface components {
             /** Name */
             name?: string | null;
             operation_type?: components["schemas"]["OperationType"] | null;
+        };
+        /** OperationProgressListResponse */
+        OperationProgressListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["OperationProgressResponse"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total Count */
+            total_count: number;
+        };
+        /**
+         * OperationProgressResponse
+         * @description Detailed shape returned by every progress mutation + GET. Wider
+         *     than ``MoOperationResponse`` (which is used inside MoResponse) —
+         *     surfaces the scrap/wastage/byproduct counters and the state column
+         *     that the FE shop-floor view needs.
+         */
+        OperationProgressResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** End Date */
+            end_date: string | null;
+            /** Executor */
+            executor: string;
+            /**
+             * Manufacturing Order Id
+             * Format: uuid
+             */
+            manufacturing_order_id: string;
+            /**
+             * Mo Operation Id
+             * Format: uuid
+             */
+            mo_operation_id: string;
+            /**
+             * Operation Master Id
+             * Format: uuid
+             */
+            operation_master_id: string;
+            /** Operation Sequence */
+            operation_sequence: number | null;
+            /** Qty Byproduct */
+            qty_byproduct: string;
+            /** Qty In */
+            qty_in: string;
+            /** Qty Out */
+            qty_out: string;
+            /** Qty Rejected */
+            qty_rejected: string;
+            /** Qty Wastage */
+            qty_wastage: string;
+            /** Start Date */
+            start_date: string | null;
+            state: components["schemas"]["MoOperationState"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * OperationQtyInRequest
+         * @description POST /manufacturing/mo-operations/{id}/qty-in. qty_in is a
+         *     delta (added to the cumulative running total).
+         */
+        OperationQtyInRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
+            /** Qty In */
+            qty_in: number | string;
+        };
+        /**
+         * OperationQtyOutRequest
+         * @description POST /manufacturing/mo-operations/{id}/qty-out. Every qty is a
+         *     delta added to the corresponding cumulative running total on the
+         *     mo_operation row. At least one of (qty_out, qty_scrap, qty_byproduct,
+         *     qty_wastage) must be > 0; the service enforces this.
+         */
+        OperationQtyOutRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
+            /**
+             * Qty Byproduct
+             * @default 0
+             */
+            qty_byproduct: number | string;
+            /**
+             * Qty Out
+             * @default 0
+             */
+            qty_out: number | string;
+            /**
+             * Qty Scrap
+             * @default 0
+             */
+            qty_scrap: number | string;
+            /**
+             * Qty Wastage
+             * @default 0
+             */
+            qty_wastage: number | string;
+        };
+        /**
+         * OperationStartRequest
+         * @description POST /manufacturing/mo-operations/{id}/start. firm_id is
+         *     defense-in-depth on top of RLS — when the session carries a firm
+         *     scope the body must match (see router).
+         */
+        OperationStartRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
         };
         /**
          * OperationType
@@ -5565,6 +5824,35 @@ export interface components {
             period: components["schemas"]["PnlPeriod"];
             /** Total Income */
             total_income: string;
+        };
+        /**
+         * ProductionEventResponse
+         * @description One row from production_event. Payload is a JSON object whose
+         *     shape varies by event_type.
+         */
+        ProductionEventResponse: {
+            /** Actor User Id */
+            actor_user_id: string | null;
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Event Type */
+            event_type: string;
+            /** Manufacturing Order Id */
+            manufacturing_order_id: string | null;
+            /** Mo Operation Id */
+            mo_operation_id: string | null;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
         };
         /**
          * PurchaseOrderStatus
@@ -9555,6 +9843,185 @@ export interface operations {
             };
         };
     };
+    get_mo_operation_manufacturing_mo_operations__mo_operation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_operation_manufacturing_mo_operations__mo_operation_id__complete_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationCompleteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationProgressResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_qty_in_manufacturing_mo_operations__mo_operation_id__qty_in_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationQtyInRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationProgressResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_qty_out_manufacturing_mo_operations__mo_operation_id__qty_out_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationQtyOutRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationProgressResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_operation_manufacturing_mo_operations__mo_operation_id__start_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationProgressResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_mo_manufacturing_mo__mo_id__get: {
         parameters: {
             query?: never;
@@ -9711,6 +10178,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MaterialIssueListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_mo_operations_manufacturing_mo__mo_id__operations_get: {
+        parameters: {
+            query?: {
+                firm_id?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                mo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationProgressListResponse"];
                 };
             };
             /** @description Validation Error */

@@ -7045,6 +7045,54 @@
         "title": "MoStatus",
         "type": "string"
       },
+      "OperationCompleteRequest": {
+        "description": "POST /manufacturing/mo-operations/{id}/complete. Requires\nqty_in == qty_out + qty_scrap + qty_byproduct + qty_wastage.",
+        "properties": {
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          }
+        },
+        "required": [
+          "firm_id"
+        ],
+        "title": "OperationCompleteRequest",
+        "type": "object"
+      },
+      "OperationDetailResponse": {
+        "description": "GET /manufacturing/mo-operations/{id} \u2014 operation + its event\nlog. Events ordered oldest first.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionEventResponse"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/OperationProgressResponse"
+          }
+        },
+        "required": [
+          "operation",
+          "events"
+        ],
+        "title": "OperationDetailResponse",
+        "type": "object"
+      },
       "OperationMasterCreateRequest": {
         "properties": {
           "code": {
@@ -7321,6 +7369,309 @@
           }
         },
         "title": "OperationMasterUpdateRequest",
+        "type": "object"
+      },
+      "OperationProgressListResponse": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OperationProgressResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total_count": {
+            "title": "Total Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset",
+          "count",
+          "total_count"
+        ],
+        "title": "OperationProgressListResponse",
+        "type": "object"
+      },
+      "OperationProgressResponse": {
+        "description": "Detailed shape returned by every progress mutation + GET. Wider\nthan ``MoOperationResponse`` (which is used inside MoResponse) \u2014\nsurfaces the scrap/wastage/byproduct counters and the state column\nthat the FE shop-floor view needs.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Date"
+          },
+          "executor": {
+            "title": "Executor",
+            "type": "string"
+          },
+          "manufacturing_order_id": {
+            "format": "uuid",
+            "title": "Manufacturing Order Id",
+            "type": "string"
+          },
+          "mo_operation_id": {
+            "format": "uuid",
+            "title": "Mo Operation Id",
+            "type": "string"
+          },
+          "operation_master_id": {
+            "format": "uuid",
+            "title": "Operation Master Id",
+            "type": "string"
+          },
+          "operation_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Sequence"
+          },
+          "qty_byproduct": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Byproduct",
+            "type": "string"
+          },
+          "qty_in": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty In",
+            "type": "string"
+          },
+          "qty_out": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Out",
+            "type": "string"
+          },
+          "qty_rejected": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Rejected",
+            "type": "string"
+          },
+          "qty_wastage": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Wastage",
+            "type": "string"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MoOperationState"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mo_operation_id",
+          "manufacturing_order_id",
+          "operation_master_id",
+          "operation_sequence",
+          "state",
+          "executor",
+          "qty_in",
+          "qty_out",
+          "qty_rejected",
+          "qty_byproduct",
+          "qty_wastage",
+          "start_date",
+          "end_date",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "OperationProgressResponse",
+        "type": "object"
+      },
+      "OperationQtyInRequest": {
+        "description": "POST /manufacturing/mo-operations/{id}/qty-in. qty_in is a\ndelta (added to the cumulative running total).",
+        "properties": {
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "qty_in": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Qty In"
+          }
+        },
+        "required": [
+          "firm_id",
+          "qty_in"
+        ],
+        "title": "OperationQtyInRequest",
+        "type": "object"
+      },
+      "OperationQtyOutRequest": {
+        "description": "POST /manufacturing/mo-operations/{id}/qty-out. Every qty is a\ndelta added to the corresponding cumulative running total on the\nmo_operation row. At least one of (qty_out, qty_scrap, qty_byproduct,\nqty_wastage) must be > 0; the service enforces this.",
+        "properties": {
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "qty_byproduct": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "0",
+            "title": "Qty Byproduct"
+          },
+          "qty_out": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "0",
+            "title": "Qty Out"
+          },
+          "qty_scrap": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "0",
+            "title": "Qty Scrap"
+          },
+          "qty_wastage": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "0",
+            "title": "Qty Wastage"
+          }
+        },
+        "required": [
+          "firm_id"
+        ],
+        "title": "OperationQtyOutRequest",
+        "type": "object"
+      },
+      "OperationStartRequest": {
+        "description": "POST /manufacturing/mo-operations/{id}/start. firm_id is\ndefense-in-depth on top of RLS \u2014 when the session carries a firm\nscope the body must match (see router).",
+        "properties": {
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          }
+        },
+        "required": [
+          "firm_id"
+        ],
+        "title": "OperationStartRequest",
         "type": "object"
       },
       "OperationType": {
@@ -9093,6 +9444,77 @@
           "by_ledger_group"
         ],
         "title": "PnlResponse",
+        "type": "object"
+      },
+      "ProductionEventResponse": {
+        "description": "One row from production_event. Payload is a JSON object whose\nshape varies by event_type.",
+        "properties": {
+          "actor_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor User Id"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "manufacturing_order_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manufacturing Order Id"
+          },
+          "mo_operation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mo Operation Id"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "event_id",
+          "event_type",
+          "mo_operation_id",
+          "manufacturing_order_id",
+          "payload",
+          "actor_user_id",
+          "occurred_at"
+        ],
+        "title": "ProductionEventResponse",
         "type": "object"
       },
       "PurchaseOrderStatus": {
@@ -17291,6 +17713,330 @@
         ]
       }
     },
+    "/manufacturing/mo-operations/{mo_operation_id}": {
+      "get": {
+        "operationId": "get_mo_operation_manufacturing_mo_operations__mo_operation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get one MO operation + its append-only production event log",
+        "tags": [
+          "manufacturing",
+          "operation_progress"
+        ]
+      }
+    },
+    "/manufacturing/mo-operations/{mo_operation_id}/complete": {
+      "post": {
+        "operationId": "complete_operation_manufacturing_mo_operations__mo_operation_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationCompleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationProgressResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close an in-house MO operation (IN_PROGRESS \u2192 CLOSED)",
+        "tags": [
+          "manufacturing",
+          "operation_progress"
+        ]
+      }
+    },
+    "/manufacturing/mo-operations/{mo_operation_id}/qty-in": {
+      "post": {
+        "operationId": "record_qty_in_manufacturing_mo_operations__mo_operation_id__qty_in_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationQtyInRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationProgressResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record qty_in (units received) on an in-progress MO operation",
+        "tags": [
+          "manufacturing",
+          "operation_progress"
+        ]
+      }
+    },
+    "/manufacturing/mo-operations/{mo_operation_id}/qty-out": {
+      "post": {
+        "operationId": "record_qty_out_manufacturing_mo_operations__mo_operation_id__qty_out_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationQtyOutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationProgressResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record qty_out / scrap / byproduct / wastage on an in-progress MO operation",
+        "tags": [
+          "manufacturing",
+          "operation_progress"
+        ]
+      }
+    },
+    "/manufacturing/mo-operations/{mo_operation_id}/start": {
+      "post": {
+        "operationId": "start_operation_manufacturing_mo_operations__mo_operation_id__start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationProgressResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start an in-house MO operation (PENDING \u2192 IN_PROGRESS)",
+        "tags": [
+          "manufacturing",
+          "operation_progress"
+        ]
+      }
+    },
     "/manufacturing/mo/{mo_id}": {
       "get": {
         "operationId": "get_mo_manufacturing_mo__mo_id__get",
@@ -17606,6 +18352,90 @@
         "tags": [
           "manufacturing",
           "mo"
+        ]
+      }
+    },
+    "/manufacturing/mo/{mo_id}/operations": {
+      "get": {
+        "operationId": "list_mo_operations_manufacturing_mo__mo_id__operations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "firm_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Firm Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationProgressListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List operations on an MO, ordered by sequence",
+        "tags": [
+          "manufacturing",
+          "operation_progress"
         ]
       }
     },
