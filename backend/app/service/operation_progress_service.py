@@ -100,6 +100,23 @@ _KARIGAR = "KARIGAR"
 # Over-receive tolerance at qty_in — see module docstring.
 _OVER_RECEIVE_TOLERANCE = Decimal("1.05")
 
+# Terminal predecessor states — any of these mean a predecessor is
+# "done enough" not to block its successor. CLOSED is the canonical
+# happy-path terminator; SKIPPED (operator deliberately bypassed the
+# op, e.g. fabric arrived pre-dyed) and CANCELLED (op aborted, no
+# rework) are equally final from the successor's point of view —
+# nothing more will ever happen on that op. Treating only CLOSED as
+# terminal would wedge a routing whose first op was legitimately
+# skipped or cancelled. Hoisted to a module-level constant so the
+# predecessor check has a single source of truth.
+_TERMINAL_PREDECESSOR_STATES: frozenset[MoOperationState] = frozenset(
+    {
+        MoOperationState.CLOSED,
+        MoOperationState.SKIPPED,
+        MoOperationState.CANCELLED,
+    }
+)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Event types (extension of ProductionEvent.event_type, a free-text
@@ -214,8 +231,14 @@ def _ensure_in_house(op: MoOperation) -> None:
 
 def _predecessors_closed(session: Session, *, op: MoOperation) -> bool:
     """All operations on the same MO with a smaller operation_sequence
-    must be CLOSED. Sequence-based predecessor check — see module
-    docstring for the simplification choice.
+    must be in a terminal state (CLOSED / SKIPPED / CANCELLED).
+    Sequence-based predecessor check — see module docstring for the
+    simplification choice.
+
+    A predecessor is "closed enough" iff its state is in
+    ``_TERMINAL_PREDECESSOR_STATES``. SKIPPED and CANCELLED are
+    treated as logically-closed: no further activity will occur on
+    that op, so a successor is free to start.
 
     Operations with ``operation_sequence IS NULL`` (defensive — shouldn't
     happen for MOs created via ``mo_service.create_mo``) are treated as
@@ -230,7 +253,7 @@ def _predecessors_closed(session: Session, *, op: MoOperation) -> bool:
             MoOperation.deleted_at.is_(None),
             MoOperation.operation_sequence.is_not(None),
             MoOperation.operation_sequence < op.operation_sequence,
-            MoOperation.state != MoOperationState.CLOSED,
+            MoOperation.state.not_in(_TERMINAL_PREDECESSOR_STATES),
         )
     ).scalar_one()
     return int(pending_count or 0) == 0
@@ -278,7 +301,8 @@ def start_operation(
         (typically via the first material issue's auto-start path)
         before per-op progress can be recorded.
       - All operations with a smaller ``operation_sequence`` on the
-        same MO are ``CLOSED``.
+        same MO are in a terminal state (``CLOSED``, ``SKIPPED``, or
+        ``CANCELLED``) — see ``_TERMINAL_PREDECESSOR_STATES``.
 
     Emits ``OPERATION_STARTED`` event + audit row.
     """
@@ -303,7 +327,8 @@ def start_operation(
     if not _predecessors_closed(session, op=op):
         raise AppValidationError(
             f"Cannot start operation {mo_operation_id}: a predecessor (smaller "
-            f"operation_sequence than {op.operation_sequence}) is not CLOSED yet."
+            f"operation_sequence than {op.operation_sequence}) is not in a "
+            "terminal state (CLOSED / SKIPPED / CANCELLED) yet."
         )
 
     now = datetime.now(tz=UTC)

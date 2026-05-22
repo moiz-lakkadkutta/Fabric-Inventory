@@ -537,3 +537,125 @@ def test_cross_org_rls_opacity(http_client: TestClient, sync_engine: Engine) -> 
     )
     assert resp.status_code == 422, resp.text
     assert "not found" in resp.json()["detail"].lower()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Predecessor terminal-state check: SKIPPED / CANCELLED are
+# logically-closed and must NOT block their successor (TR-A07-FU1).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _set_op_state_via_sql(
+    sync_engine: Engine,
+    *,
+    org_id: str,
+    mo_operation_id: str,
+    state: str,
+) -> None:
+    """Flip an MoOperation row directly to ``state`` under the org-scoped
+    session so RLS allows the update. Mirrors the raw-SQL pattern used
+    in ``test_start_rejects_karigar_operation``.
+    """
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        session.execute(
+            text("UPDATE mo_operation SET state = :state WHERE mo_operation_id = :op_id"),
+            {"state": state, "op_id": mo_operation_id},
+        )
+        session.commit()
+
+
+def test_start_succeeds_when_predecessor_is_skipped(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """If op1 is SKIPPED (operator legitimately bypassed it — e.g.
+    fabric arrived pre-dyed so the dye op isn't run), op2 must still
+    be startable. CLOSED is not the only terminal state.
+    """
+    me, mo_id, _ops = _seed_world_one_line_two_ops(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+
+    ops = _list_ops(http_client, owner=me, mo_id=mo_id)
+    op1_id = str(ops[0]["mo_operation_id"])
+    op2_id = str(ops[1]["mo_operation_id"])
+
+    _set_op_state_via_sql(
+        sync_engine,
+        org_id=me["org_id"],
+        mo_operation_id=op1_id,
+        state="SKIPPED",
+    )
+
+    resp = http_client.post(
+        f"/manufacturing/mo-operations/{op2_id}/start",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["state"] == "IN_PROGRESS"
+
+
+def test_start_succeeds_when_predecessor_is_cancelled(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """If op1 is CANCELLED (op aborted, no rework), op2 must still be
+    startable — nothing more will ever happen on op1, so it is
+    logically-closed for predecessor purposes.
+    """
+    me, mo_id, _ops = _seed_world_one_line_two_ops(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+
+    ops = _list_ops(http_client, owner=me, mo_id=mo_id)
+    op1_id = str(ops[0]["mo_operation_id"])
+    op2_id = str(ops[1]["mo_operation_id"])
+
+    _set_op_state_via_sql(
+        sync_engine,
+        org_id=me["org_id"],
+        mo_operation_id=op1_id,
+        state="CANCELLED",
+    )
+
+    resp = http_client.post(
+        f"/manufacturing/mo-operations/{op2_id}/start",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["state"] == "IN_PROGRESS"
+
+
+def test_start_still_rejects_when_predecessor_is_in_progress(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Sanity: the fix must not regress the original block. While op1
+    is IN_PROGRESS (a non-terminal state) op2 must still be refused
+    with a 422 mentioning the terminal-state requirement.
+    """
+    me, mo_id, _ops = _seed_world_one_line_two_ops(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+
+    ops = _list_ops(http_client, owner=me, mo_id=mo_id)
+    op1_id = str(ops[0]["mo_operation_id"])
+    op2_id = str(ops[1]["mo_operation_id"])
+
+    # Start op1 the normal way so it ends up IN_PROGRESS.
+    r_start = http_client.post(
+        f"/manufacturing/mo-operations/{op1_id}/start",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"]},
+    )
+    assert r_start.status_code == 200, r_start.text
+    assert r_start.json()["state"] == "IN_PROGRESS"
+
+    resp = http_client.post(
+        f"/manufacturing/mo-operations/{op2_id}/start",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"]},
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"].lower()
+    assert "predecessor" in detail
