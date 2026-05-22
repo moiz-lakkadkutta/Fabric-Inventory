@@ -504,7 +504,7 @@ def test_post_journal_voucher_translates_voucher_number_race_to_422(
                     params={},
                     orig=Exception(
                         "duplicate key value violates unique constraint "
-                        '"voucher_org_id_firm_id_series_number_key"'
+                        '"voucher_org_id_firm_id_voucher_type_series_number_key"'
                     ),
                 )
         real_flush(objects)  # type: ignore[arg-type]
@@ -532,3 +532,56 @@ def test_post_journal_voucher_translates_voucher_number_race_to_422(
             ],
             created_by=None,
         )
+
+
+def test_voucher_unique_includes_voucher_type(db_session: OrmSession) -> None:
+    """A06 followup M1: the DB unique on ``voucher`` is
+    ``(org_id, firm_id, voucher_type, series, number)``. Two voucher rows
+    in the same firm with the same series + number but different
+    ``voucher_type`` must both persist successfully — the application's
+    ``_allocate_voucher_number`` already partitions sequences by
+    voucher_type, and the DB constraint now mirrors that contract.
+
+    Without the widened unique, this insert sequence would trip a
+    ``duplicate key`` IntegrityError on the second row.
+    """
+    org_id, firm_id = _seed_org_with_coa(db_session)
+
+    series = "X"
+    number = "0001"
+
+    # First row: a JOURNAL voucher at (firm, "X", "0001").
+    jv = Voucher(
+        org_id=org_id,
+        firm_id=firm_id,
+        voucher_type=VoucherType.JOURNAL,
+        series=series,
+        number=number,
+        voucher_date=datetime.date(2026, 5, 22),
+        status=VoucherStatus.POSTED,
+        total_debit=Decimal("0"),
+        total_credit=Decimal("0"),
+    )
+    db_session.add(jv)
+    db_session.flush()
+
+    # Second row: a MATERIAL_ISSUE voucher at the same (firm, "X", "0001").
+    # Under the OLD narrower unique this would have collided; with the
+    # widened unique it must persist.
+    mi_vch = Voucher(
+        org_id=org_id,
+        firm_id=firm_id,
+        voucher_type=VoucherType.MATERIAL_ISSUE,
+        series=series,
+        number=number,
+        voucher_date=datetime.date(2026, 5, 22),
+        status=VoucherStatus.POSTED,
+        total_debit=Decimal("0"),
+        total_credit=Decimal("0"),
+    )
+    db_session.add(mi_vch)
+    db_session.flush()
+
+    assert jv.voucher_id != mi_vch.voucher_id
+    assert jv.voucher_type == VoucherType.JOURNAL
+    assert mi_vch.voucher_type == VoucherType.MATERIAL_ISSUE

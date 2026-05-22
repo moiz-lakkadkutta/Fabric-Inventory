@@ -475,8 +475,8 @@ def issue_materials(
         session.flush()
     except IntegrityError as exc:
         # Mirror C01: narrow to the voucher-number race; everything else
-        # bubbles.
-        if "voucher_org_id_firm_id_series_number_key" in str(exc.orig):
+        # bubbles. (A06 followups widened the unique to include voucher_type.)
+        if "voucher_org_id_firm_id_voucher_type_series_number_key" in str(exc.orig):
             raise AppValidationError(
                 "Voucher number race detected — please retry the request."
             ) from exc

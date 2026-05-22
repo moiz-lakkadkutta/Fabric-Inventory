@@ -102,9 +102,10 @@ class Voucher(Base, SoftDeleteMixin):
         UniqueConstraint(
             "org_id",
             "firm_id",
+            "voucher_type",
             "series",
             "number",
-            name="voucher_org_id_firm_id_series_number_key",
+            name="voucher_org_id_firm_id_voucher_type_series_number_key",
         ),
     )
 
