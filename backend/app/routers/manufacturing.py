@@ -68,6 +68,7 @@ from app.schemas.manufacturing import (
     MoMaterialLineResponse,
     MoOperationResponse,
     MoResponse,
+    MoTransitionRequest,
     OperationCompleteRequest,
     OperationDetailResponse,
     OperationMasterCreateRequest,
@@ -925,6 +926,7 @@ def _mo_material_line_to_response(line: MoMaterialLine) -> MoMaterialLineRespons
         qty_required=line.qty_required if line.qty_required is not None else _Decimal("0"),
         qty_issued=line.qty_issued if line.qty_issued is not None else _Decimal("0"),
         qty_scrap=line.qty_scrap if line.qty_scrap is not None else _Decimal("0"),
+        is_optional=bool(line.is_optional),
     )
 
 
@@ -957,6 +959,8 @@ def _mo_to_response(mo: ManufacturingOrder) -> MoResponse:
         planned_qty=mo.planned_qty,
         produced_qty=mo.produced_qty,
         scrap_qty=mo.scrap_qty,
+        planned_start_date=mo.planned_start_date,
+        planned_end_date=mo.planned_end_date,
         closed_at=mo.closed_at,
         created_at=mo.created_at,
         updated_at=mo.updated_at,
@@ -1078,10 +1082,15 @@ def release_mo(
     mo_id: uuid.UUID,
     db: SyncDBSession,
     current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
+    body: MoTransitionRequest | None = None,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> MoResponse:
     mo_service.release_mo(
-        db, org_id=current_user.org_id, mo_id=mo_id, released_by=current_user.user_id
+        db,
+        org_id=current_user.org_id,
+        mo_id=mo_id,
+        released_by=current_user.user_id,
+        narration=body.narration if body is not None else None,
     )
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
     return _mo_to_response(fresh)
@@ -1096,10 +1105,15 @@ def start_mo(
     mo_id: uuid.UUID,
     db: SyncDBSession,
     current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
+    body: MoTransitionRequest | None = None,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> MoResponse:
     mo_service.start_mo(
-        db, org_id=current_user.org_id, mo_id=mo_id, started_by=current_user.user_id
+        db,
+        org_id=current_user.org_id,
+        mo_id=mo_id,
+        started_by=current_user.user_id,
+        narration=body.narration if body is not None else None,
     )
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
     return _mo_to_response(fresh)
@@ -1114,10 +1128,15 @@ def complete_mo(
     mo_id: uuid.UUID,
     db: SyncDBSession,
     current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
+    body: MoTransitionRequest | None = None,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> MoResponse:
     mo_service.complete_mo(
-        db, org_id=current_user.org_id, mo_id=mo_id, completed_by=current_user.user_id
+        db,
+        org_id=current_user.org_id,
+        mo_id=mo_id,
+        completed_by=current_user.user_id,
+        narration=body.narration if body is not None else None,
     )
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
     return _mo_to_response(fresh)
@@ -1132,9 +1151,16 @@ def close_mo(
     mo_id: uuid.UUID,
     db: SyncDBSession,
     current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
+    body: MoTransitionRequest | None = None,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> MoResponse:
-    mo_service.close_mo(db, org_id=current_user.org_id, mo_id=mo_id, closed_by=current_user.user_id)
+    mo_service.close_mo(
+        db,
+        org_id=current_user.org_id,
+        mo_id=mo_id,
+        closed_by=current_user.user_id,
+        narration=body.narration if body is not None else None,
+    )
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
     return _mo_to_response(fresh)
 
