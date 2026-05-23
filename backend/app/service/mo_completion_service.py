@@ -196,7 +196,7 @@ def _resolve_system_ledger(session: Session, *, org_id: uuid.UUID, code: str) ->
 
 
 @dataclass(frozen=True, slots=True)
-class _LossBreakdown:
+class LossBreakdown:
     """Sum of every loss bucket across every operation on the MO.
 
     ``scrap_qty`` aggregates ``qty_rejected`` (column-side) across all
@@ -213,6 +213,11 @@ class _LossBreakdown:
     ``QC_RESULT_RECORDED.payload.qty_rework`` — see
     ``docs/retros/task-tr-a10.md``. If a future migration backfills a
     column, this lookup becomes the fallback path.
+
+    Public dataclass: reused by the read-only completion-preview
+    endpoint (TASK-TR-A11-FU) so the FE can show exactly what A11 would
+    do without committing. Same instance for both code paths keeps the
+    aggregation source of truth single.
     """
 
     scrap_qty: Decimal
@@ -221,9 +226,14 @@ class _LossBreakdown:
     rework_qty: Decimal
 
 
-def _aggregate_loss_breakdown(
+# Backward-compat alias — internal callers still use the underscored name
+# inline below. Removing the alias is a no-op refactor for a follow-up.
+_LossBreakdown = LossBreakdown
+
+
+def aggregate_loss_breakdown(
     session: Session, *, org_id: uuid.UUID, mo_id: uuid.UUID
-) -> _LossBreakdown:
+) -> LossBreakdown:
     """Walk every operation on the MO and sum the loss buckets.
 
     Column-side aggregation for scrap / wastage / byproduct. For
@@ -297,7 +307,7 @@ def _aggregate_loss_breakdown(
                 f"qty_rework payload value {raw!r}; cannot settle WIP."
             ) from None
 
-    return _LossBreakdown(
+    return LossBreakdown(
         scrap_qty=scrap.quantize(_QTY_QUANT),
         wastage_qty=wastage.quantize(_QTY_QUANT),
         by_product_qty=byproduct.quantize(_QTY_QUANT),
@@ -305,7 +315,12 @@ def _aggregate_loss_breakdown(
     )
 
 
-def _sum_wip_cost_pool(session: Session, *, org_id: uuid.UUID, mo_id: uuid.UUID) -> Decimal:
+# Backward-compat alias for the underscored name — kept so any downstream
+# helper that imported the private symbol keeps working without churn.
+_aggregate_loss_breakdown = aggregate_loss_breakdown
+
+
+def sum_wip_cost_pool(session: Session, *, org_id: uuid.UUID, mo_id: uuid.UUID) -> Decimal:
     """Sum every WIP-debit ``voucher_line.amount`` posted by A06
     material-issue vouchers against this MO.
 
@@ -334,6 +349,10 @@ def _sum_wip_cost_pool(session: Session, *, org_id: uuid.UUID, mo_id: uuid.UUID)
         )
     ).scalar_one()
     return Decimal(rows or 0).quantize(_MONEY_QUANT)
+
+
+# Backward-compat alias for the underscored name.
+_sum_wip_cost_pool = sum_wip_cost_pool
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -463,7 +482,7 @@ def complete_mo_with_settlement(
         )
 
     # Phase 4: aggregate the loss buckets.
-    breakdown = _aggregate_loss_breakdown(session, org_id=org_id, mo_id=mo_id)
+    breakdown = aggregate_loss_breakdown(session, org_id=org_id, mo_id=mo_id)
     # ALL_OR_NONE means produced_qty == planned_qty by definition (we
     # just enforced it). A non-zero rework_qty at this point is a
     # contradiction — the gate in Phase 2 above already refuses REWORK
@@ -477,7 +496,7 @@ def complete_mo_with_settlement(
         )
 
     # Phase 5: cost pool roll-up.
-    cost_pool = _sum_wip_cost_pool(session, org_id=org_id, mo_id=mo_id)
+    cost_pool = sum_wip_cost_pool(session, org_id=org_id, mo_id=mo_id)
     if cost_pool <= Decimal("0"):
         raise AppValidationError(
             f"Cannot complete MO {mo_id}: WIP cost pool is zero — no "
@@ -673,4 +692,189 @@ def complete_mo_with_settlement(
     return mo_service.get_mo(session, org_id=org_id, mo_id=mo_id)
 
 
-__all__ = ["complete_mo_with_settlement"]
+# ──────────────────────────────────────────────────────────────────────
+# Completion preview (TASK-TR-A11-FU)
+# ──────────────────────────────────────────────────────────────────────
+
+
+_SUPPORTED_POLICIES = frozenset({"ALL_OR_NONE"})
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionPreview:
+    """Read-only snapshot of what ``complete_mo_with_settlement`` would
+    do for a given ``(mo, produced_qty_target)``. No state changes, no
+    GL writes — just the numbers + a list of blocking reasons.
+
+    Same dataclass shape regardless of ``can_complete`` — the FE renders
+    the cost / loss figures either way (they're informational when
+    ``can_complete=False``) and switches the CTA on ``can_complete``.
+
+    ``unit_cost`` is ``Decimal("0")`` when ``produced_qty_target`` is
+    zero or negative (we never divide by zero); a blocking_reason is
+    added for the same input so the FE sees the explanation.
+
+    ``ledger_codes`` is constant for the current v1 implementation; the
+    FE uses it for an explainer tooltip ("DR 1300 / CR 1310").
+    """
+
+    mo_id: uuid.UUID
+    status: MoStatus
+    planned_qty: Decimal
+    produced_qty_target: Decimal
+    scrap_qty: Decimal
+    wastage_qty: Decimal
+    by_product_qty: Decimal
+    rework_qty: Decimal
+    cost_pool: Decimal
+    unit_cost: Decimal
+    inventory_ledger_code: str
+    wip_ledger_code: str
+    can_complete: bool
+    blocking_reasons: tuple[str, ...]
+    policy: str
+
+
+def preview_completion(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    mo_id: uuid.UUID,
+    produced_qty_target: Decimal,
+) -> CompletionPreview:
+    """Build a ``CompletionPreview`` for the given MO + target qty.
+
+    Read-only: collects blocking_reasons instead of raising so the
+    caller (the FE completion dialog) can render the cost numbers AND
+    the reason in one round trip. Permission gate (``manufacturing.mo.read``)
+    lives at the router; the service itself only enforces RLS via the
+    underlying ``mo_service.get_mo`` lookup.
+
+    Aggregation reuses the same helpers ``complete_mo_with_settlement``
+    uses, so the preview is byte-for-byte the same numbers the actual
+    completion would post. The only divergence is the no-raise posture:
+    every gate that would have raised an ``AppValidationError`` instead
+    appends a string to ``blocking_reasons`` and sets ``can_complete``
+    to False.
+
+    Decimal grid: produced_qty_target is quantized to NUMERIC(15,4) the
+    same way ``complete_mo_with_settlement`` does, so the equality check
+    against planned_qty under ALL_OR_NONE behaves identically.
+    """
+    blocking_reasons: list[str] = []
+
+    # Load + scope the MO. RLS hides cross-org rows so ``get_mo`` raises
+    # ``not found`` — translate to 404 at the router via the standard
+    # AppValidationError handling. We intentionally do NOT swallow the
+    # not-found error here: a missing MO is not a "blocking reason", it's
+    # a 404.
+    mo = mo_service.get_mo(session, org_id=org_id, mo_id=mo_id)
+    if mo.firm_id != firm_id:
+        # Same defence-in-depth posture as ``complete_mo_with_settlement``.
+        # An MO in a different firm than the session is a permissions
+        # error, not a preview-blocking-reason, so we surface the raise.
+        raise AppValidationError(f"MO {mo_id} does not belong to firm {firm_id}.")
+
+    # Quantize target qty up-front; an invalid (zero / negative) target
+    # is captured as a blocking reason rather than raising so the FE
+    # can still show the cost-pool number with the explanation.
+    try:
+        target_dec = Decimal(produced_qty_target).quantize(_QTY_QUANT)
+    except (ValueError, TypeError, ArithmeticError):
+        target_dec = Decimal("0").quantize(_QTY_QUANT)
+        blocking_reasons.append(
+            f"produced_qty_target {produced_qty_target!r} is not a valid decimal."
+        )
+    if target_dec <= Decimal("0"):
+        blocking_reasons.append(f"produced_qty_target must be > 0 (got {target_dec}).")
+
+    # State gate.
+    if mo.status != MoStatus.IN_PROGRESS:
+        blocking_reasons.append(
+            f"MO status is {mo.status.value if mo.status else None}, expected IN_PROGRESS."
+        )
+
+    # Op-state gate — collect each offending op so the FE can list them.
+    open_ops = list(
+        session.execute(
+            select(MoOperation.mo_operation_id, MoOperation.state).where(
+                MoOperation.org_id == org_id,
+                MoOperation.manufacturing_order_id == mo_id,
+                MoOperation.deleted_at.is_(None),
+                MoOperation.state.not_in(
+                    {
+                        MoOperationState.CLOSED,
+                        MoOperationState.SKIPPED,
+                        MoOperationState.CANCELLED,
+                    }
+                ),
+            )
+        )
+    )
+    for op_id, op_state in open_ops:
+        blocking_reasons.append(
+            f"Operation {op_id} is in state {op_state.value}, expected CLOSED/SKIPPED/CANCELLED."
+        )
+
+    # Policy gate.
+    policy = (mo.completion_policy or "ALL_OR_NONE").upper()
+    if policy not in _SUPPORTED_POLICIES:
+        blocking_reasons.append(
+            f"completion_policy={policy} is not supported in v1 (only ALL_OR_NONE)."
+        )
+
+    planned_qty = Decimal(mo.planned_qty).quantize(_QTY_QUANT)
+    if policy == "ALL_OR_NONE" and target_dec > Decimal("0") and target_dec != planned_qty:
+        blocking_reasons.append(
+            f"ALL_OR_NONE policy requires produced_qty_target ({target_dec}) "
+            f"to equal planned_qty ({planned_qty})."
+        )
+
+    # Aggregate loss buckets — same helper the real settlement calls.
+    breakdown = aggregate_loss_breakdown(session, org_id=org_id, mo_id=mo_id)
+    if breakdown.rework_qty > Decimal("0"):
+        blocking_reasons.append(
+            f"Aggregated rework_qty={breakdown.rework_qty} from QC event log. "
+            "Rework must be fully cycled (new op + QC PASS) before completion."
+        )
+
+    # Cost pool — same helper, same RLS path.
+    cost_pool = sum_wip_cost_pool(session, org_id=org_id, mo_id=mo_id)
+    if cost_pool <= Decimal("0"):
+        blocking_reasons.append(
+            "WIP cost pool is zero — no material issues have been posted against this MO."
+        )
+
+    if target_dec > Decimal("0"):
+        unit_cost = (cost_pool / target_dec).quantize(_UNIT_COST_QUANT)
+    else:
+        unit_cost = Decimal("0").quantize(_UNIT_COST_QUANT)
+
+    return CompletionPreview(
+        mo_id=mo.manufacturing_order_id,
+        status=mo.status if mo.status else MoStatus.DRAFT,
+        planned_qty=planned_qty,
+        produced_qty_target=target_dec,
+        scrap_qty=breakdown.scrap_qty,
+        wastage_qty=breakdown.wastage_qty,
+        by_product_qty=breakdown.by_product_qty,
+        rework_qty=breakdown.rework_qty,
+        cost_pool=cost_pool,
+        unit_cost=unit_cost,
+        inventory_ledger_code=_INVENTORY_LEDGER_CODE,
+        wip_ledger_code=_WIP_LEDGER_CODE,
+        can_complete=len(blocking_reasons) == 0,
+        blocking_reasons=tuple(blocking_reasons),
+        policy=policy,
+    )
+
+
+__all__ = [
+    "CompletionPreview",
+    "LossBreakdown",
+    "aggregate_loss_breakdown",
+    "complete_mo_with_settlement",
+    "preview_completion",
+    "sum_wip_cost_pool",
+]

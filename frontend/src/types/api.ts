@@ -1458,6 +1458,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/manufacturing/mo/{mo_id}/completion-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview the MO completion + WIP settlement that A11 would post (read-only) — TASK-TR-A11-FU
+         * @description Read-only: returns the cost pool, per-unit cost, and loss breakdown that ``POST /manufacturing/mo/{id}/complete`` would post for the given ``produced_qty_target``, plus a list of ``blocking_reasons`` populated when any pre-flight check fails (MO not IN_PROGRESS, an op not in {CLOSED, SKIPPED, CANCELLED}, ALL_OR_NONE policy mismatch, non-zero rework_qty, empty WIP cost pool, etc.). ``can_complete`` is False whenever ``blocking_reasons`` is non-empty; the response is still 200 — the FE renders the numbers AND the reason in one round trip. No state changes, no GL writes, no audit emit.
+         */
+        get: operations["completion_preview_manufacturing_mo__mo_id__completion_preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/manufacturing/mo/{mo_id}/issue-materials": {
         parameters: {
             query?: never;
@@ -5132,6 +5152,68 @@ export interface components {
             produced_qty: number | string;
             /** Series */
             series?: string | null;
+        };
+        /**
+         * MoCompletionPreviewLedgerCodes
+         * @description The two ledger codes the A11 completion voucher would post
+         *     against — surfaced verbatim so the FE can render a "DR 1300 / CR
+         *     1310" tooltip beside the cost number. Both codes are constant in
+         *     v1 (see ``mo_completion_service._INVENTORY_LEDGER_CODE`` /
+         *     ``_WIP_LEDGER_CODE``) — the FE shouldn't hard-code them.
+         */
+        MoCompletionPreviewLedgerCodes: {
+            /** Inventory Dr */
+            inventory_dr: string;
+            /** Wip Cr */
+            wip_cr: string;
+        };
+        /**
+         * MoCompletionPreviewResponse
+         * @description A11-FU — read-only snapshot of what
+         *     ``POST /manufacturing/mo/{id}/complete`` would do for the given
+         *     ``produced_qty_target``. No state changes, no GL writes.
+         *
+         *     All quantity fields use the same NUMERIC(15,4) grid the MO header
+         *     uses; ``unit_cost`` is NUMERIC(15,6) to match ``stock_ledger``.
+         *
+         *     ``can_complete`` is False whenever any pre-flight check fails. The
+         *     response is still 200 — the caller wants both the cost numbers AND
+         *     the explanation. ``blocking_reasons`` is empty when ``can_complete``
+         *     is True.
+         *
+         *     ``policy`` echoes the MO's ``completion_policy`` column verbatim
+         *     (v1 ships ``ALL_OR_NONE`` only).
+         */
+        MoCompletionPreviewResponse: {
+            /** Blocking Reasons */
+            blocking_reasons: string[];
+            /** By Product Qty */
+            by_product_qty: string;
+            /** Can Complete */
+            can_complete: boolean;
+            /** Cost Pool */
+            cost_pool: string;
+            ledger_codes: components["schemas"]["MoCompletionPreviewLedgerCodes"];
+            /**
+             * Mo Id
+             * Format: uuid
+             */
+            mo_id: string;
+            /** Planned Qty */
+            planned_qty: string;
+            /** Policy */
+            policy: string;
+            /** Produced Qty Target */
+            produced_qty_target: string;
+            /** Rework Qty */
+            rework_qty: string;
+            /** Scrap Qty */
+            scrap_qty: string;
+            status: components["schemas"]["MoStatus"];
+            /** Unit Cost */
+            unit_cost: string;
+            /** Wastage Qty */
+            wastage_qty: string;
         };
         /** MoCreateRequest */
         MoCreateRequest: {
@@ -10968,6 +11050,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    completion_preview_manufacturing_mo__mo_id__completion_preview_get: {
+        parameters: {
+            query: {
+                firm_id: string;
+                produced_qty_target: number | string;
+            };
+            header?: never;
+            path: {
+                mo_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MoCompletionPreviewResponse"];
                 };
             };
             /** @description Validation Error */
