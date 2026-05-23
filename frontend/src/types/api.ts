@@ -1447,7 +1447,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Complete (IN_PROGRESS → COMPLETED) a manufacturing order */
+        /**
+         * Complete (IN_PROGRESS → COMPLETED) a manufacturing order with WIP settlement — TASK-TR-A11
+         * @description Money-touching: drains the WIP cost pool into finished-goods inventory. Posts a balanced GL voucher (DR 1300 Inventory / CR 1310 Work-in-Process) for the full pool, inserts an inbound stock-ledger row for the finished item at the firm's MAIN warehouse with unit_cost = cost_pool / produced_qty, then flips the MO header to COMPLETED. With completion_policy=ALL_OR_NONE (the default and only v1 policy) the request's produced_qty must equal planned_qty. All operations must be in {CLOSED, SKIPPED, CANCELLED} — REWORK QC verdicts block completion until the rework cycle finishes.
+         */
         post: operations["complete_mo_manufacturing_mo__mo_id__complete_post"];
         delete?: never;
         options?: never;
@@ -5102,6 +5105,34 @@ export interface components {
             /** Uploaded By */
             uploaded_by: string | null;
         };
+        /**
+         * MoCompleteRequest
+         * @description A11 — body for the money-touching ``POST /manufacturing/mo/{id}/complete``.
+         *
+         *     ``firm_id`` is a defence-in-depth check (must match the session's
+         *     firm scope, same posture as ``MoCreateRequest`` and
+         *     ``MaterialIssueCreateRequest``).
+         *
+         *     ``produced_qty`` is the operator-claimed finished-goods qty. With
+         *     ``completion_policy=ALL_OR_NONE`` (v1 default) the service refuses
+         *     anything that doesn't equal ``planned_qty``.
+         *
+         *     ``series`` for the GL voucher (defaults to ``"MOC"`` server-side —
+         *     Manufacturing Order Completion).
+         */
+        MoCompleteRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
+            /** Produced Qty */
+            produced_qty: number | string;
+            /** Series */
+            series?: string | null;
+        };
         /** MoCreateRequest */
         MoCreateRequest: {
             /**
@@ -5351,6 +5382,12 @@ export interface components {
          *     A05 followups (M3): narration is piped through to ``audit_log.reason``
          *     so the activity feed captures operator intent on every transition,
          *     not just create.
+         *
+         *     A11 NOTE: ``release`` / ``start`` / ``close`` still accept this
+         *     skinny body. ``complete`` now requires ``MoCompleteRequest`` which
+         *     is a superset (carries ``produced_qty`` + ``firm_id``); the legacy
+         *     body is no longer accepted on ``complete`` because the new endpoint
+         *     is money-touching.
          */
         MoTransitionRequest: {
             /** Narration */
@@ -7560,7 +7597,7 @@ export interface components {
          * VoucherType
          * @enum {string}
          */
-        VoucherType: "SALES_INVOICE" | "PURCHASE_INVOICE" | "PAYMENT" | "RECEIPT" | "JOURNAL" | "CONTRA" | "DEBIT_NOTE" | "CREDIT_NOTE" | "OPENING_BAL" | "MATERIAL_ISSUE";
+        VoucherType: "SALES_INVOICE" | "PURCHASE_INVOICE" | "PAYMENT" | "RECEIPT" | "JOURNAL" | "CONTRA" | "DEBIT_NOTE" | "CREDIT_NOTE" | "OPENING_BAL" | "MATERIAL_ISSUE" | "MANUFACTURING_COMPLETION";
     };
     responses: never;
     parameters: never;
@@ -10918,9 +10955,9 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
-                "application/json": components["schemas"]["MoTransitionRequest"] | null;
+                "application/json": components["schemas"]["MoCompleteRequest"];
             };
         };
         responses: {

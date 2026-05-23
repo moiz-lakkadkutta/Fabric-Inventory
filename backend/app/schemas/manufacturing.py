@@ -326,9 +326,36 @@ class MoTransitionRequest(BaseModel):
     A05 followups (M3): narration is piped through to ``audit_log.reason``
     so the activity feed captures operator intent on every transition,
     not just create.
+
+    A11 NOTE: ``release`` / ``start`` / ``close`` still accept this
+    skinny body. ``complete`` now requires ``MoCompleteRequest`` which
+    is a superset (carries ``produced_qty`` + ``firm_id``); the legacy
+    body is no longer accepted on ``complete`` because the new endpoint
+    is money-touching.
     """
 
     narration: str | None = Field(default=None, max_length=2000)
+
+
+class MoCompleteRequest(BaseModel):
+    """A11 — body for the money-touching ``POST /manufacturing/mo/{id}/complete``.
+
+    ``firm_id`` is a defence-in-depth check (must match the session's
+    firm scope, same posture as ``MoCreateRequest`` and
+    ``MaterialIssueCreateRequest``).
+
+    ``produced_qty`` is the operator-claimed finished-goods qty. With
+    ``completion_policy=ALL_OR_NONE`` (v1 default) the service refuses
+    anything that doesn't equal ``planned_qty``.
+
+    ``series`` for the GL voucher (defaults to ``"MOC"`` server-side —
+    Manufacturing Order Completion).
+    """
+
+    firm_id: uuid.UUID
+    produced_qty: Decimal = Field(gt=Decimal("0"))
+    narration: str | None = Field(default=None, max_length=2000)
+    series: str | None = Field(default=None, max_length=50)
 
 
 class MoMaterialLineResponse(BaseModel):
@@ -829,6 +856,7 @@ __all__ = [
     "MaterialIssueLineResponse",
     "MaterialIssueListResponse",
     "MaterialIssueResponse",
+    "MoCompleteRequest",
     "MoCreateRequest",
     "MoListItem",
     "MoListResponse",

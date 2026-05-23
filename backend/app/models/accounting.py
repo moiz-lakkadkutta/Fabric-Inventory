@@ -62,6 +62,13 @@ class VoucherType(enum.StrEnum):
     # ``ADD VALUE`` is forward-only so the migration's downgrade can't
     # remove it (harmless after a downgrade — no rows reference it).
     MATERIAL_ISSUE = "MATERIAL_ISSUE"
+    # TR-A11: MO completion / WIP settlement (DR FG-Inventory / CR WIP).
+    # The mirror leg of MATERIAL_ISSUE: drains the WIP cost pool into the
+    # finished item's inventory value when an MO transitions
+    # IN_PROGRESS → COMPLETED. Added via the
+    # ``task_tr_a11_mo_completion`` migration; same forward-only caveat
+    # as MATERIAL_ISSUE.
+    MANUFACTURING_COMPLETION = "MANUFACTURING_COMPLETION"
 
 
 class JournalLineType(enum.StrEnum):

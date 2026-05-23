@@ -68,6 +68,7 @@ from app.schemas.manufacturing import (
     MaterialIssueLineResponse,
     MaterialIssueListResponse,
     MaterialIssueResponse,
+    MoCompleteRequest,
     MoCreateRequest,
     MoListItem,
     MoListResponse,
@@ -102,6 +103,7 @@ from app.service import (
     karigar_send_out_service,
     manufacturing_masters_service,
     material_issue_service,
+    mo_completion_service,
     mo_service,
     operation_progress_service,
     qc_service,
@@ -1135,21 +1137,43 @@ def start_mo(
 @mos_router.post(
     "/{mo_id}/complete",
     response_model=MoResponse,
-    summary="Complete (IN_PROGRESS → COMPLETED) a manufacturing order",
+    summary=(
+        "Complete (IN_PROGRESS → COMPLETED) a manufacturing order with WIP settlement — TASK-TR-A11"
+    ),
+    description=(
+        "Money-touching: drains the WIP cost pool into finished-goods "
+        "inventory. Posts a balanced GL voucher (DR 1300 Inventory / "
+        "CR 1310 Work-in-Process) for the full pool, inserts an inbound "
+        "stock-ledger row for the finished item at the firm's MAIN "
+        "warehouse with unit_cost = cost_pool / produced_qty, then "
+        "flips the MO header to COMPLETED. With completion_policy="
+        "ALL_OR_NONE (the default and only v1 policy) the request's "
+        "produced_qty must equal planned_qty. All operations must be in "
+        "{CLOSED, SKIPPED, CANCELLED} — REWORK QC verdicts block "
+        "completion until the rework cycle finishes."
+    ),
 )
 def complete_mo(
     mo_id: uuid.UUID,
+    body: MoCompleteRequest,
     db: SyncDBSession,
     current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
-    body: MoTransitionRequest | None = None,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> MoResponse:
-    mo_service.complete_mo(
+    # Defense-in-depth: when the session has an explicit firm scope, the
+    # body firm_id must match — same posture as create_mo and
+    # issue_materials_for_mo.
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    mo_completion_service.complete_mo_with_settlement(
         db,
         org_id=current_user.org_id,
+        firm_id=body.firm_id,
         mo_id=mo_id,
+        produced_qty=body.produced_qty,
         completed_by=current_user.user_id,
-        narration=body.narration if body is not None else None,
+        narration=body.narration,
+        series=body.series or "MOC",
     )
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
     return _mo_to_response(fresh)
