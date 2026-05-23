@@ -98,6 +98,9 @@ export type BackendOperationProgressResponse = components['schemas']['OperationP
 export type BackendMoOperationState = components['schemas']['MoOperationState'];
 export type BackendOperationType = components['schemas']['OperationType'];
 
+// A2 MO Create Wizard — request shape for POST /manufacturing/mo.
+export type BackendMoCreateRequest = components['schemas']['MoCreateRequest'];
+
 // ── MO list ↔ Kanban view-model mapper ────────────────────────────────
 
 /**
@@ -499,8 +502,7 @@ export function useOperationMasters(params: ListOperationMastersParams = {}) {
 // Hooks for the missing MO-header /start action, the missing
 // /issue-materials UI on the Materials tab, and the per-operation
 // progress mutations (start / qty-in / qty-out / complete) that the
-// Operations drawer drives. Kept in one block to keep the diff narrow
-// for the parallel A1 / A2 worktrees that may also touch this file.
+// Operations drawer drives.
 
 export interface StartMoInput {
   moId: string;
@@ -540,6 +542,44 @@ async function liveIssueMaterials(
   if (input.series !== undefined) body.series = input.series;
   if (input.narration !== undefined) body.narration = input.narration;
   return api<BackendMaterialIssueResponse>(`/manufacturing/mo/${input.moId}/issue-materials`, {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body,
+  });
+}
+
+// ── Create / Release (TASK-TR-A2 MO Create Wizard) ───────────────────
+
+export interface CreateMoInput {
+  firm_id?: string;
+  bom_id: string;
+  design_id: string;
+  finished_item_id: string;
+  routing_id: string;
+  /** Decimal-as-string on the wire — never JS-arithmetic this. */
+  qty_to_produce: string;
+  planned_start_date: string;
+  planned_end_date?: string | null;
+  series?: string | null;
+  narration?: string | null;
+  idempotencyKey: string;
+}
+
+async function liveCreateMo(input: CreateMoInput): Promise<BackendMoResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendMoCreateRequest = {
+    firm_id,
+    bom_id: input.bom_id,
+    design_id: input.design_id,
+    finished_item_id: input.finished_item_id,
+    routing_id: input.routing_id,
+    qty_to_produce: input.qty_to_produce,
+    planned_start_date: input.planned_start_date,
+  };
+  if (input.planned_end_date !== undefined) body.planned_end_date = input.planned_end_date;
+  if (input.series !== undefined) body.series = input.series;
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendMoResponse>('/manufacturing/mo', {
     method: 'POST',
     idempotencyKey: input.idempotencyKey,
     body,
@@ -671,6 +711,41 @@ export function useStartMo() {
   });
 }
 
+// ── A2 MO Create Wizard hooks ────────────────────────────────────────
+
+export interface ReleaseMoInput {
+  moId: string;
+  narration?: string | null;
+  idempotencyKey: string;
+}
+
+async function liveReleaseMo(input: ReleaseMoInput): Promise<BackendMoResponse> {
+  const body: BackendMoTransitionRequest = {};
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendMoResponse>(`/manufacturing/mo/${input.moId}/release`, {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body,
+  });
+}
+
+/**
+ * POST /manufacturing/mo (A01). Money-touching once Release happens, but
+ * Create alone is just metadata. We invalidate the MO list so the new
+ * draft surfaces immediately and prime the detail cache so the caller
+ * can navigate to /manufacturing/mo/:id without a refetch flash.
+ */
+export function useCreateMo() {
+  const qc = useQueryClient();
+  return useMutation<BackendMoResponse, Error, CreateMoInput>({
+    mutationFn: (input) => liveCreateMo(input),
+    onSuccess: (mo) => {
+      qc.invalidateQueries({ queryKey: MO_KEY });
+      qc.setQueryData([...MO_KEY, 'detail', mo.manufacturing_order_id], mo);
+    },
+  });
+}
+
 /**
  * POST /manufacturing/mo/{id}/issue-materials. Stock-touching — drains
  * raw material from on-hand into WIP and bumps each line's qty_issued.
@@ -721,6 +796,18 @@ export function useCompleteOperation(moId: string | undefined) {
   });
 }
 
+/** POST /manufacturing/mo/:id/release — moves a DRAFT MO to RELEASED. */
+export function useReleaseMo() {
+  const qc = useQueryClient();
+  return useMutation<BackendMoResponse, Error, ReleaseMoInput>({
+    mutationFn: (input) => liveReleaseMo(input),
+    onSuccess: (mo) => {
+      qc.invalidateQueries({ queryKey: MO_KEY });
+      qc.setQueryData([...MO_KEY, 'detail', mo.manufacturing_order_id], mo);
+    },
+  });
+}
+
 // ── Test-only exports ────────────────────────────────────────────────
 
 /** Mappers exposed for the live-mapping unit tests. */
@@ -754,4 +841,7 @@ export const __live = {
   liveRecordQtyIn,
   liveRecordQtyOut,
   liveCompleteOperation,
+  // A2:
+  liveCreateMo,
+  liveReleaseMo,
 };
