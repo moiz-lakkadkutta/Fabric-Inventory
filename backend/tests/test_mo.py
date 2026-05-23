@@ -320,13 +320,16 @@ def test_create_mo_materializes_material_lines_and_operations(
         assert line["qty_scrap"] == "0.0000"
 
     # Routing has 3 ops in a linear chain → 3 mo_operations, sequenced 1..3,
-    # all PENDING / IN_HOUSE, planned qty_in == qty_to_produce.
+    # all PENDING / IN_HOUSE.
+    # TR-A08-FU: qty_in seeds to 0 (was previously qty_to_produce). The
+    # in-house path's ``record_qty_in`` accumulates from 0, and the
+    # karigar path no longer needs its first-dispatch reset.
     ops = body["operations"]
     assert len(ops) == 3
     assert [op["operation_sequence"] for op in ops] == [1, 2, 3]
     assert all(op["state"] == "PENDING" for op in ops)
     assert all(op["executor"] == "IN_HOUSE" for op in ops)
-    assert all(op["qty_in"] == "10.0000" for op in ops)
+    assert all(op["qty_in"] == "0.0000" for op in ops)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1459,3 +1462,104 @@ def test_transition_without_narration_leaves_reason_null(
         ).scalar_one()
 
     assert row.reason is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TR-A08 followup: MoOperation.input_item_id / output_item_id populated
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_mo_populates_op_input_output_item_ids(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Every materialised ``mo_operation`` row carries:
+    - ``input_item_id``  = BOM's primary raw (first non-deleted,
+      non-optional line) for op #1; previous op's output_item_id for
+      later ops.
+    - ``output_item_id`` = MO's ``finished_item_id`` for every op
+      (v1: routing produces the finished item end-to-end; per-op
+      intermediate items are A11 follow-up).
+    """
+    from sqlalchemy import select
+
+    from app.models.manufacturing import MoOperation
+
+    me, design_id, finished, raws, bom, routing = _seed_mo_world(http_client)
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+            qty="10.0000",
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+    mo_id = resp.json()["manufacturing_order_id"]
+
+    # The BOM's first line is raws[0] (sequence=1, non-optional, qty=2.0).
+    primary_raw_id = uuid.UUID(raws[0])
+    finished_uuid = uuid.UUID(finished)
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        rows = list(
+            session.execute(
+                select(MoOperation)
+                .where(MoOperation.manufacturing_order_id == uuid.UUID(mo_id))
+                .order_by(MoOperation.operation_sequence.asc())
+            ).scalars()
+        )
+
+    assert len(rows) == 3
+    # Op #1 input = BOM's primary raw; ops #2/#3 inherit from prev output.
+    assert rows[0].input_item_id == primary_raw_id
+    assert rows[1].input_item_id == finished_uuid
+    assert rows[2].input_item_id == finished_uuid
+    # Every op outputs the MO's finished item in v1.
+    assert all(r.output_item_id == finished_uuid for r in rows)
+
+
+def test_create_mo_seeds_op_qty_in_to_zero(http_client: TestClient, sync_engine: Engine) -> None:
+    """TR-A08-FU: ``mo_operation.qty_in`` is seeded to 0 (was
+    ``planned_qty`` pre-followup). The in-house path's record_qty_in
+    accumulates from 0; the karigar path no longer needs a first-
+    dispatch reset.
+    """
+    from decimal import Decimal
+
+    from sqlalchemy import select
+
+    from app.models.manufacturing import MoOperation
+
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+            qty="42.0000",
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+    mo_id = resp.json()["manufacturing_order_id"]
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        rows = list(
+            session.execute(
+                select(MoOperation).where(MoOperation.manufacturing_order_id == uuid.UUID(mo_id))
+            ).scalars()
+        )
+
+    assert len(rows) == 3
+    for r in rows:
+        assert Decimal(str(r.qty_in)) == Decimal("0")
+        assert (r.qty_in_record_count or 0) == 0

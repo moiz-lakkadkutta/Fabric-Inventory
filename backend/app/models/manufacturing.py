@@ -714,6 +714,23 @@ class MoOperation(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     qty_in_record_count: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )
+    # TR-A08 followup: per-op input / output item. ``input_item_id`` is the
+    # item this operation consumes (== the prior op's ``output_item_id``,
+    # or the BOM's primary raw for the first op); ``output_item_id`` is
+    # the item this operation produces (== MO's finished item in v1).
+    # Both NULLABLE — legacy rows created pre-followup carry NULL.
+    # Karigar dispatch picks ``input_item_id`` (not MO.finished_item_id)
+    # so multi-stage routings dispatch the right physical item.
+    input_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("item.item_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    output_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("item.item_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     manufacturing_order: Mapped[ManufacturingOrder] = relationship(back_populates="operations")
     # Lazy join to the catalogue row so reason strings / UI can render

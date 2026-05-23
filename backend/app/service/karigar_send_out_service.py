@@ -67,7 +67,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
@@ -206,30 +206,37 @@ def _ensure_karigar(op: MoOperation) -> None:
 # (A07) and the karigar dispatch path (A08).
 
 
-def _resolve_dispatch_item(session: Session, *, mo: ManufacturingOrder) -> tuple[uuid.UUID, str]:
+def _resolve_dispatch_item(
+    session: Session, *, mo: ManufacturingOrder, op: MoOperation
+) -> tuple[uuid.UUID, str]:
     """Pick the item + UOM for the JWO line on a dispatch.
 
-    v1 simplification: we mint a JWO line against the MO's *finished
-    item*. The operation conceptually consumes the prior op's output
-    and produces this op's output; the finished item is the closest
-    available stand-in at the mo_operation level (operations don't
-    carry an item_id column).
+    TR-A08 followup: read from ``MoOperation.input_item_id`` (populated
+    by ``mo_service.create_mo`` post-followup) so multi-op routings ship
+    the correct physical item — e.g. a cut → stitch routing dispatches
+    raw fabric (the cut op's INPUT), not the finished garment.
+
+    Fallback for legacy MOs created before the followup migration (which
+    carry ``input_item_id IS NULL``): we still default to the MO's
+    finished item so existing data keeps working. New MOs always
+    populate the column.
 
     Returns ``(item_id, uom)`` where ``uom`` comes from the item's
     ``primary_uom``.
     """
     from app.models import Item  # local import to avoid cycle at module load
 
+    target_item_id = op.input_item_id or mo.finished_item_id
     item = session.execute(
         select(Item).where(
-            Item.item_id == mo.finished_item_id,
+            Item.item_id == target_item_id,
             Item.org_id == mo.org_id,
             Item.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
     if item is None:
         raise AppValidationError(
-            f"Cannot dispatch: finished item {mo.finished_item_id} not found on MO."
+            f"Cannot dispatch: input item {target_item_id} not found on MO operation."
         )
     return item.item_id, item.primary_uom
 
@@ -344,9 +351,11 @@ def dispatch_to_karigar(
             f"Party {karigar_party_id} is not flagged as a karigar — set is_karigar=True first."
         )
 
-    # Resolve item + uom: explicit > MO's finished item default.
+    # Resolve item + uom: explicit override > op's input_item_id (TR-A08
+    # followup) > MO's finished item (legacy fallback for pre-followup
+    # MOs that carry input_item_id=NULL).
     if item_id is None:
-        item_id, default_uom = _resolve_dispatch_item(session, mo=mo)
+        item_id, default_uom = _resolve_dispatch_item(session, mo=mo, op=op)
         if uom is None:
             uom = default_uom
     elif uom is None:
@@ -391,21 +400,10 @@ def dispatch_to_karigar(
     op.outward_challan_id = jwo.job_work_order_id
     op.karigar_party_id = karigar_party_id
     op.qty_out = Decimal(op.qty_out or 0) + qty_dec
-    # First-dispatch zeroing of qty_in: MO-create seeds ``qty_in`` to the
-    # MO's ``planned_qty`` (the "planned in" figure used by the in-house
-    # progress flow). For a karigar op, qty_in tracks the cumulative ACTUAL
-    # qty received back from the karigar — it starts at zero. We detect
-    # the first dispatch by the absence of any prior OPERATION_DISPATCHED
-    # event for this op (also covers the rare case where an op was flipped
-    # from IN_HOUSE to KARIGAR mid-flight).
-    has_prior_dispatch = session.execute(
-        select(func.count(ProductionEvent.event_id)).where(
-            ProductionEvent.mo_operation_id == op.mo_operation_id,
-            ProductionEvent.event_type == _EventType.OPERATION_DISPATCHED,
-        )
-    ).scalar_one()
-    if int(has_prior_dispatch or 0) == 0:
-        op.qty_in = Decimal("0")
+    # TR-A08 followup: the old "reset qty_in to 0 on first dispatch"
+    # block was deleted. A05 now seeds ``qty_in`` to 0 at MO-create, so
+    # there's nothing to reset — ``qty_in`` already starts at zero and
+    # accumulates as the karigar returns batches.
     op.updated_at = now
     if dispatched_by is not None:
         op.updated_by = dispatched_by

@@ -23,10 +23,10 @@ each — the events ARE the audit trail).
 Schema notes folded in from the A01 model + DDL:
 
   - ``mo_operation.qty_in``  — running cumulative qty received at this
-    operation. Set to ``ManufacturingOrder.planned_qty`` at MO create
-    (the "planned in" figure); ``record_qty_in`` ADDS to it (so the
-    initial value is overwritten on first record; see Phase 1
-    handling).
+    operation. Seeded to ``0`` at MO-create (post-TR-A08-FU; before the
+    followup it was seeded to ``planned_qty`` and ``record_qty_in``
+    had to "overwrite" the planning figure on the first call); each
+    ``record_qty_in`` ADDS to the running cumulative.
   - ``mo_operation.qty_out`` — running cumulative qty dispatched
     (good units only).
   - ``mo_operation.qty_rejected`` — cumulative scrap. NOT NULL default
@@ -349,11 +349,14 @@ def record_qty_in(
     """Record receipt of ``qty_in`` units at this in-house operation.
 
     Semantics:
-      - The MO-create path seeded ``qty_in`` to ``planned_qty`` (the
-        figure for "what we plan to push through this op"). On the
-        FIRST ``record_qty_in`` call we OVERWRITE that planning figure
-        with the actual qty (so the running sum tracks reality, not
-        intent). Subsequent calls ADD.
+      - Post-TR-A08-FU: ``qty_in`` is seeded to 0 at MO-create. Every
+        call ADDS the delta to the running cumulative — including the
+        first call (``0 + qty_in_dec == qty_in_dec``). The historical
+        "first-call OVERWRITES the planning figure" branch is preserved
+        as a sanity check for any legacy MO that still carries a non-
+        zero ``qty_in`` from before the followup migration — the two
+        behaviours are numerically identical for fresh (post-followup)
+        MOs.
       - "First call" is detected via ``op.qty_in_record_count == 0``
         — a dedicated counter column added in the A07 polish migration.
         The earlier heuristic (counting prior ``OPERATION_QTY_IN_RECORDED``
@@ -401,11 +404,12 @@ def record_qty_in(
     planned = Decimal(mo.planned_qty)
     ceiling = (planned * _OVER_RECEIVE_TOLERANCE).quantize(Decimal("0.0001"))
 
-    # First call OVERWRITES the planning figure that MO-create seeded
-    # into qty_in (== planned_qty); subsequent calls ADD. Single source
-    # of truth = the ``qty_in_record_count`` counter column (== 0 on a
-    # fresh op). See module docstring for the heuristic-vs-counter
-    # rationale.
+    # Post-TR-A08-FU: ``qty_in`` is seeded to 0 at MO-create, so the
+    # first-call branch is numerically identical to "just add". We keep
+    # the explicit OVERWRITE for pre-followup MOs that may still carry
+    # the legacy ``qty_in = planned_qty`` seed. Single source of truth
+    # for "first call" = the ``qty_in_record_count`` counter column
+    # (== 0 on a fresh op).
     is_first_call = (op.qty_in_record_count or 0) == 0
     new_total = qty_in_dec if is_first_call else Decimal(op.qty_in or 0) + qty_in_dec
 

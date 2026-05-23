@@ -219,8 +219,12 @@ def _seed_world(
     create, all default to IN_HOUSE per the column default).
 
     Returns ``(owner, mo_id, [mo_op1_id, mo_op2_id], karigar_party_id, raw_item_id)``.
-    The raw item is the one pre-stocked at MAIN, so the karigar dispatch
-    can use it as the physical item being shipped out.
+    Post TR-A08-FU: the karigar dispatch defaults to the operation's
+    ``input_item_id`` (populated by mo_service.create_mo). For the FIRST
+    op that's the BOM's primary raw item — i.e. ``raw``. The raw is
+    pre-stocked + reserved-on-the-shelf at MAIN so the dispatch goes
+    through. We still pre-stock the finished item too as a safety
+    blanket for legacy tests / fallback codepaths.
     """
     me = _signup_owner(http_client)
     design_id = _create_design(http_client, me, code=f"D-{uuid.uuid4().hex[:6]}")
@@ -237,9 +241,11 @@ def _seed_world(
     op2 = _create_op(http_client, me, code=f"OP2-{uuid.uuid4().hex[:4]}")
     routing = _create_routing(http_client, me, design_id=design_id, ops=[op1, op2])
 
-    # Pre-stock BOTH the raw (needed for issue-materials) AND the finished
-    # item (needed for karigar dispatch — the v1 default in the service
-    # ships the MO's finished item out to the karigar).
+    # Pre-stock BOTH the raw (needed for issue-materials AND the karigar
+    # dispatch's default item post TR-A08-FU — op #1's input_item_id is
+    # the BOM's primary raw) AND the finished item (legacy fallback path
+    # for any test that flips op #2 to karigar, since #2's
+    # input_item_id = #1's output_item_id = finished item in v1).
     _pre_stock_items(
         sync_engine,
         org_id=uuid.UUID(me["org_id"]),
@@ -864,3 +870,104 @@ def test_production_events_emitted(http_client: TestClient, sync_engine: Engine)
         "OPERATION_RECEIVED_FULL",
         "OPERATION_CLOSED",
     ]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TR-A08 followup: dispatch reads MoOperation.input_item_id (the BOM's
+# primary raw for op #1), NOT MO.finished_item_id. Multi-op routings
+# (cut → stitch) must ship the right physical item — raw fabric for the
+# cut step, not the finished garment.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_dispatch_karigar_uses_op_input_item_id_not_mo_finished(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Verify the JWO minted by ``dispatch_to_karigar`` references the
+    operation's ``input_item_id`` (= BOM's primary raw for the first
+    op), not the MO's ``finished_item_id``. This is the core
+    correctness fix from the A08 retro: pre-followup, every dispatch
+    silently shipped the MO's finished item regardless of which
+    operation it was, which is wrong for any cut → stitch routing.
+    """
+    from app.models import JobWorkOrder, JobWorkOrderLine
+    from app.models.manufacturing import MoOperation
+
+    me, mo_id, mo_ops, karigar, raw_item_id = _seed_world(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+    op_id = mo_ops[0]
+
+    # Sanity: op #1 was materialised with input_item_id = raw.
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        op = session.execute(
+            select(MoOperation).where(MoOperation.mo_operation_id == uuid.UUID(op_id))
+        ).scalar_one()
+    assert op.input_item_id == uuid.UUID(raw_item_id)
+
+    r = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/dispatch-karigar",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "karigar_party_id": karigar,
+            "qty_dispatched": "25.0000",
+            "dispatch_date": "2026-06-02",
+        },
+    )
+    assert r.status_code == 200, r.text
+    jwo_id = r.json()["outward_challan_id"]
+
+    # The JWO's single line must carry the RAW item_id, not the
+    # finished item_id.
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        line = session.execute(
+            select(JobWorkOrderLine).where(JobWorkOrderLine.job_work_order_id == uuid.UUID(jwo_id))
+        ).scalar_one()
+        jwo = session.execute(
+            select(JobWorkOrder).where(JobWorkOrder.job_work_order_id == uuid.UUID(jwo_id))
+        ).scalar_one()
+
+    assert str(line.item_id) == raw_item_id
+    assert jwo.karigar_party_id == uuid.UUID(karigar)
+
+
+def test_dispatch_karigar_qty_in_starts_at_zero_no_reset_needed(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """TR-A08-FU: ``mo_operation.qty_in`` is now seeded to 0 at MO
+    create, so the karigar dispatch path no longer has a "reset qty_in
+    to 0 on first dispatch" branch. Verify ``qty_in`` is 0 both before
+    AND after the first dispatch (dispatch only touches qty_out).
+    """
+    from app.models.manufacturing import MoOperation
+
+    me, mo_id, mo_ops, karigar, _item_id = _seed_world(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+    op_id = mo_ops[0]
+
+    # Pre-dispatch: qty_in seeded to 0.
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        op_before = session.execute(
+            select(MoOperation).where(MoOperation.mo_operation_id == uuid.UUID(op_id))
+        ).scalar_one()
+    assert Decimal(str(op_before.qty_in)) == Decimal("0")
+
+    r = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/dispatch-karigar",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "karigar_party_id": karigar,
+            "qty_dispatched": "30.0000",
+            "dispatch_date": "2026-06-02",
+        },
+    )
+    assert r.status_code == 200, r.text
+    # Post-dispatch: qty_in still 0 (only receive-back bumps it).
+    assert Decimal(str(r.json()["qty_in"])) == Decimal("0")
+    assert Decimal(str(r.json()["qty_out"])) == Decimal("30.0000")
