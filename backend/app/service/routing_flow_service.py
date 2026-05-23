@@ -40,8 +40,15 @@ Edge type                         Upstream state required (for downstream to sta
                                   produced at least the threshold (``qty_out >=
                                   threshold_qty``) OR at least the threshold
                                   percentage of the planning figure
-                                  (``qty_out / qty_in_planned * 100 >=
-                                  threshold_pct``).
+                                  (``qty_out / planning_baseline * 100 >=
+                                  threshold_pct``). The planning baseline is
+                                  ``predecessor.qty_in`` for IN_HOUSE ops and
+                                  ``MO.planned_qty`` for KARIGAR ops (karigar
+                                  dispatch zeroes ``qty_in`` and re-uses the
+                                  column for cumulative receipts, so it isn't a
+                                  stable baseline). Falls back to
+                                  ``MO.planned_qty`` for either type if the
+                                  primary baseline is non-positive.
 
                                   The "at-or-past IN_PROGRESS" rule is non-trivial:
                                   a PARTIAL flow with ``threshold_qty == 0`` (not
@@ -116,7 +123,6 @@ from typing import Final
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.exceptions import AppValidationError
 from app.models.manufacturing import (
     ManufacturingOrder,
     MoOperation,
@@ -125,6 +131,13 @@ from app.models.manufacturing import (
     RoutingEdge,
     RoutingEdgeType,
 )
+
+# ``MoOperation.executor`` is a plain ``String(20)`` column rather than a
+# typed enum (the existing services use literal strings); the only two
+# legal values today are "IN_HOUSE" and "KARIGAR". Centralised here so a
+# typo in the PF→S baseline branch fails loud rather than silently
+# treating a KARIGAR op as IN_HOUSE.
+_EXECUTOR_KARIGAR: Final[str] = "KARIGAR"
 
 # ──────────────────────────────────────────────────────────────────────
 # State buckets — kept module-level so the FE / callers can inspect
@@ -227,6 +240,7 @@ def _check_edge(
     *,
     edge: RoutingEdge,
     predecessor: MoOperation | None,
+    mo_planned_qty: Decimal,
 ) -> tuple[bool, str | None]:
     """Apply ONE edge's semantic. Returns ``(allowed, reason_if_blocked)``.
 
@@ -234,6 +248,16 @@ def _check_edge(
     references an op that was not instantiated on the MO — should not
     happen post-A05; we refuse to let the successor start rather than
     silently green-lighting).
+
+    ``mo_planned_qty`` is the parent MO's ``planned_qty``, passed through
+    so the PF→S ``threshold_pct`` branch can use it as a stable baseline
+    for KARIGAR predecessors. Karigar dispatch zeroes ``qty_in`` on first
+    send-out (see ``karigar_send_out_service.dispatch_to_karigar``), so
+    using ``qty_in`` as the percentage denominator gives nonsense numbers
+    once a karigar op is in flight — the MO's planned figure is the
+    stable "cumulative units expected" for the whole route. For IN_HOUSE
+    predecessors we keep using ``qty_in`` (A07-FU2 / docstring contract);
+    if it's zero we fall back defensively to ``mo_planned_qty``.
     """
     if predecessor is None:
         return (
@@ -275,6 +299,19 @@ def _check_edge(
         #    must have started for "partial output" to make sense.
         # 2. The threshold (qty or pct) must be met by upstream's
         #    cumulative ``qty_out``.
+        #
+        # Defensive XOR: A04 enforces "exactly one of (threshold_qty,
+        # threshold_pct)" at routing-create. If a row was corrupted
+        # post-validation (manual SQL, future migration bug), the engine
+        # must refuse to silently pick one — reject with a clear
+        # corruption message instead.
+        if edge.threshold_qty is not None and edge.threshold_pct is not None:
+            return (
+                False,
+                f"PARTIAL_FINISH_TO_START edge {edge.routing_edge_id} has both "
+                "threshold_qty and threshold_pct set; must be exactly one "
+                "(routing corruption)",
+            )
         if predecessor.state not in IN_PROGRESS_OR_BEYOND_STATES:
             return (
                 False,
@@ -294,18 +331,29 @@ def _check_edge(
                 )
             return True, None
         if edge.threshold_pct is not None:
-            # ``qty_in`` is the planning figure (set to MO.planned_qty
-            # at MO-create per the A07 module docstring). It can be
-            # NULL or zero in defensive paths; treat zero as "no
-            # planning figure" and fall through to a hard block
-            # because we can't compute the percentage.
-            planned = Decimal(predecessor.qty_in or 0)
+            # Pick the right percentage denominator per executor:
+            #   - IN_HOUSE: ``qty_in`` is the planning figure (seeded
+            #     from MO.planned_qty at MO-create per A07's docstring).
+            #   - KARIGAR: dispatch_to_karigar() ZEROES ``qty_in`` on
+            #     first send-out — for a karigar op it tracks cumulative
+            #     GOOD RECEIPTS, not the plan. So ``qty_in`` is not a
+            #     stable baseline. Use the parent MO's ``planned_qty``
+            #     instead — it's the cumulative-good-units-expected for
+            #     the whole route, which makes the ratio meaningful.
+            # Both paths fall back to ``mo_planned_qty`` if their primary
+            # baseline is non-positive (defence in depth).
+            if predecessor.executor == _EXECUTOR_KARIGAR:
+                planned = mo_planned_qty
+            else:
+                planned = Decimal(predecessor.qty_in or 0)
+                if planned <= 0:
+                    planned = mo_planned_qty
             if planned <= 0:
                 return (
                     False,
                     f"predecessor (operation_master {edge.from_operation_id}) "
-                    "has no planning figure (qty_in <= 0); cannot evaluate "
-                    "PARTIAL_FINISH_TO_START threshold_pct",
+                    "has no planning figure (qty_in <= 0 and MO.planned_qty "
+                    "<= 0); cannot evaluate PARTIAL_FINISH_TO_START threshold_pct",
                 )
             achieved_pct = (produced / planned) * Decimal("100")
             threshold_pct = Decimal(edge.threshold_pct)
@@ -390,6 +438,7 @@ def can_start_operation(
         return True, None
 
     op_by_master = _load_mo_operations(session, mo_id=op.manufacturing_order_id)
+    mo_planned_qty = Decimal(mo.planned_qty or 0)
 
     # BFS over incoming edges. ``visited`` guards the safety counter.
     # We walk single-hop (each direct predecessor of the target op),
@@ -411,29 +460,16 @@ def can_start_operation(
             continue
         visited.add(edge.routing_edge_id)
         predecessor = op_by_master.get(edge.from_operation_id)
-        allowed, reason = _check_edge(edge=edge, predecessor=predecessor)
+        allowed, reason = _check_edge(
+            edge=edge, predecessor=predecessor, mo_planned_qty=mo_planned_qty
+        )
         if not allowed:
             return False, reason
     return True, None
 
 
-def assert_can_start_operation(
-    session: Session,
-    *,
-    op: MoOperation,
-) -> None:
-    """Convenience wrapper that raises ``AppValidationError`` if the op
-    cannot start. Service callers prefer this — they already raise
-    422s for predecessor blocks.
-    """
-    allowed, reason = can_start_operation(session, op=op)
-    if not allowed:
-        raise AppValidationError(f"Cannot start operation {op.mo_operation_id}: {reason}.")
-
-
 __all__ = [
     "IN_PROGRESS_OR_BEYOND_STATES",
     "TERMINAL_STATES",
-    "assert_can_start_operation",
     "can_start_operation",
 ]

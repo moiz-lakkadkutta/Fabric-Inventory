@@ -30,6 +30,12 @@ from sqlalchemy.orm import Session as OrmSession
 from app.models.manufacturing import MoOperation
 from app.service import routing_flow_service
 
+# ``_make_salesperson`` lives in the operation-progress test file — re-use
+# it rather than duplicating the RBAC scaffolding (register_user +
+# assign_role + issue_tokens) here. Both files share the same fixture
+# shape and FastAPI test client.
+from tests.test_operation_progress import _make_salesperson
+
 # ──────────────────────────────────────────────────────────────────────
 # Helpers (signup / masters / routing) — kept self-contained so the
 # test file can be read top-to-bottom without flipping to A07's tests.
@@ -890,3 +896,236 @@ def test_can_start_endpoint_surfaces_engine_verdict(
     body = r.json()
     assert body["allowed"] is True
     assert body["reason"] is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 14. /can-start cross-org RLS opacity. Org B has no row-visibility on
+#     org A's operation; the loader inside the router treats it as a
+#     miss and raises the standard not-found envelope. Mirrors the
+#     existing ``test_cross_org_rls_opacity`` in test_operation_progress
+#     (422 + "not found", not 404 — operation_progress_service.get_operation
+#     raises ``AppValidationError`` whose http_status is 422). Either
+#     way the rule we're proving is "no data leak across orgs".
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_can_start_endpoint_cross_org_returns_not_found(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Org A creates the MO + op; Org B's token GETs /can-start on it.
+    RLS makes the row invisible to Org B → the loader raises a not-found
+    AppValidationError → 422 with "not found" in the detail. The key
+    property is "no data leak"; the precise status code mirrors the
+    sibling test on GET /mo-operations/{id}.
+    """
+    op_codes = [f"OP{i}-{uuid.uuid4().hex[:4]}" for i in range(2)]
+    _me_a, _mo_a, ops_a = _seed_world(
+        http_client,
+        sync_engine,
+        op_codes=op_codes,
+        edges_spec=[(0, 1, "FINISH_TO_START", None)],
+    )
+    masters = list(ops_a.keys())
+    op_b_id = ops_a[masters[1]]
+
+    # Fresh org B (separate signup) — has zero visibility into Org A's row.
+    me_b = _signup_owner(http_client)
+    r = http_client.get(
+        f"/manufacturing/mo-operations/{op_b_id}/can-start",
+        headers=_auth(me_b["access_token"]),
+    )
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert "not found" in body["detail"].lower()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 15. /can-start with a SALESPERSON token → 403 (lacks
+#     manufacturing.operation.read). Uses the real RBAC stack
+#     (identity_service.register_user + rbac_service.assign_role) via
+#     the shared ``_make_salesperson`` helper from test_operation_progress.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_can_start_endpoint_salesperson_403(http_client: TestClient, sync_engine: Engine) -> None:
+    """Owner seeds the MO; a SALESPERSON-role user under the same org+firm
+    GETs /can-start → 403 PERMISSION_DENIED. The role lacks
+    ``manufacturing.operation.read``."""
+    op_codes = [f"OP{i}-{uuid.uuid4().hex[:4]}" for i in range(2)]
+    me, _mo, ops = _seed_world(
+        http_client,
+        sync_engine,
+        op_codes=op_codes,
+        edges_spec=[(0, 1, "FINISH_TO_START", None)],
+    )
+    masters = list(ops.keys())
+    op_b_id = ops[masters[1]]
+
+    sales_token = _make_salesperson(
+        sync_engine,
+        org_id=uuid.UUID(me["org_id"]),
+        firm_id=uuid.UUID(me["firm_id"]),
+    )
+
+    r = http_client.get(
+        f"/manufacturing/mo-operations/{op_b_id}/can-start",
+        headers=_auth(sales_token),
+    )
+    assert r.status_code == 403, r.text
+    assert r.json()["code"] == "PERMISSION_DENIED"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 16. PF→S threshold_pct with a KARIGAR predecessor must use
+#     ``MO.planned_qty`` as the denominator (not ``predecessor.qty_in``,
+#     which dispatch_to_karigar zeroes on first send-out and then
+#     re-uses for cumulative receipts). Two sub-cases:
+#       - karigar received 60% of plan → downstream unlocked.
+#       - karigar received 40% of plan → downstream still blocked.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _set_op_executor(
+    sync_engine: Engine, *, org_id: str, mo_operation_id: str, executor: str
+) -> None:
+    """Flip the ``executor`` column on an MoOperation row. mo_service
+    creates every op as IN_HOUSE; tests that need KARIGAR semantics
+    promote individual ops via raw SQL (mirrors the karigar test file's
+    PATCH-based promotion path but stays inside the engine's domain so
+    we don't depend on the karigar router being wired in)."""
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        session.execute(
+            text("UPDATE mo_operation SET executor = :ex WHERE mo_operation_id = :op_id"),
+            {"ex": executor, "op_id": mo_operation_id},
+        )
+        session.commit()
+
+
+def test_pf_to_s_threshold_pct_with_karigar_predecessor(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """KARIGAR A → IN_HOUSE B (PF→S, threshold_pct=50).
+
+    On a karigar predecessor, the engine must NOT use ``qty_in`` as the
+    percentage denominator — first dispatch zeroes it, and subsequent
+    receipts overwrite it with cumulative-received-good, neither of
+    which is a stable planning figure. The engine uses
+    ``MO.planned_qty`` instead (the cumulative-good-units expected for
+    the whole route).
+
+    With ``planned_qty=200`` and ``threshold_pct=50`` the downstream
+    unlocks at ``qty_out >= 100`` good units received from karigar.
+    """
+    op_codes = [f"OP{i}-{uuid.uuid4().hex[:4]}" for i in range(2)]
+    me, _mo, ops = _seed_world(
+        http_client,
+        sync_engine,
+        op_codes=op_codes,
+        edges_spec=[
+            (0, 1, "PARTIAL_FINISH_TO_START", {"threshold_pct": "50.00"}),
+        ],
+        planned_qty="200.0000",
+    )
+    masters = list(ops.keys())
+    op_a, op_b = masters[0], masters[1]
+    op_b_mo = _load_op(sync_engine, org_id=me["org_id"], op_id=ops[op_b])
+
+    # Promote A to KARIGAR and simulate dispatch+receive bookkeeping:
+    #   - qty_in = 0  (first-dispatch zeroing — what real dispatch does)
+    #   - qty_out tracks dispatched/received good; tests vary it below.
+    # The state is set to RECEIVED_PARTIAL because partial receipt is
+    # the realistic shape — past IN_PROGRESS, not yet CLOSED.
+    _set_op_executor(
+        sync_engine,
+        org_id=me["org_id"],
+        mo_operation_id=ops[op_a],
+        executor="KARIGAR",
+    )
+
+    # 40% of planned_qty (80/200) → downstream blocked.
+    _set_op(
+        sync_engine,
+        org_id=me["org_id"],
+        mo_operation_id=ops[op_a],
+        state="RECEIVED_PARTIAL",
+        qty_in=Decimal("0"),
+        qty_out=Decimal("80"),
+    )
+    allowed, reason = _can_start(sync_engine, org_id=me["org_id"], op=op_b_mo)
+    assert not allowed, reason
+    assert reason is not None
+    # Reason must reference the 40% figure (80/200) — proves the engine
+    # is using MO.planned_qty=200 as the denominator, not qty_in=0
+    # (which would otherwise trigger the "no planning figure" path or
+    # divide-by-zero). The "200" in the reason string is the
+    # Decimal-rendered MO.planned_qty.
+    assert "40.00%" in reason, reason
+    assert "/200" in reason, reason
+
+    # Bump to 60% (120/200) → downstream unlocked.
+    _set_op(
+        sync_engine,
+        org_id=me["org_id"],
+        mo_operation_id=ops[op_a],
+        qty_out=Decimal("120"),
+    )
+    allowed, reason = _can_start(sync_engine, org_id=me["org_id"], op=op_b_mo)
+    assert allowed, reason
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 17. PF→S with BOTH thresholds set → engine rejects defensively.
+#     A04 enforces "exactly one of threshold_qty / threshold_pct" at
+#     routing-create. If a row gets corrupted post-validation (manual
+#     SQL, future migration bug), the engine must refuse rather than
+#     silently picking one.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_pf_to_s_rejects_both_thresholds_set(http_client: TestClient, sync_engine: Engine) -> None:
+    """Seed a valid PF→S edge via the API (threshold_qty only), then
+    corrupt the row via raw SQL to ALSO set threshold_pct. The engine
+    must return ``(False, reason)`` whose reason explicitly names the
+    "both thresholds set" corruption."""
+    op_codes = [f"OP{i}-{uuid.uuid4().hex[:4]}" for i in range(2)]
+    me, _mo, ops = _seed_world(
+        http_client,
+        sync_engine,
+        op_codes=op_codes,
+        edges_spec=[
+            (0, 1, "PARTIAL_FINISH_TO_START", {"threshold_qty": "50.0000"}),
+        ],
+    )
+    masters = list(ops.keys())
+    op_a, op_b = masters[0], masters[1]
+
+    # Put A IN_PROGRESS with qty_out=100 so we'd otherwise sail past
+    # both qty AND pct thresholds — the corruption check should fire
+    # BEFORE the threshold math runs.
+    _set_op(
+        sync_engine,
+        org_id=me["org_id"],
+        mo_operation_id=ops[op_a],
+        state="IN_PROGRESS",
+        qty_out=Decimal("100"),
+    )
+
+    # Corrupt the edge: bypass A04 validation by setting threshold_pct
+    # directly via SQL while threshold_qty is already populated.
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        session.execute(
+            text(
+                "UPDATE routing_edge SET threshold_pct = 25.00 "
+                "WHERE from_operation_id = :from_op AND to_operation_id = :to_op"
+            ),
+            {"from_op": op_a, "to_op": op_b},
+        )
+        session.commit()
+
+    op_b_mo = _load_op(sync_engine, org_id=me["org_id"], op_id=ops[op_b])
+    allowed, reason = _can_start(sync_engine, org_id=me["org_id"], op=op_b_mo)
+    assert not allowed
+    assert reason is not None
+    assert "both threshold_qty and threshold_pct" in reason, reason

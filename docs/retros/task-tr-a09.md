@@ -52,6 +52,19 @@ machine has already enforced its incoming edges by induction. A
 CLOSED predecessor implies its own predecessors were CLOSED (for
 F→S) or IN_PROGRESS (for S→S) at the time it closed.
 
+**Soundness caveat — single-hop holds iff state moves monotonically
+forward.** All state-mutating services in the codebase
+(`operation_progress_service.start_operation` / `complete_operation`
+and `karigar_send_out_service.{dispatch,acknowledge,receive,close}_*`)
+only move ops forward in the state machine; none of them flip an op
+back to PENDING/READY. If a future service path violates that
+monotonic-forward assumption (e.g. an "un-close" admin endpoint),
+single-hop would no longer be sound — a downstream op previously
+marked CLOSED by induction over its predecessor's then-closed state
+could be silently invalidated when the predecessor moves back.
+Defending against that would require either re-asserting on every
+read or storing the predecessor-state-at-the-time as an audit row.
+
 ## Edge-type semantics decision matrix
 
 | Edge type                  | Upstream state requirement                                                                           | Threshold check        |
