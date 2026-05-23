@@ -77,8 +77,14 @@ seed:
 # Defaults to a demo@example.com / "Demo Co" / "Demo Firm" tenant; pass
 # overrides through ARGS, e.g.:
 #   make seed-demo ARGS="--email me@example.com --org-name 'Moiz Trading'"
+# TASK-TR-C1: prepend ENVIRONMENT=dev so `crypto.get_master_kek()` falls
+# back to the public dev KEK instead of raising PIIConfigError on a
+# bare-machine `make seed-demo`. Mirrors the same env-prepend pattern
+# the `run` target in backend/Makefile uses (PR #104, DYLD helper).
+# Override with `ENVIRONMENT=production make seed-demo` if you really
+# do want to seed against a prod KEK.
 seed-demo:
-	cd backend && uv run python -m app.cli.seed_demo $(ARGS)
+	cd backend && ENVIRONMENT=$${ENVIRONMENT:-dev} uv run python -m app.cli.seed_demo $(ARGS)
 
 deploy:
 	@echo "Implement in TASK-005 (GitHub Actions deploy workflow)."

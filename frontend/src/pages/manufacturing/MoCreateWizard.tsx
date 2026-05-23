@@ -231,7 +231,41 @@ function DesignSelector({ designs, selectedId, onPick, search, onSearch }: Desig
           padding: 4,
         }}
       >
-        {filtered.length === 0 ? (
+        {/*
+          TASK-TR-C1: distinguish "no designs at all" (fresh-signup
+          empty state) from "search returned nothing". The former gets
+          a CTA into the manufacturing landing page where designs are
+          managed; the latter just hints the search filtered them out.
+          The "Next" gate elsewhere already requires a design pick to
+          enable submit — this CTA only ferries the user out of the
+          stranded state, it doesn't bypass the gate.
+        */}
+        {designs.length === 0 ? (
+          <div
+            style={{
+              fontSize: 12.5,
+              color: 'var(--text-secondary)',
+              padding: 12,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              alignItems: 'flex-start',
+            }}
+          >
+            <span>No designs yet — create one to start an MO.</span>
+            <Link
+              to="/manufacturing"
+              style={{
+                fontSize: 12.5,
+                color: 'var(--accent)',
+                textDecoration: 'underline',
+                fontWeight: 600,
+              }}
+            >
+              Go to design masters →
+            </Link>
+          </div>
+        ) : filtered.length === 0 ? (
           <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)', padding: 8 }}>
             No designs match.
           </div>
@@ -769,12 +803,23 @@ function Section1(props: Section1Props) {
         </Field>
         <div className="space-y-3">
           <Field label="Quantity" required htmlFor="mo-qty">
+            {/*
+              TASK-TR-C1: no `max` cap — the QA re-audit (2026-05-23)
+              found a freshly-signed-up org couldn't enter any quantity
+              because an inferred upper bound clamped at 0 (no design
+              picked yet = no `qty_required` derived). Quantity is per
+              MO, independent of any design master field, so the only
+              bound is `min={1}`. `step={1}` keeps the spinbutton arrows
+              integer-clean; the clamp parses junk to 1 (not 0) so the
+              field never holds a value below `min`.
+            */}
             <Input
               id="mo-qty"
               type="number"
               min={1}
+              step={1}
               value={props.qty}
-              onChange={(e) => props.setQty(Math.max(0, Number(e.target.value) || 0))}
+              onChange={(e) => props.setQty(Math.max(1, Number(e.target.value) || 1))}
             />
           </Field>
           <Field label="Start date" required htmlFor="mo-start">

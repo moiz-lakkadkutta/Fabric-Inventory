@@ -54,6 +54,7 @@ from app.service import (
     audit_service,
     feature_flag_service,
     identity_service,
+    inventory_service,
     password_reset_service,
     rbac_service,
     seed_service,
@@ -204,6 +205,17 @@ def signup(
     )
     db.add(firm)
     db.flush()
+
+    # TASK-TR-C1: every fresh signup gets a default Location so the
+    # inventory/jobwork/GRN/stock-issue flows have somewhere to anchor
+    # against from minute one. Without this, the first user is stranded
+    # on every "pick a location" dropdown until they manually create one,
+    # and there is no FE path to do that on a brand-new org. Re-uses the
+    # existing `get_or_create_default_location` helper so the seeded row
+    # is identical to the one `inventory_service.add_stock` lazily
+    # creates today (code='MAIN', type=WAREHOUSE) — keeps the implicit
+    # contract from inventory_service intact.
+    inventory_service.get_or_create_default_location(db, org_id=org.org_id, firm_id=firm.firm_id)
 
     rbac_service.seed_system_roles(db, org_id=org.org_id)
     seed_service.seed_system_catalog(db, org_id=org.org_id)
