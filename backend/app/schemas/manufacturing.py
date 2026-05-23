@@ -578,6 +578,107 @@ class OperationDetailResponse(BaseModel):
     events: list[ProductionEventResponse]
 
 
+# ──────────────────────────────────────────────────────────────────────
+# TASK-TR-A08 — Karigar (job-work) per-operation send-out / receive
+# ──────────────────────────────────────────────────────────────────────
+#
+# Lifecycle:
+#   PENDING → DISPATCHED → ACKNOWLEDGED →
+#       RECEIVED_PARTIAL ⇄ RECEIVED_FULL → CLOSED
+#
+# A re-dispatch from RECEIVED_FULL is allowed (operator splits a
+# planned batch across multiple shipments).
+
+
+class KarigarDispatchRequest(BaseModel):
+    """POST /manufacturing/mo-operations/{id}/dispatch-karigar.
+
+    ``firm_id`` is defense-in-depth on top of RLS — when the session
+    carries a firm scope the body must match (see router).
+
+    ``item_id`` + ``uom``: what physical item is being sent out to the
+    karigar. The MoOperation row does NOT carry an item_id — operations
+    transform materials and the "input item" varies by op (raw at op1,
+    dyed-fabric at op2, etc.). When omitted, the service defaults to the
+    MO's finished item (best-fit for the simplest case where the
+    operation's input IS the finished item, e.g. a stitched garment going
+    to an embroiderer). Operators with multi-op routings should pass
+    ``item_id`` explicitly.
+    """
+
+    firm_id: uuid.UUID
+    karigar_party_id: uuid.UUID
+    qty_dispatched: Decimal = Field(gt=Decimal("0"))
+    dispatch_date: datetime.date
+    item_id: uuid.UUID | None = None
+    uom: str | None = Field(default=None, max_length=20)
+    lot_id: uuid.UUID | None = None
+    narration: str | None = Field(default=None, max_length=2000)
+
+
+class KarigarAcknowledgeRequest(BaseModel):
+    """POST /manufacturing/mo-operations/{id}/acknowledge-karigar.
+
+    The karigar's "received your goods, started work" beat.
+    """
+
+    firm_id: uuid.UUID
+    narration: str | None = Field(default=None, max_length=2000)
+
+
+class KarigarReceiveRequest(BaseModel):
+    """POST /manufacturing/mo-operations/{id}/receive-karigar.
+
+    Quantities are deltas (added to the cumulative running totals on the
+    mo_operation row). At least one of ``qty_received`` / ``qty_scrap``
+    / ``qty_byproduct`` / ``qty_wastage`` must be > 0 — the service
+    enforces this.
+    """
+
+    firm_id: uuid.UUID
+    qty_received: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    qty_scrap: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    qty_byproduct: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    qty_wastage: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    receipt_date: datetime.date | None = None
+    narration: str | None = Field(default=None, max_length=2000)
+
+
+class KarigarCloseRequest(BaseModel):
+    """POST /manufacturing/mo-operations/{id}/close-karigar."""
+
+    firm_id: uuid.UUID
+    narration: str | None = Field(default=None, max_length=2000)
+
+
+class KarigarOperationResponse(BaseModel):
+    """Shape returned by every karigar mutation + the karigar detail
+    endpoint. Wider than ``OperationProgressResponse`` — also surfaces
+    the outward/inward challan ids + the karigar party (needed by the
+    shop-floor view).
+    """
+
+    mo_operation_id: uuid.UUID
+    manufacturing_order_id: uuid.UUID
+    operation_master_id: uuid.UUID
+    operation_sequence: int | None
+    state: MoOperationState
+    executor: str
+    karigar_party_id: uuid.UUID | None
+    outward_challan_id: uuid.UUID | None
+    inward_challan_id: uuid.UUID | None
+    qty_in: Decimal
+    qty_out: Decimal
+    qty_rejected: Decimal
+    qty_byproduct: Decimal
+    qty_wastage: Decimal
+    start_date: datetime.datetime | None
+    end_date: datetime.datetime | None
+    acknowledged_at: datetime.datetime | None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
 __all__ = [
     "BomCreateRequest",
     "BomLineInput",
@@ -592,6 +693,11 @@ __all__ = [
     "DesignListResponse",
     "DesignResponse",
     "DesignUpdateRequest",
+    "KarigarAcknowledgeRequest",
+    "KarigarCloseRequest",
+    "KarigarDispatchRequest",
+    "KarigarOperationResponse",
+    "KarigarReceiveRequest",
     "MaterialIssueCreateRequest",
     "MaterialIssueLineInput",
     "MaterialIssueLineResponse",

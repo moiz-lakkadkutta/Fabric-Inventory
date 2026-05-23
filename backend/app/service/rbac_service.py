@@ -190,6 +190,25 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
         "read",
         "View MO operations + their production event log",
     ),
+    # Karigar / job-work per-operation lifecycle (TASK-TR-A08). Split
+    # off from ``manufacturing.operation.progress`` because dispatch ships
+    # physical goods OUT to an external karigar and receive-back posts
+    # stock IN — both stock-touching, and Warehouse staff (who already
+    # carry ``jobwork.order.create``) should be able to drive them on
+    # behalf of Production. The receive bit is separate from dispatch so
+    # a "receive-only" reception clerk role is possible later; today both
+    # ride alongside ``jobwork.order.create`` on Warehouse + Production
+    # Manager.
+    (
+        "manufacturing.karigar",
+        "dispatch",
+        "Dispatch a karigar (job-work) operation — mints outward challan + sets MoOperation",
+    ),
+    (
+        "manufacturing.karigar",
+        "receive",
+        "Receive back from a karigar operation — mints inward challan + updates MoOperation",
+    ),
 )
 
 
@@ -325,6 +344,15 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "sales.dc.approve",
                 "jobwork.order.create",
                 "jobwork.order.read",
+                # Karigar (A08) — Warehouse runs the dispatch dock + the
+                # receive-back counter; they already own the
+                # jobwork.order.create permission for the same physical
+                # workflow, so karigar dispatch/receive ride alongside.
+                # ``manufacturing.operation.read`` lets them see the MO
+                # operation row they're acting on.
+                "manufacturing.karigar.dispatch",
+                "manufacturing.karigar.receive",
+                "manufacturing.operation.read",
             }
         ),
     ),
@@ -377,6 +405,11 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # progress for in-house operations.
                 "manufacturing.operation.progress",
                 "manufacturing.operation.read",
+                # Karigar (A08) — Production Manager dispatches /
+                # acknowledges / receives back per-operation send-outs
+                # to external job-work contractors.
+                "manufacturing.karigar.dispatch",
+                "manufacturing.karigar.receive",
             }
         ),
     ),

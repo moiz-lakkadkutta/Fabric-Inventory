@@ -58,6 +58,11 @@ from app.schemas.manufacturing import (
     DesignListResponse,
     DesignResponse,
     DesignUpdateRequest,
+    KarigarAcknowledgeRequest,
+    KarigarCloseRequest,
+    KarigarDispatchRequest,
+    KarigarOperationResponse,
+    KarigarReceiveRequest,
     MaterialIssueCreateRequest,
     MaterialIssueLineResponse,
     MaterialIssueListResponse,
@@ -89,6 +94,7 @@ from app.schemas.manufacturing import (
 )
 from app.service import (
     bom_service,
+    karigar_send_out_service,
     manufacturing_masters_service,
     material_issue_service,
     mo_service,
@@ -1542,3 +1548,175 @@ def get_mo_operation(
         operation=_to_progress_response(op),
         events=[_to_event_response(ev) for ev in events],
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Karigar / job-work per-operation send-out (TASK-TR-A08)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Lifecycle:
+#   PENDING → DISPATCHED → ACKNOWLEDGED → RECEIVED_PARTIAL ↔ RECEIVED_FULL → CLOSED
+#
+# Each transition emits an append-only ``ProductionEvent``. POST bodies
+# carry ``firm_id`` for defense-in-depth on top of RLS; Idempotency-Key
+# flows via the global ``IdempotencyMiddleware``.
+#
+# Permission split: ``manufacturing.karigar.dispatch`` covers dispatch +
+# acknowledge + close (any state-only flip the dispatching side does);
+# ``manufacturing.karigar.receive`` covers the receive-back. Warehouse +
+# Production Manager carry both today.
+
+karigar_router = APIRouter(prefix="/manufacturing", tags=["manufacturing", "karigar"])
+
+
+def _to_karigar_response(op: MoOperation) -> KarigarOperationResponse:
+    """Render an ``MoOperation`` ORM row as the karigar-facing shape.
+
+    Wider than ``OperationProgressResponse`` — also surfaces the
+    karigar party + outward/inward challan ids the shop-floor view needs.
+    """
+    from decimal import Decimal
+
+    return KarigarOperationResponse(
+        mo_operation_id=op.mo_operation_id,
+        manufacturing_order_id=op.manufacturing_order_id,
+        operation_master_id=op.operation_master_id,
+        operation_sequence=op.operation_sequence,
+        state=op.state,
+        executor=op.executor,
+        karigar_party_id=op.karigar_party_id,
+        outward_challan_id=op.outward_challan_id,
+        inward_challan_id=op.inward_challan_id,
+        qty_in=Decimal(op.qty_in) if op.qty_in is not None else Decimal("0"),
+        qty_out=Decimal(op.qty_out) if op.qty_out is not None else Decimal("0"),
+        qty_rejected=Decimal(op.qty_rejected) if op.qty_rejected is not None else Decimal("0"),
+        qty_byproduct=Decimal(op.qty_byproduct) if op.qty_byproduct is not None else Decimal("0"),
+        qty_wastage=Decimal(op.qty_wastage) if op.qty_wastage is not None else Decimal("0"),
+        start_date=op.start_date,
+        end_date=op.end_date,
+        acknowledged_at=op.acknowledged_at,
+        created_at=op.created_at,
+        updated_at=op.updated_at,
+    )
+
+
+@karigar_router.post(
+    "/mo-operations/{mo_operation_id}/dispatch-karigar",
+    response_model=KarigarOperationResponse,
+    summary="Dispatch a karigar (job-work) MO operation (PENDING/RECEIVED_FULL → DISPATCHED)",
+)
+def dispatch_karigar(
+    mo_operation_id: uuid.UUID,
+    body: KarigarDispatchRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.karigar.dispatch"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> KarigarOperationResponse:
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = karigar_send_out_service.dispatch_to_karigar(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        karigar_party_id=body.karigar_party_id,
+        qty_dispatched=body.qty_dispatched,
+        dispatch_date=body.dispatch_date,
+        item_id=body.item_id,
+        uom=body.uom,
+        lot_id=body.lot_id,
+        dispatched_by=current_user.user_id,
+        narration=body.narration,
+    )
+    return _to_karigar_response(op)
+
+
+@karigar_router.post(
+    "/mo-operations/{mo_operation_id}/acknowledge-karigar",
+    response_model=KarigarOperationResponse,
+    summary="Acknowledge a karigar dispatch (DISPATCHED → ACKNOWLEDGED)",
+)
+def acknowledge_karigar(
+    mo_operation_id: uuid.UUID,
+    body: KarigarAcknowledgeRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.karigar.dispatch"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> KarigarOperationResponse:
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = karigar_send_out_service.acknowledge_karigar(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        acknowledged_by=current_user.user_id,
+        narration=body.narration,
+    )
+    return _to_karigar_response(op)
+
+
+@karigar_router.post(
+    "/mo-operations/{mo_operation_id}/receive-karigar",
+    response_model=KarigarOperationResponse,
+    summary=(
+        "Receive back from karigar "
+        "(ACKNOWLEDGED/RECEIVED_PARTIAL → RECEIVED_PARTIAL or RECEIVED_FULL)"
+    ),
+)
+def receive_karigar(
+    mo_operation_id: uuid.UUID,
+    body: KarigarReceiveRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.karigar.receive"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> KarigarOperationResponse:
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = karigar_send_out_service.receive_from_karigar(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        qty_received=body.qty_received,
+        qty_scrap=body.qty_scrap,
+        qty_byproduct=body.qty_byproduct,
+        qty_wastage=body.qty_wastage,
+        receipt_date=body.receipt_date,
+        received_by=current_user.user_id,
+        narration=body.narration,
+    )
+    return _to_karigar_response(op)
+
+
+@karigar_router.post(
+    "/mo-operations/{mo_operation_id}/close-karigar",
+    response_model=KarigarOperationResponse,
+    summary="Close a karigar MO operation (RECEIVED_FULL → CLOSED)",
+)
+def close_karigar(
+    mo_operation_id: uuid.UUID,
+    body: KarigarCloseRequest,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.karigar.dispatch"))
+    ],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> KarigarOperationResponse:
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = karigar_send_out_service.close_karigar_operation(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        closed_by=current_user.user_id,
+        narration=body.narration,
+    )
+    return _to_karigar_response(op)
