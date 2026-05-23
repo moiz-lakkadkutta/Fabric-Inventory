@@ -4,8 +4,12 @@ import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useManufacturingOrders } from '@/lib/queries/manufacturing';
-import { KANBAN_COLUMNS, type ManufacturingOrder, type MoStage } from '@/lib/mock/manufacturing';
+import {
+  KANBAN_COLUMNS,
+  useManufacturingOrders,
+  type ManufacturingOrder,
+  type MoStage,
+} from '@/lib/queries/manufacturing';
 
 export default function ManufacturingPipeline() {
   const moQuery = useManufacturingOrders();
