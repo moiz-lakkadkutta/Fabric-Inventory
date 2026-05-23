@@ -1596,9 +1596,9 @@ def can_start_mo_operation(
 # flows via the global ``IdempotencyMiddleware``.
 #
 # Permission split: ``manufacturing.karigar.dispatch`` covers dispatch +
-# acknowledge + close (any state-only flip the dispatching side does);
-# ``manufacturing.karigar.receive`` covers the receive-back. Warehouse +
-# Production Manager carry both today.
+# acknowledge (the outbound leg); ``manufacturing.karigar.receive`` covers
+# the receive-back + close (the inbound leg — close finalises the return
+# loop). Warehouse + Production Manager carry both today.
 
 karigar_router = APIRouter(prefix="/manufacturing", tags=["manufacturing", "karigar"])
 
@@ -1739,7 +1739,7 @@ def close_karigar(
     body: KarigarCloseRequest,
     db: SyncDBSession,
     current_user: Annotated[
-        TokenPayload, Depends(require_permission("manufacturing.karigar.dispatch"))
+        TokenPayload, Depends(require_permission("manufacturing.karigar.receive"))
     ],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> KarigarOperationResponse:
