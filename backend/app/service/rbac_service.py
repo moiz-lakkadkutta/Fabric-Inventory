@@ -96,6 +96,16 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("banking.bank", "create", "Create bank accounts / cheques"),
     ("banking.bank", "read", "View bank accounts / cheques"),
     ("banking.bank", "update", "Update bank accounts / cheques"),
+    # Bank reconciliation (TASK-TR-B3) — match imported bank-statement
+    # rows against posted RECEIPT/PAYMENT vouchers + create unmatched
+    # rows as new vouchers. Read-only preview is gated by
+    # accounting.voucher.read; confirming a match (mutates the
+    # ``bank_reconciled_at`` stamp) needs this permission.
+    (
+        "accounting.bank_recon",
+        "confirm",
+        "Confirm bank-statement matches and create unmatched-as-voucher entries",
+    ),
     # Admin
     ("admin.firm", "manage", "Manage firm settings"),
     ("admin.audit", "read", "View audit log"),
@@ -265,6 +275,8 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "accounting.period.close",
                 "banking.bank.read",
                 "banking.bank.create",
+                # TR-B3: Accountants reconcile bank statements monthly.
+                "accounting.bank_recon.confirm",
                 "admin.audit.read",
                 "sales.order.read",
                 "dashboard.read",

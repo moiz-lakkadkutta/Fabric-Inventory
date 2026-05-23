@@ -636,6 +636,277 @@
         "title": "BankAccountUpdateRequest",
         "type": "object"
       },
+      "BankReconciliationConfirmRequest": {
+        "properties": {
+          "bank_account_id": {
+            "format": "uuid",
+            "title": "Bank Account Id",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "matches": {
+            "items": {
+              "$ref": "#/components/schemas/ConfirmedMatchRequest"
+            },
+            "maxItems": 2000,
+            "minItems": 1,
+            "title": "Matches",
+            "type": "array"
+          }
+        },
+        "required": [
+          "firm_id",
+          "bank_account_id",
+          "matches"
+        ],
+        "title": "BankReconciliationConfirmRequest",
+        "type": "object"
+      },
+      "BankReconciliationConfirmResponse": {
+        "properties": {
+          "bank_account_id": {
+            "format": "uuid",
+            "title": "Bank Account Id",
+            "type": "string"
+          },
+          "reconciled_voucher_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Reconciled Voucher Ids",
+            "type": "array"
+          },
+          "skipped_already_reconciled": {
+            "title": "Skipped Already Reconciled",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bank_account_id",
+          "reconciled_voucher_ids",
+          "skipped_already_reconciled"
+        ],
+        "title": "BankReconciliationConfirmResponse",
+        "type": "object"
+      },
+      "BankReconciliationPreviewRequest": {
+        "properties": {
+          "bank_account_id": {
+            "format": "uuid",
+            "title": "Bank Account Id",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "statement_rows": {
+            "items": {
+              "$ref": "#/components/schemas/BankStatementRowRequest"
+            },
+            "maxItems": 2000,
+            "title": "Statement Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "firm_id",
+          "bank_account_id",
+          "statement_rows"
+        ],
+        "title": "BankReconciliationPreviewRequest",
+        "type": "object"
+      },
+      "BankReconciliationPreviewResponse": {
+        "properties": {
+          "bank_account_id": {
+            "format": "uuid",
+            "title": "Bank Account Id",
+            "type": "string"
+          },
+          "statement_rows": {
+            "items": {
+              "$ref": "#/components/schemas/StatementRowWithCandidatesResponse"
+            },
+            "title": "Statement Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bank_account_id",
+          "statement_rows"
+        ],
+        "title": "BankReconciliationPreviewResponse",
+        "type": "object"
+      },
+      "BankReconciliationUnmatchedAsVoucherRequest": {
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Amount"
+          },
+          "bank_account_id": {
+            "format": "uuid",
+            "title": "Bank Account Id",
+            "type": "string"
+          },
+          "counter_ledger_id": {
+            "format": "uuid",
+            "title": "Counter Ledger Id",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "party_id": {
+            "format": "uuid",
+            "title": "Party Id",
+            "type": "string"
+          },
+          "statement_date": {
+            "format": "date",
+            "title": "Statement Date",
+            "type": "string"
+          },
+          "statement_description": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Statement Description",
+            "type": "string"
+          },
+          "statement_ref": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Statement Ref",
+            "type": "string"
+          },
+          "voucher_type": {
+            "$ref": "#/components/schemas/VoucherType"
+          }
+        },
+        "required": [
+          "firm_id",
+          "bank_account_id",
+          "voucher_type",
+          "party_id",
+          "counter_ledger_id",
+          "statement_date",
+          "statement_ref",
+          "amount"
+        ],
+        "title": "BankReconciliationUnmatchedAsVoucherRequest",
+        "type": "object"
+      },
+      "BankReconciliationUnmatchedAsVoucherResponse": {
+        "properties": {
+          "bank_reconciled_at": {
+            "format": "date-time",
+            "title": "Bank Reconciled At",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "statement_ref": {
+            "title": "Statement Ref",
+            "type": "string"
+          },
+          "voucher_date": {
+            "format": "date",
+            "title": "Voucher Date",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          },
+          "voucher_type": {
+            "$ref": "#/components/schemas/VoucherType"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "series",
+          "number",
+          "voucher_date",
+          "voucher_type",
+          "bank_reconciled_at",
+          "statement_ref"
+        ],
+        "title": "BankReconciliationUnmatchedAsVoucherResponse",
+        "type": "object"
+      },
+      "BankStatementRowRequest": {
+        "description": "One row imported from the bank's CSV statement.\n\n`amount` is signed: positive = inflow (credit on the statement),\nnegative = outflow. We don't enforce a sign convention here \u2014 the\nmatching heuristic uses |abs(amount)| so either convention works.\n`balance` is optional and unused by the matcher; it's persisted in\nthe response so the UI can show running balance per row.",
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Amount"
+          },
+          "balance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Balance"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Description",
+            "type": "string"
+          },
+          "statement_date": {
+            "format": "date",
+            "title": "Statement Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "statement_date",
+          "amount"
+        ],
+        "title": "BankStatementRowRequest",
+        "type": "object"
+      },
       "Body_approve_migration_admin_migrations__migration_id__approve_post": {
         "properties": {
           "file": {
@@ -975,6 +1246,63 @@
           "reason"
         ],
         "title": "CanStartOperationResponse",
+        "type": "object"
+      },
+      "CandidateMatchResponse": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "integer"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "voucher_date": {
+            "format": "date",
+            "title": "Voucher Date",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          },
+          "voucher_type": {
+            "$ref": "#/components/schemas/VoucherType"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "score",
+          "voucher_type",
+          "voucher_date",
+          "series",
+          "number",
+          "narration",
+          "amount"
+        ],
+        "title": "CandidateMatchResponse",
         "type": "object"
       },
       "ChequeCreateRequest": {
@@ -1392,6 +1720,33 @@
           "deleted_at"
         ],
         "title": "CoaGroupResponse",
+        "type": "object"
+      },
+      "ConfirmedMatchRequest": {
+        "properties": {
+          "statement_ref": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Statement Ref",
+            "type": "string"
+          },
+          "statement_row_idx": {
+            "minimum": 0.0,
+            "title": "Statement Row Idx",
+            "type": "integer"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "statement_row_idx",
+          "voucher_id",
+          "statement_ref"
+        ],
+        "title": "ConfirmedMatchRequest",
         "type": "object"
       },
       "CostCentreCreateRequest": {
@@ -12662,6 +13017,57 @@
         "title": "SkuUpdateRequest",
         "type": "object"
       },
+      "StatementRowWithCandidatesResponse": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "balance": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Balance"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateMatchResponse"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "statement_date": {
+            "format": "date",
+            "title": "Statement Date",
+            "type": "string"
+          },
+          "statement_row_idx": {
+            "title": "Statement Row Idx",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "statement_row_idx",
+          "statement_date",
+          "description",
+          "amount",
+          "balance",
+          "candidates"
+        ],
+        "title": "StatementRowWithCandidatesResponse",
+        "type": "object"
+      },
       "StockAdjustmentListResponse": {
         "description": "Paginated list of adjustment headers.",
         "properties": {
@@ -14898,6 +15304,186 @@
           "banking",
           "banking",
           "bank-account"
+        ]
+      }
+    },
+    "/bank-reconciliation/confirm": {
+      "post": {
+        "operationId": "confirm_bank_reconciliation_bank_reconciliation_confirm_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BankReconciliationConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BankReconciliationConfirmResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm operator-selected bank-statement matches",
+        "tags": [
+          "accounting",
+          "bank-reconciliation"
+        ]
+      }
+    },
+    "/bank-reconciliation/preview": {
+      "post": {
+        "operationId": "preview_bank_reconciliation_bank_reconciliation_preview_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BankReconciliationPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BankReconciliationPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview candidate voucher matches for an imported bank statement",
+        "tags": [
+          "accounting",
+          "bank-reconciliation"
+        ]
+      }
+    },
+    "/bank-reconciliation/unmatched-as-voucher": {
+      "post": {
+        "operationId": "create_unmatched_as_voucher_bank_reconciliation_unmatched_as_voucher_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BankReconciliationUnmatchedAsVoucherRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BankReconciliationUnmatchedAsVoucherResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a new voucher for an unmatched bank-statement row",
+        "tags": [
+          "accounting",
+          "bank-reconciliation"
         ]
       }
     },

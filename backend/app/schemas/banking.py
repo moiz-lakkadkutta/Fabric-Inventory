@@ -145,3 +145,98 @@ class VoucherListResponse(BaseModel):
     limit: int
     offset: int
     count: int
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Bank reconciliation (TASK-TR-B3)
+#
+# Money on the wire is rupees-as-Decimal (per CLAUDE.md), matching the
+# voucher list shape.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class BankStatementRowRequest(BaseModel):
+    """One row imported from the bank's CSV statement.
+
+    `amount` is signed: positive = inflow (credit on the statement),
+    negative = outflow. We don't enforce a sign convention here — the
+    matching heuristic uses |abs(amount)| so either convention works.
+    `balance` is optional and unused by the matcher; it's persisted in
+    the response so the UI can show running balance per row.
+    """
+
+    statement_date: datetime.date
+    description: str = Field(default="", max_length=500)
+    amount: Decimal
+    balance: Decimal | None = None
+
+
+class BankReconciliationPreviewRequest(BaseModel):
+    firm_id: uuid.UUID
+    bank_account_id: uuid.UUID
+    statement_rows: list[BankStatementRowRequest] = Field(max_length=2000)
+
+
+class CandidateMatchResponse(BaseModel):
+    voucher_id: uuid.UUID
+    score: int
+    voucher_type: VoucherType
+    voucher_date: datetime.date
+    series: str
+    number: str
+    narration: str | None
+    amount: Decimal
+
+
+class StatementRowWithCandidatesResponse(BaseModel):
+    statement_row_idx: int
+    statement_date: datetime.date
+    description: str
+    amount: Decimal
+    balance: Decimal | None
+    candidates: list[CandidateMatchResponse]
+
+
+class BankReconciliationPreviewResponse(BaseModel):
+    bank_account_id: uuid.UUID
+    statement_rows: list[StatementRowWithCandidatesResponse]
+
+
+class ConfirmedMatchRequest(BaseModel):
+    statement_row_idx: int = Field(ge=0)
+    voucher_id: uuid.UUID
+    statement_ref: str = Field(min_length=1, max_length=200)
+
+
+class BankReconciliationConfirmRequest(BaseModel):
+    firm_id: uuid.UUID
+    bank_account_id: uuid.UUID
+    matches: list[ConfirmedMatchRequest] = Field(min_length=1, max_length=2000)
+
+
+class BankReconciliationConfirmResponse(BaseModel):
+    bank_account_id: uuid.UUID
+    reconciled_voucher_ids: list[uuid.UUID]
+    skipped_already_reconciled: int
+
+
+class BankReconciliationUnmatchedAsVoucherRequest(BaseModel):
+    firm_id: uuid.UUID
+    bank_account_id: uuid.UUID
+    voucher_type: VoucherType
+    party_id: uuid.UUID
+    counter_ledger_id: uuid.UUID
+    statement_date: datetime.date
+    statement_description: str = Field(default="", max_length=500)
+    statement_ref: str = Field(min_length=1, max_length=200)
+    amount: Decimal
+
+
+class BankReconciliationUnmatchedAsVoucherResponse(BaseModel):
+    voucher_id: uuid.UUID
+    series: str
+    number: str
+    voucher_date: datetime.date
+    voucher_type: VoucherType
+    bank_reconciled_at: datetime.datetime
+    statement_ref: str

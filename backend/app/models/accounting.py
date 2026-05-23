@@ -169,6 +169,15 @@ class Voucher(Base, SoftDeleteMixin):
     )
     prev_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     this_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # TR-B3: bank-statement reconciliation stamps. NULL = not reconciled.
+    # Setting these does NOT post new GL lines; the trial balance is
+    # invariant under reconciliation. The reconciliation flow updates
+    # only these two columns + the bank_account.last_reconciled_date
+    # roll-up. See ``bank_reconciliation_service.confirm_matches``.
+    bank_reconciled_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    statement_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     lines: Mapped[list[VoucherLine]] = relationship(
         back_populates="voucher", cascade="all, delete-orphan"

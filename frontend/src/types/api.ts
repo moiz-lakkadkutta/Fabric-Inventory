@@ -466,6 +466,57 @@ export interface paths {
         patch: operations["update_bank_account_bank_accounts__bank_account_id__patch"];
         trace?: never;
     };
+    "/bank-reconciliation/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm operator-selected bank-statement matches */
+        post: operations["confirm_bank_reconciliation_bank_reconciliation_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bank-reconciliation/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview candidate voucher matches for an imported bank statement */
+        post: operations["preview_bank_reconciliation_bank_reconciliation_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bank-reconciliation/unmatched-as-voucher": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a new voucher for an unmatched bank-statement row */
+        post: operations["create_unmatched_as_voucher_bank_reconciliation_unmatched_as_voucher_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/boms": {
         parameters: {
             query?: never;
@@ -2519,6 +2570,147 @@ export interface components {
             /** Last Reconciled Date */
             last_reconciled_date?: string | null;
         };
+        /** BankReconciliationConfirmRequest */
+        BankReconciliationConfirmRequest: {
+            /**
+             * Bank Account Id
+             * Format: uuid
+             */
+            bank_account_id: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Matches */
+            matches: components["schemas"]["ConfirmedMatchRequest"][];
+        };
+        /** BankReconciliationConfirmResponse */
+        BankReconciliationConfirmResponse: {
+            /**
+             * Bank Account Id
+             * Format: uuid
+             */
+            bank_account_id: string;
+            /** Reconciled Voucher Ids */
+            reconciled_voucher_ids: string[];
+            /** Skipped Already Reconciled */
+            skipped_already_reconciled: number;
+        };
+        /** BankReconciliationPreviewRequest */
+        BankReconciliationPreviewRequest: {
+            /**
+             * Bank Account Id
+             * Format: uuid
+             */
+            bank_account_id: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Statement Rows */
+            statement_rows: components["schemas"]["BankStatementRowRequest"][];
+        };
+        /** BankReconciliationPreviewResponse */
+        BankReconciliationPreviewResponse: {
+            /**
+             * Bank Account Id
+             * Format: uuid
+             */
+            bank_account_id: string;
+            /** Statement Rows */
+            statement_rows: components["schemas"]["StatementRowWithCandidatesResponse"][];
+        };
+        /** BankReconciliationUnmatchedAsVoucherRequest */
+        BankReconciliationUnmatchedAsVoucherRequest: {
+            /** Amount */
+            amount: number | string;
+            /**
+             * Bank Account Id
+             * Format: uuid
+             */
+            bank_account_id: string;
+            /**
+             * Counter Ledger Id
+             * Format: uuid
+             */
+            counter_ledger_id: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /**
+             * Party Id
+             * Format: uuid
+             */
+            party_id: string;
+            /**
+             * Statement Date
+             * Format: date
+             */
+            statement_date: string;
+            /**
+             * Statement Description
+             * @default
+             */
+            statement_description: string;
+            /** Statement Ref */
+            statement_ref: string;
+            voucher_type: components["schemas"]["VoucherType"];
+        };
+        /** BankReconciliationUnmatchedAsVoucherResponse */
+        BankReconciliationUnmatchedAsVoucherResponse: {
+            /**
+             * Bank Reconciled At
+             * Format: date-time
+             */
+            bank_reconciled_at: string;
+            /** Number */
+            number: string;
+            /** Series */
+            series: string;
+            /** Statement Ref */
+            statement_ref: string;
+            /**
+             * Voucher Date
+             * Format: date
+             */
+            voucher_date: string;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
+            voucher_type: components["schemas"]["VoucherType"];
+        };
+        /**
+         * BankStatementRowRequest
+         * @description One row imported from the bank's CSV statement.
+         *
+         *     `amount` is signed: positive = inflow (credit on the statement),
+         *     negative = outflow. We don't enforce a sign convention here — the
+         *     matching heuristic uses |abs(amount)| so either convention works.
+         *     `balance` is optional and unused by the matcher; it's persisted in
+         *     the response so the UI can show running balance per row.
+         */
+        BankStatementRowRequest: {
+            /** Amount */
+            amount: number | string;
+            /** Balance */
+            balance?: number | string | null;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Statement Date
+             * Format: date
+             */
+            statement_date: string;
+        };
         /** Body_approve_migration_admin_migrations__migration_id__approve_post */
         Body_approve_migration_admin_migrations__migration_id__approve_post: {
             /**
@@ -2689,6 +2881,30 @@ export interface components {
             /** Reason */
             reason: string | null;
         };
+        /** CandidateMatchResponse */
+        CandidateMatchResponse: {
+            /** Amount */
+            amount: string;
+            /** Narration */
+            narration: string | null;
+            /** Number */
+            number: string;
+            /** Score */
+            score: number;
+            /** Series */
+            series: string;
+            /**
+             * Voucher Date
+             * Format: date
+             */
+            voucher_date: string;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
+            voucher_type: components["schemas"]["VoucherType"];
+        };
         /** ChequeCreateRequest */
         ChequeCreateRequest: {
             /** Amount */
@@ -2835,6 +3051,18 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** ConfirmedMatchRequest */
+        ConfirmedMatchRequest: {
+            /** Statement Ref */
+            statement_ref: string;
+            /** Statement Row Idx */
+            statement_row_idx: number;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
         };
         /** CostCentreCreateRequest */
         CostCentreCreateRequest: {
@@ -7331,6 +7559,24 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /** StatementRowWithCandidatesResponse */
+        StatementRowWithCandidatesResponse: {
+            /** Amount */
+            amount: string;
+            /** Balance */
+            balance: string | null;
+            /** Candidates */
+            candidates: components["schemas"]["CandidateMatchResponse"][];
+            /** Description */
+            description: string;
+            /**
+             * Statement Date
+             * Format: date
+             */
+            statement_date: string;
+            /** Statement Row Idx */
+            statement_row_idx: number;
+        };
         /**
          * StockAdjustmentListResponse
          * @description Paginated list of adjustment headers.
@@ -8516,6 +8762,111 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BankAccountResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_bank_reconciliation_bank_reconciliation_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BankReconciliationConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankReconciliationConfirmResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_bank_reconciliation_bank_reconciliation_preview_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BankReconciliationPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankReconciliationPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_unmatched_as_voucher_bank_reconciliation_unmatched_as_voucher_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BankReconciliationUnmatchedAsVoucherRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BankReconciliationUnmatchedAsVoucherResponse"];
                 };
             };
             /** @description Validation Error */

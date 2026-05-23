@@ -22,6 +22,7 @@ from app.middleware import (
 from app.routers import accounting as accounting_router
 from app.routers import admin as admin_router
 from app.routers import auth as auth_router
+from app.routers import bank_reconciliation as bank_reconciliation_router
 from app.routers import banking as banking_router
 from app.routers import dashboard as dashboard_router
 from app.routers import inventory as inventory_router
@@ -161,6 +162,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_router.activity_router)
     app.include_router(receipts_router.router)
     app.include_router(banking_router.router)
+    app.include_router(bank_reconciliation_router.router)
     app.include_router(accounting_router.router)
     app.include_router(reports_router.router)
     app.include_router(jobwork_router.router)
