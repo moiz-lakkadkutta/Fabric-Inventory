@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 
@@ -33,13 +33,14 @@ describe('ManufacturingPipeline', () => {
     expect(screen.getByText(/Bridal Lehenga/)).toBeInTheDocument();
   });
 
-  it('"+ New MO" keeps the coming-soon affordance until the MO FE ships (TASK-TR-B05)', async () => {
+  it('no longer shows the "View list" / "+ New MO" coming-soon buttons (TASK-TR-A14)', async () => {
+    // The buttons fired a placeholder ComingSoonDialog while Manufacturing
+    // was feature-flagged off. Now that A14 has flipped the flag on, the
+    // Kanban is the live entry point and the placeholder CTAs are gone.
     renderPipeline();
     await waitFor(() => expect(screen.getByText(/Bridal Lehenga/)).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /new mo/i }));
-    // The dialog references the placeholder follow-up so the next agent
-    // can grep for it when the MO create UI lands.
-    await waitFor(() => expect(screen.getByText(/TASK-TR-A-FE/i)).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /new mo/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /view list/i })).not.toBeInTheDocument();
   });
 });

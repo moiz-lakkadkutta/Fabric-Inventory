@@ -711,8 +711,12 @@ def me(current_user: CurrentUser, db: SyncDBSession) -> MeResponse:
     Requires a valid access token (refresh tokens are explicitly rejected
     by AuthMiddleware — only access tokens populate request.state.user).
     """
+    # `resolve_flags_for_firm` overlays `FLAG_DEFAULTS` onto the raw DB
+    # rows so default-on modules (e.g. `manufacturing.enabled`) light up
+    # without a backfill migration. /me is the runtime-gating boundary;
+    # the admin toggle UI continues to use the raw `get_flags_for_firm`.
     flags: dict[str, bool] = (
-        feature_flag_service.get_flags_for_firm(db, firm_id=current_user.firm_id)
+        feature_flag_service.resolve_flags_for_firm(db, firm_id=current_user.firm_id)
         if current_user.firm_id is not None
         else {}
     )

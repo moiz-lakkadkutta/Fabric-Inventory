@@ -127,6 +127,22 @@ export function useFeatureFlag(key: string): boolean {
   return useAuthStore((s) => s.me?.flags[key] === true);
 }
 
+/**
+ * Like `useFeatureFlag` but with a caller-supplied default for the
+ * "flag not present in the /me payload" case. Used by modules that
+ * default ON (e.g. `manufacturing.enabled` per TASK-TR-A14): missing
+ * key → render; explicit `false` → hide. The default is also returned
+ * before /me has loaded, which keeps the first paint stable instead of
+ * flashing a hidden nav entry on bootstrap.
+ */
+export function useFeatureFlagWithDefault(key: string, defaultValue: boolean): boolean {
+  return useAuthStore((s) => {
+    if (!s.me) return defaultValue;
+    const v = s.me.flags[key];
+    return v === undefined ? defaultValue : v;
+  });
+}
+
 export function usePendingMfa(): PendingMfa | null {
   return useAuthStore((s) => s.pendingMfa);
 }

@@ -1,6 +1,7 @@
+import { renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { authStore } from '@/store/auth';
+import { authStore, useFeatureFlag, useFeatureFlagWithDefault } from '@/store/auth';
 
 const FAKE_ME = {
   user_id: 'u1',
@@ -63,5 +64,33 @@ describe('authStore', () => {
     unsub();
     authStore.clear();
     expect(calls).toBe(2);
+  });
+});
+
+describe('useFeatureFlag / useFeatureFlagWithDefault (TASK-TR-A14)', () => {
+  it('useFeatureFlag returns false for missing keys', () => {
+    authStore.setMe({ ...FAKE_ME, flags: {} });
+    const { result } = renderHook(() => useFeatureFlag('manufacturing.enabled'));
+    expect(result.current).toBe(false);
+  });
+
+  it('useFeatureFlagWithDefault returns the default for missing keys', () => {
+    authStore.setMe({ ...FAKE_ME, flags: {} });
+    const { result } = renderHook(() => useFeatureFlagWithDefault('manufacturing.enabled', true));
+    expect(result.current).toBe(true);
+  });
+
+  it('useFeatureFlagWithDefault returns the explicit value when set', () => {
+    authStore.setMe({ ...FAKE_ME, flags: { 'manufacturing.enabled': false } });
+    const { result } = renderHook(() => useFeatureFlagWithDefault('manufacturing.enabled', true));
+    expect(result.current).toBe(false);
+  });
+
+  it('useFeatureFlagWithDefault returns the default when /me has not loaded', () => {
+    // Pre-bootstrap: status='unknown', me=null. Prevents the nav from
+    // flashing a hidden state on first paint.
+    authStore.reset();
+    const { result } = renderHook(() => useFeatureFlagWithDefault('manufacturing.enabled', true));
+    expect(result.current).toBe(true);
   });
 });
