@@ -33,14 +33,15 @@ describe('ManufacturingPipeline', () => {
     expect(screen.getByText(/Bridal Lehenga/)).toBeInTheDocument();
   });
 
-  it('no longer shows the "View list" / "+ New MO" coming-soon buttons (TASK-TR-A14)', async () => {
-    // The buttons fired a placeholder ComingSoonDialog while Manufacturing
-    // was feature-flagged off. Now that A14 has flipped the flag on, the
-    // Kanban is the live entry point and the placeholder CTAs are gone.
+  it('exposes "View MOs" and "+ New MO" CTAs that route to the MO list/create pages (TASK-TR-A14-FU)', async () => {
+    // A14 stripped the ComingSoon stubs; A14-FU re-introduces real CTAs
+    // that target the live MO list (/manufacturing/mo) and the create
+    // placeholder (/manufacturing/mo/new). The button labels stay short
+    // because the kanban header is dense.
     renderPipeline();
     await waitFor(() => expect(screen.getByText(/Bridal Lehenga/)).toBeInTheDocument());
 
-    expect(screen.queryByRole('button', { name: /new mo/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /view list/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /view mos/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /new mo/i })).toBeInTheDocument();
   });
 });

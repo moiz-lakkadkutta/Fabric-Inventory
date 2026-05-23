@@ -20,6 +20,9 @@ import InventoryList from '@/pages/inventory/InventoryList';
 import LotDetail from '@/pages/inventory/LotDetail';
 import JobWorkOverview from '@/pages/jobwork/JobWorkOverview';
 import ManufacturingPipeline from '@/pages/manufacturing/ManufacturingPipeline';
+import MoCreatePlaceholder from '@/pages/manufacturing/MoCreatePlaceholder';
+import MoDetail from '@/pages/manufacturing/MoDetail';
+import MoList from '@/pages/manufacturing/MoList';
 import ItemDetail from '@/pages/masters/ItemDetail';
 import ItemList from '@/pages/masters/ItemList';
 import PartyDetail from '@/pages/masters/PartyDetail';
@@ -102,6 +105,12 @@ const router = createBrowserRouter([
       { path: 'inventory', element: <InventoryList /> },
       { path: 'inventory/lots/:id', element: <LotDetail /> },
       { path: 'manufacturing', element: <ManufacturingPipeline /> },
+      // TASK-TR-A14-FU: MO list + detail live above the legacy pipeline
+      // kanban. The /new stub is a reachable placeholder until the
+      // creation form ships as its own task.
+      { path: 'manufacturing/mo', element: <MoList /> },
+      { path: 'manufacturing/mo/new', element: <MoCreatePlaceholder /> },
+      { path: 'manufacturing/mo/:id', element: <MoDetail /> },
       { path: 'jobwork', element: <JobWorkOverview /> },
       { path: 'accounting', element: <AccountingHub /> },
       { path: 'reports', element: <ReportsHub /> },

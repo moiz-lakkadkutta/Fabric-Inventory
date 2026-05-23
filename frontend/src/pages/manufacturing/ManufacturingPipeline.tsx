@@ -1,5 +1,8 @@
+import { Plus } from 'lucide-react';
 import { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   KANBAN_COLUMNS,
@@ -10,11 +13,11 @@ import {
 
 export default function ManufacturingPipeline() {
   const moQuery = useManufacturingOrders();
-  // TASK-TR-A14: the "View list" and "+ New MO" ComingSoon buttons
-  // were removed when Manufacturing flipped from feature-flagged-off to
-  // trial-ready. The MO list/detail screens land in a follow-up FE
-  // task; until then, the Kanban is the canonical entry point and
-  // shouldn't show buttons that fire a placeholder dialog.
+  const navigate = useNavigate();
+  // TASK-TR-A14-FU: real MO list + detail screens have shipped. The
+  // "View MOs" CTA replaces the prior ComingSoon stub; "+ New MO"
+  // routes to the placeholder until the create-MO form lands as its
+  // own task.
 
   const grouped = useMemo(() => {
     const out = new Map<MoStage, ManufacturingOrder[]>();
@@ -32,6 +35,15 @@ export default function ManufacturingPipeline() {
         <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
           {moQuery.isPending ? '—' : `${moQuery.data?.length ?? 0} active orders in pipeline`}
         </span>
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" size="default" onClick={() => navigate('/manufacturing/mo')}>
+            View MOs
+          </Button>
+          <Button size="default" onClick={() => navigate('/manufacturing/mo/new')}>
+            <Plus />
+            New MO
+          </Button>
+        </div>
       </header>
 
       {moQuery.isPending ? (
