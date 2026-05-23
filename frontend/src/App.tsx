@@ -14,6 +14,7 @@ import Dashboard from '@/pages/Dashboard';
 import NotFound from '@/pages/NotFound';
 import Placeholder from '@/pages/Placeholder';
 import AccountingHub from '@/pages/accounting/AccountingHub';
+import BankReconcile from '@/pages/accounting/BankReconcile';
 import AdminHub from '@/pages/admin/AdminHub';
 import Migrations from '@/pages/admin/Migrations';
 import InventoryList from '@/pages/inventory/InventoryList';
@@ -113,6 +114,10 @@ const router = createBrowserRouter([
       { path: 'manufacturing/mo/:id', element: <MoDetail /> },
       { path: 'jobwork', element: <JobWorkOverview /> },
       { path: 'accounting', element: <AccountingHub /> },
+      // TR-B3: full-page bank-statement reconciliation flow. Lives
+      // under /accounting so the breadcrumb / role-gate inherits the
+      // AccountingHub posture.
+      { path: 'accounting/bank-recon', element: <BankReconcile /> },
       { path: 'reports', element: <ReportsHub /> },
       { path: 'masters', element: <Navigate to="/masters/parties" replace /> },
       { path: 'masters/parties', element: <PartyList /> },

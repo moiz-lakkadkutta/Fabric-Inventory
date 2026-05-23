@@ -1,8 +1,8 @@
 import { Plus } from 'lucide-react';
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
-import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Pill, type PillKind } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
 import { downloadExport } from '@/lib/api/download';
@@ -60,6 +60,7 @@ const VOUCHER_TYPE_LABEL: Record<VoucherTypeRaw, string> = {
 };
 
 export default function AccountingHub() {
+  const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('receipts');
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [voucherOpen, setVoucherOpen] = useState(false);
@@ -116,14 +117,9 @@ export default function AccountingHub() {
     }
   };
 
-  // Bank statement reconciliation (match imported MT940/CSV against
-  // posted receipts/payments) is a v2 feature — the trial customer
-  // can reconcile manually via the cheques tab + bank-account ledger
-  // for now. Replace this stub when a real reconcile workflow lands.
-  const reconcile = useComingSoon({
-    feature: 'Bank reconciliation',
-    task: 'v2 (Bank statement match — not in trial scope)',
-  });
+  // TR-B3: bank reconciliation is a full-page route (`/accounting/bank-recon`).
+  // The button is a router link, not a dialog — the multi-step flow needs
+  // the breathing room of a full page.
 
   let cta: React.ReactNode = null;
   if (tab === 'receipts') {
@@ -168,7 +164,7 @@ export default function AccountingHub() {
               } bank accounts`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" {...reconcile.triggerProps}>
+          <Button variant="outline" onClick={() => navigate('/accounting/bank-recon')}>
             Reconcile bank
           </Button>
           <Button
@@ -190,7 +186,6 @@ export default function AccountingHub() {
           {cta}
         </div>
       </header>
-      {reconcile.dialog}
       {exportError && (
         <div
           role="alert"
