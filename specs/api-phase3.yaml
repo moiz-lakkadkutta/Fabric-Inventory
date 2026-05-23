@@ -1505,6 +1505,32 @@ components:
         - operation
         - events
 
+    CanStartOperationResponse:
+      type: object
+      description: |
+        GET /manufacturing/mo-operations/{id}/can-start - TR-A09.
+        Surfaces the routing-DAG engine verdict so the FE can disable a
+        "Start" button (and show a hint) when an upstream edge is
+        unsatisfied. `reason` is a human-readable description of the first
+        blocking constraint, null when `allowed` is true.
+        Idempotent / read-only - does not transition the op. The state
+        machine guards in start_operation remain the source of truth: a FE
+        that ignored the can-start hint and POSTed /start would still get
+        a 422 with the same reason.
+      properties:
+        mo_operation_id:
+          type: string
+          format: uuid
+        allowed:
+          type: boolean
+        reason:
+          type: string
+          nullable: true
+      required:
+        - mo_operation_id
+        - allowed
+        - reason
+
     KarigarDispatchRequest:
       type: object
       description: |
@@ -4774,9 +4800,44 @@ paths:
   # A07: per-operation progress mutations + reads (mo_operation lifecycle).
   # Authoritative source: backend/app/routers/manufacturing.py +
   # frontend/scripts/openapi-snapshot.json (auto-emitted by FastAPI).
-  # NOTE: A09's GET /manufacturing/mo-operations/{id}/can-start is NOT yet
-  # on main (PR #136 still open at the time of backfill); add when merged.
   # ---------------------------------------------------------------
+
+  /manufacturing/mo-operations/{mo_operation_id}/can-start:
+    get:
+      operationId: canStartMoOperation
+      tags:
+        - manufacturing
+      summary: Routing-DAG verdict - can this op start now?
+      description: |
+        TR-A09 - surfaces the edge-walking engine's verdict for an op so
+        the FE can disable a "Start" button (or pre-flight a karigar
+        dispatch) when an upstream edge is unsatisfied.
+        Read-only. The state-machine guards inside start_operation /
+        dispatch_to_karigar remain the source of truth: an over-eager
+        POST would still get a 422 with the same reason.
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Routing-DAG verdict for the operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanStartOperationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: manufacturing.operation.read
 
   /manufacturing/mo-operations/{mo_operation_id}/start:
     post:
