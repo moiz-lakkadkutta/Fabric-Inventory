@@ -101,6 +101,12 @@ export type BackendOperationType = components['schemas']['OperationType'];
 // A2 MO Create Wizard — request shape for POST /manufacturing/mo.
 export type BackendMoCreateRequest = components['schemas']['MoCreateRequest'];
 
+// A5 QC actions — start-qc + record-verdict + read-latest-verdict.
+export type BackendQcStartRequest = components['schemas']['QcStartRequest'];
+export type BackendQcResultRequest = components['schemas']['QcResultRequest'];
+export type BackendQcResultResponse = components['schemas']['QcResultResponse'];
+export type BackendQcOperationResponse = components['schemas']['QcOperationResponse'];
+
 // ── MO list ↔ Kanban view-model mapper ────────────────────────────────
 
 /**
@@ -808,6 +814,124 @@ export function useReleaseMo() {
   });
 }
 
+// ── A5 QC actions (TASK-TR-A5) ───────────────────────────────────────
+//
+// QC operation lifecycle is driven by three endpoints that the drawer
+// surfaces in the right order based on the op's current state:
+//   PENDING / READY  → POST /start-qc           (→ QC_PENDING)
+//   QC_PENDING       → POST /record-qc-result   (→ CLOSED or REWORK)
+//   REWORK           → re-record once the rework clone closes (same endpoint)
+//   CLOSED           → read-only GET /qc-result
+//
+// The GET /qc-result endpoint is load-bearing for the verdict form
+// because it surfaces `predecessor_qty_out` — the qty arriving at QC
+// that the 5 bucket inputs MUST sum to (the BE enforces strictly).
+// Replicating the predecessor lookup on the FE would mean walking the
+// routing-edge graph + filtering rework clones; instead we ask the BE.
+
+async function liveStartQc(input: OperationProgressInput): Promise<BackendQcOperationResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendQcStartRequest = { firm_id };
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendQcOperationResponse>(
+    `/manufacturing/mo-operations/${input.moOperationId}/start-qc`,
+    {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body,
+    },
+  );
+}
+
+export interface RecordQcResultInput extends OperationProgressInput {
+  qty_passed: string | number;
+  qty_rejected: string | number;
+  qty_byproduct: string | number;
+  qty_wastage: string | number;
+  qty_rework: string | number;
+}
+
+async function liveRecordQcResult(input: RecordQcResultInput): Promise<BackendQcOperationResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendQcResultRequest = {
+    firm_id,
+    qty_passed: input.qty_passed,
+    qty_rejected: input.qty_rejected,
+    qty_byproduct: input.qty_byproduct,
+    qty_wastage: input.qty_wastage,
+    qty_rework: input.qty_rework,
+  };
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendQcOperationResponse>(
+    `/manufacturing/mo-operations/${input.moOperationId}/record-qc-result`,
+    {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body,
+    },
+  );
+}
+
+async function liveGetQcResult(moOperationId: string): Promise<BackendQcResultResponse> {
+  return api<BackendQcResultResponse>(`/manufacturing/mo-operations/${moOperationId}/qc-result`);
+}
+
+const QC_RESULT_KEY = ['manufacturing', 'qc-result'] as const;
+
+/** POST /manufacturing/mo-operations/{id}/start-qc (PENDING → QC_PENDING). */
+export function useStartQc(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendQcOperationResponse, Error, OperationProgressInput>({
+    mutationFn: (input) => liveStartQc(input),
+    onSuccess: (_next, variables) => {
+      invalidateMoAndStock(qc, moId);
+      // The verdict form gates on the latest GET /qc-result — drop the
+      // cached "not recorded yet" snapshot so the form re-fetches the
+      // freshly-resolvable predecessor_qty_out.
+      qc.invalidateQueries({ queryKey: [...QC_RESULT_KEY, variables.moOperationId] });
+    },
+  });
+}
+
+/**
+ * POST /manufacturing/mo-operations/{id}/record-qc-result. PASS verdicts
+ * close the QC op; REWORK verdicts keep it in REWORK and spawn a clone
+ * MoOperation that re-emerges in `MoResponse.operations` (A10-FU). We
+ * invalidate the MO detail + the QC verdict cache so both forms re-read.
+ */
+export function useRecordQcResult(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendQcOperationResponse, Error, RecordQcResultInput>({
+    mutationFn: (input) => liveRecordQcResult(input),
+    onSuccess: (_next, variables) => {
+      invalidateMoAndStock(qc, moId);
+      qc.invalidateQueries({ queryKey: [...QC_RESULT_KEY, variables.moOperationId] });
+    },
+  });
+}
+
+/**
+ * GET /manufacturing/mo-operations/{id}/qc-result. Returns `recorded=false`
+ * + zero buckets when the verdict hasn't landed yet — the FE renders an
+ * "awaiting QC" state in that case without a 404. The load-bearing
+ * field is `predecessor_qty_out`: the qty arriving at QC that the
+ * verdict-form's 5 buckets must sum to.
+ */
+export function useQcResult(
+  moOperationId: string | undefined,
+  options: { enabled?: boolean } = {},
+) {
+  return useQuery<BackendQcResultResponse>({
+    queryKey: [...QC_RESULT_KEY, moOperationId],
+    enabled: options.enabled !== false && moOperationId !== undefined,
+    queryFn: () => liveGetQcResult(moOperationId as string),
+    // Re-read on every drawer open: predecessor_qty_out can change if
+    // the upstream op re-records qty_out before QC starts.
+    staleTime: 0,
+    gcTime: 0,
+  });
+}
+
 // ── Test-only exports ────────────────────────────────────────────────
 
 /** Mappers exposed for the live-mapping unit tests. */
@@ -844,4 +968,8 @@ export const __live = {
   // A2:
   liveCreateMo,
   liveReleaseMo,
+  // A5:
+  liveStartQc,
+  liveRecordQcResult,
+  liveGetQcResult,
 };
