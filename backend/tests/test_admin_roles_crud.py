@@ -232,9 +232,7 @@ def test_create_role_rejects_unknown_permissions(http_client: TestClient) -> Non
     assert "Unknown permission codes" in resp.json()["detail"]
 
 
-def test_create_role_denied_for_salesperson(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_create_role_denied_for_salesperson(http_client: TestClient, sync_engine: Engine) -> None:
     owner_body = _signup(
         http_client,
         email=_unique_email(),
@@ -299,9 +297,7 @@ def test_update_and_delete_custom_role_round_trip(http_client: TestClient) -> No
     }
 
     # GET round-trips the same payload
-    get_resp = http_client.get(
-        f"/admin/roles/{role_id}", headers=_auth(body["access_token"])
-    )
+    get_resp = http_client.get(f"/admin/roles/{role_id}", headers=_auth(body["access_token"]))
     assert get_resp.status_code == 200
     assert get_resp.json()["name"] == "Junior CA"
 
@@ -313,9 +309,7 @@ def test_update_and_delete_custom_role_round_trip(http_client: TestClient) -> No
     assert del_resp.status_code == 204, del_resp.text
 
     # GET now 404s
-    get2 = http_client.get(
-        f"/admin/roles/{role_id}", headers=_auth(body["access_token"])
-    )
+    get2 = http_client.get(f"/admin/roles/{role_id}", headers=_auth(body["access_token"]))
     assert get2.status_code == 404
 
     # And it no longer shows up in /admin/roles
@@ -324,18 +318,14 @@ def test_update_and_delete_custom_role_round_trip(http_client: TestClient) -> No
     assert role_id not in role_ids
 
 
-def test_system_role_cannot_be_patched(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_system_role_cannot_be_patched(http_client: TestClient, sync_engine: Engine) -> None:
     body = _signup(
         http_client,
         email=_unique_email(),
         password="strong-password-1",
         org_name=_unique_org_name(),
     )
-    owner_role_id = _role_id_by_code(
-        sync_engine, org_id=body["org_id"], role_code="OWNER"
-    )
+    owner_role_id = _role_id_by_code(sync_engine, org_id=body["org_id"], role_code="OWNER")
     resp = http_client.patch(
         f"/admin/roles/{owner_role_id}",
         headers={**_auth(body["access_token"]), **_idem()},
@@ -345,18 +335,14 @@ def test_system_role_cannot_be_patched(
     assert resp.json()["code"] == "PERMISSION_DENIED"
 
 
-def test_system_role_cannot_be_deleted(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_system_role_cannot_be_deleted(http_client: TestClient, sync_engine: Engine) -> None:
     body = _signup(
         http_client,
         email=_unique_email(),
         password="strong-password-1",
         org_name=_unique_org_name(),
     )
-    sales_role_id = _role_id_by_code(
-        sync_engine, org_id=body["org_id"], role_code="SALESPERSON"
-    )
+    sales_role_id = _role_id_by_code(sync_engine, org_id=body["org_id"], role_code="SALESPERSON")
     resp = http_client.delete(
         f"/admin/roles/{sales_role_id}",
         headers={**_auth(body["access_token"]), **_idem()},

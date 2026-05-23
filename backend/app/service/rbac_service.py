@@ -796,9 +796,9 @@ def delete_custom_role(
     if role.is_system_role:
         raise PermissionDeniedError("System roles cannot be deleted")
 
-    assigned_count = session.execute(
-        select(UserRole).where(UserRole.role_id == role_id)
-    ).scalars().first()
+    assigned_count = (
+        session.execute(select(UserRole).where(UserRole.role_id == role_id)).scalars().first()
+    )
     if assigned_count is not None:
         raise AppValidationError(
             "Cannot delete a role with users still assigned — reassign users first"
