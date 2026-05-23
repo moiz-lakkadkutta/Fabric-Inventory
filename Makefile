@@ -1,4 +1,4 @@
-.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed seed-demo deploy backup restore restore-test e2e-setup openapi-snapshot cleanup help
+.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed seed-demo deploy backup restore restore-test e2e-setup openapi-snapshot cleanup spike-vyapar help
 
 # Prefer "docker compose" (v2 plugin); fall back to legacy "docker-compose" binary.
 COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
@@ -22,6 +22,7 @@ help:
 	@echo "  make restore date=YYYY-MM-DD [target_db=NAME] [dry_run=1]  Restore from a backup (CUT-404)"
 	@echo "  make restore-test  Round-trip test: backup → restore → assert sentinel row (CUT-404)"
 	@echo "  make cleanup      Prune used/expired password_reset_token rows (CUT-501a; cron daily)"
+	@echo "  make spike-vyapar VYAPAR_FILE=<path>  Run the Vyapar real-backup spike runner (TASK-TR-D3-PREP)"
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -121,3 +122,20 @@ openapi-snapshot:
 # this in dev is a safe no-op.
 cleanup:
 	cd backend && uv run python -m app.cli.cleanup_tokens
+
+# TASK-TR-D3-PREP: Vyapar real-backup spike runner. Reads a Vyapar
+# Excel export and prints a coverage report against the in-tree
+# VyaparExcelAdapter. Usage:
+#   make spike-vyapar VYAPAR_FILE=docs/spikes/vyapar-sample-export.xlsx
+# The VYAPAR_FILE path is interpreted relative to the repo root. If
+# unset, the target prints a helpful pointer and exits 0 — it's a
+# no-op, not an error, because the file is operator-supplied.
+spike-vyapar:
+	@if [ -z "$(VYAPAR_FILE)" ]; then \
+		echo "Set VYAPAR_FILE=<path> (typically docs/spikes/vyapar-sample-export.xlsx)."; \
+		echo "See docs/spikes/vyapar-real-backup-protocol.md for how to produce one."; \
+	else \
+		REPO_ROOT="$$(pwd)"; \
+		case "$(VYAPAR_FILE)" in /*) ABS_PATH="$(VYAPAR_FILE)";; *) ABS_PATH="$$REPO_ROOT/$(VYAPAR_FILE)";; esac; \
+		cd backend && ENVIRONMENT=dev uv run python -m scripts.spike_vyapar "$$ABS_PATH"; \
+	fi
