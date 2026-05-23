@@ -5392,6 +5392,8 @@ export interface components {
             bom_id: string | null;
             /** Closed At */
             closed_at: string | null;
+            /** Cost Pool */
+            cost_pool: string | null;
             /**
              * Created At
              * Format: date-time

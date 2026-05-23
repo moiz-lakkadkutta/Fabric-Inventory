@@ -7510,6 +7510,18 @@
             ],
             "title": "Closed At"
           },
+          "cost_pool": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Pool"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -7668,6 +7680,7 @@
           "planned_qty",
           "produced_qty",
           "scrap_qty",
+          "cost_pool",
           "planned_start_date",
           "planned_end_date",
           "closed_at",

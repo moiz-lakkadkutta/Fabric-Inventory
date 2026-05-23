@@ -452,6 +452,10 @@ class MoResponse(BaseModel):
     planned_qty: Decimal
     produced_qty: Decimal | None
     scrap_qty: Decimal | None
+    # Live WIP cost pool (sum of material-issue DR 1310 voucher_lines).
+    # Grows as `issue-materials` posts; drained to 0 at MO completion.
+    # Surface on the MO Detail Cost tab so operators see WIP in flight.
+    cost_pool: Decimal | None
     # A05 followups (M2): persisted on the MO from this task onwards.
     # NULL for MOs created before the followup migration.
     planned_start_date: datetime.date | None
