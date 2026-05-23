@@ -64,9 +64,10 @@ export type BackendMoListItem = components['schemas']['MoListItem'];
 export type BackendMoListResponse = components['schemas']['MoListResponse'];
 export type BackendMoResponse = components['schemas']['MoResponse'];
 export type BackendMoStatus = components['schemas']['MoStatus'];
+// TASK-TR-A1: A1's Kanban view-model maps each MO's eager-loaded ops.
+// `BackendMoOperationState` / `BackendOperationType` aliases live with
+// the A3 operations-drawer types below.
 export type BackendMoOperationListItem = components['schemas']['MoOperationListItem'];
-export type BackendMoOperationState = components['schemas']['MoOperationState'];
-export type BackendOperationType = components['schemas']['OperationType'];
 
 export type BackendDesignResponse = components['schemas']['DesignResponse'];
 export type BackendDesignListResponse = components['schemas']['DesignListResponse'];
