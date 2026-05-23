@@ -26,6 +26,12 @@ ops/.env.backup
 # Backup artefacts (TASK-CUT-404). Never commit dumps; .gpg or otherwise.
 ops/backups/
 
+# Vyapar real-backup samples (TASK-TR-D3-PREP). Never commit — even sanitized
+# files belong out of git; the spike runner only needs them locally. See
+# docs/spikes/vyapar-real-backup-protocol.md.
+docs/spikes/vyapar-sample-export*.xlsx
+docs/spikes/vyapar-sample-export-raw*.xlsx
+
 # OS / editor
 .DS_Store
 .idea/

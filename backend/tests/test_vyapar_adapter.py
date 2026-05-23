@@ -199,3 +199,88 @@ def test_invalid_gstin_warns_but_imports() -> None:
     parties = list(adapter.extract_parties(out.getvalue()))
     assert len(parties) == 1
     assert parties[0].gstin is None
+
+
+# ---------------------------------------------------------------------
+# TASK-TR-D3-PREP: structural guards for the D3 spike runner.
+#
+# The runner at backend/scripts/spike_vyapar.py imports _COLUMN_MAP,
+# _PARTY_SHEET_NAMES, _PARTY_TYPE_MAP, and VyaparExcelAdapter by name.
+# These tests fail loudly if anyone renames those constants without
+# updating the runner — without them, the spike silently breaks the
+# day Moiz drops a real file.
+# ---------------------------------------------------------------------
+
+
+def test_d3_constants_present() -> None:
+    """The D3 spike runner imports these four names by hard reference."""
+    from app.service.migration import vyapar_adapter
+
+    for name in ("_COLUMN_MAP", "_PARTY_SHEET_NAMES", "_PARTY_TYPE_MAP", "VyaparExcelAdapter"):
+        assert hasattr(vyapar_adapter, name), (
+            f"Vyapar adapter is missing {name!r}; the TR-D3-PREP spike runner "
+            "imports it by name. Update backend/scripts/spike_vyapar.py if you "
+            "rename it."
+        )
+
+
+def test_d3_column_map_values_target_known_fields() -> None:
+    """Every _COLUMN_MAP target must be a real IntermediateParty field
+    or one of the two adapter-internal sentinels (``_opening_balance``,
+    ``_balance_type``, ``_party_type``). Catches a refactor that drops
+    a field on the intermediate model but forgets to update the adapter.
+    """
+    from app.service.migration.intermediate import IntermediateParty
+    from app.service.migration.vyapar_adapter import _COLUMN_MAP
+
+    party_fields = set(IntermediateParty.model_fields.keys())
+    internal_sentinels = {"_opening_balance", "_balance_type", "_party_type"}
+    valid_targets = party_fields | internal_sentinels
+
+    for header, target in _COLUMN_MAP.items():
+        assert target in valid_targets, (
+            f"_COLUMN_MAP[{header!r}] -> {target!r} doesn't match any "
+            f"IntermediateParty field or known sentinel. "
+            f"Valid targets: {sorted(valid_targets)}"
+        )
+
+
+def test_d3_column_map_keys_lowercase_unique() -> None:
+    """Headers in _COLUMN_MAP must be lower-cased (the lookup in
+    _read_header lower-cases the header text) and unique (a shadow
+    mapping would silently drop coverage of one of the variants).
+    """
+    from app.service.migration.vyapar_adapter import _COLUMN_MAP
+
+    for header in _COLUMN_MAP:
+        assert header == header.lower(), (
+            f"_COLUMN_MAP key {header!r} is not lower-cased; the lookup "
+            "in _read_header lower-cases the header text before matching."
+        )
+    # dict can't have duplicate keys, but make the invariant explicit
+    # so a future refactor (e.g. to a list[tuple]) keeps it.
+    assert len(_COLUMN_MAP) == len(set(_COLUMN_MAP.keys()))
+
+
+def test_d3_party_type_map_values_are_party_kinds() -> None:
+    """Every _PARTY_TYPE_MAP value must be a non-empty tuple of valid
+    PartyKind literals.  Same regression guard as _COLUMN_MAP — keeps
+    the spike runner's vocabulary printout truthful."""
+    from typing import get_args
+
+    from app.service.migration.intermediate import PartyKind
+    from app.service.migration.vyapar_adapter import _PARTY_TYPE_MAP
+
+    # PartyKind is a Literal — extract its allowed values from typing.
+    valid_kinds = set(get_args(PartyKind))
+    assert valid_kinds, "PartyKind must define at least one literal value"
+
+    for src_value, kinds in _PARTY_TYPE_MAP.items():
+        assert isinstance(kinds, tuple) and kinds, (
+            f"_PARTY_TYPE_MAP[{src_value!r}] must be a non-empty tuple, got {kinds!r}"
+        )
+        for k in kinds:
+            assert k in valid_kinds, (
+                f"_PARTY_TYPE_MAP[{src_value!r}] contains {k!r} which is not "
+                f"a valid PartyKind. Valid kinds: {sorted(valid_kinds)}"
+            )
