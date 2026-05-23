@@ -5190,9 +5190,9 @@ paths:
         Finalises the operation after the karigar has returned all goods.
         Stamps end_date, emits a production_event. Idempotent.
 
-        NOTE: The router currently guards this with
-        manufacturing.karigar.dispatch (not receive) - dispatch role owns
-        the operation lifecycle end-to-end on the warehouse side.
+        Guarded by manufacturing.karigar.receive - closing the karigar
+        return loop is semantically a receive-side action, matching the
+        receive-karigar endpoint.
       parameters:
         - $ref: '#/components/parameters/OrgId'
         - $ref: '#/components/parameters/FirmId'
@@ -5226,4 +5226,4 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
-      x-permission: manufacturing.karigar.dispatch
+      x-permission: manufacturing.karigar.receive
