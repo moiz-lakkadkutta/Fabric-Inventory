@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 
+import { authStore } from '@/store/auth';
 import AdminHub from '@/pages/admin/AdminHub';
 
 function renderAdmin() {
@@ -50,10 +51,41 @@ describe('AdminHub (CUT-304)', () => {
     expect((select as HTMLSelectElement).value).toBe('r-owner');
   });
 
-  it('"Add role" still opens the coming-soon (custom roles deferred)', async () => {
+  it('"New role" opens the RoleBuilder dialog (TASK-TR-B4)', async () => {
     renderAdmin();
     await waitFor(() => expect(screen.getByText('Moiz Lakkadkutta')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /add role/i }));
-    await waitFor(() => expect(screen.getByText(/custom roles/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /new role/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: /new custom role/i })).toBeInTheDocument(),
+    );
+    const dialog = screen.getByRole('dialog', { name: /new custom role/i });
+    expect(within(dialog).getByLabelText(/role code/i)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(/role name/i)).toBeInTheDocument();
+  });
+
+  it('hides "New role" button when user lacks identity.role.create', async () => {
+    // Re-seed me with a permission set that drops identity.role.create.
+    authStore.setMe({
+      user_id: 'u',
+      org_id: 'mock-org',
+      firm_id: 'f',
+      email: 'no-perms@example.com',
+      permissions: ['admin.user.invite'],
+      flags: {},
+      available_firms: [],
+      token_expires_at: new Date(Date.now() + 3600_000).toISOString(),
+    });
+    renderAdmin();
+    await waitFor(() => expect(screen.getByText('Moiz Lakkadkutta')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /new role/i })).not.toBeInTheDocument();
+  });
+
+  it('renders System badge on system roles + no Edit button', async () => {
+    renderAdmin();
+    await waitFor(() => expect(screen.getByText('Moiz Lakkadkutta')).toBeInTheDocument());
+    // Mock fixtures: all 4 roles are system roles, so every card has the
+    // System badge and no Edit affordance.
+    expect(screen.getAllByText(/^system$/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole('button', { name: /^edit owner/i })).not.toBeInTheDocument();
   });
 });

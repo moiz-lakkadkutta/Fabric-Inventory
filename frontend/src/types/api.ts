@@ -169,6 +169,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the system permission catalog grouped by module
+         * @description Return the static catalog the Role builder renders.
+         *
+         *     Static — does not hit the DB. Permission rows in `permission` are
+         *     seeded per-org from this same catalog by `seed_system_permissions`,
+         *     so this endpoint and the org's actual permission set are guaranteed
+         *     to align after signup.
+         */
+        get: operations["list_permission_catalog_admin_permissions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/roles": {
         parameters: {
             query?: never;
@@ -187,11 +212,53 @@ export interface paths {
          */
         get: operations["list_roles_admin_roles_get"];
         put?: never;
-        post?: never;
+        /**
+         * Create a custom role with permission grants
+         * @description Owner-only — mints a non-system role with the given grants.
+         *
+         *     Service-layer validation handles:
+         *       - empty code/name
+         *       - colliding code with a system role (OWNER / ACCOUNTANT / …)
+         *       - unknown permission codes
+         */
+        post: operations["create_role_admin_roles_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/admin/roles/{role_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a role's full detail (incl. permission grants)
+         * @description Return the role + its current permission grants. Used by the Role
+         *     builder edit dialog to pre-check the boxes.
+         */
+        get: operations["get_role_admin_roles__role_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Soft-delete a custom role
+         * @description Owner-only — soft-deletes a non-system role. Refuses if users are
+         *     still assigned (service raises 422 — Admin must reassign first).
+         */
+        delete: operations["delete_role_admin_roles__role_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a custom role's name / description / permission grants
+         * @description Owner-only — mutates fields supplied in the body; `permissions`,
+         *     when supplied, replaces the existing grant set.
+         *
+         *     System roles refuse with 403 PERMISSION_DENIED (service raises).
+         */
+        patch: operations["update_role_admin_roles__role_id__patch"];
         trace?: never;
     };
     "/admin/users": {
@@ -3148,6 +3215,21 @@ export interface components {
             name?: string | null;
             /** Parent Cost Centre Id */
             parent_cost_centre_id?: string | null;
+        };
+        /**
+         * CreateRoleRequest
+         * @description Owner-only — `code` must be lowercase alphanumeric + underscore;
+         *     can't collide with a system role.
+         */
+        CreateRoleRequest: {
+            /** Code */
+            code: string;
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name: string;
+            /** Permissions */
+            permissions?: string[];
         };
         /** DCCreateRequest */
         DCCreateRequest: {
@@ -6512,6 +6594,37 @@ export interface components {
             tax_status?: components["schemas"]["TaxStatus"] | null;
         };
         /**
+         * PermissionCatalogEntry
+         * @description One row in the permission catalog — the FE renders these as
+         *     checkbox leaves in the Role builder.
+         */
+        PermissionCatalogEntry: {
+            /** Action */
+            action: string;
+            /** Code */
+            code: string;
+            /** Description */
+            description?: string | null;
+            /** Resource */
+            resource: string;
+        };
+        /**
+         * PermissionCatalogModule
+         * @description A module bucket (``sales``, ``inventory``, etc.) groups related
+         *     permission codes under a collapsible section in the UI.
+         */
+        PermissionCatalogModule: {
+            /** Module */
+            module: string;
+            /** Permissions */
+            permissions: components["schemas"]["PermissionCatalogEntry"][];
+        };
+        /** PermissionCatalogResponse */
+        PermissionCatalogResponse: {
+            /** Items */
+            items: components["schemas"]["PermissionCatalogModule"][];
+        };
+        /**
          * PnlGroupRow
          * @description One row in the P&L by-ledger-group table.
          *
@@ -6927,6 +7040,28 @@ export interface components {
              * @default true
              */
             ok: boolean;
+        };
+        /**
+         * RoleResponse
+         * @description Full role detail — used for both create + edit dialogs. Includes
+         *     grants so the edit dialog can pre-check the boxes.
+         */
+        RoleResponse: {
+            /** Code */
+            code: string;
+            /** Description */
+            description?: string | null;
+            /** Is System Role */
+            is_system_role: boolean;
+            /** Name */
+            name: string;
+            /** Permissions */
+            permissions: string[];
+            /**
+             * Role Id
+             * Format: uuid
+             */
+            role_id: string;
         };
         /** RoutingCreateRequest */
         RoutingCreateRequest: {
@@ -7854,6 +7989,19 @@ export interface components {
          * @enum {string}
          */
         UomType: "METER" | "PIECE" | "KG" | "LITER" | "SET" | "GROSS" | "DOZEN" | "ROLL" | "BUNDLE" | "OTHER";
+        /**
+         * UpdateRoleRequest
+         * @description All fields optional — supply only what's changing. `permissions`,
+         *     if present, replaces the existing grant set entirely.
+         */
+        UpdateRoleRequest: {
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Permissions */
+            permissions?: string[] | null;
+        };
         /** UpdateUserRoleRequest */
         UpdateUserRoleRequest: {
             /**
@@ -8220,6 +8368,26 @@ export interface operations {
             };
         };
     };
+    list_permission_catalog_admin_permissions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PermissionCatalogResponse"];
+                };
+            };
+        };
+    };
     list_roles_admin_roles_get: {
         parameters: {
             query?: never;
@@ -8240,6 +8408,140 @@ export interface operations {
                             [key: string]: unknown;
                         }[];
                     };
+                };
+            };
+        };
+    };
+    create_role_admin_roles_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRoleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_role_admin_roles__role_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                role_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_role_admin_roles__role_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                role_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_role_admin_roles__role_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                role_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRoleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

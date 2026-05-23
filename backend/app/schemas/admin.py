@@ -90,3 +90,67 @@ class AcceptInviteResponse(BaseModel):
 
 class UpdateUserRoleRequest(BaseModel):
     role_id: uuid.UUID
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Custom-role CRUD (TASK-TR-B4)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class PermissionCatalogEntry(BaseModel):
+    """One row in the permission catalog — the FE renders these as
+    checkbox leaves in the Role builder.
+    """
+
+    code: str
+    """Full code, ``resource.action`` (e.g. ``sales.invoice.create``)."""
+    resource: str
+    action: str
+    description: str | None = None
+
+
+class PermissionCatalogModule(BaseModel):
+    """A module bucket (``sales``, ``inventory``, etc.) groups related
+    permission codes under a collapsible section in the UI.
+    """
+
+    module: str
+    permissions: list[PermissionCatalogEntry]
+
+
+class PermissionCatalogResponse(BaseModel):
+    items: list[PermissionCatalogModule]
+
+
+class CreateRoleRequest(BaseModel):
+    """Owner-only — `code` must be lowercase alphanumeric + underscore;
+    can't collide with a system role.
+    """
+
+    code: str = Field(min_length=2, max_length=50, pattern=r"^[a-z0-9_]+$")
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    permissions: list[str] = Field(default_factory=list)
+
+
+class UpdateRoleRequest(BaseModel):
+    """All fields optional — supply only what's changing. `permissions`,
+    if present, replaces the existing grant set entirely.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    permissions: list[str] | None = None
+
+
+class RoleResponse(BaseModel):
+    """Full role detail — used for both create + edit dialogs. Includes
+    grants so the edit dialog can pre-check the boxes.
+    """
+
+    role_id: uuid.UUID
+    code: str
+    name: str
+    description: str | None = None
+    is_system_role: bool
+    permissions: list[str]

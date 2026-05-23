@@ -1996,6 +1996,49 @@
         "title": "CostCentreUpdateRequest",
         "type": "object"
       },
+      "CreateRoleRequest": {
+        "description": "Owner-only \u2014 `code` must be lowercase alphanumeric + underscore;\ncan't collide with a system role.",
+        "properties": {
+          "code": {
+            "maxLength": 50,
+            "minLength": 2,
+            "pattern": "^[a-z0-9_]+$",
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "title": "CreateRoleRequest",
+        "type": "object"
+      },
       "DCCreateRequest": {
         "properties": {
           "bill_to_address": {
@@ -10390,6 +10433,79 @@
         "title": "PartyUpdateRequest",
         "type": "object"
       },
+      "PermissionCatalogEntry": {
+        "description": "One row in the permission catalog \u2014 the FE renders these as\ncheckbox leaves in the Role builder.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "resource",
+          "action"
+        ],
+        "title": "PermissionCatalogEntry",
+        "type": "object"
+      },
+      "PermissionCatalogModule": {
+        "description": "A module bucket (``sales``, ``inventory``, etc.) groups related\npermission codes under a collapsible section in the UI.",
+        "properties": {
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "$ref": "#/components/schemas/PermissionCatalogEntry"
+            },
+            "title": "Permissions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "module",
+          "permissions"
+        ],
+        "title": "PermissionCatalogModule",
+        "type": "object"
+      },
+      "PermissionCatalogResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PermissionCatalogModule"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PermissionCatalogResponse",
+        "type": "object"
+      },
       "PnlGroupRow": {
         "description": "One row in the P&L by-ledger-group table.\n\n`current_period_amount` and `prior_period_amount` are signed against\nthe natural sign of the group (income/COGS/expense are all returned\nas positive numbers; net contribution to profit is computed in the\naggregate fields above). `variance_pct` is rounded to two decimals;\nthe FE re-formats for display.",
         "properties": {
@@ -11312,6 +11428,55 @@
           }
         },
         "title": "ResetPasswordResponse",
+        "type": "object"
+      },
+      "RoleResponse": {
+        "description": "Full role detail \u2014 used for both create + edit dialogs. Includes\ngrants so the edit dialog can pre-check the boxes.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_system_role": {
+            "title": "Is System Role",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "array"
+          },
+          "role_id": {
+            "format": "uuid",
+            "title": "Role Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role_id",
+          "code",
+          "name",
+          "is_system_role",
+          "permissions"
+        ],
+        "title": "RoleResponse",
         "type": "object"
       },
       "RoutingCreateRequest": {
@@ -13687,6 +13852,52 @@
         "title": "UomType",
         "type": "string"
       },
+      "UpdateRoleRequest": {
+        "description": "All fields optional \u2014 supply only what's changing. `permissions`,\nif present, replaces the existing grant set entirely.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "permissions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permissions"
+          }
+        },
+        "title": "UpdateRoleRequest",
+        "type": "object"
+      },
       "UpdateUserRoleRequest": {
         "properties": {
           "role_id": {
@@ -14363,6 +14574,28 @@
         ]
       }
     },
+    "/admin/permissions": {
+      "get": {
+        "description": "Return the static catalog the Role builder renders.\n\nStatic \u2014 does not hit the DB. Permission rows in `permission` are\nseeded per-org from this same catalog by `seed_system_permissions`,\nso this endpoint and the org's actual permission set are guaranteed\nto align after signup.",
+        "operationId": "list_permission_catalog_admin_permissions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List the system permission catalog grouped by module",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/roles": {
       "get": {
         "description": "Returns `{ items: [{ role_id, code, name, description, is_system_role }, ...] }`.\n\nUntyped envelope (dict) keeps the spec simple for the MVP admin\nsurface; codegen still picks up the path. Switch to a Pydantic\nresponse model when this surfaces in OpenAPI consumers other than\nAdminHub.",
@@ -14388,6 +14621,227 @@
           }
         },
         "summary": "List roles available for assignment in this org",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Owner-only \u2014 mints a non-system role with the given grants.\n\nService-layer validation handles:\n  - empty code/name\n  - colliding code with a system role (OWNER / ACCOUNTANT / \u2026)\n  - unknown permission codes",
+        "operationId": "create_role_admin_roles_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create a custom role with permission grants",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/roles/{role_id}": {
+      "delete": {
+        "description": "Owner-only \u2014 soft-deletes a non-system role. Refuses if users are\nstill assigned (service raises 422 \u2014 Admin must reassign first).",
+        "operationId": "delete_role_admin_roles__role_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "role_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Role Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Soft-delete a custom role",
+        "tags": [
+          "admin"
+        ]
+      },
+      "get": {
+        "description": "Return the role + its current permission grants. Used by the Role\nbuilder edit dialog to pre-check the boxes.",
+        "operationId": "get_role_admin_roles__role_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "role_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Role Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get a role's full detail (incl. permission grants)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "patch": {
+        "description": "Owner-only \u2014 mutates fields supplied in the body; `permissions`,\nwhen supplied, replaces the existing grant set.\n\nSystem roles refuse with 403 PERMISSION_DENIED (service raises).",
+        "operationId": "update_role_admin_roles__role_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "role_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Role Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update a custom role's name / description / permission grants",
         "tags": [
           "admin"
         ]

@@ -24,20 +24,27 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy import select, text
+from sqlalchemy.orm import Session
 
 from app.dependencies import SyncDBSession, require_permission
 from app.exceptions import NotFoundError
-from app.models import AppUser, Role, UserRole
+from app.models import AppUser, Permission, Role, RolePermission, UserRole
 from app.schemas.admin import (
     AcceptInviteRequest,
     AcceptInviteResponse,
     AdminUserListResponse,
     AdminUserResponse,
+    CreateRoleRequest,
     InviteCreateRequest,
     InviteCreateResponse,
+    PermissionCatalogEntry,
+    PermissionCatalogModule,
+    PermissionCatalogResponse,
+    RoleResponse,
+    UpdateRoleRequest,
     UpdateUserRoleRequest,
 )
-from app.service import invite_service
+from app.service import invite_service, rbac_service
 from app.service.identity_service import TokenPayload
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -294,6 +301,174 @@ def list_roles(
         for r in rows
     ]
     return {"items": items}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Permission catalog + Custom role CRUD (TASK-TR-B4)
+#
+# The catalog endpoint is the single source of truth the Role-builder UI
+# reads to render checkbox groups. Gated on `identity.role.read` so the
+# same permission that lets users view roles also lets them see what
+# permissions exist (consistent with the role-detail endpoint below).
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/permissions",
+    response_model=PermissionCatalogResponse,
+    summary="List the system permission catalog grouped by module",
+)
+def list_permission_catalog(
+    current_user: Annotated[TokenPayload, Depends(require_permission("identity.role.read"))],
+) -> PermissionCatalogResponse:
+    """Return the static catalog the Role builder renders.
+
+    Static — does not hit the DB. Permission rows in `permission` are
+    seeded per-org from this same catalog by `seed_system_permissions`,
+    so this endpoint and the org's actual permission set are guaranteed
+    to align after signup.
+    """
+    _ = current_user  # auth-only; dependency enforces the perm gate
+    catalog = rbac_service.list_system_permission_catalog()
+    return PermissionCatalogResponse(
+        items=[
+            PermissionCatalogModule(
+                module=group["module"],
+                permissions=[PermissionCatalogEntry(**perm) for perm in group["permissions"]],
+            )
+            for group in catalog
+        ]
+    )
+
+
+def _load_role_with_permissions(
+    db: Session,
+    *,
+    org_id: uuid.UUID,
+    role_id: uuid.UUID,
+) -> RoleResponse:
+    """Helper — returns a `RoleResponse` for an existing role + grants."""
+    role = db.execute(
+        select(Role).where(
+            Role.role_id == role_id,
+            Role.org_id == org_id,
+            Role.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if role is None:
+        raise NotFoundError(f"Role {role_id} not found")
+    grant_rows = list(
+        db.execute(
+            select(Permission.resource, Permission.action)
+            .join(RolePermission, RolePermission.permission_id == Permission.permission_id)
+            .where(RolePermission.role_id == role_id)
+        ).all()
+    )
+    grants = sorted(f"{r}.{a}" for r, a in grant_rows)
+    return RoleResponse(
+        role_id=role.role_id,
+        code=role.code,
+        name=role.name,
+        description=role.description,
+        is_system_role=bool(role.is_system_role),
+        permissions=grants,
+    )
+
+
+@router.get(
+    "/roles/{role_id}",
+    response_model=RoleResponse,
+    summary="Get a role's full detail (incl. permission grants)",
+)
+def get_role(
+    role_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("identity.role.read"))],
+) -> RoleResponse:
+    """Return the role + its current permission grants. Used by the Role
+    builder edit dialog to pre-check the boxes.
+    """
+    return _load_role_with_permissions(db, org_id=current_user.org_id, role_id=role_id)
+
+
+@router.post(
+    "/roles",
+    response_model=RoleResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a custom role with permission grants",
+)
+def create_role(
+    body: CreateRoleRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("identity.role.create"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> RoleResponse:
+    """Owner-only — mints a non-system role with the given grants.
+
+    Service-layer validation handles:
+      - empty code/name
+      - colliding code with a system role (OWNER / ACCOUNTANT / …)
+      - unknown permission codes
+    """
+    role = rbac_service.create_custom_role(
+        db,
+        org_id=current_user.org_id,
+        code=body.code,
+        name=body.name,
+        permission_codes=body.permissions,
+        description=body.description,
+    )
+    return _load_role_with_permissions(db, org_id=current_user.org_id, role_id=role.role_id)
+
+
+@router.patch(
+    "/roles/{role_id}",
+    response_model=RoleResponse,
+    summary="Update a custom role's name / description / permission grants",
+)
+def update_role(
+    role_id: uuid.UUID,
+    body: UpdateRoleRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("identity.role.update"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> RoleResponse:
+    """Owner-only — mutates fields supplied in the body; `permissions`,
+    when supplied, replaces the existing grant set.
+
+    System roles refuse with 403 PERMISSION_DENIED (service raises).
+    """
+    rbac_service.update_custom_role(
+        db,
+        org_id=current_user.org_id,
+        role_id=role_id,
+        name=body.name,
+        description=body.description,
+        permission_codes=body.permissions,
+    )
+    return _load_role_with_permissions(db, org_id=current_user.org_id, role_id=role_id)
+
+
+@router.delete(
+    "/roles/{role_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Soft-delete a custom role",
+)
+def delete_role(
+    role_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("identity.role.delete"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> None:
+    """Owner-only — soft-deletes a non-system role. Refuses if users are
+    still assigned (service raises 422 — Admin must reassign first).
+    """
+    rbac_service.delete_custom_role(
+        db,
+        org_id=current_user.org_id,
+        role_id=role_id,
+    )
+    return None
 
 
 # Sentinel — keeps the linter happy when imports are reorganised.

@@ -8,6 +8,10 @@ Exposes:
 - `get_user_permissions(session, user_id, firm_id)`
 - `has_permission(session, user_id, firm_id, permission_code)`
 - `create_custom_role(session, org_id, code, name, permission_codes, description)`
+- `update_custom_role(session, org_id, role_id, name=, description=, permission_codes=)`
+- `delete_custom_role(session, org_id, role_id)`
+- `list_system_permission_catalog()` — static catalog grouped by module
+- `list_org_permissions(session, org_id)` — Permission rows for the org
 
 Conventions:
 
@@ -25,7 +29,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable
-from typing import Final
+from typing import Final, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -52,6 +56,7 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("identity.role", "create", "Create custom roles"),
     ("identity.role", "update", "Update custom roles"),
     ("identity.role", "read", "View roles + permissions"),
+    ("identity.role", "delete", "Soft-delete custom roles"),
     # Masters
     ("masters.party", "create", "Create parties (customer/supplier/karigar/transporter)"),
     ("masters.party", "update", "Update parties"),
@@ -683,3 +688,178 @@ def update_system_role(*_args: object, **_kwargs: object) -> None:
     without changing call sites.
     """
     raise PermissionDeniedError("System roles are immutable for MVP")
+
+
+def update_custom_role(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    role_id: uuid.UUID,
+    name: str | None = None,
+    description: str | None = None,
+    permission_codes: Iterable[str] | None = None,
+) -> Role:
+    """Update name/description/permission grants on a non-system role.
+
+    `permission_codes`, when provided, is treated as the new full set —
+    grants are replaced (delete-then-insert). When ``None``, grants are
+    left untouched.
+
+    Validates:
+      - Role exists in this org and is not soft-deleted.
+      - Role is not a system role (system roles are immutable).
+      - `name`, when provided, is non-empty.
+      - Every entry in `permission_codes` exists for this org.
+    """
+    role = session.execute(
+        select(Role).where(
+            Role.role_id == role_id,
+            Role.org_id == org_id,
+            Role.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if role is None:
+        raise AppValidationError(f"Role {role_id} not found in this organization")
+    if role.is_system_role:
+        raise PermissionDeniedError("System roles are immutable for MVP")
+
+    if name is not None:
+        stripped = name.strip()
+        if not stripped:
+            raise AppValidationError("Role `name` cannot be empty")
+        role.name = stripped
+    if description is not None:
+        role.description = description or None
+
+    if permission_codes is not None:
+        perms = {
+            f"{p.resource}.{p.action}": p
+            for p in session.execute(
+                select(Permission).where(Permission.org_id == org_id)
+            ).scalars()
+        }
+        requested = list(permission_codes)
+        unknown = sorted({c for c in requested if c not in perms})
+        if unknown:
+            raise AppValidationError(f"Unknown permission codes: {unknown}")
+
+        # Replace grants — delete-then-insert. Cleaner than diffing, and
+        # `role_permission` is exempt from audit so the churn doesn't
+        # bloat the audit log.
+        existing_grants = list(
+            session.execute(
+                select(RolePermission).where(RolePermission.role_id == role.role_id)
+            ).scalars()
+        )
+        for g in existing_grants:
+            session.delete(g)
+        session.flush()
+        new_grants = [
+            RolePermission(
+                org_id=org_id,
+                role_id=role.role_id,
+                permission_id=perms[c].permission_id,
+            )
+            for c in requested
+        ]
+        if new_grants:
+            session.add_all(new_grants)
+            session.flush()
+
+    return role
+
+
+def delete_custom_role(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    role_id: uuid.UUID,
+) -> None:
+    """Soft-delete a non-system role.
+
+    Validates:
+      - Role exists in this org and isn't already deleted.
+      - Role is not a system role.
+      - No live `UserRole` rows reference it — refuse delete if users are
+        still assigned (Admin must reassign first; saves us from leaving
+        users with zero effective permissions).
+    """
+    role = session.execute(
+        select(Role).where(
+            Role.role_id == role_id,
+            Role.org_id == org_id,
+            Role.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if role is None:
+        raise AppValidationError(f"Role {role_id} not found in this organization")
+    if role.is_system_role:
+        raise PermissionDeniedError("System roles cannot be deleted")
+
+    assigned_count = (
+        session.execute(select(UserRole).where(UserRole.role_id == role_id)).scalars().first()
+    )
+    if assigned_count is not None:
+        raise AppValidationError(
+            "Cannot delete a role with users still assigned — reassign users first"
+        )
+
+    import datetime as _dt
+
+    role.deleted_at = _dt.datetime.now(_dt.UTC)
+    session.flush()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Permission catalog (FE consumes for the Role builder)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _module_for_resource(resource: str) -> str:
+    """Map a permission `resource` (e.g. ``sales.invoice``) to a UI module
+    bucket (``sales``). The bucket is just the first dotted segment.
+    """
+    return resource.split(".", 1)[0]
+
+
+class PermissionCatalogEntryDict(TypedDict):
+    code: str
+    resource: str
+    action: str
+    description: str
+
+
+class PermissionCatalogModuleDict(TypedDict):
+    module: str
+    permissions: list[PermissionCatalogEntryDict]
+
+
+def list_system_permission_catalog() -> list[PermissionCatalogModuleDict]:
+    """Returns the static catalog the FE renders in the Role builder.
+
+    Shape: a list of ``{module, permissions: [{code, resource, action, description}]}``
+    entries, ordered by the canonical module sequence so the UI is stable.
+    The list comes straight from `_SYSTEM_PERMISSIONS` so adding a new
+    permission to the catalog automatically surfaces here.
+    """
+    # Canonical module order — mirrors the sequence in `_SYSTEM_PERMISSIONS`
+    # rather than alphabetic so related groups stay adjacent in the UI.
+    seen_modules: list[str] = []
+    grouped: dict[str, list[PermissionCatalogEntryDict]] = {}
+    for resource, action, description in _SYSTEM_PERMISSIONS:
+        module = _module_for_resource(resource)
+        if module not in grouped:
+            grouped[module] = []
+            seen_modules.append(module)
+        grouped[module].append(
+            PermissionCatalogEntryDict(
+                code=f"{resource}.{action}",
+                resource=resource,
+                action=action,
+                description=description,
+            )
+        )
+    return [
+        PermissionCatalogModuleDict(module=module, permissions=grouped[module])
+        for module in seen_modules
+    ]
