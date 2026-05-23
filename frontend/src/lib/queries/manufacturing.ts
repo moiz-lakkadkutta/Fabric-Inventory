@@ -30,16 +30,15 @@
  * Shape-mismatch adaptations (the queries layer absorbs these so
  * consumer pages don't have to):
  *   - The Kanban groups by an MO `stage` (PLANNED / CUTTING / EMBROIDERY
- *     / STITCHING / QC / PACKED), but the BE only exposes a header-level
- *     `MoStatus` (DRAFT / RELEASED / IN_PROGRESS / COMPLETED / CLOSED).
- *     Per-operation granularity needs the operations array (only on the
- *     detail endpoint) and a coherent routing — neither is reliable for
- *     a list view today. We collapse `MoStatus` → `MoStage` so the Kanban
- *     renders sensibly; finer stage placement is a follow-up.
- *   - `MoListItem` carries no product / customer / due-date / UoM. We
- *     surface what we have (`finished_item_id` / `mo_date` / a placeholder
- *     product label) and leave the visual fields for the follow-up that
- *     joins MO ↔ item / party / sales-order.
+ *     / STITCHING / QC / PACKED). TASK-TR-A1: `useManufacturingOrders`
+ *     opts into `?include=operations` and `deriveMoStage` walks the
+ *     loaded operations + each op's `operation_master.operation_type`
+ *     to pick the lane. Falls back to header-status mapping when ops
+ *     are absent (lean shape).
+ *   - `MoListItem.finished_item_name` is server-resolved via LEFT JOIN
+ *     so the card surfaces the product name (no more "MO {number}"
+ *     placeholder). Customer slot stays empty until MO ↔ sales-order
+ *     link lands — the Kanban is about WHAT is being made.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -65,6 +64,10 @@ export type BackendMoListItem = components['schemas']['MoListItem'];
 export type BackendMoListResponse = components['schemas']['MoListResponse'];
 export type BackendMoResponse = components['schemas']['MoResponse'];
 export type BackendMoStatus = components['schemas']['MoStatus'];
+// TASK-TR-A1: A1's Kanban view-model maps each MO's eager-loaded ops.
+// `BackendMoOperationState` / `BackendOperationType` aliases live with
+// the A3 operations-drawer types below.
+export type BackendMoOperationListItem = components['schemas']['MoOperationListItem'];
 
 export type BackendDesignResponse = components['schemas']['DesignResponse'];
 export type BackendDesignListResponse = components['schemas']['DesignListResponse'];
@@ -124,12 +127,115 @@ export type BackendProductionEventResponse = components['schemas']['ProductionEv
 // ── MO list ↔ Kanban view-model mapper ────────────────────────────────
 
 /**
- * Collapse the header-level `MoStatus` to a Kanban `MoStage`. The BE
- * doesn't track an explicit current-stage on the MO header (the per-
- * operation lifecycle lives on `mo_operation.state`), so this is a
- * coarse mapping for the list view. The MO-detail screen — once it
- * lands as a follow-up — should drive stage placement off the live
- * operations array, not this fallback.
+ * Op states that mean "this op is still part of the current chain"
+ * for the purpose of picking the *current* lane. CLOSED + SKIPPED +
+ * CANCELLED are "done with this op", so we skip past them.
+ *
+ * TASK-TR-A1: the Kanban lane is driven by the FIRST non-CLOSED op in
+ * the chain (lowest sequence), with its operation_type mapped into a
+ * lane. PENDING / READY / DISPATCHED / ACKNOWLEDGED / IN_PROGRESS /
+ * RECEIVED_PARTIAL / RECEIVED_FULL / QC_PENDING / REWORK all count as
+ * "the chain hasn't moved past this op".
+ */
+const OP_STATE_DONE: ReadonlySet<BackendMoOperationState> = new Set([
+  'CLOSED',
+  'SKIPPED',
+  'CANCELLED',
+]);
+
+/**
+ * Map an ``OperationType`` to a Kanban lane.
+ *
+ * Lane choices reflect the textile-trade routing the trial customer
+ * runs today (cutting → embroidery → stitching → QC → packing). When
+ * the operation_type doesn't fit a specific lane (WEAVING / DYEING /
+ * OTHER) we drop into "CUTTING" — that's the visual home for "raw-
+ * material prep" in the textile shop floor.
+ */
+export function operationTypeToStage(opType: BackendOperationType | null | undefined): MoStage {
+  switch (opType) {
+    case 'EMBROIDERY':
+      return 'EMBROIDERY';
+    case 'STITCHING':
+      return 'STITCHING';
+    case 'QC':
+      return 'QC';
+    case 'PACKING':
+      // PACKING is the LAST op of a typical routing. While packing
+      // is in flight we render the MO in PACKED — visually it's
+      // already past the QC gate; the progress badge gives the
+      // operator the "not 100% yet" cue.
+      return 'PACKED';
+    case 'WEAVING':
+    case 'DYEING':
+    case 'OTHER':
+    case null:
+    case undefined:
+      // Textile fabric-prep ops (weaving / dyeing) and unclassified
+      // ops live in the "CUTTING" lane — that's where the trial
+      // customer's first physical handling happens.
+      return 'CUTTING';
+    default: {
+      // Exhaustiveness guard: TypeScript flags this if a new
+      // OperationType lands and isn't handled above.
+      const _exhaustive: never = opType;
+      void _exhaustive;
+      return 'CUTTING';
+    }
+  }
+}
+
+/**
+ * Derive the current Kanban stage for an MO from its operations array
+ * + header status (TASK-TR-A1).
+ *
+ * Algorithm:
+ *   1. DRAFT or RELEASED                          → PLANNED
+ *   2. Every op is in a "done" state              → PACKED
+ *   3. Otherwise, pick the FIRST non-done op
+ *      (lowest sequence) and map its op type      → lane
+ *   4. No operations array (lean shape)           → fall back to header
+ *      ``MoStatus``-derived lane (legacy mapping)
+ */
+export function deriveMoStage(
+  status: BackendMoStatus,
+  ops: BackendMoOperationListItem[] | null | undefined,
+): MoStage {
+  if (status === 'DRAFT' || status === 'RELEASED') return 'PLANNED';
+  if (status === 'COMPLETED' || status === 'CLOSED') return 'PACKED';
+  if (!ops || ops.length === 0) {
+    // Lean shape (no ?include=operations) — fall back to the legacy
+    // status-only mapping.
+    return moStatusToStage(status);
+  }
+  const sorted = [...ops].sort((a, b) => (a.operation_sequence ?? 0) - (b.operation_sequence ?? 0));
+  if (sorted.every((op) => OP_STATE_DONE.has(op.state))) return 'PACKED';
+  const current = sorted.find((op) => !OP_STATE_DONE.has(op.state));
+  if (!current) return 'PACKED';
+  return operationTypeToStage(current.operation_type);
+}
+
+/**
+ * Days since an op transitioned into its active state, from
+ * ``start_date``. Returns 0 when start_date is missing (op hasn't
+ * started yet) — the card just shows no SLA badge.
+ */
+export function daysSinceStart(
+  startDate: string | null | undefined,
+  now: Date = new Date(),
+): number {
+  if (!startDate) return 0;
+  const start = new Date(startDate);
+  if (Number.isNaN(start.getTime())) return 0;
+  const ms = now.getTime() - start.getTime();
+  return Math.max(0, Math.floor(ms / (1000 * 60 * 60 * 24)));
+}
+
+/**
+ * Collapse the header-level `MoStatus` to a Kanban `MoStage`. Legacy
+ * fallback for the lean list shape (no operations array). The richer
+ * ``deriveMoStage`` is preferred when the FE asks for
+ * ``?include=operations``.
  */
 export function moStatusToStage(status: BackendMoStatus): MoStage {
   switch (status) {
@@ -138,9 +244,8 @@ export function moStatusToStage(status: BackendMoStatus): MoStage {
       return 'PLANNED';
     case 'IN_PROGRESS':
       // Without operations + routing, we can't know which middle stage
-      // an in-progress MO sits in. Park it at STITCHING — the most common
-      // bottleneck in the trial customer's flow. Follow-up will compute
-      // this from `mo.operations[]` once the detail-view UI lands.
+      // an in-progress MO sits in. Park it at STITCHING — the most
+      // common bottleneck in the trial customer's flow.
       return 'STITCHING';
     case 'COMPLETED':
     case 'CLOSED':
@@ -152,34 +257,71 @@ export function moStatusToStage(status: BackendMoStatus): MoStage {
 
 /**
  * Map a BE MO list-item into the legacy `ManufacturingOrder` shape the
- * Kanban consumes. Fields we can't derive yet (product / customer /
- * UoM / due-date / progress / SLA timers) get sensible placeholders so
- * the Kanban still renders cleanly. A future task that joins MO with
- * the finished-item master + sales-order link can fill these in.
+ * Kanban consumes. Drives lane + progress + days_in_stage off the
+ * eager-loaded ``operations`` array when present; otherwise falls back
+ * to the header-status mapping with placeholder zeros for the SLA
+ * fields (TASK-TR-A1).
+ *
+ * ``finished_item_name`` replaces the legacy "MO {number}" placeholder
+ * for the card's product line; the ``customer`` slot is repurposed as
+ * the finished-item display label since the Kanban is about WHAT is
+ * being made, not WHO ordered it (the MO header has no customer link
+ * today).
  */
-export function mapMoListItemToKanban(b: BackendMoListItem): ManufacturingOrder {
+export function mapMoListItemToKanban(
+  b: BackendMoListItem,
+  now: Date = new Date(),
+): ManufacturingOrder {
+  const ops = b.operations ?? null;
+  const stage = deriveMoStage(b.status, ops);
+
+  // Progress: closed_ops / total_ops × 100. Falls back to the legacy
+  // 0/100 binary when the operations array isn't present.
+  let progress_pct = 0;
+  if (ops && ops.length > 0) {
+    const closed = ops.filter((o) => OP_STATE_DONE.has(o.state)).length;
+    progress_pct = Math.round((closed / ops.length) * 100);
+  } else if (b.status === 'COMPLETED' || b.status === 'CLOSED') {
+    progress_pct = 100;
+  }
+
+  // days_in_stage: derive from the current IN_PROGRESS op's start_date.
+  // If no op is mid-flight (PENDING / READY before start) → 0.
+  let days_in_stage = 0;
+  if (ops && ops.length > 0) {
+    const sorted = [...ops].sort(
+      (a, b2) => (a.operation_sequence ?? 0) - (b2.operation_sequence ?? 0),
+    );
+    const current = sorted.find((op) => !OP_STATE_DONE.has(op.state));
+    if (current?.start_date) {
+      days_in_stage = daysSinceStart(current.start_date, now);
+    }
+  }
+
   return {
     mo_id: b.manufacturing_order_id,
     number: b.series ? `${b.series}/${b.number}` : b.number,
-    // Product name needs a join through finished_item_id → item.name; not
-    // available in the list shape. Surface the MO number as a friendly
-    // placeholder so the card isn't blank.
-    product: `MO ${b.number}`,
+    // Product: prefer finished_item_name (server-resolved) → fall back
+    // to the prior placeholder when the field is null (legacy rows).
+    product: b.finished_item_name ?? `MO ${b.number}`,
     qty: parseFloat(b.planned_qty || '0'),
-    // No UoM on the list shape; default to PIECE — the only other supported
-    // Kanban UoM is METER and the list page tolerates either.
+    // No UoM on the list shape; default to PIECE — METER is the only
+    // other supported Kanban UoM and the list page tolerates either.
     uom: 'PIECE',
-    // No customer link on the MO header today; left blank rather than
-    // faking a value. The card just renders an empty customer slot.
+    // No customer link on the MO header today; the Kanban renders
+    // "WHAT is being made" via the product line. Leave empty so the
+    // card collapses cleanly rather than faking a value.
     customer: '',
-    // No planned_end_date on the list shape; surface mo_date so something
-    // useful shows ("Due 2026-05-14").
-    due_date: b.mo_date,
-    stage: moStatusToStage(b.status),
-    // No progress / SLA derivation in this PR — needs operations and
-    // routing standards. Render flat 0 for IN_PROGRESS, 100 for COMPLETED.
-    progress_pct: b.status === 'COMPLETED' || b.status === 'CLOSED' ? 100 : 0,
-    days_in_stage: 0,
+    // Prefer planned_end_date — when set, that's the real ETA. Fall
+    // back to mo_date for legacy MOs created before the persistence
+    // followup (so the card still has something useful).
+    due_date: b.planned_end_date ?? b.mo_date,
+    stage,
+    progress_pct,
+    days_in_stage,
+    // No SLA standards yet — the FE renders the badge only when
+    // days_in_stage > std_days_in_stage, so leaving this at 0 keeps
+    // the card visually clean. A future task can wire per-routing SLA.
     std_days_in_stage: 0,
   };
 }
@@ -192,6 +334,10 @@ export interface ListMosParams {
   design_id?: string;
   limit?: number;
   offset?: number;
+  // TASK-TR-A1: comma-separated list of expansions. Currently only
+  // "operations" is supported by the BE. Off by default to preserve
+  // the lean payload shape for the MO list page.
+  include?: string;
 }
 
 function requireFirmId(explicit?: string): string {
@@ -210,6 +356,7 @@ async function liveListMos(params: ListMosParams = {}): Promise<BackendMoListIte
   if (firm_id) usp.set('firm_id', firm_id);
   if (params.status) usp.set('status', params.status);
   if (params.design_id) usp.set('design_id', params.design_id);
+  if (params.include) usp.set('include', params.include);
   usp.set('limit', String(params.limit ?? 100));
   usp.set('offset', String(params.offset ?? 0));
   const qs = usp.toString();
@@ -369,17 +516,26 @@ const BOM_KEY = ['manufacturing', 'boms'] as const;
 const ROUTING_KEY = ['manufacturing', 'routings'] as const;
 
 /**
- * Legacy hook consumed by `ManufacturingPipeline`. Returns the Kanban
- * view-model. In live mode this maps the BE MO list; in mock mode it
- * returns the click-dummy fixture so demos still work.
+ * Hook consumed by `ManufacturingPipeline`. Returns the Kanban
+ * view-model with per-MO operations eager-loaded so lane placement +
+ * progress + days_in_stage come from real op state (TASK-TR-A1).
+ *
+ * In live mode the underlying GET ``/manufacturing/mo?include=operations``
+ * call returns the canonical (non-clone) op chain on each MO. The
+ * mock-mode branch keeps the click-dummy fixture so design demos
+ * still render.
  */
 export function useManufacturingOrders(params: ListMosParams = {}) {
+  // Always include operations for the Kanban — its lane mapping
+  // depends on per-op state. The MO-list page uses ``useMos`` (lean)
+  // for its dense table.
+  const effective: ListMosParams = { ...params, include: 'operations' };
   return useQuery<ManufacturingOrder[]>({
-    queryKey: [...MO_KEY, 'kanban', params],
+    queryKey: [...MO_KEY, 'kanban', effective],
     queryFn: async (): Promise<ManufacturingOrder[]> => {
       if (IS_LIVE) {
-        const items = await liveListMos(params);
-        return items.map(mapMoListItemToKanban);
+        const items = await liveListMos(effective);
+        return items.map((b) => mapMoListItemToKanban(b));
       }
       return fakeFetch([...manufacturingOrders]);
     },
@@ -1170,6 +1326,9 @@ export function useCloseKarigar(moId: string | undefined) {
 export const _internal = {
   mapMoListItemToKanban,
   moStatusToStage,
+  deriveMoStage,
+  operationTypeToStage,
+  daysSinceStart,
 };
 
 /**

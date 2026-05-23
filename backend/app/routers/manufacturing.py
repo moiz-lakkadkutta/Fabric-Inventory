@@ -24,6 +24,7 @@ from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query, status
+from sqlalchemy import select
 
 from app.dependencies import SyncDBSession, require_permission
 from app.exceptions import AppValidationError
@@ -45,7 +46,7 @@ from app.models.manufacturing import (
     RoutingEdge,
     RoutingEdgeType,
 )
-from app.models.masters import CostCentre, CostCentreType
+from app.models.masters import CostCentre, CostCentreType, Item
 from app.schemas.manufacturing import (
     BomCreateRequest,
     BomLineResponse,
@@ -76,6 +77,7 @@ from app.schemas.manufacturing import (
     MoListItem,
     MoListResponse,
     MoMaterialLineResponse,
+    MoOperationListItem,
     MoOperationResponse,
     MoResponse,
     MoTransitionRequest,
@@ -1008,7 +1010,35 @@ def _mo_to_response(mo: ManufacturingOrder, *, db: SyncDBSession | None = None) 
     )
 
 
-def _mo_to_list_item(mo: ManufacturingOrder) -> MoListItem:
+def _mo_operation_to_list_item(op: MoOperation) -> MoOperationListItem:
+    """Project a loaded ``MoOperation`` (with eager ``operation_master``)
+    into the lean Kanban-side shape. The caller filters clones."""
+    master = op.operation_master
+    return MoOperationListItem(
+        mo_operation_id=op.mo_operation_id,
+        operation_master_id=op.operation_master_id,
+        operation_sequence=op.operation_sequence,
+        state=op.state if op.state is not None else MoOperationState.PENDING,
+        executor=op.executor,
+        operation_type=master.operation_type if master is not None else None,
+        operation_master_name=master.name if master is not None else "",
+        start_date=op.start_date,
+    )
+
+
+def _mo_to_list_item(
+    mo: ManufacturingOrder,
+    *,
+    finished_item_name: str | None,
+    include_operations: bool,
+) -> MoListItem:
+    operations: list[MoOperationListItem] | None = None
+    if include_operations:
+        # Filter clones (REWORK spawns) so the Kanban shows the canonical
+        # chain. Same filter A09 routing-flow uses. Sort by sequence.
+        canonical = [op for op in mo.operations if op.rework_of_mo_operation_id is None]
+        canonical.sort(key=lambda o: o.operation_sequence or 0)
+        operations = [_mo_operation_to_list_item(op) for op in canonical]
     return MoListItem(
         manufacturing_order_id=mo.manufacturing_order_id,
         org_id=mo.org_id,
@@ -1017,10 +1047,13 @@ def _mo_to_list_item(mo: ManufacturingOrder) -> MoListItem:
         number=mo.number,
         design_id=mo.design_id,
         finished_item_id=mo.finished_item_id,
+        finished_item_name=finished_item_name,
         status=mo.status if mo.status is not None else MoStatus.DRAFT,
         mo_date=mo.mo_date,
         planned_qty=mo.planned_qty,
+        planned_end_date=mo.planned_end_date,
         created_at=mo.created_at,
+        operations=operations,
     )
 
 
@@ -1075,7 +1108,30 @@ def list_mos(
     design_id: Annotated[uuid.UUID | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
+    include: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Comma-separated list of expansions. Currently supported: "
+                "``operations`` — eager-loads each MO's operations + "
+                "operation_master so the Kanban can drive lane placement "
+                "off real per-op state. Off by default to preserve the "
+                "lean response shape (TASK-TR-A1)."
+            ),
+        ),
+    ] = None,
 ) -> MoListResponse:
+    # Parse ``include`` once. Comma-list shape leaves room for future
+    # expansions (e.g. ``include=operations,material_lines``) without a
+    # new query param. Unknown tokens are silently ignored — clients
+    # that ask for too much shouldn't break the list call.
+    expansions = (
+        {tok.strip().lower() for tok in include.split(",") if tok.strip()}
+        if include is not None
+        else set()
+    )
+    include_operations = "operations" in expansions
+
     items, total = mo_service.list_mos(
         db,
         org_id=current_user.org_id,
@@ -1084,9 +1140,32 @@ def list_mos(
         design_id=design_id,
         limit=limit,
         offset=offset,
+        include_operations=include_operations,
     )
+
+    # Resolve finished-item names in a single query — avoids N+1 from a
+    # naive per-MO fetch. Org-scope filter on top of RLS for defense-in-
+    # depth. Empty `items` short-circuits to skip the round-trip.
+    finished_item_names: dict[uuid.UUID, str] = {}
+    if items:
+        item_ids = {m.finished_item_id for m in items}
+        rows = db.execute(
+            select(Item.item_id, Item.name).where(
+                Item.org_id == current_user.org_id,
+                Item.item_id.in_(item_ids),
+            )
+        ).all()
+        finished_item_names = {row[0]: row[1] for row in rows}
+
     return MoListResponse(
-        items=[_mo_to_list_item(m) for m in items],
+        items=[
+            _mo_to_list_item(
+                m,
+                finished_item_name=finished_item_names.get(m.finished_item_id),
+                include_operations=include_operations,
+            )
+            for m in items
+        ],
         limit=limit,
         offset=offset,
         count=len(items),

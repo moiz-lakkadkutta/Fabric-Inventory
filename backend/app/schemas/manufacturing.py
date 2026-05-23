@@ -468,8 +468,39 @@ class MoResponse(BaseModel):
     operations: list[MoOperationResponse]
 
 
+class MoOperationListItem(BaseModel):
+    """Lean per-operation row used by the Kanban view (TASK-TR-A1).
+
+    Mirrors a subset of ``MoOperationResponse`` plus the resolved
+    ``operation_type`` / ``operation_master_name`` so the FE can drive
+    Kanban-lane placement without an N+1 fetch against the operation
+    master catalogue. Only populated when ``GET /manufacturing/mo`` is
+    called with ``?include=operations``; absent otherwise to preserve
+    the lean default shape.
+    """
+
+    mo_operation_id: uuid.UUID
+    operation_master_id: uuid.UUID
+    operation_sequence: int | None
+    state: MoOperationState
+    executor: str
+    operation_type: OperationType | None
+    operation_master_name: str
+    # ``start_date`` is the wall-clock when the op transitioned to
+    # IN_PROGRESS (or DISPATCHED for karigar ops). The Kanban derives
+    # `days_in_stage` off this.
+    start_date: datetime.datetime | None
+
+
 class MoListItem(BaseModel):
-    """List view: lighter than ``MoResponse`` — no nested children."""
+    """List view: lighter than ``MoResponse`` — no nested children.
+
+    TASK-TR-A1: optionally carries ``operations`` (only when the caller
+    passes ``?include=operations``) so the Kanban can drive stage lanes
+    off real op state. ``finished_item_name`` is always populated via a
+    single LEFT JOIN with ``item`` so the card shows the product name
+    rather than a placeholder.
+    """
 
     manufacturing_order_id: uuid.UUID
     org_id: uuid.UUID
@@ -478,10 +509,23 @@ class MoListItem(BaseModel):
     number: str
     design_id: uuid.UUID
     finished_item_id: uuid.UUID
+    # Resolved server-side via a single LEFT JOIN against ``item`` —
+    # avoids an N+1 fetch from the FE for what is a hot list view.
+    # ``None`` only if the finished item was hard-deleted, which the
+    # service layer forbids today.
+    finished_item_name: str | None = None
     status: MoStatus
     mo_date: datetime.date
     planned_qty: Decimal
+    # ``planned_end_date`` surfaces on the Kanban card as "Due …" when
+    # set; absent on legacy MOs created before the persistence followup.
+    planned_end_date: datetime.date | None = None
     created_at: datetime.datetime
+    # Only populated when ``?include=operations`` is set; the canonical
+    # (non-clone) ops sorted by ``operation_sequence``. Clones — rows
+    # with a non-null ``rework_of_mo_operation_id`` — are filtered out
+    # so the Kanban shows the original chain only.
+    operations: list[MoOperationListItem] | None = None
 
 
 class MoListResponse(BaseModel):

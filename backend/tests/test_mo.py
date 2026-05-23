@@ -1584,3 +1584,260 @@ def test_create_mo_seeds_op_qty_in_to_zero(http_client: TestClient, sync_engine:
     for r in rows:
         assert Decimal(str(r.qty_in)) == Decimal("0")
         assert (r.qty_in_record_count or 0) == 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TASK-TR-A1: GET /manufacturing/mo?include=operations + finished_item_name
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_list_mos_default_shape_omits_operations(http_client: TestClient) -> None:
+    """A1: the default (no ``?include``) list shape stays lean — no
+    ``operations`` array, and the Kanban-side fields are absent / null
+    so existing callers see no behaviour change.
+    """
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+
+    listed = http_client.get(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"]},
+    )
+    assert listed.status_code == 200, listed.text
+    body = listed.json()
+    assert body["count"] >= 1
+    item = body["items"][0]
+    # Operations array is the explicit opt-in field — None / absent off
+    # the wire when the param is omitted.
+    assert item.get("operations") is None
+    # finished_item_name is always populated (single LEFT JOIN by design).
+    assert item["finished_item_name"] is not None
+    assert item["finished_item_name"].startswith("Item F-")
+
+
+def test_list_mos_include_operations_returns_ops_with_master_metadata(
+    http_client: TestClient,
+) -> None:
+    """A1: ``?include=operations`` eager-loads the operations array on
+    each list item with operation_type + operation_master_name resolved
+    server-side. start_date is included so the FE can compute
+    ``days_in_stage`` off the IN_PROGRESS op without a detail fetch.
+    """
+    me = _signup_owner(http_client)
+    design_id = _create_design(http_client, me, code=f"D-{uuid.uuid4().hex[:6]}")
+    finished = _create_item(http_client, me, code=f"F-{uuid.uuid4().hex[:6]}", item_type="FINISHED")
+    raws = [_create_item(http_client, me, code=f"R{i}-{uuid.uuid4().hex[:5]}") for i in range(2)]
+    bom = _create_bom(
+        http_client,
+        me,
+        design_id=design_id,
+        finished_item_id=finished,
+        line_items=[(raws[0], "1.0000"), (raws[1], "0.5000")],
+    )
+
+    # Build a routing with a known mix of operation_types so the FE
+    # mapping (STITCHING → "Stitching" lane, QC → "QC" lane) is
+    # exercised end-to-end.
+    op_payloads = [
+        ("CUT", "WEAVING"),  # placeholder — no CUTTING enum; WEAVING is fine
+        ("STITCH", "STITCHING"),
+        ("QC", "QC"),
+    ]
+    op_ids: list[str] = []
+    for code, op_type in op_payloads:
+        resp = http_client.post(
+            "/operation-masters",
+            headers=_auth(me["access_token"]),
+            json={
+                "code": f"{code}-{uuid.uuid4().hex[:4]}",
+                "name": f"{code} op",
+                "firm_id": me["firm_id"],
+                "operation_type": op_type,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        op_ids.append(resp.json()["operation_master_id"])
+
+    routing = _create_routing(http_client, me, design_id=design_id, ops=op_ids)
+
+    mo = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+        ),
+    )
+    assert mo.status_code == 201, mo.text
+
+    listed = http_client.get(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"], "include": "operations"},
+    )
+    assert listed.status_code == 200, listed.text
+    body = listed.json()
+    assert body["count"] == 1
+    item = body["items"][0]
+
+    ops = item.get("operations")
+    assert isinstance(ops, list), "operations should be a list when ?include=operations"
+    assert len(ops) == 3
+    # Sorted by operation_sequence.
+    assert [op["operation_sequence"] for op in ops] == [1, 2, 3]
+    # operation_type + operation_master_name resolved server-side from
+    # the operation_master catalogue.
+    assert [op["operation_type"] for op in ops] == ["WEAVING", "STITCHING", "QC"]
+    assert all(op["operation_master_name"] for op in ops)
+    # start_date is exposed (None on a freshly-created PENDING MO).
+    assert all("start_date" in op for op in ops)
+    assert all(op["state"] == "PENDING" for op in ops)
+
+
+def test_list_mos_include_operations_filters_clones(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A1: clone rows (``rework_of_mo_operation_id IS NOT NULL``) are
+    filtered out so the Kanban sees the canonical operation chain only.
+    The clone is created by direct DB write — A10-FU's QC verdict path
+    spawns clones in real life; this is the cheaper assertion target.
+    """
+    from sqlalchemy import select as sa_select
+
+    from app.models.manufacturing import MoOperation
+
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    mo = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+        ),
+    )
+    assert mo.status_code == 201, mo.text
+    mo_id = mo.json()["manufacturing_order_id"]
+
+    # Insert a rework clone of the first op directly — mirrors what
+    # qc_service.record_qc_result spawns on a REWORK verdict.
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        original = session.execute(
+            sa_select(MoOperation)
+            .where(
+                MoOperation.manufacturing_order_id == uuid.UUID(mo_id),
+                MoOperation.operation_sequence == 1,
+                MoOperation.rework_of_mo_operation_id.is_(None),
+            )
+            .limit(1)
+        ).scalar_one()
+        clone = MoOperation(
+            org_id=original.org_id,
+            firm_id=original.firm_id,
+            manufacturing_order_id=original.manufacturing_order_id,
+            operation_master_id=original.operation_master_id,
+            operation_sequence=original.operation_sequence,
+            executor=original.executor,
+            rework_of_mo_operation_id=original.mo_operation_id,
+        )
+        session.add(clone)
+        session.commit()
+
+    listed = http_client.get(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"], "include": "operations"},
+    )
+    assert listed.status_code == 200, listed.text
+    items = listed.json()["items"]
+    target = next(i for i in items if i["manufacturing_order_id"] == mo_id)
+    ops = target["operations"]
+    # Routing has 3 ops + 1 clone = 4 rows; canonical chain = 3.
+    assert len(ops) == 3
+    # No op id matches the clone's id.
+    assert all(op["mo_operation_id"] != str(clone.mo_operation_id) for op in ops)
+    # All exposed ops are originals.
+    assert all(op["mo_operation_id"] != str(clone.mo_operation_id) for op in ops)
+
+
+def test_list_mos_unknown_include_token_is_ignored(http_client: TestClient) -> None:
+    """A1: ``?include`` accepts a comma-separated list. Unknown tokens
+    are silently dropped so a client asking for ``?include=foo,operations``
+    still gets operations populated and isn't broken by typos.
+    """
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+        ),
+    )
+
+    # Unknown token alone → behaves like no include (operations None).
+    none_resp = http_client.get(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"], "include": "bogus"},
+    )
+    assert none_resp.status_code == 200
+    assert none_resp.json()["items"][0]["operations"] is None
+
+    # operations + bogus together → operations still populated.
+    both_resp = http_client.get(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"], "include": "operations,bogus"},
+    )
+    assert both_resp.status_code == 200
+    assert isinstance(both_resp.json()["items"][0]["operations"], list)
+
+
+def test_list_mos_exposes_planned_end_date(http_client: TestClient) -> None:
+    """A1: ``planned_end_date`` rides on the list item so the Kanban
+    card can render "Due …" off the actual planned end (not the MO
+    creation date as a placeholder).
+    """
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        json=_mo_payload(
+            me=me,
+            design_id=design_id,
+            finished_item_id=finished,
+            bom_id=str(bom["bom_id"]),
+            routing_id=str(routing["routing_id"]),
+            planned_end_date="2026-06-15",
+        ),
+    )
+    resp = http_client.get(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"]},
+    )
+    assert resp.status_code == 200
+    item = resp.json()["items"][0]
+    assert item["planned_end_date"] == "2026-06-15"

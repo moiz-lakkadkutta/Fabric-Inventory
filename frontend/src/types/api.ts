@@ -5569,6 +5569,12 @@ export interface components {
         /**
          * MoListItem
          * @description List view: lighter than ``MoResponse`` — no nested children.
+         *
+         *     TASK-TR-A1: optionally carries ``operations`` (only when the caller
+         *     passes ``?include=operations``) so the Kanban can drive stage lanes
+         *     off real op state. ``finished_item_name`` is always populated via a
+         *     single LEFT JOIN with ``item`` so the card shows the product name
+         *     rather than a placeholder.
          */
         MoListItem: {
             /**
@@ -5586,6 +5592,8 @@ export interface components {
              * Format: uuid
              */
             finished_item_id: string;
+            /** Finished Item Name */
+            finished_item_name?: string | null;
             /**
              * Firm Id
              * Format: uuid
@@ -5603,11 +5611,15 @@ export interface components {
             mo_date: string;
             /** Number */
             number: string;
+            /** Operations */
+            operations?: components["schemas"]["MoOperationListItem"][] | null;
             /**
              * Org Id
              * Format: uuid
              */
             org_id: string;
+            /** Planned End Date */
+            planned_end_date?: string | null;
             /** Planned Qty */
             planned_qty: string;
             /** Series */
@@ -5652,6 +5664,39 @@ export interface components {
             qty_required: string;
             /** Qty Scrap */
             qty_scrap: string;
+        };
+        /**
+         * MoOperationListItem
+         * @description Lean per-operation row used by the Kanban view (TASK-TR-A1).
+         *
+         *     Mirrors a subset of ``MoOperationResponse`` plus the resolved
+         *     ``operation_type`` / ``operation_master_name`` so the FE can drive
+         *     Kanban-lane placement without an N+1 fetch against the operation
+         *     master catalogue. Only populated when ``GET /manufacturing/mo`` is
+         *     called with ``?include=operations``; absent otherwise to preserve
+         *     the lean default shape.
+         */
+        MoOperationListItem: {
+            /** Executor */
+            executor: string;
+            /**
+             * Mo Operation Id
+             * Format: uuid
+             */
+            mo_operation_id: string;
+            /**
+             * Operation Master Id
+             * Format: uuid
+             */
+            operation_master_id: string;
+            /** Operation Master Name */
+            operation_master_name: string;
+            /** Operation Sequence */
+            operation_sequence: number | null;
+            operation_type: components["schemas"]["OperationType"] | null;
+            /** Start Date */
+            start_date: string | null;
+            state: components["schemas"]["MoOperationState"];
         };
         /** MoOperationResponse */
         MoOperationResponse: {
@@ -11102,6 +11147,8 @@ export interface operations {
                 design_id?: string | null;
                 limit?: number;
                 offset?: number;
+                /** @description Comma-separated list of expansions. Currently supported: ``operations`` — eager-loads each MO's operations + operation_master so the Kanban can drive lane placement off real per-op state. Off by default to preserve the lean response shape (TASK-TR-A1). */
+                include?: string | null;
             };
             header?: never;
             path?: never;

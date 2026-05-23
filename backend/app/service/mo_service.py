@@ -577,12 +577,19 @@ def list_mos(
     design_id: uuid.UUID | None = None,
     limit: int = 50,
     offset: int = 0,
+    include_operations: bool = False,
 ) -> tuple[list[ManufacturingOrder], int]:
     """List MOs (paginated). Returns ``(items, total_count)``.
 
-    Filters are AND-combined. Material lines + operations are NOT
-    eager-loaded on list (keeps the payload small); use ``get_mo`` for
-    a detail view.
+    Filters are AND-combined. Material lines are NOT eager-loaded on
+    list (keeps the payload small); use ``get_mo`` for a detail view.
+
+    ``include_operations`` (TASK-TR-A1) — when True, eager-loads each
+    MO's operations + their ``operation_master`` (selectinload chain)
+    so the FE Kanban can drive lane placement off real per-op state
+    without an N+1 fetch. Clone rows (``rework_of_mo_operation_id IS
+    NOT NULL``) are NOT filtered at the query layer — the response
+    builder strips them so the canonical chain is what reaches the FE.
     """
     base_where = [
         ManufacturingOrder.org_id == org_id,
@@ -598,15 +605,21 @@ def list_mos(
     total = session.execute(
         select(func.count(ManufacturingOrder.manufacturing_order_id)).where(*base_where)
     ).scalar_one()
-    rows = list(
-        session.execute(
-            select(ManufacturingOrder)
-            .where(*base_where)
-            .order_by(ManufacturingOrder.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-        ).scalars()
+    stmt = (
+        select(ManufacturingOrder)
+        .where(*base_where)
+        .order_by(ManufacturingOrder.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
+    if include_operations:
+        # Two-level selectinload: MO → operations → operation_master.
+        # The router resolves operation_master.name + operation_type off
+        # the loaded master so we don't refetch per op.
+        stmt = stmt.options(
+            selectinload(ManufacturingOrder.operations).selectinload(MoOperation.operation_master)
+        )
+    rows = list(session.execute(stmt).scalars())
     return rows, int(total or 0)
 
 

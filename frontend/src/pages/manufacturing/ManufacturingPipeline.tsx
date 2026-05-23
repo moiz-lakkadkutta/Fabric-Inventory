@@ -147,7 +147,14 @@ function KanbanCard({ mo }: { mo: ManufacturingOrder }) {
         {mo.product}
       </div>
       <div className="mt-1.5" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-        {mo.qty} {mo.uom.toLowerCase()} · {mo.customer}
+        {/*
+          TASK-TR-A1: customer slot on the MO header is not wired today
+          (no sales-order ↔ MO link in v1). Drop it from the card when
+          empty so we don't render a trailing "· " separator. The card
+          is about WHAT is being made, not WHO ordered it.
+        */}
+        {mo.qty} {mo.uom.toLowerCase()}
+        {mo.customer ? ` · ${mo.customer}` : ''}
       </div>
       <div className="mt-2.5">
         <div
