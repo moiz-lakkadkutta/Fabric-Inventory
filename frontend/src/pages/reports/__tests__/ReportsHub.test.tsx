@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ReportsHub from '@/pages/reports/ReportsHub';
 
@@ -57,5 +57,36 @@ describe('ReportsHub', () => {
     renderReports();
     fireEvent.click(screen.getByRole('tab', { name: /daybook/i }));
     await waitFor(() => expect(screen.getByText(/RC\/25-26\/0001/)).toBeInTheDocument());
+  });
+});
+
+describe('ReportsHub — Print (TASK-TR-B1)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('Print button calls window.print() once (no ComingSoon dialog)', async () => {
+    const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
+    renderReports();
+    // Wait for the page to settle (P&L panel renders).
+    await waitFor(() => expect(screen.getAllByText(/total income/i).length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: /print report/i }));
+    expect(printSpy).toHaveBeenCalledTimes(1);
+    // The old "coming soon" copy must not be on screen.
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/click-dummy/i)).not.toBeInTheDocument();
+  });
+
+  it('renders a print-only header block above the tabs', async () => {
+    renderReports();
+    await waitFor(() => expect(screen.getAllByText(/total income/i).length).toBeGreaterThan(0));
+    // The print header is screen-hidden by CSS but present in the DOM
+    // so the browser surfaces it when @media print kicks in.
+    const header = document.querySelector('.print-header');
+    expect(header).not.toBeNull();
+    expect(header?.querySelector('.print-header-title')?.textContent).toMatch(/P&L/i);
   });
 });
