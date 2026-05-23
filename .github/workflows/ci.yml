@@ -436,6 +436,20 @@ jobs:
           CI: "true"
         run: pnpm exec playwright test cutover.spec.ts
 
+      # TASK-TR-A13 — manufacturing pipeline acceptance. API-driven E2E
+      # against the same docker-compose stack we just used above (signup
+      # mints a fresh tenant, so this spec can't collide with the
+      # cutover org). Run as a second invocation so the two suites
+      # have separate Playwright reports + traces on failure.
+      - name: Run Playwright manufacturing pipeline (manufacturing-pipeline.spec.ts)
+        working-directory: frontend
+        env:
+          E2E_NO_WEBSERVER: "1"
+          E2E_RUN_CUTOVER: "1"
+          PLAYWRIGHT_BASE_URL: http://localhost:5173
+          CI: "true"
+        run: pnpm exec playwright test manufacturing-pipeline.spec.ts
+
       - name: Dump docker logs on failure
         if: failure()
         run: |
