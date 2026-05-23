@@ -7458,7 +7458,7 @@
         "type": "object"
       },
       "OperationProgressResponse": {
-        "description": "Detailed shape returned by every progress mutation + GET. Wider\nthan ``MoOperationResponse`` (which is used inside MoResponse) \u2014\nsurfaces the scrap/wastage/byproduct counters and the state column\nthat the FE shop-floor view needs.",
+        "description": "Detailed shape returned by every progress mutation + GET. Wider\nthan ``MoOperationResponse`` (which is used inside MoResponse) \u2014\nsurfaces the scrap/wastage/byproduct counters and the state column\nthat the FE shop-floor view needs.\n\n``version`` is the optimistic-concurrency counter on\n``MoOperation``; the FE can stamp it into a future\n``If-Match`` / ``X-Expected-Version`` header so a stale shop-floor\ntablet doesn't clobber a parallel update.",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -7551,6 +7551,10 @@
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
           }
         },
         "required": [
@@ -7568,7 +7572,8 @@
           "start_date",
           "end_date",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "version"
         ],
         "title": "OperationProgressResponse",
         "type": "object"

@@ -1355,6 +1355,7 @@ def _to_progress_response(op: MoOperation) -> OperationProgressResponse:
         end_date=op.end_date,
         created_at=op.created_at,
         updated_at=op.updated_at,
+        version=op.version or 0,
     )
 
 

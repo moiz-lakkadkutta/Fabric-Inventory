@@ -283,39 +283,51 @@ def _list_ops(
     return [it for it in items if isinstance(it, dict)]
 
 
-def _make_salesperson(sync_engine: Engine, *, org_id: uuid.UUID, firm_id: uuid.UUID) -> str:
+def _make_user_with_role(
+    sync_engine: Engine, *, org_id: uuid.UUID, firm_id: uuid.UUID, role_code: str
+) -> str:
+    """Create a fresh user, assign them ``role_code`` (an existing system
+    role), and return a fresh access token bound to ``(org_id, firm_id)``.
+    Used by RBAC tests that need a non-OWNER session.
+    """
     from app.models import AppUser, Role
     from app.service import identity_service, rbac_service
 
     with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
-        sales_role = session.execute(
-            select(Role).where(Role.org_id == org_id, Role.code == "SALESPERSON")
+        role_row = session.execute(
+            select(Role).where(Role.org_id == org_id, Role.code == role_code)
         ).scalar_one()
-        sales_user = identity_service.register_user(
+        new_user = identity_service.register_user(
             session,
-            email=f"sales-{uuid.uuid4().hex[:6]}@example.com",
+            email=f"{role_code.lower()}-{uuid.uuid4().hex[:6]}@example.com",
             password="strong-password-1",
             org_id=org_id,
         )
         rbac_service.assign_role(
             session,
-            user_id=sales_user.user_id,
-            role_id=sales_role.role_id,
+            user_id=new_user.user_id,
+            role_id=role_row.role_id,
             firm_id=firm_id,
             org_id=org_id,
         )
-        sales_user_id = sales_user.user_id
+        new_user_id = new_user.user_id
         session.commit()
 
     with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
-        sales_user = session.execute(
-            select(AppUser).where(AppUser.user_id == sales_user_id)
+        new_user = session.execute(
+            select(AppUser).where(AppUser.user_id == new_user_id)
         ).scalar_one()
-        pair = identity_service.issue_tokens(session, user=sales_user, firm_id=firm_id)
+        pair = identity_service.issue_tokens(session, user=new_user, firm_id=firm_id)
         session.commit()
     return pair.access_token
+
+
+def _make_salesperson(sync_engine: Engine, *, org_id: uuid.UUID, firm_id: uuid.UUID) -> str:
+    return _make_user_with_role(
+        sync_engine, org_id=org_id, firm_id=firm_id, role_code="SALESPERSON"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -659,3 +671,139 @@ def test_start_still_rejects_when_predecessor_is_in_progress(
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"].lower()
     assert "predecessor" in detail
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A07 polish: Accountant has manufacturing.operation.read but NOT
+# manufacturing.operation.progress — GET succeeds, POST gets 403.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_accountant_can_read_operation_but_not_progress(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Accountant is granted ``manufacturing.operation.read`` (cost-roll-up
+    drilldown into the production_event audit trail) but NOT
+    ``manufacturing.operation.progress`` (shop-floor lifecycle is
+    Production Manager's job). Verify both halves with a real RBAC stack.
+    """
+    me, mo_id, _ops = _seed_world_one_line_two_ops(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+
+    ops = _list_ops(http_client, owner=me, mo_id=mo_id)
+    op1_id = str(ops[0]["mo_operation_id"])
+
+    accountant_token = _make_user_with_role(
+        sync_engine,
+        org_id=uuid.UUID(me["org_id"]),
+        firm_id=uuid.UUID(me["firm_id"]),
+        role_code="ACCOUNTANT",
+    )
+
+    # GET single op + events → 200
+    r_get = http_client.get(
+        f"/manufacturing/mo-operations/{op1_id}",
+        headers=_auth(accountant_token),
+    )
+    assert r_get.status_code == 200, r_get.text
+    body = r_get.json()
+    assert body["operation"]["mo_operation_id"] == op1_id
+
+    # GET list of ops → 200
+    r_list = http_client.get(
+        f"/manufacturing/mo/{mo_id}/operations",
+        headers=_auth(accountant_token),
+        params={"firm_id": me["firm_id"]},
+    )
+    assert r_list.status_code == 200, r_list.text
+
+    # POST /start → 403
+    r_start = http_client.post(
+        f"/manufacturing/mo-operations/{op1_id}/start",
+        headers=_auth(accountant_token),
+        json={"firm_id": me["firm_id"]},
+    )
+    assert r_start.status_code == 403, r_start.text
+    assert r_start.json()["code"] == "PERMISSION_DENIED"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A07 polish: qty_in_record_count drives the first-call-overwrite branch
+# (replaces the event-count heuristic). Two record_qty_in calls of 30
+# should add to a cumulative 60, not overwrite to 30 on each call.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_record_qty_in_overwrites_first_then_adds(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """The first ``record_qty_in`` call overwrites the planning figure;
+    subsequent calls add to the cumulative. Two posts of 30 should
+    leave qty_in at 60, not 30. Locks in the counter-column branch.
+    """
+    me, mo_id, _ops = _seed_world_one_line_two_ops(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+
+    ops = _list_ops(http_client, owner=me, mo_id=mo_id)
+    op1_id = str(ops[0]["mo_operation_id"])
+
+    r_start = http_client.post(
+        f"/manufacturing/mo-operations/{op1_id}/start",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"]},
+    )
+    assert r_start.status_code == 200, r_start.text
+
+    # First record_qty_in: overwrites planning figure (planned=100) → 30
+    r1 = http_client.post(
+        f"/manufacturing/mo-operations/{op1_id}/qty-in",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "qty_in": "30.0000"},
+    )
+    assert r1.status_code == 200, r1.text
+    assert Decimal(str(r1.json()["qty_in"])) == Decimal("30.0000")
+
+    # Second record_qty_in: adds to cumulative → 60
+    r2 = http_client.post(
+        f"/manufacturing/mo-operations/{op1_id}/qty-in",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "qty_in": "30.0000"},
+    )
+    assert r2.status_code == 200, r2.text
+    assert Decimal(str(r2.json()["qty_in"])) == Decimal("60.0000")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A07 polish: OperationProgressResponse exposes the optimistic-concurrency
+# ``version`` counter. Should start at 1 (incremented on /start) and
+# climb with each subsequent mutation.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_response_exposes_version_counter(http_client: TestClient, sync_engine: Engine) -> None:
+    me, mo_id, _ops = _seed_world_one_line_two_ops(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+
+    ops = _list_ops(http_client, owner=me, mo_id=mo_id)
+    op1_id = str(ops[0]["mo_operation_id"])
+
+    r_start = http_client.post(
+        f"/manufacturing/mo-operations/{op1_id}/start",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"]},
+    )
+    assert r_start.status_code == 200, r_start.text
+    v_after_start = r_start.json()["version"]
+    assert isinstance(v_after_start, int)
+    assert v_after_start >= 1
+
+    r_in = http_client.post(
+        f"/manufacturing/mo-operations/{op1_id}/qty-in",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "qty_in": "100.0000"},
+    )
+    assert r_in.status_code == 200, r_in.text
+    assert r_in.json()["version"] > v_after_start
