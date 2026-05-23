@@ -107,6 +107,20 @@ export type BackendQcResultRequest = components['schemas']['QcResultRequest'];
 export type BackendQcResultResponse = components['schemas']['QcResultResponse'];
 export type BackendQcOperationResponse = components['schemas']['QcOperationResponse'];
 
+// A4 karigar — request + response shapes for the dispatch / acknowledge /
+// receive / close path. The wider ``KarigarOperationResponse`` carries
+// ``acknowledged_at`` + ``outward_challan_id`` for the drawer's JWO
+// deep-link; the detail GET returns the narrower OperationProgressResponse
+// + event log, from which the same fields can be re-derived on cold
+// reloads.
+export type BackendKarigarOperationResponse = components['schemas']['KarigarOperationResponse'];
+export type BackendKarigarDispatchRequest = components['schemas']['KarigarDispatchRequest'];
+export type BackendKarigarAcknowledgeRequest = components['schemas']['KarigarAcknowledgeRequest'];
+export type BackendKarigarReceiveRequest = components['schemas']['KarigarReceiveRequest'];
+export type BackendKarigarCloseRequest = components['schemas']['KarigarCloseRequest'];
+export type BackendOperationDetailResponse = components['schemas']['OperationDetailResponse'];
+export type BackendProductionEventResponse = components['schemas']['ProductionEventResponse'];
+
 // ── MO list ↔ Kanban view-model mapper ────────────────────────────────
 
 /**
@@ -932,6 +946,224 @@ export function useQcResult(
   });
 }
 
+// ── A4 karigar actions (TASK-TR-A4) ──────────────────────────────────
+//
+// Mutation hooks for the karigar lifecycle (dispatch → acknowledge →
+// receive → close) plus a read-only ``useMoOperationDetail`` that lets
+// the drawer reconstruct ``acknowledged_at`` + ``outward_challan_id``
+// from the event log on a fresh page load (before any A4 mutation has
+// landed in the query cache). Each mutation invalidates the parent MO
+// (the operation state flips), the JWO list (dispatch mints a new JWO,
+// receives bump line totals), and the inventory namespace (dispatch /
+// receive move stock between MAIN and JOBWORK locations).
+//
+// All five share the operation-detail cache key — A5's QC PR will read
+// the same key, so we expose it as a const for cross-PR consistency.
+
+const OP_DETAIL_KEY = ['manufacturing', 'mo-operation-detail'] as const;
+
+async function liveGetMoOperationDetail(
+  moOperationId: string,
+): Promise<BackendOperationDetailResponse> {
+  return api<BackendOperationDetailResponse>(`/manufacturing/mo-operations/${moOperationId}`);
+}
+
+/**
+ * GET /manufacturing/mo-operations/{id} — operation snapshot + the
+ * append-only production event log. The drawer reads
+ * ``acknowledged_at`` (presence of an ``OPERATION_ACKNOWLEDGED`` event)
+ * and ``outward_challan_id`` (payload of the latest
+ * ``OPERATION_DISPATCHED`` event) from this when no karigar mutation
+ * has run yet in the current session.
+ */
+export function useMoOperationDetail(moOperationId: string | undefined) {
+  return useQuery<BackendOperationDetailResponse | null>({
+    queryKey: [...OP_DETAIL_KEY, moOperationId],
+    enabled: moOperationId !== undefined,
+    queryFn: () =>
+      IS_LIVE
+        ? liveGetMoOperationDetail(moOperationId as string)
+        : fakeFetch<BackendOperationDetailResponse | null>(null),
+    // The event log grows additively on every mutation; staleTime=0
+    // keeps the drawer honest after a dispatch / acknowledge / receive.
+    staleTime: 0,
+  });
+}
+
+export interface DispatchKarigarInput {
+  moOperationId: string;
+  firm_id?: string;
+  karigarPartyId: string;
+  qtyDispatched: string | number;
+  dispatchDate: string;
+  itemId?: string | null;
+  uom?: string | null;
+  lotId?: string | null;
+  narration?: string;
+  idempotencyKey: string;
+}
+
+async function liveDispatchKarigar(
+  input: DispatchKarigarInput,
+): Promise<BackendKarigarOperationResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendKarigarDispatchRequest = {
+    firm_id,
+    karigar_party_id: input.karigarPartyId,
+    qty_dispatched: input.qtyDispatched,
+    dispatch_date: input.dispatchDate,
+  };
+  // Send item_id / uom / lot_id only when present; the BE defaults
+  // item_id to the MO's finished item when omitted (A08-FU wiring).
+  if (input.itemId !== undefined && input.itemId !== null) body.item_id = input.itemId;
+  if (input.uom !== undefined && input.uom !== null) body.uom = input.uom;
+  if (input.lotId !== undefined && input.lotId !== null) body.lot_id = input.lotId;
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendKarigarOperationResponse>(
+    `/manufacturing/mo-operations/${input.moOperationId}/dispatch-karigar`,
+    {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body,
+    },
+  );
+}
+
+export interface AcknowledgeKarigarInput {
+  moOperationId: string;
+  firm_id?: string;
+  narration?: string;
+  idempotencyKey: string;
+}
+
+async function liveAcknowledgeKarigar(
+  input: AcknowledgeKarigarInput,
+): Promise<BackendKarigarOperationResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendKarigarAcknowledgeRequest = { firm_id };
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendKarigarOperationResponse>(
+    `/manufacturing/mo-operations/${input.moOperationId}/acknowledge-karigar`,
+    {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body,
+    },
+  );
+}
+
+export interface ReceiveKarigarInput {
+  moOperationId: string;
+  firm_id?: string;
+  qtyReceived?: string | number;
+  qtyScrap?: string | number;
+  qtyByproduct?: string | number;
+  qtyWastage?: string | number;
+  receiptDate?: string | null;
+  narration?: string;
+  idempotencyKey: string;
+}
+
+async function liveReceiveKarigar(
+  input: ReceiveKarigarInput,
+): Promise<BackendKarigarOperationResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  // The BE schema defaults each qty to 0 — but at least one must be >0
+  // (the service enforces this). FE-side validation lives in the form.
+  const body: BackendKarigarReceiveRequest = {
+    firm_id,
+    qty_received: input.qtyReceived ?? 0,
+    qty_scrap: input.qtyScrap ?? 0,
+    qty_byproduct: input.qtyByproduct ?? 0,
+    qty_wastage: input.qtyWastage ?? 0,
+  };
+  if (input.receiptDate !== undefined) body.receipt_date = input.receiptDate;
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendKarigarOperationResponse>(
+    `/manufacturing/mo-operations/${input.moOperationId}/receive-karigar`,
+    {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body,
+    },
+  );
+}
+
+export interface CloseKarigarInput {
+  moOperationId: string;
+  firm_id?: string;
+  narration?: string;
+  idempotencyKey: string;
+}
+
+async function liveCloseKarigar(
+  input: CloseKarigarInput,
+): Promise<BackendKarigarOperationResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendKarigarCloseRequest = { firm_id };
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendKarigarOperationResponse>(
+    `/manufacturing/mo-operations/${input.moOperationId}/close-karigar`,
+    {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body,
+    },
+  );
+}
+
+/**
+ * Karigar-mutation cache fan-out. Re-uses the in-house helper but also
+ * busts the JWO list (dispatch mints a JWO; receive updates line totals)
+ * and the operation-detail key (drawer reads ``acknowledged_at`` from
+ * the events log) so the drawer re-renders against fresh state.
+ */
+function invalidateKarigarFanout(
+  qc: ReturnType<typeof useQueryClient>,
+  moId: string | undefined,
+  moOperationId: string,
+): void {
+  invalidateMoAndStock(qc, moId);
+  qc.invalidateQueries({ queryKey: [...OP_DETAIL_KEY, moOperationId] });
+  qc.invalidateQueries({ queryKey: ['jobwork', 'orders'] });
+}
+
+/** POST /manufacturing/mo-operations/{id}/dispatch-karigar. Mints a JWO. */
+export function useDispatchKarigar(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendKarigarOperationResponse, Error, DispatchKarigarInput>({
+    mutationFn: (input) => liveDispatchKarigar(input),
+    onSuccess: (_resp, input) => invalidateKarigarFanout(qc, moId, input.moOperationId),
+  });
+}
+
+/** POST /manufacturing/mo-operations/{id}/acknowledge-karigar. */
+export function useAcknowledgeKarigar(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendKarigarOperationResponse, Error, AcknowledgeKarigarInput>({
+    mutationFn: (input) => liveAcknowledgeKarigar(input),
+    onSuccess: (_resp, input) => invalidateKarigarFanout(qc, moId, input.moOperationId),
+  });
+}
+
+/** POST /manufacturing/mo-operations/{id}/receive-karigar. Cumulative. */
+export function useReceiveKarigar(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendKarigarOperationResponse, Error, ReceiveKarigarInput>({
+    mutationFn: (input) => liveReceiveKarigar(input),
+    onSuccess: (_resp, input) => invalidateKarigarFanout(qc, moId, input.moOperationId),
+  });
+}
+
+/** POST /manufacturing/mo-operations/{id}/close-karigar. */
+export function useCloseKarigar(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendKarigarOperationResponse, Error, CloseKarigarInput>({
+    mutationFn: (input) => liveCloseKarigar(input),
+    onSuccess: (_resp, input) => invalidateKarigarFanout(qc, moId, input.moOperationId),
+  });
+}
+
 // ── Test-only exports ────────────────────────────────────────────────
 
 /** Mappers exposed for the live-mapping unit tests. */
@@ -972,4 +1204,10 @@ export const __live = {
   liveStartQc,
   liveRecordQcResult,
   liveGetQcResult,
+  // A4 karigar:
+  liveGetMoOperationDetail,
+  liveDispatchKarigar,
+  liveAcknowledgeKarigar,
+  liveReceiveKarigar,
+  liveCloseKarigar,
 };
