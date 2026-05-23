@@ -716,6 +716,12 @@ class MoOperation(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     )
 
     manufacturing_order: Mapped[ManufacturingOrder] = relationship(back_populates="operations")
+    # Lazy join to the catalogue row so reason strings / UI can render
+    # the operation's human name without a separate lookup. Selectinload-
+    # eligible via ``selectinload(MoOperation.operation_master)``; the
+    # routing_flow engine uses that to surface FE-friendly predecessor
+    # names in its blocked-reason strings (TR-A09 FU3).
+    operation_master: Mapped[OperationMaster] = relationship()
 
 
 # ──────────────────────────────────────────────────────────────────────
