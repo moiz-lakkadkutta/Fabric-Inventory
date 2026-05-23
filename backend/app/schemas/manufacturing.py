@@ -584,6 +584,25 @@ class OperationDetailResponse(BaseModel):
     events: list[ProductionEventResponse]
 
 
+class CanStartOperationResponse(BaseModel):
+    """GET /manufacturing/mo-operations/{id}/can-start — TR-A09.
+
+    Surface the routing-DAG engine verdict for an operation so the FE
+    can disable a "Start" button (and show a hint) when an upstream
+    edge is unsatisfied. ``reason`` is a human-readable description of
+    the first blocking constraint, ``None`` when ``allowed`` is True.
+
+    Idempotent / read-only — does not transition the op. The state
+    machine guards in ``start_operation`` are still the source of
+    truth: a FE that ignored the can-start hint and POSTed /start
+    would still get a 422 with the same reason.
+    """
+
+    mo_operation_id: uuid.UUID
+    allowed: bool
+    reason: str | None
+
+
 # ──────────────────────────────────────────────────────────────────────
 # TASK-TR-A08 — Karigar (job-work) per-operation send-out / receive
 # ──────────────────────────────────────────────────────────────────────
@@ -691,6 +710,7 @@ __all__ = [
     "BomLineResponse",
     "BomListResponse",
     "BomResponse",
+    "CanStartOperationResponse",
     "CostCentreCreateRequest",
     "CostCentreListResponse",
     "CostCentreResponse",

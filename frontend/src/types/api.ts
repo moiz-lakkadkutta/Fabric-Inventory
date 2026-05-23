@@ -1201,6 +1201,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/manufacturing/mo-operations/{mo_operation_id}/can-start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Routing-DAG verdict: can this op start now?
+         * @description TR-A09 — surface the edge-walking engine's verdict for an op so
+         *     the FE can disable a "Start" button (or pre-flight a karigar
+         *     dispatch) when an upstream edge is unsatisfied.
+         *
+         *     Read-only. The state-machine guards inside ``start_operation`` /
+         *     ``dispatch_to_karigar`` remain the source of truth: an over-eager
+         *     POST would still get a 422 with the same reason.
+         */
+        get: operations["can_start_mo_operation_manufacturing_mo_operations__mo_operation_id__can_start_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/manufacturing/mo-operations/{mo_operation_id}/close-karigar": {
         parameters: {
             query?: never;
@@ -2556,6 +2582,31 @@ export interface components {
             updated_at: string;
             /** Version Number */
             version_number: number;
+        };
+        /**
+         * CanStartOperationResponse
+         * @description GET /manufacturing/mo-operations/{id}/can-start — TR-A09.
+         *
+         *     Surface the routing-DAG engine verdict for an operation so the FE
+         *     can disable a "Start" button (and show a hint) when an upstream
+         *     edge is unsatisfied. ``reason`` is a human-readable description of
+         *     the first blocking constraint, ``None`` when ``allowed`` is True.
+         *
+         *     Idempotent / read-only — does not transition the op. The state
+         *     machine guards in ``start_operation`` are still the source of
+         *     truth: a FE that ignored the can-start hint and POSTed /start
+         *     would still get a 422 with the same reason.
+         */
+        CanStartOperationResponse: {
+            /** Allowed */
+            allowed: boolean;
+            /**
+             * Mo Operation Id
+             * Format: uuid
+             */
+            mo_operation_id: string;
+            /** Reason */
+            reason: string | null;
         };
         /** ChequeCreateRequest */
         ChequeCreateRequest: {
@@ -10165,6 +10216,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KarigarOperationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    can_start_mo_operation_manufacturing_mo_operations__mo_operation_id__can_start_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CanStartOperationResponse"];
                 };
             };
             /** @description Validation Error */

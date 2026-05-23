@@ -79,20 +79,15 @@ from app.models.manufacturing import (
     MoStatus,
     ProductionEvent,
 )
-from app.service import audit_service, jobwork_service
+from app.service import audit_service, jobwork_service, routing_flow_service
 
 _IN_HOUSE = "IN_HOUSE"
 _KARIGAR = "KARIGAR"
 
-# Same predecessor-terminal set as A07 (FU1) — CLOSED / SKIPPED /
-# CANCELLED all mean "the predecessor will produce nothing more".
-_TERMINAL_PREDECESSOR_STATES: frozenset[MoOperationState] = frozenset(
-    {
-        MoOperationState.CLOSED,
-        MoOperationState.SKIPPED,
-        MoOperationState.CANCELLED,
-    }
-)
+# Predecessor terminal set (CLOSED / SKIPPED / CANCELLED) lives in
+# ``routing_flow_service.TERMINAL_STATES`` post-TR-A09 — the
+# edge-walking engine owns the predecessor check for both the in-house
+# (A07) and karigar (A08) paths.
 
 # States a karigar op can be in when re-dispatching. PENDING for the
 # first dispatch; RECEIVED_FULL for a re-dispatch (operator splits the
@@ -205,22 +200,10 @@ def _ensure_karigar(op: MoOperation) -> None:
         )
 
 
-def _predecessors_closed(session: Session, *, op: MoOperation) -> bool:
-    """Same predecessor check as A07 — sequence-based, treats
-    CLOSED / SKIPPED / CANCELLED as terminal.
-    """
-    if op.operation_sequence is None:
-        return False
-    pending_count = session.execute(
-        select(func.count(MoOperation.mo_operation_id)).where(
-            MoOperation.manufacturing_order_id == op.manufacturing_order_id,
-            MoOperation.deleted_at.is_(None),
-            MoOperation.operation_sequence.is_not(None),
-            MoOperation.operation_sequence < op.operation_sequence,
-            MoOperation.state.not_in(_TERMINAL_PREDECESSOR_STATES),
-        )
-    ).scalar_one()
-    return int(pending_count or 0) == 0
+# Note: the sequence-based ``_predecessors_closed`` helper was removed
+# in TR-A09. The edge-walking ``routing_flow_service.can_start_operation``
+# engine now handles the predecessor check for both the in-house path
+# (A07) and the karigar dispatch path (A08).
 
 
 def _resolve_dispatch_item(session: Session, *, mo: ManufacturingOrder) -> tuple[uuid.UUID, str]:
@@ -337,12 +320,13 @@ def dispatch_to_karigar(
             f"is in status {mo.status}, expected IN_PROGRESS."
         )
 
-    if not _predecessors_closed(session, op=op):
-        raise AppValidationError(
-            f"Cannot dispatch operation {mo_operation_id}: a predecessor "
-            f"(smaller operation_sequence than {op.operation_sequence}) is not "
-            "in a terminal state (CLOSED / SKIPPED / CANCELLED) yet."
-        )
+    # TR-A09: edge-walking DAG engine replaces the sequence-based
+    # predecessor check. The karigar dispatch path applies the same
+    # FINISH_TO_START / START_TO_START / PARTIAL_FINISH_TO_START
+    # semantics as the in-house start path.
+    allowed, reason = routing_flow_service.can_start_operation(session, op=op)
+    if not allowed:
+        raise AppValidationError(f"Cannot dispatch operation {mo_operation_id}: {reason}.")
 
     # Validate karigar party. jobwork_service does this too but the
     # error there is generic; we want the early bail.
