@@ -7381,6 +7381,11 @@
             "title": "Executor",
             "type": "string"
           },
+          "is_rework_paid": {
+            "default": false,
+            "title": "Is Rework Paid",
+            "type": "boolean"
+          },
           "manufacturing_order_id": {
             "format": "uuid",
             "title": "Manufacturing Order Id",
@@ -7430,6 +7435,18 @@
               }
             ],
             "title": "Qty Out"
+          },
+          "rework_of_mo_operation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rework Of Mo Operation Id"
           },
           "state": {
             "$ref": "#/components/schemas/MoOperationState"
@@ -8080,6 +8097,11 @@
             "title": "Executor",
             "type": "string"
           },
+          "is_rework_paid": {
+            "default": false,
+            "title": "Is Rework Paid",
+            "type": "boolean"
+          },
           "manufacturing_order_id": {
             "format": "uuid",
             "title": "Manufacturing Order Id",
@@ -8130,6 +8152,18 @@
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Qty Wastage",
             "type": "string"
+          },
+          "rework_of_mo_operation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rework Of Mo Operation Id"
           },
           "start_date": {
             "anyOf": [

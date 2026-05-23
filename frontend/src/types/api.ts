@@ -5348,6 +5348,11 @@ export interface components {
             /** Executor */
             executor: string;
             /**
+             * Is Rework Paid
+             * @default false
+             */
+            is_rework_paid: boolean;
+            /**
              * Manufacturing Order Id
              * Format: uuid
              */
@@ -5368,6 +5373,8 @@ export interface components {
             qty_in: string | null;
             /** Qty Out */
             qty_out: string | null;
+            /** Rework Of Mo Operation Id */
+            rework_of_mo_operation_id?: string | null;
             state: components["schemas"]["MoOperationState"];
         };
         /**
@@ -5621,6 +5628,11 @@ export interface components {
             /** Executor */
             executor: string;
             /**
+             * Is Rework Paid
+             * @default false
+             */
+            is_rework_paid: boolean;
+            /**
              * Manufacturing Order Id
              * Format: uuid
              */
@@ -5647,6 +5659,8 @@ export interface components {
             qty_rejected: string;
             /** Qty Wastage */
             qty_wastage: string;
+            /** Rework Of Mo Operation Id */
+            rework_of_mo_operation_id?: string | null;
             /** Start Date */
             start_date: string | null;
             state: components["schemas"]["MoOperationState"];

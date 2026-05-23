@@ -958,6 +958,8 @@ def _mo_operation_to_response(op: MoOperation) -> MoOperationResponse:
         executor=op.executor,
         qty_in=op.qty_in,
         qty_out=op.qty_out,
+        rework_of_mo_operation_id=op.rework_of_mo_operation_id,
+        is_rework_paid=bool(op.is_rework_paid),
     )
 
 
@@ -1457,6 +1459,9 @@ def _to_progress_response(op: MoOperation) -> OperationProgressResponse:
         created_at=op.created_at,
         updated_at=op.updated_at,
         version=op.version or 0,
+        # A10-FU: clone-relationship surface.
+        rework_of_mo_operation_id=op.rework_of_mo_operation_id,
+        is_rework_paid=bool(op.is_rework_paid),
     )
 
 

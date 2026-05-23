@@ -208,8 +208,21 @@ def _load_routing_with_edges(
 
 def _load_mo_operations(session: Session, *, mo_id: uuid.UUID) -> dict[uuid.UUID, MoOperation]:
     """Return ``{operation_master_id: MoOperation}`` for every non-deleted
-    op on the MO. The map lets the engine answer "what's the state of
-    the predecessor whose master id is X" in O(1).
+    *original* op on the MO. The map lets the engine answer "what's the
+    state of the predecessor whose master id is X" in O(1).
+
+    **A10-FU rework filter.** Rework clones (``rework_of_mo_operation_id
+    IS NOT NULL``) share the same ``operation_master_id`` as their parent
+    — without this filter, a clone PENDING row would silently clobber
+    the parent's CLOSED state in the dict and break downstream
+    predecessor checks for the QC op (the routing edge points at the
+    operation_master, and the engine asked "what's the state of the
+    op with master=X?" expecting the original). Clones live OFF the
+    routing graph (they have no incoming edge of their own); their own
+    can_start check short-circuits via the ``rework_of_mo_operation_id
+    IS NOT NULL`` guard in ``can_start_operation`` — so they never need
+    a routing-graph predecessor lookup. Filtering them out of this map
+    is the single source of truth.
 
     Eager-loads ``operation_master`` (selectinload) so reason strings
     rendered in ``_check_edge`` can use the human-friendly catalogue
@@ -222,6 +235,7 @@ def _load_mo_operations(session: Session, *, mo_id: uuid.UUID) -> dict[uuid.UUID
             .where(
                 MoOperation.manufacturing_order_id == mo_id,
                 MoOperation.deleted_at.is_(None),
+                MoOperation.rework_of_mo_operation_id.is_(None),
             )
             .options(selectinload(MoOperation.operation_master))
         ).scalars()
@@ -410,6 +424,16 @@ def can_start_operation(
     Defensive characteristics:
       - No incoming edges → allowed (base case; also serves as the
         fallback for edgeless or routing-less MOs).
+      - **Rework clones** (``rework_of_mo_operation_id IS NOT NULL``)
+        are always startable: the clone is created in response to a
+        QC REWORK verdict, so its semantic predecessor (the parent
+        op whose work needs redoing) has by definition produced units
+        that need re-processing. Clones live off the routing graph —
+        they have no incoming edge of their own — so the standard
+        edge-walking check would trivially pass anyway, but we make
+        this explicit so future readers don't have to reason about
+        clone semantics through the dict-clobber filter in
+        ``_load_mo_operations``. A10-FU.
       - Soft-deleted edges are ignored.
       - A predecessor that has no instantiated MoOperation on the
         same MO is treated as a hard block.
@@ -420,6 +444,13 @@ def can_start_operation(
         caps the loop at ``num_operations * 2`` so a corrupted DB
         with a self-loop or cycle cannot infinite-loop.
     """
+    # A10-FU: rework clones are always startable. They were spawned by a
+    # QC REWORK verdict; the clone's qty_in == the qty needing redo, and
+    # the parent op (the failing predecessor) has by definition already
+    # produced units. No routing-edge check needed.
+    if op.rework_of_mo_operation_id is not None:
+        return True, None
+
     # Load the parent MO so we know which routing applies.
     mo = session.execute(
         select(ManufacturingOrder).where(

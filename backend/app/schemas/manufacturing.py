@@ -425,6 +425,16 @@ class MoOperationResponse(BaseModel):
     executor: str
     qty_in: Decimal | None
     qty_out: Decimal | None
+    # A10-FU: rework-clone hooks. ``rework_of_mo_operation_id`` points
+    # back to the failing predecessor when this row is a clone spawned
+    # by a REWORK QC verdict (NULL on original ops). ``is_rework_paid``
+    # is the textile-trade billability flag — defaults FALSE (free
+    # rework when the karigar's work is faulty); a future admin path
+    # may flip it for legitimately billable rework. Surfaced here so
+    # the FE can render the "Rework of op #X" relationship + the
+    # billable badge.
+    rework_of_mo_operation_id: uuid.UUID | None = None
+    is_rework_paid: bool = False
 
 
 class MoResponse(BaseModel):
@@ -624,6 +634,10 @@ class OperationProgressResponse(BaseModel):
     created_at: datetime.datetime
     updated_at: datetime.datetime
     version: int
+    # A10-FU: clone-relationship surface. NULL on original ops; set on
+    # rework clones. Surfaces in shop-floor + completion-preview UIs.
+    rework_of_mo_operation_id: uuid.UUID | None = None
+    is_rework_paid: bool = False
 
 
 class OperationProgressListResponse(BaseModel):
