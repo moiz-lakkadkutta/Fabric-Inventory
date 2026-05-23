@@ -373,14 +373,15 @@ def post_journal_voucher(
     except IntegrityError as exc:
         # C01 hardening (M3): `_allocate_voucher_number` races on
         # concurrent JV posts within the same firm. The DB unique
-        # `voucher_org_id_firm_id_series_number_key` saves correctness;
-        # translate the loser's IntegrityError into a clean 422 retry
-        # instead of bubbling a 500. Mirrors the BOM pattern at
-        # `bom_service.py:307-313`. We match on the constraint-name string
-        # in `exc.orig` (rather than the SQLSTATE on `exc.orig.pgcode`)
-        # because it pinpoints THIS race and won't swallow unrelated
-        # unique violations on `voucher_line` etc.
-        if "voucher_org_id_firm_id_series_number_key" in str(exc.orig):
+        # `voucher_org_id_firm_id_voucher_type_series_number_key` saves
+        # correctness; translate the loser's IntegrityError into a clean
+        # 422 retry instead of bubbling a 500. Mirrors the BOM pattern
+        # at `bom_service.py:307-313`. We match on the constraint-name
+        # string in `exc.orig` (rather than the SQLSTATE on
+        # `exc.orig.pgcode`) because it pinpoints THIS race and won't
+        # swallow unrelated unique violations on `voucher_line` etc.
+        # (A06 followups widened the unique to include voucher_type.)
+        if "voucher_org_id_firm_id_voucher_type_series_number_key" in str(exc.orig):
             raise AppValidationError(
                 "Voucher number race detected — please retry.",
             ) from exc

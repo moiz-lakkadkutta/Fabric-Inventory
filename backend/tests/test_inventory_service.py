@@ -638,3 +638,74 @@ def test_stock_position_atp_qty_is_db_computed(
     )
     db_session.refresh(pos)
     assert pos.atp_qty == Decimal("50.0000")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# A06 followup M2: stock_position.on_hand_qty >= 0 CHECK constraint
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_stock_position_check_constraint_rejects_negative(
+    db_session: OrmSession, firm_and_item: tuple[Firm, Item, Location]
+) -> None:
+    """Defense-in-depth: the application enforces non-negative on-hand
+    via ``inventory_service.remove_stock``, but the DB layer also has a
+    CHECK so a buggy or service-bypass code path can't drive the row
+    negative.
+
+    Seed a positive position via the service, then directly UPDATE
+    ``on_hand_qty = -1``. The CHECK constraint must reject it with an
+    ``IntegrityError`` mentioning the constraint name.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    firm, item, loc = firm_and_item
+    inventory_service.add_stock(
+        db_session,
+        org_id=firm.org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=loc.location_id,
+        qty=Decimal("5"),
+        unit_cost=Decimal("10"),
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+    )
+    position = (
+        db_session.execute(
+            select(StockPosition).where(
+                StockPosition.org_id == firm.org_id,
+                StockPosition.item_id == item.item_id,
+            )
+        )
+        .scalars()
+        .one()
+    )
+
+    # Use SAVEPOINT so the IntegrityError doesn't abort the outer
+    # transaction fixture's rollback semantics.
+    with pytest.raises(IntegrityError) as exc_info, db_session.begin_nested():
+        position.on_hand_qty = Decimal("-1")
+        db_session.flush()
+    assert "stock_position_on_hand_qty_non_negative" in str(exc_info.value.orig)
+
+
+def test_stock_position_check_constraint_rejects_negative_on_insert(
+    db_session: OrmSession, firm_and_item: tuple[Firm, Item, Location]
+) -> None:
+    """Same CHECK applies on INSERT, not just UPDATE."""
+    from sqlalchemy.exc import IntegrityError
+
+    firm, item, loc = firm_and_item
+    with pytest.raises(IntegrityError) as exc_info, db_session.begin_nested():
+        bad = StockPosition(
+            org_id=firm.org_id,
+            firm_id=firm.firm_id,
+            item_id=item.item_id,
+            lot_id=None,
+            location_id=loc.location_id,
+            on_hand_qty=Decimal("-1"),
+        )
+        db_session.add(bad)
+        db_session.flush()
+    assert "stock_position_on_hand_qty_non_negative" in str(exc_info.value.orig)
