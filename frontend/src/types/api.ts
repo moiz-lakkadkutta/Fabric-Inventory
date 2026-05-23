@@ -1278,6 +1278,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/manufacturing/mo-operations/{mo_operation_id}/qc-result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Latest QC verdict + bucket breakdown for a QC operation
+         * @description Read the most recent ``QC_RESULT_RECORDED`` event for the op.
+         *     Returns ``recorded=False`` with zero buckets when QC has not been
+         *     posted yet — the FE can render an "awaiting QC" state without a
+         *     404. ``qty_rework`` is the load-bearing field, pulled off the event
+         *     payload (no column lives on ``mo_operation``).
+         */
+        get: operations["get_qc_result_manufacturing_mo_operations__mo_operation_id__qc_result_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/manufacturing/mo-operations/{mo_operation_id}/qty-in": {
         parameters: {
             query?: never;
@@ -1329,6 +1353,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/manufacturing/mo-operations/{mo_operation_id}/record-qc-result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record QC verdict on a QC_PENDING operation (→ CLOSED or REWORK) */
+        post: operations["record_qc_result_manufacturing_mo_operations__mo_operation_id__record_qc_result_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/manufacturing/mo-operations/{mo_operation_id}/start": {
         parameters: {
             query?: never;
@@ -1340,6 +1381,23 @@ export interface paths {
         put?: never;
         /** Start an in-house MO operation (PENDING → IN_PROGRESS) */
         post: operations["start_operation_manufacturing_mo_operations__mo_operation_id__start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo-operations/{mo_operation_id}/start-qc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start a QC inspection operation (PENDING → QC_PENDING) */
+        post: operations["start_qc_manufacturing_mo_operations__mo_operation_id__start_qc_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6177,6 +6235,163 @@ export interface components {
          * @enum {string}
          */
         PurchaseOrderStatus: "DRAFT" | "APPROVED" | "CONFIRMED" | "PARTIAL_GRN" | "FULLY_RECEIVED" | "CANCELLED";
+        /**
+         * QcOperationResponse
+         * @description Shape returned by every QC mutation + the QC GET endpoint.
+         *
+         *     Same column-side shape as ``OperationProgressResponse`` (qty_in /
+         *     qty_out / scrap / byproduct / wastage / state / executor) plus
+         *     ``operation_type`` so the FE can render QC-specific affordances.
+         *     ``qty_rework`` is NOT a column — see ``QcResultResponse`` for the
+         *     latest verdict + rework qty pulled off the event log.
+         */
+        QcOperationResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** End Date */
+            end_date: string | null;
+            /** Executor */
+            executor: string;
+            /**
+             * Manufacturing Order Id
+             * Format: uuid
+             */
+            manufacturing_order_id: string;
+            /**
+             * Mo Operation Id
+             * Format: uuid
+             */
+            mo_operation_id: string;
+            /**
+             * Operation Master Id
+             * Format: uuid
+             */
+            operation_master_id: string;
+            /** Operation Sequence */
+            operation_sequence: number | null;
+            operation_type: components["schemas"]["OperationType"] | null;
+            /** Qty Byproduct */
+            qty_byproduct: string;
+            /** Qty In */
+            qty_in: string;
+            /** Qty Out */
+            qty_out: string;
+            /** Qty Rejected */
+            qty_rejected: string;
+            /** Qty Wastage */
+            qty_wastage: string;
+            /** Start Date */
+            start_date: string | null;
+            state: components["schemas"]["MoOperationState"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * QcResultRequest
+         * @description POST /manufacturing/mo-operations/{id}/record-qc-result.
+         *
+         *     Every quantity is non-negative; the sum MUST equal the predecessor
+         *     op's ``qty_out`` (the qty arriving at QC). The service enforces
+         *     this strictly.
+         */
+        QcResultRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
+            /**
+             * Qty Byproduct
+             * @default 0
+             */
+            qty_byproduct: number | string;
+            /**
+             * Qty Passed
+             * @default 0
+             */
+            qty_passed: number | string;
+            /**
+             * Qty Rejected
+             * @default 0
+             */
+            qty_rejected: number | string;
+            /**
+             * Qty Rework
+             * @default 0
+             */
+            qty_rework: number | string;
+            /**
+             * Qty Wastage
+             * @default 0
+             */
+            qty_wastage: number | string;
+        };
+        /**
+         * QcResultResponse
+         * @description GET /manufacturing/mo-operations/{id}/qc-result.
+         *
+         *     Surfaces the LATEST recorded QC verdict + bucket breakdown — read
+         *     off the most recent ``QC_RESULT_RECORDED`` ``ProductionEvent``. If
+         *     QC has not been recorded yet, the response carries ``recorded=False``
+         *     and the bucket fields are all zero.
+         *
+         *     ``qty_rework`` is the load-bearing field here — it does not live
+         *     on ``mo_operation`` (no column), so this endpoint is the only API
+         *     surface for it pre-A10-FU.
+         */
+        QcResultResponse: {
+            /**
+             * Mo Operation Id
+             * Format: uuid
+             */
+            mo_operation_id: string;
+            /** Occurred At */
+            occurred_at: string | null;
+            /** Predecessor Mo Operation Id */
+            predecessor_mo_operation_id: string | null;
+            /** Predecessor Qty Out */
+            predecessor_qty_out: string;
+            /** Qty Byproduct */
+            qty_byproduct: string;
+            /** Qty Passed */
+            qty_passed: string;
+            /** Qty Rejected */
+            qty_rejected: string;
+            /** Qty Rework */
+            qty_rework: string;
+            /** Qty Wastage */
+            qty_wastage: string;
+            /** Recorded */
+            recorded: boolean;
+            /** Verdict */
+            verdict: string | null;
+        };
+        /**
+         * QcStartRequest
+         * @description POST /manufacturing/mo-operations/{id}/start-qc.
+         *
+         *     ``firm_id`` is defense-in-depth on top of RLS — when the session
+         *     carries a firm scope, the body must match (see router).
+         */
+        QcStartRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
+        };
         /** ReceiptAllocationItem */
         ReceiptAllocationItem: {
             /** Amount */
@@ -10371,6 +10586,37 @@ export interface operations {
             };
         };
     };
+    get_qc_result_manufacturing_mo_operations__mo_operation_id__qc_result_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QcResultResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     record_qty_in_manufacturing_mo_operations__mo_operation_id__qty_in_post: {
         parameters: {
             query?: never;
@@ -10482,6 +10728,43 @@ export interface operations {
             };
         };
     };
+    record_qc_result_manufacturing_mo_operations__mo_operation_id__record_qc_result_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QcResultRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QcOperationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     start_operation_manufacturing_mo_operations__mo_operation_id__start_post: {
         parameters: {
             query?: never;
@@ -10506,6 +10789,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OperationProgressResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_qc_manufacturing_mo_operations__mo_operation_id__start_qc_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QcStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QcOperationResponse"];
                 };
             };
             /** @description Validation Error */

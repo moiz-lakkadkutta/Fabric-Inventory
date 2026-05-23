@@ -704,6 +704,106 @@ class KarigarOperationResponse(BaseModel):
     updated_at: datetime.datetime
 
 
+# ──────────────────────────────────────────────────────────────────────
+# TASK-TR-A10 — QC (Quality Control) inspection operation
+# ──────────────────────────────────────────────────────────────────────
+#
+# Lifecycle:
+#   PENDING → QC_PENDING → CLOSED   (PASS verdict)
+#                       └→ REWORK   (REWORK verdict — v1 stops here)
+#
+# Strict conservation at ``record-qc-result``:
+#   qty_passed + qty_rejected + qty_byproduct + qty_wastage + qty_rework
+#       == predecessor.qty_out
+#
+# ``qty_rework`` is held on the ``QC_RESULT_RECORDED`` event payload —
+# no column lives on ``mo_operation``. Rework-op creation lands in
+# TASK-TR-A10-FU.
+
+
+class QcStartRequest(BaseModel):
+    """POST /manufacturing/mo-operations/{id}/start-qc.
+
+    ``firm_id`` is defense-in-depth on top of RLS — when the session
+    carries a firm scope, the body must match (see router).
+    """
+
+    firm_id: uuid.UUID
+    narration: str | None = Field(default=None, max_length=2000)
+
+
+class QcResultRequest(BaseModel):
+    """POST /manufacturing/mo-operations/{id}/record-qc-result.
+
+    Every quantity is non-negative; the sum MUST equal the predecessor
+    op's ``qty_out`` (the qty arriving at QC). The service enforces
+    this strictly.
+    """
+
+    firm_id: uuid.UUID
+    qty_passed: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    qty_rejected: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    qty_byproduct: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    qty_wastage: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    qty_rework: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    narration: str | None = Field(default=None, max_length=2000)
+
+
+class QcOperationResponse(BaseModel):
+    """Shape returned by every QC mutation + the QC GET endpoint.
+
+    Same column-side shape as ``OperationProgressResponse`` (qty_in /
+    qty_out / scrap / byproduct / wastage / state / executor) plus
+    ``operation_type`` so the FE can render QC-specific affordances.
+    ``qty_rework`` is NOT a column — see ``QcResultResponse`` for the
+    latest verdict + rework qty pulled off the event log.
+    """
+
+    mo_operation_id: uuid.UUID
+    manufacturing_order_id: uuid.UUID
+    operation_master_id: uuid.UUID
+    operation_type: OperationType | None
+    operation_sequence: int | None
+    state: MoOperationState
+    executor: str
+    qty_in: Decimal
+    qty_out: Decimal
+    qty_rejected: Decimal
+    qty_byproduct: Decimal
+    qty_wastage: Decimal
+    start_date: datetime.datetime | None
+    end_date: datetime.datetime | None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+    version: int
+
+
+class QcResultResponse(BaseModel):
+    """GET /manufacturing/mo-operations/{id}/qc-result.
+
+    Surfaces the LATEST recorded QC verdict + bucket breakdown — read
+    off the most recent ``QC_RESULT_RECORDED`` ``ProductionEvent``. If
+    QC has not been recorded yet, the response carries ``recorded=False``
+    and the bucket fields are all zero.
+
+    ``qty_rework`` is the load-bearing field here — it does not live
+    on ``mo_operation`` (no column), so this endpoint is the only API
+    surface for it pre-A10-FU.
+    """
+
+    mo_operation_id: uuid.UUID
+    recorded: bool
+    verdict: str | None  # 'PASS' | 'REWORK' | None
+    qty_passed: Decimal
+    qty_rejected: Decimal
+    qty_byproduct: Decimal
+    qty_wastage: Decimal
+    qty_rework: Decimal
+    predecessor_qty_out: Decimal
+    predecessor_mo_operation_id: uuid.UUID | None
+    occurred_at: datetime.datetime | None
+
+
 __all__ = [
     "BomCreateRequest",
     "BomLineInput",
@@ -748,6 +848,10 @@ __all__ = [
     "OperationQtyOutRequest",
     "OperationStartRequest",
     "ProductionEventResponse",
+    "QcOperationResponse",
+    "QcResultRequest",
+    "QcResultResponse",
+    "QcStartRequest",
     "RoutingCreateRequest",
     "RoutingEdgeInput",
     "RoutingEdgeResponse",

@@ -87,6 +87,10 @@ from app.schemas.manufacturing import (
     OperationQtyOutRequest,
     OperationStartRequest,
     ProductionEventResponse,
+    QcOperationResponse,
+    QcResultRequest,
+    QcResultResponse,
+    QcStartRequest,
     RoutingCreateRequest,
     RoutingEdgeResponse,
     RoutingEdgesUpdateRequest,
@@ -100,6 +104,7 @@ from app.service import (
     material_issue_service,
     mo_service,
     operation_progress_service,
+    qc_service,
     routing_flow_service,
     routing_service,
 )
@@ -1754,3 +1759,190 @@ def close_karigar(
         narration=body.narration,
     )
     return _to_karigar_response(op)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# QC inspection (TASK-TR-A10)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Lifecycle:
+#   PENDING → QC_PENDING → CLOSED   (PASS verdict)
+#                       └→ REWORK   (REWORK verdict — v1 stops here)
+#
+# QC ops DO NOT consume materials; they inspect the output of a single
+# predecessor op. Strict conservation at ``record-qc-result``:
+#   passed + rejected + byproduct + wastage + rework == predecessor.qty_out
+#
+# ``qty_rework`` lives on the ``QC_RESULT_RECORDED`` event payload, not
+# a column — rework-op creation is A10-FU. The GET /qc-result endpoint
+# surfaces the latest verdict + bucket breakdown by reading the event.
+#
+# Permission split: ``manufacturing.qc.write`` (mutations) +
+# ``manufacturing.qc.read`` (reads). Granted to OWNER + Production
+# Manager today; Accountant gets read-only for cost-roll-up.
+
+qc_router = APIRouter(prefix="/manufacturing", tags=["manufacturing", "qc"])
+
+
+def _qc_operation_type(
+    db: SyncDBSession, op: MoOperation, org_id: uuid.UUID
+) -> OperationType | None:
+    """Resolve the ``operation_type`` for a MO operation via its
+    catalogue ``operation_master``. ``MoOperation`` doesn't carry the
+    type column; the catalogue is the source of truth.
+    """
+    from sqlalchemy import select as _select
+
+    om = db.execute(
+        _select(OperationMaster.operation_type).where(
+            OperationMaster.operation_master_id == op.operation_master_id,
+            OperationMaster.org_id == org_id,
+            OperationMaster.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    return om
+
+
+def _to_qc_response(
+    op: MoOperation, *, operation_type: OperationType | None
+) -> QcOperationResponse:
+    """Render a ``MoOperation`` ORM row as the QC API-facing shape.
+
+    Mirrors ``_to_progress_response`` plus ``operation_type``.
+    """
+    from decimal import Decimal as _Decimal
+
+    return QcOperationResponse(
+        mo_operation_id=op.mo_operation_id,
+        manufacturing_order_id=op.manufacturing_order_id,
+        operation_master_id=op.operation_master_id,
+        operation_type=operation_type,
+        operation_sequence=op.operation_sequence,
+        state=op.state,
+        executor=op.executor,
+        qty_in=_Decimal(op.qty_in) if op.qty_in is not None else _Decimal("0"),
+        qty_out=_Decimal(op.qty_out) if op.qty_out is not None else _Decimal("0"),
+        qty_rejected=_Decimal(op.qty_rejected) if op.qty_rejected is not None else _Decimal("0"),
+        qty_byproduct=_Decimal(op.qty_byproduct) if op.qty_byproduct is not None else _Decimal("0"),
+        qty_wastage=_Decimal(op.qty_wastage) if op.qty_wastage is not None else _Decimal("0"),
+        start_date=op.start_date,
+        end_date=op.end_date,
+        created_at=op.created_at,
+        updated_at=op.updated_at,
+        version=op.version or 0,
+    )
+
+
+@qc_router.post(
+    "/mo-operations/{mo_operation_id}/start-qc",
+    response_model=QcOperationResponse,
+    summary="Start a QC inspection operation (PENDING → QC_PENDING)",
+)
+def start_qc(
+    mo_operation_id: uuid.UUID,
+    body: QcStartRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.qc.write"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> QcOperationResponse:
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = qc_service.start_qc_inspection(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        started_by=current_user.user_id,
+        narration=body.narration,
+    )
+    op_type = _qc_operation_type(db, op, current_user.org_id)
+    return _to_qc_response(op, operation_type=op_type)
+
+
+@qc_router.post(
+    "/mo-operations/{mo_operation_id}/record-qc-result",
+    response_model=QcOperationResponse,
+    summary="Record QC verdict on a QC_PENDING operation (→ CLOSED or REWORK)",
+)
+def record_qc_result(
+    mo_operation_id: uuid.UUID,
+    body: QcResultRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.qc.write"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> QcOperationResponse:
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = qc_service.record_qc_result(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        qty_passed=body.qty_passed,
+        qty_rejected=body.qty_rejected,
+        qty_byproduct=body.qty_byproduct,
+        qty_wastage=body.qty_wastage,
+        qty_rework=body.qty_rework,
+        narration=body.narration,
+        recorded_by=current_user.user_id,
+    )
+    op_type = _qc_operation_type(db, op, current_user.org_id)
+    return _to_qc_response(op, operation_type=op_type)
+
+
+@qc_router.get(
+    "/mo-operations/{mo_operation_id}/qc-result",
+    response_model=QcResultResponse,
+    summary="Latest QC verdict + bucket breakdown for a QC operation",
+)
+def get_qc_result(
+    mo_operation_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.qc.read"))],
+) -> QcResultResponse:
+    """Read the most recent ``QC_RESULT_RECORDED`` event for the op.
+    Returns ``recorded=False`` with zero buckets when QC has not been
+    posted yet — the FE can render an "awaiting QC" state without a
+    404. ``qty_rework`` is the load-bearing field, pulled off the event
+    payload (no column lives on ``mo_operation``).
+    """
+    from decimal import Decimal as _Decimal
+
+    event = qc_service.get_latest_qc_result(
+        db, org_id=current_user.org_id, mo_operation_id=mo_operation_id
+    )
+    if event is None:
+        return QcResultResponse(
+            mo_operation_id=mo_operation_id,
+            recorded=False,
+            verdict=None,
+            qty_passed=_Decimal("0"),
+            qty_rejected=_Decimal("0"),
+            qty_byproduct=_Decimal("0"),
+            qty_wastage=_Decimal("0"),
+            qty_rework=_Decimal("0"),
+            predecessor_qty_out=_Decimal("0"),
+            predecessor_mo_operation_id=None,
+            occurred_at=None,
+        )
+    p = event.payload or {}
+
+    def _dec(key: str) -> _Decimal:
+        raw = p.get(key)
+        return _Decimal(str(raw)) if raw is not None else _Decimal("0")
+
+    pred_id_raw = p.get("predecessor_mo_operation_id")
+    pred_id = uuid.UUID(str(pred_id_raw)) if pred_id_raw else None
+    return QcResultResponse(
+        mo_operation_id=mo_operation_id,
+        recorded=True,
+        verdict=p.get("verdict"),
+        qty_passed=_dec("qty_passed"),
+        qty_rejected=_dec("qty_rejected"),
+        qty_byproduct=_dec("qty_byproduct"),
+        qty_wastage=_dec("qty_wastage"),
+        qty_rework=_dec("qty_rework"),
+        predecessor_qty_out=_dec("predecessor_qty_out"),
+        predecessor_mo_operation_id=pred_id,
+        occurred_at=event.occurred_at,
+    )

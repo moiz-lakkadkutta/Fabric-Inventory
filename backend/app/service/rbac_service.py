@@ -209,6 +209,22 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
         "receive",
         "Receive back from a karigar operation — mints inward challan + updates MoOperation",
     ),
+    # QC inspection operation (TASK-TR-A10). Split off from
+    # ``manufacturing.operation.progress`` because QC has its own
+    # state machine (PENDING → QC_PENDING → CLOSED / REWORK) and the
+    # verdict has cost-roll-up consequences (A11) that warrant a
+    # dedicated permission slug. A "QC Inspector" system role is not
+    # in scope for v1 — OWNER + Production Manager carry both.
+    (
+        "manufacturing.qc",
+        "write",
+        "Start / record verdict on a QC inspection operation",
+    ),
+    (
+        "manufacturing.qc",
+        "read",
+        "View QC operation state + latest verdict + bucket breakdown",
+    ),
 )
 
 
@@ -279,6 +295,9 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # production_event log is the audit trail for WIP cost
                 # accrual. No write.
                 "manufacturing.operation.read",
+                # QC (A10) — Accountant reads only; QC verdict + bucket
+                # breakdown feeds A11 WIP cost settlement. No write.
+                "manufacturing.qc.read",
             }
         ),
     ),
@@ -410,6 +429,10 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # to external job-work contractors.
                 "manufacturing.karigar.dispatch",
                 "manufacturing.karigar.receive",
+                # QC (A10) — Production Manager runs the QC inspection
+                # (start / record verdict). Read for the FE workflow.
+                "manufacturing.qc.write",
+                "manufacturing.qc.read",
             }
         ),
     ),
