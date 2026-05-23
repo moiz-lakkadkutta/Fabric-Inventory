@@ -917,3 +917,33 @@ def test_empty_lines_rejected(http_client: TestClient, sync_engine: Engine) -> N
         json={"firm_id": me["firm_id"], "lines": []},
     )
     assert resp.status_code == 422, resp.text
+
+
+def test_mo_response_exposes_cost_pool_after_issue(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """`MoResponse.cost_pool` surfaces the live WIP cost pool to the FE
+    so the MO Detail Cost tab can render WIP-in-flight without round-
+    tripping through the completion-preview endpoint. The pool grows
+    as `issue-materials` posts the DR 1310 voucher_lines."""
+    me, mo_id, _b, _r, _f = _seed_full_world(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    mo = _get_mo(http_client, owner=me, mo_id=mo_id)
+
+    # Pre-issue: cost_pool is 0 (server_default).
+    assert Decimal(str(mo["cost_pool"])) == Decimal("0")
+
+    issue_lines = [
+        {"mo_material_line_id": ln["mo_material_line_id"], "qty_to_issue": ln["qty_required"]}
+        for ln in _mo_lines(mo)
+    ]
+    resp = http_client.post(
+        f"/manufacturing/mo/{mo_id}/issue-materials",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "lines": issue_lines},
+    )
+    assert resp.status_code == 201, resp.text
+
+    # Post-issue: cost_pool equals the voucher's DR 1310 total = Rs.2000.
+    fresh = _get_mo(http_client, owner=me, mo_id=mo_id)
+    assert Decimal(str(fresh["cost_pool"])) == Decimal("2000.00")

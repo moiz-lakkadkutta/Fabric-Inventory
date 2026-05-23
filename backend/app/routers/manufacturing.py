@@ -963,7 +963,21 @@ def _mo_operation_to_response(op: MoOperation) -> MoOperationResponse:
     )
 
 
-def _mo_to_response(mo: ManufacturingOrder) -> MoResponse:
+def _mo_to_response(mo: ManufacturingOrder, *, db: SyncDBSession | None = None) -> MoResponse:
+    # cost_pool: the persisted column is dormant (only drained to 0 at
+    # MO completion). The live WIP pool is the sum of POSTED 1310 DR
+    # voucher_lines from material issues; compute on-read when a session
+    # is available. Callers without a session see a 0 fallback (test
+    # harnesses, etc.) — production paths all pass the session in.
+    live_cost_pool: Decimal | None = None
+    if db is not None and mo.status not in {MoStatus.COMPLETED, MoStatus.CLOSED}:
+        live_cost_pool = mo_completion_service.sum_wip_cost_pool(
+            db, org_id=mo.org_id, mo_id=mo.manufacturing_order_id
+        )
+    elif db is not None:
+        # Completed/closed MOs have drained the pool to 0; trust the
+        # persisted column (which the completion service explicitly set).
+        live_cost_pool = Decimal(mo.cost_pool) if mo.cost_pool is not None else Decimal("0")
     return MoResponse(
         manufacturing_order_id=mo.manufacturing_order_id,
         org_id=mo.org_id,
@@ -979,6 +993,7 @@ def _mo_to_response(mo: ManufacturingOrder) -> MoResponse:
         planned_qty=mo.planned_qty,
         produced_qty=mo.produced_qty,
         scrap_qty=mo.scrap_qty,
+        cost_pool=live_cost_pool,
         planned_start_date=mo.planned_start_date,
         planned_end_date=mo.planned_end_date,
         closed_at=mo.closed_at,
@@ -1044,7 +1059,7 @@ def create_mo(
     )
     # Re-fetch with eager-loaded children for the response builder.
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo.manufacturing_order_id)
-    return _mo_to_response(fresh)
+    return _mo_to_response(fresh, db=db)
 
 
 @mos_router.get(
@@ -1090,7 +1105,7 @@ def get_mo(
     current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.read"))],
 ) -> MoResponse:
     mo = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
-    return _mo_to_response(mo)
+    return _mo_to_response(mo, db=db)
 
 
 @mos_router.post(
@@ -1113,7 +1128,7 @@ def release_mo(
         narration=body.narration if body is not None else None,
     )
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
-    return _mo_to_response(fresh)
+    return _mo_to_response(fresh, db=db)
 
 
 @mos_router.post(
@@ -1136,7 +1151,7 @@ def start_mo(
         narration=body.narration if body is not None else None,
     )
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
-    return _mo_to_response(fresh)
+    return _mo_to_response(fresh, db=db)
 
 
 @mos_router.get(
@@ -1242,7 +1257,7 @@ def complete_mo(
         series=body.series or "MOC",
     )
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
-    return _mo_to_response(fresh)
+    return _mo_to_response(fresh, db=db)
 
 
 @mos_router.post(
@@ -1265,7 +1280,7 @@ def close_mo(
         narration=body.narration if body is not None else None,
     )
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
-    return _mo_to_response(fresh)
+    return _mo_to_response(fresh, db=db)
 
 
 # NOTE: ``POST /manufacturing/mo/{mo_id}/cancel`` is intentionally NOT
