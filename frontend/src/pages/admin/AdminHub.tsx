@@ -1,25 +1,24 @@
 /*
- * AdminHub (TASK-CUT-304) — Owner-facing user + role management.
+ * AdminHub (TASK-CUT-304 + TASK-TR-B4) — Owner-facing user + role management.
  *
  * Live-mode wires:
  *   GET    /admin/users          → useUsers
  *   GET    /admin/roles          → useRoles
  *   POST   /admin/invites        → InviteUserDialog
  *   PATCH  /admin/users/{id}/role → useUpdateUserRole (per-row select)
+ *   POST   /admin/roles          → RoleBuilder (B4)
+ *   PATCH  /admin/roles/{id}     → RoleBuilder edit mode (B4)
+ *   DELETE /admin/roles/{id}     → RoleBuilder edit mode (B4)
  *
  * Mock-mode falls back to the fixtures in `lib/mock/admin.ts` so the
  * click-dummy still functions without a backend.
- *
- * The "Add custom role" affordance is still coming-soon — custom-role
- * CRUD is deferred to Wave 5+ per the cutover plan.
  */
 
-import { Plus, ShieldCheck, Upload } from 'lucide-react';
+import { Pencil, Plus, ShieldCheck, Upload } from 'lucide-react';
 import * as React from 'react';
 import { Link } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
-import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Monogram } from '@/components/ui/monogram';
 import { Pill } from '@/components/ui/pill';
 import { QueryError } from '@/components/ui/query-error';
@@ -33,19 +32,30 @@ import {
   type AdminUser,
 } from '@/lib/queries/admin';
 import { InviteUserDialog } from '@/pages/admin/InviteUserDialog';
+import { RoleBuilder } from '@/pages/admin/_components/RoleBuilder';
+import { useMe } from '@/store/auth';
+
+function permissionGranted(me: ReturnType<typeof useMe>, code: string): boolean {
+  // Defensive default: when /me hasn't loaded yet (or in tests that
+  // skip the auth bootstrap), assume the perm is granted so the
+  // click-dummy stays usable. The BE refuses the actual mutation if
+  // not authorised, so this is purely a UI affordance hint.
+  if (!me) return true;
+  return me.permissions.includes(code);
+}
 
 export default function AdminHub() {
+  const me = useMe();
   const users = useUsers();
   const roles = useRoles();
   const [inviteOpen, setInviteOpen] = React.useState(false);
-  // Custom-role CRUD is deferred to v2 — the 4 stock roles (Owner,
-  // Accountant, Sales, Production) cover dogfood + the manufacturer-
-  // trial customer per docs/implementation-plan-trial.md. Replace
-  // when a customer asks for tenant-defined roles.
-  const newRole = useComingSoon({
-    feature: 'Add custom role',
-    task: 'v2 (Custom roles — not in trial scope)',
-  });
+  const [roleBuilder, setRoleBuilder] = React.useState<{
+    open: boolean;
+    roleId: string | null;
+  }>({ open: false, roleId: null });
+
+  const canCreateRole = permissionGranted(me, 'identity.role.create');
+  const canUpdateRole = permissionGranted(me, 'identity.role.update');
 
   const usersList = users.data ?? [];
   const rolesList = roles.data ?? [];
@@ -64,17 +74,24 @@ export default function AdminHub() {
               Migrations
             </Link>
           </Button>
-          <Button variant="outline" {...newRole.triggerProps}>
-            Add role
-          </Button>
+          {canCreateRole && (
+            <Button variant="outline" onClick={() => setRoleBuilder({ open: true, roleId: null })}>
+              <Plus />
+              New role
+            </Button>
+          )}
           <Button onClick={() => setInviteOpen(true)}>
             <Plus />
             Invite user
           </Button>
         </div>
       </header>
-      {newRole.dialog}
       <InviteUserDialog open={inviteOpen} onClose={() => setInviteOpen(false)} />
+      <RoleBuilder
+        open={roleBuilder.open}
+        roleId={roleBuilder.roleId}
+        onClose={() => setRoleBuilder({ open: false, roleId: null })}
+      />
 
       <section
         style={{
@@ -144,6 +161,7 @@ export default function AdminHub() {
         <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2">
           {rolesList.map((r) => {
             const memberCount = usersList.filter((u) => u.role_id === r.role_id).length;
+            const editable = !r.is_system_role && canUpdateRole;
             return (
               <article
                 key={r.role_id}
@@ -154,20 +172,36 @@ export default function AdminHub() {
                   background: 'var(--bg-canvas)',
                 }}
               >
-                <div className="flex items-baseline justify-between">
+                <div className="flex items-baseline justify-between gap-2">
                   <span style={{ fontSize: 13.5, fontWeight: 600 }}>{r.name}</span>
-                  <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                    {memberCount} member{memberCount === 1 ? '' : 's'}
-                  </span>
+                  <div className="flex items-baseline gap-2">
+                    {r.is_system_role && (
+                      <Pill kind="scrap" aria-label={`${r.name} is a system role`}>
+                        System
+                      </Pill>
+                    )}
+                    <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                      {memberCount} member{memberCount === 1 ? '' : 's'}
+                    </span>
+                  </div>
                 </div>
                 <div className="mt-1" style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
                   {r.description ?? '—'}
                 </div>
-                <div
-                  className="mono mt-2"
-                  style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}
-                >
-                  {r.code}
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <div className="mono" style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+                    {r.code}
+                  </div>
+                  {editable && (
+                    <Button
+                      variant="outline"
+                      onClick={() => setRoleBuilder({ open: true, roleId: r.role_id })}
+                      aria-label={`Edit ${r.name}`}
+                    >
+                      <Pencil size={12} />
+                      Edit
+                    </Button>
+                  )}
                 </div>
               </article>
             );

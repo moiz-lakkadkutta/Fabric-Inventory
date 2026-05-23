@@ -29,6 +29,12 @@ function buildMockMe(): MeResponse {
       'accounting.voucher.post',
       'admin.user.invite',
       'masters.party.create',
+      // TASK-TR-B4 — Owner-equivalent perms so the Admin Hub renders
+      // the New/Edit/Delete role affordances by default.
+      'identity.role.create',
+      'identity.role.update',
+      'identity.role.delete',
+      'identity.role.read',
     ],
     flags: {},
     available_firms: firms.map((f) => ({ firm_id: f.firm_id, code: f.code, name: f.name })),
