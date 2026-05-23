@@ -19,6 +19,7 @@
 | **Stock-unit stage state machine** | **✗ Missing — added here §4** | — |
 | **Event-sourced transitions** | **✗ Missing — added here §5** | — |
 | **Per-transition API contracts** | **✗ Missing — added here §6** | — |
+| Per-operation progress (A07) + karigar send-out (A08) API contracts | ✓ Backfilled into `specs/api-phase3.yaml` (TR-OPENAPI-BACKFILL, #41) | `specs/api-phase3.yaml` |
 | **Production-manager UI workflow** | **✗ Missing — added here §7** | — |
 | **Pipeline Kanban board spec** | **✗ Missing — added here §8** | — |
 | **100-piece worked example** | **✗ Missing — added here §9** | — |

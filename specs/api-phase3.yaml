@@ -1249,6 +1249,454 @@ components:
         - rate_type
         - rate_value
 
+    # ---------------------------------------------------------------
+    # A07 + A08: per-operation progress + karigar send-out (mo_operation lifecycle)
+    # Authoritative source: backend/app/routers/manufacturing.py +
+    # frontend/scripts/openapi-snapshot.json (auto-emitted by FastAPI).
+    # ---------------------------------------------------------------
+
+    MoOperationState:
+      type: string
+      description: |
+        Per-operation lifecycle - mo_operation_state Postgres enum. Added by
+        the forward ALTER TABLE mo_operation block; richer than the legacy
+        free-text status column, which is kept in parallel.
+      enum:
+        - PENDING
+        - READY
+        - DISPATCHED
+        - ACKNOWLEDGED
+        - IN_PROGRESS
+        - RECEIVED_PARTIAL
+        - RECEIVED_FULL
+        - QC_PENDING
+        - REWORK
+        - CLOSED
+        - SKIPPED
+        - CANCELLED
+
+    OperationStartRequest:
+      type: object
+      description: |
+        POST /manufacturing/mo-operations/{id}/start. firm_id is
+        defense-in-depth on top of RLS - when the session carries a firm
+        scope the body must match (see router).
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        narration:
+          type: string
+          maxLength: 2000
+          nullable: true
+      required:
+        - firm_id
+
+    OperationQtyInRequest:
+      type: object
+      description: |
+        POST /manufacturing/mo-operations/{id}/qty-in. qty_in is a delta
+        (added to the cumulative running total).
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        qty_in:
+          type: string
+          description: Decimal as string (NUMERIC(18,2)); minimum 0.
+        narration:
+          type: string
+          maxLength: 2000
+          nullable: true
+      required:
+        - firm_id
+        - qty_in
+
+    OperationQtyOutRequest:
+      type: object
+      description: |
+        POST /manufacturing/mo-operations/{id}/qty-out. Every qty is a delta
+        added to the corresponding cumulative running total on the
+        mo_operation row. At least one of (qty_out, qty_scrap, qty_byproduct,
+        qty_wastage) must be > 0; the service enforces this.
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        qty_out:
+          type: string
+          default: '0'
+        qty_scrap:
+          type: string
+          default: '0'
+        qty_byproduct:
+          type: string
+          default: '0'
+        qty_wastage:
+          type: string
+          default: '0'
+        narration:
+          type: string
+          maxLength: 2000
+          nullable: true
+      required:
+        - firm_id
+
+    OperationCompleteRequest:
+      type: object
+      description: |
+        POST /manufacturing/mo-operations/{id}/complete. Requires
+        qty_in == qty_out + qty_scrap + qty_byproduct + qty_wastage.
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        narration:
+          type: string
+          maxLength: 2000
+          nullable: true
+      required:
+        - firm_id
+
+    OperationProgressResponse:
+      type: object
+      description: |
+        Detailed shape returned by every progress mutation + GET. Wider than
+        MoOperationResponse (which is used inside MoResponse) - surfaces the
+        scrap/wastage/byproduct counters and the state column the FE
+        shop-floor view needs. version is the optimistic-concurrency counter;
+        the FE can stamp it into a future If-Match / X-Expected-Version
+        header so a stale shop-floor tablet does not clobber a parallel
+        update.
+      properties:
+        mo_operation_id:
+          type: string
+          format: uuid
+        manufacturing_order_id:
+          type: string
+          format: uuid
+        operation_master_id:
+          type: string
+          format: uuid
+        operation_sequence:
+          type: integer
+          nullable: true
+        state:
+          $ref: '#/components/schemas/MoOperationState'
+        executor:
+          type: string
+        qty_in:
+          type: string
+        qty_out:
+          type: string
+        qty_rejected:
+          type: string
+        qty_byproduct:
+          type: string
+        qty_wastage:
+          type: string
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+      required:
+        - mo_operation_id
+        - manufacturing_order_id
+        - operation_master_id
+        - operation_sequence
+        - state
+        - executor
+        - qty_in
+        - qty_out
+        - qty_rejected
+        - qty_byproduct
+        - qty_wastage
+        - start_date
+        - end_date
+        - created_at
+        - updated_at
+        - version
+
+    OperationProgressListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperationProgressResponse'
+        limit:
+          type: integer
+        offset:
+          type: integer
+        count:
+          type: integer
+        total_count:
+          type: integer
+      required:
+        - items
+        - limit
+        - offset
+        - count
+        - total_count
+
+    ProductionEventResponse:
+      type: object
+      description: |
+        One row from production_event. Payload is a JSON object whose shape
+        varies by event_type.
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+        mo_operation_id:
+          type: string
+          format: uuid
+          nullable: true
+        manufacturing_order_id:
+          type: string
+          format: uuid
+          nullable: true
+        payload:
+          type: object
+          additionalProperties: true
+        actor_user_id:
+          type: string
+          format: uuid
+          nullable: true
+        occurred_at:
+          type: string
+          format: date-time
+      required:
+        - event_id
+        - event_type
+        - mo_operation_id
+        - manufacturing_order_id
+        - payload
+        - actor_user_id
+        - occurred_at
+
+    OperationDetailResponse:
+      type: object
+      description: |
+        GET /manufacturing/mo-operations/{id} - operation + its event log.
+        Events ordered oldest first.
+      properties:
+        operation:
+          $ref: '#/components/schemas/OperationProgressResponse'
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductionEventResponse'
+      required:
+        - operation
+        - events
+
+    KarigarDispatchRequest:
+      type: object
+      description: |
+        POST /manufacturing/mo-operations/{id}/dispatch-karigar.
+        firm_id is defense-in-depth on top of RLS. item_id + uom describe
+        what physical item is being sent to the karigar - when omitted the
+        service defaults to the MO's finished item.
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        karigar_party_id:
+          type: string
+          format: uuid
+        qty_dispatched:
+          type: string
+          description: Decimal as string; must be > 0.
+        dispatch_date:
+          type: string
+          format: date
+        item_id:
+          type: string
+          format: uuid
+          nullable: true
+        lot_id:
+          type: string
+          format: uuid
+          nullable: true
+        uom:
+          type: string
+          maxLength: 20
+          nullable: true
+        narration:
+          type: string
+          maxLength: 2000
+          nullable: true
+      required:
+        - firm_id
+        - karigar_party_id
+        - qty_dispatched
+        - dispatch_date
+
+    KarigarAcknowledgeRequest:
+      type: object
+      description: |
+        POST /manufacturing/mo-operations/{id}/acknowledge-karigar.
+        The karigar's "received your goods, started work" beat.
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        narration:
+          type: string
+          maxLength: 2000
+          nullable: true
+      required:
+        - firm_id
+
+    KarigarReceiveRequest:
+      type: object
+      description: |
+        POST /manufacturing/mo-operations/{id}/receive-karigar.
+        Quantities are deltas added to the cumulative running totals on the
+        mo_operation row. At least one of qty_received / qty_scrap /
+        qty_byproduct / qty_wastage must be > 0; the service enforces this.
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        qty_received:
+          type: string
+          default: '0'
+        qty_scrap:
+          type: string
+          default: '0'
+        qty_byproduct:
+          type: string
+          default: '0'
+        qty_wastage:
+          type: string
+          default: '0'
+        receipt_date:
+          type: string
+          format: date
+          nullable: true
+        narration:
+          type: string
+          maxLength: 2000
+          nullable: true
+      required:
+        - firm_id
+
+    KarigarCloseRequest:
+      type: object
+      description: |
+        POST /manufacturing/mo-operations/{id}/close-karigar.
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        narration:
+          type: string
+          maxLength: 2000
+          nullable: true
+      required:
+        - firm_id
+
+    KarigarOperationResponse:
+      type: object
+      description: |
+        Shape returned by every karigar mutation + the karigar detail
+        endpoint. Wider than OperationProgressResponse - also surfaces the
+        outward/inward challan ids + the karigar party (needed by the
+        shop-floor view).
+      properties:
+        mo_operation_id:
+          type: string
+          format: uuid
+        manufacturing_order_id:
+          type: string
+          format: uuid
+        operation_master_id:
+          type: string
+          format: uuid
+        operation_sequence:
+          type: integer
+          nullable: true
+        state:
+          $ref: '#/components/schemas/MoOperationState'
+        executor:
+          type: string
+        karigar_party_id:
+          type: string
+          format: uuid
+          nullable: true
+        outward_challan_id:
+          type: string
+          format: uuid
+          nullable: true
+        inward_challan_id:
+          type: string
+          format: uuid
+          nullable: true
+        qty_in:
+          type: string
+        qty_out:
+          type: string
+        qty_rejected:
+          type: string
+        qty_byproduct:
+          type: string
+        qty_wastage:
+          type: string
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+        acknowledged_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - mo_operation_id
+        - manufacturing_order_id
+        - operation_master_id
+        - operation_sequence
+        - state
+        - executor
+        - karigar_party_id
+        - outward_challan_id
+        - inward_challan_id
+        - qty_in
+        - qty_out
+        - qty_rejected
+        - qty_byproduct
+        - qty_wastage
+        - start_date
+        - end_date
+        - acknowledged_at
+        - created_at
+        - updated_at
+
 security:
   - bearerAuth: []
 
@@ -4321,3 +4769,461 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
       x-permission: mfg.events.view
+
+  # ---------------------------------------------------------------
+  # A07: per-operation progress mutations + reads (mo_operation lifecycle).
+  # Authoritative source: backend/app/routers/manufacturing.py +
+  # frontend/scripts/openapi-snapshot.json (auto-emitted by FastAPI).
+  # NOTE: A09's GET /manufacturing/mo-operations/{id}/can-start is NOT yet
+  # on main (PR #136 still open at the time of backfill); add when merged.
+  # ---------------------------------------------------------------
+
+  /manufacturing/mo-operations/{mo_operation_id}/start:
+    post:
+      operationId: startMoOperation
+      tags:
+        - manufacturing
+      summary: Start an in-house MO operation (PENDING -> IN_PROGRESS)
+      description: |
+        Marks the operation as IN_PROGRESS, stamps start_date, emits a
+        production_event. Idempotent via Idempotency-Key. firm_id in the
+        body must match the X-Firm-Id session scope (defense-in-depth on
+        top of RLS).
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationStartRequest'
+      responses:
+        '200':
+          description: Operation started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationProgressResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: manufacturing.operation.progress
+
+  /manufacturing/mo-operations/{mo_operation_id}/qty-in:
+    post:
+      operationId: recordMoOperationQtyIn
+      tags:
+        - manufacturing
+      summary: Record qty_in (units received) on an in-progress MO operation
+      description: |
+        qty_in is a delta added to the cumulative running total. Emits a
+        production_event. Idempotent via Idempotency-Key.
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationQtyInRequest'
+      responses:
+        '200':
+          description: qty_in recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationProgressResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: manufacturing.operation.progress
+
+  /manufacturing/mo-operations/{mo_operation_id}/qty-out:
+    post:
+      operationId: recordMoOperationQtyOut
+      tags:
+        - manufacturing
+      summary: Record qty_out / scrap / byproduct / wastage on an in-progress MO operation
+      description: |
+        Every qty is a delta added to the corresponding cumulative running
+        total. At least one of qty_out / qty_scrap / qty_byproduct /
+        qty_wastage must be > 0. Idempotent via Idempotency-Key.
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationQtyOutRequest'
+      responses:
+        '200':
+          description: qty_out / scrap / byproduct / wastage recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationProgressResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: manufacturing.operation.progress
+
+  /manufacturing/mo-operations/{mo_operation_id}/complete:
+    post:
+      operationId: completeMoOperation
+      tags:
+        - manufacturing
+      summary: Close an in-house MO operation (IN_PROGRESS -> CLOSED)
+      description: |
+        Requires qty_in == qty_out + qty_scrap + qty_byproduct + qty_wastage.
+        Stamps end_date, emits a production_event. Idempotent via
+        Idempotency-Key.
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationCompleteRequest'
+      responses:
+        '200':
+          description: Operation closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationProgressResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: manufacturing.operation.progress
+
+  /manufacturing/mo/{mo_id}/operations:
+    get:
+      operationId: listMoOperations
+      tags:
+        - manufacturing
+      summary: List operations on an MO, ordered by sequence
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: firm_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        '200':
+          description: List of operations on the MO (oldest-sequence first)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationProgressListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: manufacturing.operation.read
+
+  /manufacturing/mo-operations/{mo_operation_id}:
+    get:
+      operationId: getMoOperation
+      tags:
+        - manufacturing
+      summary: Get one MO operation + its append-only production event log
+      description: |
+        Returns the operation row + every production_event row attached to
+        it (oldest first). Useful for the shop-floor detail view.
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: mo_operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Operation + event log
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationDetailResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: manufacturing.operation.read
+
+  # ---------------------------------------------------------------
+  # A08: karigar (job-work) send-out + receive-back on mo_operation.
+  # ---------------------------------------------------------------
+
+  /manufacturing/mo-operations/{mo_operation_id}/dispatch-karigar:
+    post:
+      operationId: dispatchKarigarMoOperation
+      tags:
+        - manufacturing
+      summary: Dispatch a karigar (job-work) MO operation (PENDING/RECEIVED_FULL -> DISPATCHED)
+      description: |
+        Creates the outward challan row, transitions the operation to
+        DISPATCHED, emits a production_event. Idempotent via Idempotency-Key.
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KarigarDispatchRequest'
+      responses:
+        '200':
+          description: Karigar dispatched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KarigarOperationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: manufacturing.karigar.dispatch
+
+  /manufacturing/mo-operations/{mo_operation_id}/acknowledge-karigar:
+    post:
+      operationId: acknowledgeKarigarMoOperation
+      tags:
+        - manufacturing
+      summary: Acknowledge a karigar dispatch (DISPATCHED -> ACKNOWLEDGED)
+      description: |
+        The karigar confirms receipt of the outbound goods. Stamps
+        acknowledged_at, emits a production_event. Idempotent.
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KarigarAcknowledgeRequest'
+      responses:
+        '200':
+          description: Karigar acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KarigarOperationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: manufacturing.karigar.dispatch
+
+  /manufacturing/mo-operations/{mo_operation_id}/receive-karigar:
+    post:
+      operationId: receiveKarigarMoOperation
+      tags:
+        - manufacturing
+      summary: Receive back from karigar (ACKNOWLEDGED/RECEIVED_PARTIAL -> RECEIVED_PARTIAL or RECEIVED_FULL)
+      description: |
+        Creates / appends an inward challan row, accumulates received /
+        scrap / byproduct / wastage deltas, transitions to RECEIVED_PARTIAL
+        until cumulative qty matches the dispatched qty (then RECEIVED_FULL).
+        At least one delta must be > 0.
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KarigarReceiveRequest'
+      responses:
+        '200':
+          description: Karigar receive recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KarigarOperationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: manufacturing.karigar.receive
+
+  /manufacturing/mo-operations/{mo_operation_id}/close-karigar:
+    post:
+      operationId: closeKarigarMoOperation
+      tags:
+        - manufacturing
+      summary: Close a karigar MO operation (RECEIVED_FULL -> CLOSED)
+      description: |
+        Finalises the operation after the karigar has returned all goods.
+        Stamps end_date, emits a production_event. Idempotent.
+
+        NOTE: The router currently guards this with
+        manufacturing.karigar.dispatch (not receive) - dispatch role owns
+        the operation lifecycle end-to-end on the warehouse side.
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: mo_operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KarigarCloseRequest'
+      responses:
+        '200':
+          description: Karigar operation closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KarigarOperationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: manufacturing.karigar.dispatch
