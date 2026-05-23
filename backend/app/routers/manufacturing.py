@@ -20,6 +20,7 @@ update; hard-deletes are out of scope by policy (same pattern as
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query, status
@@ -69,6 +70,8 @@ from app.schemas.manufacturing import (
     MaterialIssueListResponse,
     MaterialIssueResponse,
     MoCompleteRequest,
+    MoCompletionPreviewLedgerCodes,
+    MoCompletionPreviewResponse,
     MoCreateRequest,
     MoListItem,
     MoListResponse,
@@ -1132,6 +1135,67 @@ def start_mo(
     )
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo_id)
     return _mo_to_response(fresh)
+
+
+@mos_router.get(
+    "/{mo_id}/completion-preview",
+    response_model=MoCompletionPreviewResponse,
+    summary=(
+        "Preview the MO completion + WIP settlement that A11 would post "
+        "(read-only) — TASK-TR-A11-FU"
+    ),
+    description=(
+        "Read-only: returns the cost pool, per-unit cost, and loss "
+        "breakdown that ``POST /manufacturing/mo/{id}/complete`` would "
+        "post for the given ``produced_qty_target``, plus a list of "
+        "``blocking_reasons`` populated when any pre-flight check fails "
+        "(MO not IN_PROGRESS, an op not in {CLOSED, SKIPPED, CANCELLED}, "
+        "ALL_OR_NONE policy mismatch, non-zero rework_qty, empty WIP "
+        "cost pool, etc.). ``can_complete`` is False whenever "
+        "``blocking_reasons`` is non-empty; the response is still 200 — "
+        "the FE renders the numbers AND the reason in one round trip. "
+        "No state changes, no GL writes, no audit emit."
+    ),
+)
+def completion_preview(
+    mo_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.read"))],
+    firm_id: Annotated[uuid.UUID, Query()],
+    produced_qty_target: Annotated[Decimal, Query(gt=Decimal("0"))],
+) -> MoCompletionPreviewResponse:
+    # Firm-scoping defence-in-depth: when the session is firm-scoped
+    # (admin tokens are not), the query param must match. Same posture
+    # as ``complete_mo``'s body-side firm check.
+    if current_user.firm_id is not None and firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+
+    preview = mo_completion_service.preview_completion(
+        db,
+        org_id=current_user.org_id,
+        firm_id=firm_id,
+        mo_id=mo_id,
+        produced_qty_target=Decimal(produced_qty_target),
+    )
+    return MoCompletionPreviewResponse(
+        mo_id=preview.mo_id,
+        status=preview.status,
+        planned_qty=preview.planned_qty,
+        produced_qty_target=preview.produced_qty_target,
+        scrap_qty=preview.scrap_qty,
+        wastage_qty=preview.wastage_qty,
+        by_product_qty=preview.by_product_qty,
+        rework_qty=preview.rework_qty,
+        cost_pool=preview.cost_pool,
+        unit_cost=preview.unit_cost,
+        ledger_codes=MoCompletionPreviewLedgerCodes(
+            inventory_dr=preview.inventory_ledger_code,
+            wip_cr=preview.wip_ledger_code,
+        ),
+        can_complete=preview.can_complete,
+        blocking_reasons=list(preview.blocking_reasons),
+        policy=preview.policy,
+    )
 
 
 @mos_router.post(

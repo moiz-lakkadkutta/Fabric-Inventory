@@ -358,6 +358,51 @@ class MoCompleteRequest(BaseModel):
     series: str | None = Field(default=None, max_length=50)
 
 
+class MoCompletionPreviewLedgerCodes(BaseModel):
+    """The two ledger codes the A11 completion voucher would post
+    against — surfaced verbatim so the FE can render a "DR 1300 / CR
+    1310" tooltip beside the cost number. Both codes are constant in
+    v1 (see ``mo_completion_service._INVENTORY_LEDGER_CODE`` /
+    ``_WIP_LEDGER_CODE``) — the FE shouldn't hard-code them.
+    """
+
+    inventory_dr: str
+    wip_cr: str
+
+
+class MoCompletionPreviewResponse(BaseModel):
+    """A11-FU — read-only snapshot of what
+    ``POST /manufacturing/mo/{id}/complete`` would do for the given
+    ``produced_qty_target``. No state changes, no GL writes.
+
+    All quantity fields use the same NUMERIC(15,4) grid the MO header
+    uses; ``unit_cost`` is NUMERIC(15,6) to match ``stock_ledger``.
+
+    ``can_complete`` is False whenever any pre-flight check fails. The
+    response is still 200 — the caller wants both the cost numbers AND
+    the explanation. ``blocking_reasons`` is empty when ``can_complete``
+    is True.
+
+    ``policy`` echoes the MO's ``completion_policy`` column verbatim
+    (v1 ships ``ALL_OR_NONE`` only).
+    """
+
+    mo_id: uuid.UUID
+    status: MoStatus
+    planned_qty: Decimal
+    produced_qty_target: Decimal
+    scrap_qty: Decimal
+    wastage_qty: Decimal
+    by_product_qty: Decimal
+    rework_qty: Decimal
+    cost_pool: Decimal
+    unit_cost: Decimal
+    ledger_codes: MoCompletionPreviewLedgerCodes
+    can_complete: bool
+    blocking_reasons: list[str]
+    policy: str
+
+
 class MoMaterialLineResponse(BaseModel):
     mo_material_line_id: uuid.UUID
     manufacturing_order_id: uuid.UUID
@@ -857,6 +902,8 @@ __all__ = [
     "MaterialIssueListResponse",
     "MaterialIssueResponse",
     "MoCompleteRequest",
+    "MoCompletionPreviewLedgerCodes",
+    "MoCompletionPreviewResponse",
     "MoCreateRequest",
     "MoListItem",
     "MoListResponse",

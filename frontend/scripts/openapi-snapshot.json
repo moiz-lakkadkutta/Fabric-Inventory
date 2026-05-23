@@ -7017,6 +7017,114 @@
         "title": "MoCompleteRequest",
         "type": "object"
       },
+      "MoCompletionPreviewLedgerCodes": {
+        "description": "The two ledger codes the A11 completion voucher would post\nagainst \u2014 surfaced verbatim so the FE can render a \"DR 1300 / CR\n1310\" tooltip beside the cost number. Both codes are constant in\nv1 (see ``mo_completion_service._INVENTORY_LEDGER_CODE`` /\n``_WIP_LEDGER_CODE``) \u2014 the FE shouldn't hard-code them.",
+        "properties": {
+          "inventory_dr": {
+            "title": "Inventory Dr",
+            "type": "string"
+          },
+          "wip_cr": {
+            "title": "Wip Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "inventory_dr",
+          "wip_cr"
+        ],
+        "title": "MoCompletionPreviewLedgerCodes",
+        "type": "object"
+      },
+      "MoCompletionPreviewResponse": {
+        "description": "A11-FU \u2014 read-only snapshot of what\n``POST /manufacturing/mo/{id}/complete`` would do for the given\n``produced_qty_target``. No state changes, no GL writes.\n\nAll quantity fields use the same NUMERIC(15,4) grid the MO header\nuses; ``unit_cost`` is NUMERIC(15,6) to match ``stock_ledger``.\n\n``can_complete`` is False whenever any pre-flight check fails. The\nresponse is still 200 \u2014 the caller wants both the cost numbers AND\nthe explanation. ``blocking_reasons`` is empty when ``can_complete``\nis True.\n\n``policy`` echoes the MO's ``completion_policy`` column verbatim\n(v1 ships ``ALL_OR_NONE`` only).",
+        "properties": {
+          "blocking_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocking Reasons",
+            "type": "array"
+          },
+          "by_product_qty": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "By Product Qty",
+            "type": "string"
+          },
+          "can_complete": {
+            "title": "Can Complete",
+            "type": "boolean"
+          },
+          "cost_pool": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cost Pool",
+            "type": "string"
+          },
+          "ledger_codes": {
+            "$ref": "#/components/schemas/MoCompletionPreviewLedgerCodes"
+          },
+          "mo_id": {
+            "format": "uuid",
+            "title": "Mo Id",
+            "type": "string"
+          },
+          "planned_qty": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Planned Qty",
+            "type": "string"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "produced_qty_target": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Produced Qty Target",
+            "type": "string"
+          },
+          "rework_qty": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Rework Qty",
+            "type": "string"
+          },
+          "scrap_qty": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Scrap Qty",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MoStatus"
+          },
+          "unit_cost": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Unit Cost",
+            "type": "string"
+          },
+          "wastage_qty": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Wastage Qty",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mo_id",
+          "status",
+          "planned_qty",
+          "produced_qty_target",
+          "scrap_qty",
+          "wastage_qty",
+          "by_product_qty",
+          "rework_qty",
+          "cost_pool",
+          "unit_cost",
+          "ledger_codes",
+          "can_complete",
+          "blocking_reasons",
+          "policy"
+        ],
+        "title": "MoCompletionPreviewResponse",
+        "type": "object"
+      },
       "MoCreateRequest": {
         "properties": {
           "bom_id": {
@@ -19630,6 +19738,79 @@
           }
         },
         "summary": "Complete (IN_PROGRESS \u2192 COMPLETED) a manufacturing order with WIP settlement \u2014 TASK-TR-A11",
+        "tags": [
+          "manufacturing",
+          "mo"
+        ]
+      }
+    },
+    "/manufacturing/mo/{mo_id}/completion-preview": {
+      "get": {
+        "description": "Read-only: returns the cost pool, per-unit cost, and loss breakdown that ``POST /manufacturing/mo/{id}/complete`` would post for the given ``produced_qty_target``, plus a list of ``blocking_reasons`` populated when any pre-flight check fails (MO not IN_PROGRESS, an op not in {CLOSED, SKIPPED, CANCELLED}, ALL_OR_NONE policy mismatch, non-zero rework_qty, empty WIP cost pool, etc.). ``can_complete`` is False whenever ``blocking_reasons`` is non-empty; the response is still 200 \u2014 the FE renders the numbers AND the reason in one round trip. No state changes, no GL writes, no audit emit.",
+        "operationId": "completion_preview_manufacturing_mo__mo_id__completion_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "firm_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Firm Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "produced_qty_target",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "title": "Produced Qty Target"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoCompletionPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview the MO completion + WIP settlement that A11 would post (read-only) \u2014 TASK-TR-A11-FU",
         "tags": [
           "manufacturing",
           "mo"
