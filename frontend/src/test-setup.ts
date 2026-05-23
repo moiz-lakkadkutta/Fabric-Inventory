@@ -28,6 +28,7 @@ function buildMockMe(): MeResponse {
       'sales.invoice.finalize',
       'accounting.voucher.post',
       'admin.user.invite',
+      'masters.party.create',
     ],
     flags: {},
     available_firms: firms.map((f) => ({ firm_id: f.firm_id, code: f.code, name: f.name })),

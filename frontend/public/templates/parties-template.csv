@@ -1,0 +1,2 @@
+code,name,legal_name,is_customer,is_supplier,is_karigar,is_transporter,gstin,pan,phone,email,state_code,credit_limit,tax_status,contact_person
+C-0001,Anjali Saree Centre,Anjali Trading Co Pvt Ltd,true,false,false,false,27AAACA1234N1Z5,AAACA1234N,9876543210,owner@anjalisaree.example,27,500000,REGULAR,Anjali Kapoor
