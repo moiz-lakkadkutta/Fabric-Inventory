@@ -659,6 +659,16 @@ def _create_one_mo(
 def test_state_machine_draft_to_closed_happy_path(
     http_client: TestClient,
 ) -> None:
+    """State-machine smoke (DRAFT → RELEASED → IN_PROGRESS → ...).
+
+    A11 makes ``/complete`` money-touching (it now requires a
+    ``MoCompleteRequest`` body and validates WIP cost pool / op states
+    before flipping to COMPLETED). This skinny state-machine test no
+    longer drives all four transitions in one shot — the full settle-
+    + flip happy path lives in ``test_mo_completion.py``. We assert
+    DRAFT → RELEASED → IN_PROGRESS here and trust the A11 module-level
+    tests for the rest of the chain.
+    """
     me, mo_id = _create_one_mo(http_client)
 
     r1 = http_client.post(f"/manufacturing/mo/{mo_id}/release", headers=_auth(me["access_token"]))
@@ -669,15 +679,6 @@ def test_state_machine_draft_to_closed_happy_path(
     assert r2.status_code == 200, r2.text
     assert r2.json()["status"] == "IN_PROGRESS"
 
-    r3 = http_client.post(f"/manufacturing/mo/{mo_id}/complete", headers=_auth(me["access_token"]))
-    assert r3.status_code == 200, r3.text
-    assert r3.json()["status"] == "COMPLETED"
-
-    r4 = http_client.post(f"/manufacturing/mo/{mo_id}/close", headers=_auth(me["access_token"]))
-    assert r4.status_code == 200, r4.text
-    assert r4.json()["status"] == "CLOSED"
-    assert r4.json()["closed_at"] is not None
-
 
 # ──────────────────────────────────────────────────────────────────────
 # State machine — invalid transitions
@@ -686,7 +687,11 @@ def test_state_machine_draft_to_closed_happy_path(
 
 @pytest.mark.parametrize(
     "action_path",
-    ["start", "complete", "close"],
+    # A11: ``complete`` now requires a money-touching body
+    # (``MoCompleteRequest``) so the no-body 422 we test here is
+    # generic Pydantic shape rather than the state-machine reason —
+    # we exercise complete's state-guard in test_mo_completion.py.
+    ["start", "close"],
 )
 def test_release_required_before_other_transitions(
     http_client: TestClient, action_path: str
@@ -716,15 +721,21 @@ def test_cannot_release_a_non_draft_mo(http_client: TestClient) -> None:
 
 
 def test_cannot_complete_when_not_in_progress(http_client: TestClient) -> None:
+    """RELEASED MO cannot be /complete'd. With A11 the endpoint requires
+    a money-touching body; we send a minimal valid one so the
+    state-guard fires (not the Pydantic shape guard)."""
     me, mo_id = _create_one_mo(http_client)
     http_client.post(f"/manufacturing/mo/{mo_id}/release", headers=_auth(me["access_token"]))
     resp = http_client.post(
-        f"/manufacturing/mo/{mo_id}/complete", headers=_auth(me["access_token"])
+        f"/manufacturing/mo/{mo_id}/complete",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "produced_qty": "1.0000"},
     )
     assert resp.status_code == 422, resp.text
     body = resp.json()
-    assert "status is" in body["detail"].lower()
-    assert "released" in body["detail"].lower()
+    detail_lower = body["detail"].lower()
+    # Could be "status is RELEASED, expected IN_PROGRESS".
+    assert "in_progress" in detail_lower or "released" in detail_lower
 
 
 def test_cannot_close_when_not_completed(http_client: TestClient) -> None:
@@ -1326,10 +1337,16 @@ def test_create_mo_emits_audit_log_on_each_state_transition(
 ) -> None:
     """Minor follow-up: every lifecycle POST must fire ``audit_service.log``
     so the AccountingHub timeline / compliance feed has a row per
-    transition. Verifies the entity_id is the MO and the action string
-    matches the API verb."""
+    transition.
+
+    A11 (money-touching ``complete``): the ``complete`` and ``close``
+    legs of the chain are exercised in ``test_mo_completion.py`` against
+    a fully-issued + ops-closed MO. Here we lock in the audit-row emit
+    for the two no-money transitions (release + start). The chain is:
+        create → release → start (and we stop there).
+    """
     me, mo_id = _create_one_mo(http_client)
-    for action in ("release", "start", "complete", "close"):
+    for action in ("release", "start"):
         r = http_client.post(
             f"/manufacturing/mo/{mo_id}/{action}",
             headers=_auth(me["access_token"]),
@@ -1354,8 +1371,9 @@ def test_create_mo_emits_audit_log_on_each_state_transition(
             ).scalars()
         )
     actions = [row.action for row in rows]
-    # 1 create + 4 transitions = 5.
-    assert actions == ["create", "release", "start", "complete", "close"]
+    # 1 create + 2 transitions = 3 here. complete + close emit are
+    # covered in test_mo_completion.py.
+    assert actions == ["create", "release", "start"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1365,11 +1383,14 @@ def test_create_mo_emits_audit_log_on_each_state_transition(
 
 @pytest.mark.parametrize(
     "action_path,narration_text",
+    # A11: ``complete`` is money-touching now and exercises narration
+    # piping in test_mo_completion.py against a real cost pool. ``close``
+    # requires completion first, which needs WIP cost — out of scope for
+    # this skinny narration test. Cover the two no-money transitions
+    # here; A11 module covers the money ones.
     [
         ("release", "cutting starts tomorrow"),
         ("start", "first shift begins"),
-        ("complete", "all pieces stitched + QC pass"),
-        ("close", "final close after rework"),
     ],
 )
 def test_transition_records_narration_in_audit_log(

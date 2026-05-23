@@ -541,8 +541,66 @@ def test_cannot_issue_against_completed_or_closed_mo(
 ) -> None:
     me, mo_id, _b, _r, _f = _seed_full_world(http_client, sync_engine)
     _release_mo(http_client, owner=me, mo_id=mo_id)
-    http_client.post(f"/manufacturing/mo/{mo_id}/start", headers=_auth(me["access_token"]))
-    http_client.post(f"/manufacturing/mo/{mo_id}/complete", headers=_auth(me["access_token"]))
+    # Issue every line in full so the MO auto-starts IN_PROGRESS and a
+    # WIP cost pool exists for the A11 completion to settle.
+    mo_initial = _get_mo(http_client, owner=me, mo_id=mo_id)
+    issue_lines = [
+        {
+            "mo_material_line_id": ln["mo_material_line_id"],
+            "qty_to_issue": ln["qty_required"],
+        }
+        for ln in _mo_lines(mo_initial)
+    ]
+    r_issue = http_client.post(
+        f"/manufacturing/mo/{mo_id}/issue-materials",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "lines": issue_lines},
+    )
+    assert r_issue.status_code == 201, r_issue.text
+    # Drive every operation to CLOSED so A11's pre-completion gate
+    # passes. The routing has 3 sequential STITCHING ops; planned_qty
+    # is 10 so each op handles 10 units in→out.
+    ops_resp = http_client.get(
+        f"/manufacturing/mo/{mo_id}/operations",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"]},
+    )
+    assert ops_resp.status_code == 200, ops_resp.text
+    ops_items = ops_resp.json()["items"]
+    h = _auth(me["access_token"])
+    ops_sorted = sorted(
+        ops_items,
+        key=lambda o: (o.get("operation_sequence") or 0, o["mo_operation_id"]),
+    )
+    for op in ops_sorted:
+        op_id = op["mo_operation_id"]
+        http_client.post(
+            f"/manufacturing/mo-operations/{op_id}/start",
+            headers=h,
+            json={"firm_id": me["firm_id"]},
+        )
+        http_client.post(
+            f"/manufacturing/mo-operations/{op_id}/qty-in",
+            headers=h,
+            json={"firm_id": me["firm_id"], "qty_in": "10.0000"},
+        )
+        http_client.post(
+            f"/manufacturing/mo-operations/{op_id}/qty-out",
+            headers=h,
+            json={"firm_id": me["firm_id"], "qty_out": "10.0000"},
+        )
+        http_client.post(
+            f"/manufacturing/mo-operations/{op_id}/complete",
+            headers=h,
+            json={"firm_id": me["firm_id"]},
+        )
+    # A11: /complete now requires a money-touching body.
+    r_complete = http_client.post(
+        f"/manufacturing/mo/{mo_id}/complete",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "produced_qty": "10.0000"},
+    )
+    assert r_complete.status_code == 200, r_complete.text
 
     # COMPLETED → reject.
     mo = _get_mo(http_client, owner=me, mo_id=mo_id)

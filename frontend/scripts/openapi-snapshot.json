@@ -6964,6 +6964,59 @@
         "title": "MigrationResponse",
         "type": "object"
       },
+      "MoCompleteRequest": {
+        "description": "A11 \u2014 body for the money-touching ``POST /manufacturing/mo/{id}/complete``.\n\n``firm_id`` is a defence-in-depth check (must match the session's\nfirm scope, same posture as ``MoCreateRequest`` and\n``MaterialIssueCreateRequest``).\n\n``produced_qty`` is the operator-claimed finished-goods qty. With\n``completion_policy=ALL_OR_NONE`` (v1 default) the service refuses\nanything that doesn't equal ``planned_qty``.\n\n``series`` for the GL voucher (defaults to ``\"MOC\"`` server-side \u2014\nManufacturing Order Completion).",
+        "properties": {
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "produced_qty": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Produced Qty"
+          },
+          "series": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series"
+          }
+        },
+        "required": [
+          "firm_id",
+          "produced_qty"
+        ],
+        "title": "MoCompleteRequest",
+        "type": "object"
+      },
       "MoCreateRequest": {
         "properties": {
           "bom_id": {
@@ -7515,7 +7568,7 @@
         "type": "string"
       },
       "MoTransitionRequest": {
-        "description": "Optional body for the four MO transition endpoints\n(``release`` / ``start`` / ``complete`` / ``close``). Only carries\n``narration`` today \u2014 the API verb itself encodes the transition.\n\nA05 followups (M3): narration is piped through to ``audit_log.reason``\nso the activity feed captures operator intent on every transition,\nnot just create.",
+        "description": "Optional body for the four MO transition endpoints\n(``release`` / ``start`` / ``complete`` / ``close``). Only carries\n``narration`` today \u2014 the API verb itself encodes the transition.\n\nA05 followups (M3): narration is piped through to ``audit_log.reason``\nso the activity feed captures operator intent on every transition,\nnot just create.\n\nA11 NOTE: ``release`` / ``start`` / ``close`` still accept this\nskinny body. ``complete`` now requires ``MoCompleteRequest`` which\nis a superset (carries ``produced_qty`` + ``firm_id``); the legacy\nbody is no longer accepted on ``complete`` because the new endpoint\nis money-touching.",
         "properties": {
           "narration": {
             "anyOf": [
@@ -13281,7 +13334,8 @@
           "DEBIT_NOTE",
           "CREDIT_NOTE",
           "OPENING_BAL",
-          "MATERIAL_ISSUE"
+          "MATERIAL_ISSUE",
+          "MANUFACTURING_COMPLETION"
         ],
         "title": "VoucherType",
         "type": "string"
@@ -19513,6 +19567,7 @@
     },
     "/manufacturing/mo/{mo_id}/complete": {
       "post": {
+        "description": "Money-touching: drains the WIP cost pool into finished-goods inventory. Posts a balanced GL voucher (DR 1300 Inventory / CR 1310 Work-in-Process) for the full pool, inserts an inbound stock-ledger row for the finished item at the firm's MAIN warehouse with unit_cost = cost_pool / produced_qty, then flips the MO header to COMPLETED. With completion_policy=ALL_OR_NONE (the default and only v1 policy) the request's produced_qty must equal planned_qty. All operations must be in {CLOSED, SKIPPED, CANCELLED} \u2014 REWORK QC verdicts block completion until the rework cycle finishes.",
         "operationId": "complete_mo_manufacturing_mo__mo_id__complete_post",
         "parameters": [
           {
@@ -19546,18 +19601,11 @@
           "content": {
             "application/json": {
               "schema": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/MoTransitionRequest"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": "Body"
+                "$ref": "#/components/schemas/MoCompleteRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -19581,7 +19629,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Complete (IN_PROGRESS \u2192 COMPLETED) a manufacturing order",
+        "summary": "Complete (IN_PROGRESS \u2192 COMPLETED) a manufacturing order with WIP settlement \u2014 TASK-TR-A11",
         "tags": [
           "manufacturing",
           "mo"
