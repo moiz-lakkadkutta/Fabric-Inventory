@@ -42,7 +42,7 @@
  *     joins MO ↔ item / party / sales-order.
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { api } from '@/lib/api/client';
 import { IS_LIVE } from '@/lib/api/mode';
@@ -74,6 +74,14 @@ export type BackendBomListResponse = components['schemas']['BomListResponse'];
 
 export type BackendRoutingResponse = components['schemas']['RoutingResponse'];
 export type BackendRoutingListResponse = components['schemas']['RoutingListResponse'];
+
+export type BackendMoCompletionPreviewResponse =
+  components['schemas']['MoCompletionPreviewResponse'];
+export type BackendMoCompleteRequest = components['schemas']['MoCompleteRequest'];
+
+export type BackendOperationMasterResponse = components['schemas']['OperationMasterResponse'];
+export type BackendOperationMasterListResponse =
+  components['schemas']['OperationMasterListResponse'];
 
 // ── MO list ↔ Kanban view-model mapper ────────────────────────────────
 
@@ -246,6 +254,75 @@ async function liveGetRouting(routingId: string): Promise<BackendRoutingResponse
   return api<BackendRoutingResponse>(`/routings/${routingId}`);
 }
 
+// ── MO completion preview / complete (A11 + A11-FU) ───────────────────
+
+export interface CompletionPreviewParams {
+  moId: string;
+  firm_id?: string;
+  producedQtyTarget: string | number;
+}
+
+async function liveGetMoCompletionPreview(
+  params: CompletionPreviewParams,
+): Promise<BackendMoCompletionPreviewResponse> {
+  const firm_id = requireFirmId(params.firm_id);
+  const usp = new URLSearchParams({
+    firm_id,
+    produced_qty_target: String(params.producedQtyTarget),
+  });
+  return api<BackendMoCompletionPreviewResponse>(
+    `/manufacturing/mo/${params.moId}/completion-preview?${usp.toString()}`,
+  );
+}
+
+export interface CompleteMoInput {
+  moId: string;
+  firm_id?: string;
+  producedQty: string | number;
+  narration?: string;
+  idempotencyKey: string;
+}
+
+async function liveCompleteMo(input: CompleteMoInput): Promise<BackendMoResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendMoCompleteRequest = {
+    firm_id,
+    produced_qty: input.producedQty,
+  };
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendMoResponse>(`/manufacturing/mo/${input.moId}/complete`, {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body,
+  });
+}
+
+// ── Operation masters (lookup for the MO Detail Operations tab) ───────
+
+export interface ListOperationMastersParams {
+  firm_id?: string;
+  is_active?: boolean;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+async function liveListOperationMasters(
+  params: ListOperationMastersParams = {},
+): Promise<BackendOperationMasterResponse[]> {
+  const usp = new URLSearchParams();
+  const firm_id = authStore.get().me?.firm_id ?? params.firm_id;
+  if (firm_id) usp.set('firm_id', firm_id);
+  if (params.is_active !== undefined) usp.set('is_active', String(params.is_active));
+  if (params.search) usp.set('search', params.search);
+  usp.set('limit', String(params.limit ?? 200));
+  usp.set('offset', String(params.offset ?? 0));
+  const data = await api<BackendOperationMasterListResponse>(
+    `/operation-masters?${usp.toString()}`,
+  );
+  return data.items;
+}
+
 // ── Public hooks ──────────────────────────────────────────────────────
 
 const MO_KEY = ['manufacturing', 'mos'] as const;
@@ -338,6 +415,70 @@ export function useRouting(routingId: string | undefined) {
   });
 }
 
+const OPERATION_MASTER_KEY = ['manufacturing', 'operation-masters'] as const;
+const COMPLETION_PREVIEW_KEY = ['manufacturing', 'completion-preview'] as const;
+
+/**
+ * Read-only completion preview (A11-FU). Stays out of cache mutations —
+ * the result is recomputed by the BE on each call against live cost
+ * state, so we don't want to surface a stale snapshot if the operator
+ * is mid-decision. `enabled` lets the dialog gate the fetch until the
+ * input is valid.
+ */
+export function useMoCompletionPreview(params: {
+  moId: string | undefined;
+  producedQtyTarget: string | number;
+  enabled?: boolean;
+}) {
+  const firm_id = authStore.get().me?.firm_id;
+  return useQuery<BackendMoCompletionPreviewResponse>({
+    queryKey: [...COMPLETION_PREVIEW_KEY, params.moId, firm_id, String(params.producedQtyTarget)],
+    enabled:
+      params.enabled !== false &&
+      params.moId !== undefined &&
+      params.producedQtyTarget !== '' &&
+      Number.isFinite(Number(params.producedQtyTarget)) &&
+      Number(params.producedQtyTarget) > 0,
+    queryFn: () =>
+      liveGetMoCompletionPreview({
+        moId: params.moId as string,
+        producedQtyTarget: params.producedQtyTarget,
+      }),
+    // Always go to the network — pre-flight checks (stock available,
+    // operations CLOSED, etc.) can change between user actions.
+    staleTime: 0,
+    gcTime: 0,
+  });
+}
+
+/**
+ * POST /manufacturing/mo/{id}/complete (A11). Money-touching — drains
+ * the WIP pool into finished-goods inventory and flips the MO to
+ * COMPLETED. On success we invalidate the MO list and the specific
+ * detail so the UI re-syncs from the BE.
+ */
+export function useCompleteMo() {
+  const qc = useQueryClient();
+  return useMutation<BackendMoResponse, Error, CompleteMoInput>({
+    mutationFn: (input) => liveCompleteMo(input),
+    onSuccess: (next) => {
+      qc.invalidateQueries({ queryKey: MO_KEY });
+      qc.setQueryData([...MO_KEY, 'detail', next.manufacturing_order_id], next);
+    },
+  });
+}
+
+/** Operation-master lookup — used by MO Detail to render op names. */
+export function useOperationMasters(params: ListOperationMastersParams = {}) {
+  return useQuery<BackendOperationMasterResponse[]>({
+    queryKey: [...OPERATION_MASTER_KEY, 'list', params],
+    queryFn: () =>
+      IS_LIVE
+        ? liveListOperationMasters(params)
+        : fakeFetch([] as BackendOperationMasterResponse[]),
+  });
+}
+
 // ── Test-only exports ────────────────────────────────────────────────
 
 /** Mappers exposed for the live-mapping unit tests. */
@@ -361,4 +502,7 @@ export const __live = {
   liveGetBom,
   liveListRoutings,
   liveGetRouting,
+  liveGetMoCompletionPreview,
+  liveCompleteMo,
+  liveListOperationMasters,
 };
