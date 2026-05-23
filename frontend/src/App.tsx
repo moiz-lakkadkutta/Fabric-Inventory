@@ -20,7 +20,7 @@ import InventoryList from '@/pages/inventory/InventoryList';
 import LotDetail from '@/pages/inventory/LotDetail';
 import JobWorkOverview from '@/pages/jobwork/JobWorkOverview';
 import ManufacturingPipeline from '@/pages/manufacturing/ManufacturingPipeline';
-import MoCreatePlaceholder from '@/pages/manufacturing/MoCreatePlaceholder';
+import MoCreateWizard from '@/pages/manufacturing/MoCreateWizard';
 import MoDetail from '@/pages/manufacturing/MoDetail';
 import MoList from '@/pages/manufacturing/MoList';
 import ItemDetail from '@/pages/masters/ItemDetail';
@@ -109,7 +109,7 @@ const router = createBrowserRouter([
       // kanban. The /new stub is a reachable placeholder until the
       // creation form ships as its own task.
       { path: 'manufacturing/mo', element: <MoList /> },
-      { path: 'manufacturing/mo/new', element: <MoCreatePlaceholder /> },
+      { path: 'manufacturing/mo/new', element: <MoCreateWizard /> },
       { path: 'manufacturing/mo/:id', element: <MoDetail /> },
       { path: 'jobwork', element: <JobWorkOverview /> },
       { path: 'accounting', element: <AccountingHub /> },
