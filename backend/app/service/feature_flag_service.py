@@ -22,6 +22,19 @@ from app.models import FeatureFlag
 
 CACHE_TTL_SECONDS = 60
 
+# Per-firm flag defaults. Keys here are surfaced by
+# `resolve_flags_for_firm` (used by /auth/me) when the firm has no
+# explicit row. This is how a module flips from "feature-flagged on for
+# safety" to "default on for everyone, opt-out per firm" without
+# requiring a backfill migration.
+#
+# TASK-TR-A14 — Manufacturing (A01-A10 + UI A12) is now trial-ready;
+# the flag stays so an admin can disable the module per-firm but the
+# default is ON. A firm row with value=False overrides this default.
+FLAG_DEFAULTS: dict[str, bool] = {
+    "manufacturing.enabled": True,
+}
+
 
 class _FlagCache:
     """Tiny TTL cache: `firm_id → (expires_at_unix, flags_dict)`."""
@@ -69,6 +82,22 @@ def get_flags_for_firm(db: Session, *, firm_id: uuid.UUID) -> dict[str, bool]:
     flags: dict[str, bool] = {row.key: row.value for row in rows}
     _cache.set(firm_id, flags)
     return flags
+
+
+def resolve_flags_for_firm(db: Session, *, firm_id: uuid.UUID) -> dict[str, bool]:
+    """Return flags overlaid on `FLAG_DEFAULTS`.
+
+    `get_flags_for_firm` returns the raw DB rows (empty dict if none) —
+    that's the right shape for the admin toggle UI which needs to know
+    "is this flag explicitly set?". For runtime gating (e.g. /auth/me
+    feeding the FE nav), callers want "what should this firm see?" with
+    defaults applied. This is the latter.
+
+    Explicit DB rows always win — including explicit `False`, so a firm
+    that has opted out of a default-on module stays opted out.
+    """
+    raw = get_flags_for_firm(db, firm_id=firm_id)
+    return {**FLAG_DEFAULTS, **raw}
 
 
 def invalidate_firm(firm_id: uuid.UUID) -> None:

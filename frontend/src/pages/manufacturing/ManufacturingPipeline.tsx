@@ -1,8 +1,5 @@
-import { Plus } from 'lucide-react';
 import { useMemo } from 'react';
 
-import { Button } from '@/components/ui/button';
-import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   KANBAN_COLUMNS,
@@ -13,20 +10,11 @@ import {
 
 export default function ManufacturingPipeline() {
   const moQuery = useManufacturingOrders();
-  // MO backend shipped in TASK-TR-A05 (create + lifecycle). The MO FE
-  // create form + list view are not yet planned in the trial backlog —
-  // when an Manufacturing-UI task is added (likely a TR-A-series follow-
-  // up after A11 finished-goods receipt), wire these buttons to the
-  // real screens. Until then, keep the coming-soon affordance so the
-  // pipeline page doesn't lie about a working flow.
-  const viewList = useComingSoon({
-    feature: 'MO list view',
-    task: 'TASK-TR-A-FE (MO list + filters — not yet scheduled)',
-  });
-  const newMo = useComingSoon({
-    feature: 'New manufacturing order',
-    task: 'TASK-TR-A-FE (MO create form — not yet scheduled)',
-  });
+  // TASK-TR-A14: the "View list" and "+ New MO" ComingSoon buttons
+  // were removed when Manufacturing flipped from feature-flagged-off to
+  // trial-ready. The MO list/detail screens land in a follow-up FE
+  // task; until then, the Kanban is the canonical entry point and
+  // shouldn't show buttons that fire a placeholder dialog.
 
   const grouped = useMemo(() => {
     const out = new Map<MoStage, ManufacturingOrder[]>();
@@ -44,18 +32,7 @@ export default function ManufacturingPipeline() {
         <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
           {moQuery.isPending ? '—' : `${moQuery.data?.length ?? 0} active orders in pipeline`}
         </span>
-        <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" {...viewList.triggerProps}>
-            View list
-          </Button>
-          <Button {...newMo.triggerProps}>
-            <Plus />
-            New MO
-          </Button>
-        </div>
       </header>
-      {viewList.dialog}
-      {newMo.dialog}
 
       {moQuery.isPending ? (
         <Skeleton width="100%" height={520} radius={8} />

@@ -114,6 +114,35 @@ def test_invalidate_drops_cache(db_session: OrmSession) -> None:
     assert fresh == {"y.feature": False}
 
 
+def test_resolve_overlays_defaults_when_firm_has_no_rows(db_session: OrmSession) -> None:
+    """TASK-TR-A14: with no explicit row, `manufacturing.enabled` defaults
+    to True via `FLAG_DEFAULTS`. Raw `get_flags_for_firm` still returns
+    `{}` for that firm — defaults live in the resolved view only."""
+    feature_flag_service.clear_cache()
+    _, firm_id, _ = _seed_org_firm_user(db_session)
+
+    raw = feature_flag_service.get_flags_for_firm(db_session, firm_id=firm_id)
+    resolved = feature_flag_service.resolve_flags_for_firm(db_session, firm_id=firm_id)
+
+    assert raw == {}
+    assert resolved == {"manufacturing.enabled": True}
+
+
+def test_resolve_lets_explicit_false_override_default(db_session: OrmSession) -> None:
+    """A firm that has explicitly opted out (row with value=False) must
+    stay opted out even though the default is True."""
+    feature_flag_service.clear_cache()
+    _, firm_id, user_id = _seed_org_firm_user(db_session)
+
+    db_session.add(
+        FeatureFlag(firm_id=firm_id, key="manufacturing.enabled", value=False, updated_by=user_id)
+    )
+    db_session.flush()
+
+    resolved = feature_flag_service.resolve_flags_for_firm(db_session, firm_id=firm_id)
+    assert resolved["manufacturing.enabled"] is False
+
+
 def test_cache_ttl_expiry(db_session: OrmSession, monkeypatch: object) -> None:
     """Manually advance time to trigger TTL expiry — avoids a 60s sleep."""
     import app.service.feature_flag_service as ff_module

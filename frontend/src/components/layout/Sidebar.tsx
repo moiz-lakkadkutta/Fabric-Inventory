@@ -15,6 +15,7 @@ import {
 import { NavLink, useLocation } from 'react-router-dom';
 
 import { cn } from '@/lib/utils';
+import { useFeatureFlagWithDefault } from '@/store/auth';
 
 interface SubItem {
   to: string;
@@ -30,43 +31,57 @@ interface NavItem {
   sub?: SubItem[];
 }
 
-const NAV: NavItem[] = [
-  { to: '/', label: 'Home', icon: Home, end: true },
-  {
-    to: '/sales/invoices',
-    label: 'Sales',
-    icon: ShoppingBag,
-    prefix: '/sales',
-    sub: [
-      { to: '/sales/invoices', label: 'Invoices' },
-      { to: '/sales/quotes', label: 'Quotes' },
-      { to: '/sales/orders', label: 'Sales orders' },
-      { to: '/sales/delivery-challans', label: 'Delivery challans' },
-      { to: '/sales/returns', label: 'Returns' },
-      { to: '/sales/credit-control', label: 'Credit control' },
-    ],
-  },
-  { to: '/purchase', label: 'Purchase', icon: Truck },
-  { to: '/inventory', label: 'Inventory', icon: Package },
-  { to: '/manufacturing', label: 'Manufacturing', icon: Cog },
-  { to: '/jobwork', label: 'Job work', icon: Wrench },
-  { to: '/accounting', label: 'Accounts', icon: Wallet },
-  { to: '/reports', label: 'Reports', icon: BarChart3 },
-  {
-    to: '/masters/parties',
-    label: 'Masters',
-    icon: Database,
-    prefix: '/masters',
-    sub: [
-      { to: '/masters/parties', label: 'Parties' },
-      { to: '/masters/items', label: 'Items' },
-    ],
-  },
-  { to: '/admin', label: 'Admin', icon: ShieldCheck },
-];
+const MANUFACTURING_NAV: NavItem = {
+  to: '/manufacturing',
+  label: 'Manufacturing',
+  icon: Cog,
+};
+
+function buildNav({ manufacturingEnabled }: { manufacturingEnabled: boolean }): NavItem[] {
+  return [
+    { to: '/', label: 'Home', icon: Home, end: true },
+    {
+      to: '/sales/invoices',
+      label: 'Sales',
+      icon: ShoppingBag,
+      prefix: '/sales',
+      sub: [
+        { to: '/sales/invoices', label: 'Invoices' },
+        { to: '/sales/quotes', label: 'Quotes' },
+        { to: '/sales/orders', label: 'Sales orders' },
+        { to: '/sales/delivery-challans', label: 'Delivery challans' },
+        { to: '/sales/returns', label: 'Returns' },
+        { to: '/sales/credit-control', label: 'Credit control' },
+      ],
+    },
+    { to: '/purchase', label: 'Purchase', icon: Truck },
+    { to: '/inventory', label: 'Inventory', icon: Package },
+    // TASK-TR-A14: Manufacturing nav is gated on the
+    // `manufacturing.enabled` feature flag. Default ON via
+    // `FLAG_DEFAULTS` (BE) + `useFeatureFlagWithDefault(..., true)`
+    // (FE); a firm can opt out with an explicit flag row.
+    ...(manufacturingEnabled ? [MANUFACTURING_NAV] : []),
+    { to: '/jobwork', label: 'Job work', icon: Wrench },
+    { to: '/accounting', label: 'Accounts', icon: Wallet },
+    { to: '/reports', label: 'Reports', icon: BarChart3 },
+    {
+      to: '/masters/parties',
+      label: 'Masters',
+      icon: Database,
+      prefix: '/masters',
+      sub: [
+        { to: '/masters/parties', label: 'Parties' },
+        { to: '/masters/items', label: 'Items' },
+      ],
+    },
+    { to: '/admin', label: 'Admin', icon: ShieldCheck },
+  ];
+}
 
 export function Sidebar() {
   const { pathname } = useLocation();
+  const manufacturingEnabled = useFeatureFlagWithDefault('manufacturing.enabled', true);
+  const nav = buildNav({ manufacturingEnabled });
 
   return (
     <aside
@@ -77,7 +92,7 @@ export function Sidebar() {
       }}
     >
       <nav className="flex flex-col gap-0.5 px-2 py-3" aria-label="Primary">
-        {NAV.map((item) => {
+        {nav.map((item) => {
           const Icon = item.icon;
           const isActive = item.prefix
             ? pathname.startsWith(item.prefix)
