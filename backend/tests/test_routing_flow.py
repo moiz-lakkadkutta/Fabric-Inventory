@@ -504,8 +504,10 @@ def test_diamond_fts_requires_both_parents_closed(
     allowed, reason = _can_start(sync_engine, org_id=me["org_id"], op=op_d_mo)
     assert not allowed
     assert reason is not None
-    # The blocking reason should mention C (op_c), not B.
-    assert op_c in reason, reason
+    # The blocking reason should mention C (by its operation_master name),
+    # not B. Names are deterministic: ``_create_op`` sets name=f"Op {code}"``.
+    op_c_name = f"Op {op_codes[2]}"
+    assert op_c_name in reason, reason
 
     # Close C. D allowed.
     _set_op(sync_engine, org_id=me["org_id"], mo_operation_id=ops[op_c], state="CLOSED")
@@ -736,7 +738,8 @@ def test_mixed_graph_blocks_until_all_edges_satisfied(
     _set_op(sync_engine, org_id=me["org_id"], mo_operation_id=ops[op_c], state="IN_PROGRESS")
     allowed, reason = _can_start(sync_engine, org_id=me["org_id"], op=op_d_mo)
     assert not allowed
-    assert reason is not None and op_c in reason
+    op_c_name = f"Op {op_codes[2]}"
+    assert reason is not None and op_c_name in reason
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -843,7 +846,8 @@ def test_http_start_rejects_with_engine_reason(
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     assert "FINISH_TO_START" in detail
-    assert op_c in detail
+    op_c_name = f"Op {op_codes[2]}"
+    assert op_c_name in detail
 
     # Close C → D start now succeeds via HTTP.
     _set_op(sync_engine, org_id=me["org_id"], mo_operation_id=ops[op_c], state="CLOSED")

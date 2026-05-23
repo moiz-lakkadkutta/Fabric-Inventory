@@ -210,13 +210,20 @@ def _load_mo_operations(session: Session, *, mo_id: uuid.UUID) -> dict[uuid.UUID
     """Return ``{operation_master_id: MoOperation}`` for every non-deleted
     op on the MO. The map lets the engine answer "what's the state of
     the predecessor whose master id is X" in O(1).
+
+    Eager-loads ``operation_master`` (selectinload) so reason strings
+    rendered in ``_check_edge`` can use the human-friendly catalogue
+    ``name`` rather than raw UUIDs (TR-A09 FU3). One extra query for the
+    whole batch — cheaper than N+1 lazy loads when multiple edges block.
     """
     rows = list(
         session.execute(
-            select(MoOperation).where(
+            select(MoOperation)
+            .where(
                 MoOperation.manufacturing_order_id == mo_id,
                 MoOperation.deleted_at.is_(None),
             )
+            .options(selectinload(MoOperation.operation_master))
         ).scalars()
     )
     return {op.operation_master_id: op for op in rows}
@@ -271,13 +278,19 @@ def _check_edge(
     # as FINISH_TO_START (the strictest, safest default).
     edge_type = edge.edge_type or RoutingEdgeType.FINISH_TO_START
 
+    # ``operation_master.name`` is eager-loaded by ``_load_mo_operations``
+    # so we can render FE-friendly predecessor names in every blocked
+    # reason. Pre-compute once per edge rather than inlining the access
+    # at every return site — keeps the messages terse + consistent.
+    pred_name = predecessor.operation_master.name
+    pred_state = predecessor.state.value
+
     if edge_type is RoutingEdgeType.FINISH_TO_START:
         if predecessor.state not in TERMINAL_STATES:
             return (
                 False,
-                f"predecessor (operation_master {edge.from_operation_id}) is in "
-                f"state {predecessor.state.value}; FINISH_TO_START requires "
-                "CLOSED / SKIPPED / CANCELLED",
+                f"predecessor operation '{pred_name}' is in state {pred_state}; "
+                "FINISH_TO_START requires CLOSED / SKIPPED / CANCELLED",
             )
         return True, None
 
@@ -285,9 +298,8 @@ def _check_edge(
         if predecessor.state not in IN_PROGRESS_OR_BEYOND_STATES:
             return (
                 False,
-                f"predecessor (operation_master {edge.from_operation_id}) is in "
-                f"state {predecessor.state.value}; START_TO_START requires the "
-                "upstream to be IN_PROGRESS or beyond",
+                f"predecessor operation '{pred_name}' is in state {pred_state}; "
+                "START_TO_START requires the upstream to be IN_PROGRESS or beyond",
             )
         return True, None
 
@@ -315,9 +327,9 @@ def _check_edge(
         if predecessor.state not in IN_PROGRESS_OR_BEYOND_STATES:
             return (
                 False,
-                f"predecessor (operation_master {edge.from_operation_id}) is in "
-                f"state {predecessor.state.value}; PARTIAL_FINISH_TO_START requires "
-                "the upstream to be IN_PROGRESS or beyond before threshold checks",
+                f"predecessor operation '{pred_name}' is in state {pred_state}; "
+                "PARTIAL_FINISH_TO_START requires the upstream to be IN_PROGRESS "
+                "or beyond before threshold checks",
             )
         produced = Decimal(predecessor.qty_out or 0)
         if edge.threshold_qty is not None:
@@ -325,8 +337,8 @@ def _check_edge(
             if produced < threshold_qty:
                 return (
                     False,
-                    f"predecessor (operation_master {edge.from_operation_id}) "
-                    f"has qty_out={produced}; PARTIAL_FINISH_TO_START requires "
+                    f"predecessor operation '{pred_name}' (state={pred_state}) has "
+                    f"qty_out={produced}; PARTIAL_FINISH_TO_START requires "
                     f">= {threshold_qty}",
                 )
             return True, None
@@ -351,17 +363,17 @@ def _check_edge(
             if planned <= 0:
                 return (
                     False,
-                    f"predecessor (operation_master {edge.from_operation_id}) "
-                    "has no planning figure (qty_in <= 0 and MO.planned_qty "
-                    "<= 0); cannot evaluate PARTIAL_FINISH_TO_START threshold_pct",
+                    f"predecessor operation '{pred_name}' has no planning figure "
+                    "(qty_in <= 0 and MO.planned_qty <= 0); cannot evaluate "
+                    "PARTIAL_FINISH_TO_START threshold_pct",
                 )
             achieved_pct = (produced / planned) * Decimal("100")
             threshold_pct = Decimal(edge.threshold_pct)
             if achieved_pct < threshold_pct:
                 return (
                     False,
-                    f"predecessor (operation_master {edge.from_operation_id}) "
-                    f"has produced {achieved_pct:.2f}% of planning figure "
+                    f"predecessor operation '{pred_name}' (state={pred_state}) has "
+                    f"produced {achieved_pct:.2f}% of planning figure "
                     f"({produced}/{planned}); PARTIAL_FINISH_TO_START requires "
                     f">= {threshold_pct}%",
                 )
