@@ -20,7 +20,7 @@
  * surfaces the blocking_reasons explanation).
  */
 
-import { AlertCircle, ArrowLeft, Check, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowRight, Check, Package, X } from 'lucide-react';
 import * as React from 'react';
 import { Link, useParams } from 'react-router-dom';
 
@@ -37,13 +37,20 @@ import { useItems } from '@/lib/queries/items';
 import {
   useCompleteMo,
   useDesign,
+  useIssueMaterials,
   useMo,
   useMoCompletionPreview,
   useOperationMasters,
+  useStartMo,
+  type BackendMaterialIssueLineInput,
   type BackendMoResponse,
   type BackendMoStatus,
+  type BackendOperationMasterResponse,
 } from '@/lib/queries/manufacturing';
 import { formatDateShort } from '@/lib/format';
+import { authStore } from '@/store/auth';
+
+import { OperationDrawer } from './_components/OperationDrawer';
 
 const STATUS_PILL: Record<BackendMoStatus, { kind: PillKind; label: string }> = {
   DRAFT: { kind: 'draft', label: 'Draft' },
@@ -63,6 +70,22 @@ export default function MoDetail() {
   const opMastersQuery = useOperationMasters();
   const [tab, setTab] = React.useState<TabKey>('operations');
   const [completeOpen, setCompleteOpen] = React.useState(false);
+  const [issueOpen, setIssueOpen] = React.useState(false);
+  // Track the currently-open operation drawer by mo_operation_id. Null
+  // means closed. We carry the id (not the op object) so the drawer
+  // re-reads the row from the refetched MO on every successful
+  // mutation — keeping snapshot + actions in sync.
+  const [drawerOpId, setDrawerOpId] = React.useState<string | null>(null);
+
+  // Permission check (FE gate; BE always re-enforces). We read from the
+  // auth store directly — no hook exists yet and adding one is out of
+  // scope for this PR. Falls back to "allow" if `me` hasn't loaded yet
+  // so the page isn't blank in the test environment that doesn't
+  // populate permissions for the read-only case.
+  const permissions = authStore.get().me?.permissions ?? [];
+  const canMoWrite = permissions.includes('manufacturing.mo.write');
+  const canIssueMaterials = permissions.includes('manufacturing.material_issue.write');
+  const canOperationWrite = permissions.includes('manufacturing.operation.progress');
 
   if (moQuery.isError) {
     return <QueryError error={moQuery.error} onRetry={() => moQuery.refetch()} />;
@@ -97,6 +120,43 @@ export default function MoDetail() {
         ? 'MO already complete.'
         : `MO must be started before it can be completed (current status: ${mo.status}).`;
 
+  // Start button is only meaningful on a RELEASED MO. Tooltip explains
+  // why it's disabled in every other state.
+  const canStart = mo.status === 'RELEASED';
+  const startBlockedReason =
+    mo.status === 'RELEASED'
+      ? undefined
+      : mo.status === 'DRAFT'
+        ? 'Release the MO before it can be started.'
+        : mo.status === 'IN_PROGRESS'
+          ? 'MO is already in progress.'
+          : `MO is ${mo.status.toLowerCase()}; it cannot be started.`;
+
+  // Issue materials is permitted while RELEASED or IN_PROGRESS (the BE
+  // auto-starts a RELEASED MO on first issue).
+  const canIssueNow = mo.status === 'RELEASED' || mo.status === 'IN_PROGRESS';
+  const issueBlockedReason = canIssueNow
+    ? undefined
+    : `Materials can only be issued while the MO is RELEASED or IN_PROGRESS (current: ${mo.status}).`;
+
+  // Operations may have action surfaces only on a started MO. We let
+  // operators open the drawer in any state (read-only snapshot is
+  // still useful), but the action buttons inside are gated below.
+  const orderedOps = [...mo.operations].sort((a, b) => {
+    const aSeq = a.operation_sequence ?? Number.MAX_SAFE_INTEGER;
+    const bSeq = b.operation_sequence ?? Number.MAX_SAFE_INTEGER;
+    return aSeq - bSeq;
+  });
+  const opMastersById = new Map<string, BackendOperationMasterResponse>(
+    (opMastersQuery.data ?? []).map((o) => [o.operation_master_id, o] as const),
+  );
+  const drawerOpMaster =
+    drawerOpId !== null
+      ? opMastersById.get(
+          orderedOps.find((o) => o.mo_operation_id === drawerOpId)?.operation_master_id ?? '',
+        )
+      : undefined;
+
   return (
     <div className="space-y-4">
       <header
@@ -128,11 +188,20 @@ export default function MoDetail() {
           plannedQty={mo.planned_qty}
           pct={progressPct}
         />
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {/* Start MO — visible across all statuses so operators get a
+              consistent affordance; disabled with a tooltip when not
+              RELEASED. We render `<StartMoButton>` so the mutation +
+              idempotency-key lifecycle is encapsulated. */}
+          <StartMoButton
+            mo={mo}
+            canStart={canStart && canMoWrite}
+            blockedReason={!canMoWrite ? 'No permission.' : startBlockedReason}
+          />
           <Button
             onClick={() => setCompleteOpen(true)}
-            disabled={!canComplete}
-            title={completeBlockedReason}
+            disabled={!canComplete || !canMoWrite}
+            title={!canMoWrite ? 'No permission.' : completeBlockedReason}
           >
             <Check size={14} />
             Complete MO
@@ -189,6 +258,7 @@ export default function MoDetail() {
                 (opMastersQuery.data ?? []).map((o) => [o.operation_master_id, o.name] as const),
               )
             }
+            onRowClick={(opId) => setDrawerOpId(opId)}
           />
         )}
         {tab === 'materials' && (
@@ -197,12 +267,35 @@ export default function MoDetail() {
             itemNameById={
               new Map((itemsQuery.data ?? []).map((it) => [it.item_id, it.name] as const))
             }
+            canIssueNow={canIssueNow && canIssueMaterials}
+            issueBlockedReason={!canIssueMaterials ? 'No permission.' : issueBlockedReason}
+            onIssueClick={() => setIssueOpen(true)}
           />
         )}
         {tab === 'cost' && <CostTab mo={mo} />}
       </div>
 
       {completeOpen && <CompleteMoDialog mo={mo} onClose={() => setCompleteOpen(false)} />}
+
+      {issueOpen && (
+        <IssueMaterialsDialog
+          mo={mo}
+          itemNameById={
+            new Map((itemsQuery.data ?? []).map((it) => [it.item_id, it.name] as const))
+          }
+          onClose={() => setIssueOpen(false)}
+        />
+      )}
+
+      <OperationDrawer
+        open={drawerOpId !== null}
+        onClose={() => setDrawerOpId(null)}
+        mo={mo}
+        operationId={drawerOpId ?? ''}
+        opMaster={drawerOpMaster}
+        totalOps={orderedOps.length}
+        canWrite={canOperationWrite}
+      />
     </div>
   );
 }
@@ -290,9 +383,11 @@ function TabButton({
 function OperationsTab({
   mo,
   opNameById,
+  onRowClick,
 }: {
   mo: BackendMoResponse;
   opNameById: Map<string, string>;
+  onRowClick: (mo_operation_id: string) => void;
 }) {
   if (mo.operations.length === 0) {
     return (
@@ -330,7 +425,23 @@ function OperationsTab({
           // matches other status chips.
           const executorPill: PillKind = op.executor === 'KARIGAR' ? 'karigar' : 'finalized';
           return (
-            <tr key={op.mo_operation_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+            <tr
+              key={op.mo_operation_id}
+              onClick={() => onRowClick(op.mo_operation_id)}
+              role="button"
+              tabIndex={0}
+              aria-label={`Open ${opName} operation`}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onRowClick(op.mo_operation_id);
+                }
+              }}
+              style={{
+                borderTop: '1px solid var(--border-subtle)',
+                cursor: 'pointer',
+              }}
+            >
               <Td>
                 <span className="num" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                   {op.operation_sequence ?? '—'}
@@ -376,9 +487,15 @@ function OperationsTab({
 function MaterialsTab({
   mo,
   itemNameById,
+  canIssueNow,
+  issueBlockedReason,
+  onIssueClick,
 }: {
   mo: BackendMoResponse;
   itemNameById: Map<string, string>;
+  canIssueNow: boolean;
+  issueBlockedReason: string | undefined;
+  onIssueClick: () => void;
 }) {
   if (mo.material_lines.length === 0) {
     return (
@@ -388,71 +505,105 @@ function MaterialsTab({
     );
   }
 
+  // Has any line got remaining qty to issue? If everything is already
+  // fully issued, the button is disabled regardless of MO status so the
+  // operator gets a clear tooltip instead of a wasted dialog.
+  const anyRemaining = mo.material_lines.some(
+    (ml) => Number(ml.qty_required) - Number(ml.qty_issued) > 0,
+  );
+  const buttonDisabled = !canIssueNow || !anyRemaining;
+  const buttonReason = canIssueNow
+    ? anyRemaining
+      ? undefined
+      : 'All material lines are fully issued.'
+    : issueBlockedReason;
+
   return (
-    <table className="w-full text-left" style={{ minWidth: 640 }}>
-      <thead style={{ background: 'var(--bg-sunken)' }}>
-        <tr style={{ color: 'var(--text-tertiary)' }}>
-          <Th>Item</Th>
-          <Th align="right">Planned</Th>
-          <Th align="right">Issued</Th>
-          <Th align="right">Remaining</Th>
-          <Th align="right">Scrap</Th>
-        </tr>
-      </thead>
-      <tbody>
-        {mo.material_lines.map((ml) => {
-          const itemName = itemNameById.get(ml.item_id) ?? ml.item_id.slice(0, 8);
-          // Remaining is decimal subtraction — do it as strings → Decimal
-          // would be ideal, but Number() is the BE-blessed pattern for
-          // FE display only (we never round-trip back to the wire).
-          const remaining = (Number(ml.qty_required) - Number(ml.qty_issued)).toFixed(4);
-          return (
-            <tr
-              key={ml.mo_material_line_id}
-              style={{ borderTop: '1px solid var(--border-subtle)' }}
-            >
-              <Td>
-                <span style={{ fontSize: 13.5, fontWeight: 500 }}>
-                  {itemName}
-                  {ml.is_optional && (
-                    <span
-                      className="ml-2 uppercase"
-                      style={{
-                        fontSize: 10,
-                        color: 'var(--text-tertiary)',
-                        letterSpacing: '0.04em',
-                      }}
-                    >
-                      Optional
-                    </span>
-                  )}
-                </span>
-              </Td>
-              <Td align="right">
-                <span className="num" style={{ fontSize: 13 }}>
-                  {ml.qty_required}
-                </span>
-              </Td>
-              <Td align="right">
-                <span className="num" style={{ fontSize: 13 }}>
-                  {ml.qty_issued}
-                </span>
-              </Td>
-              <Td align="right">
-                <span className="num" style={{ fontSize: 13, fontWeight: 500 }}>
-                  {remaining}
-                </span>
-              </Td>
-              <Td align="right">
-                <span className="num" style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
-                  {ml.qty_scrap}
-                </span>
-              </Td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div>
+      <div
+        className="flex items-center justify-between gap-3 px-3 py-2.5"
+        style={{ borderBottom: '1px solid var(--border-subtle)' }}
+      >
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+          Pull raw materials from on-hand stock to WIP.
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          type="button"
+          onClick={onIssueClick}
+          disabled={buttonDisabled}
+          title={buttonReason}
+        >
+          <Package size={14} />
+          Issue All Remaining
+        </Button>
+      </div>
+      <table className="w-full text-left" style={{ minWidth: 640 }}>
+        <thead style={{ background: 'var(--bg-sunken)' }}>
+          <tr style={{ color: 'var(--text-tertiary)' }}>
+            <Th>Item</Th>
+            <Th align="right">Planned</Th>
+            <Th align="right">Issued</Th>
+            <Th align="right">Remaining</Th>
+            <Th align="right">Scrap</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {mo.material_lines.map((ml) => {
+            const itemName = itemNameById.get(ml.item_id) ?? ml.item_id.slice(0, 8);
+            // Remaining is decimal subtraction — do it as strings → Decimal
+            // would be ideal, but Number() is the BE-blessed pattern for
+            // FE display only (we never round-trip back to the wire).
+            const remaining = (Number(ml.qty_required) - Number(ml.qty_issued)).toFixed(4);
+            return (
+              <tr
+                key={ml.mo_material_line_id}
+                style={{ borderTop: '1px solid var(--border-subtle)' }}
+              >
+                <Td>
+                  <span style={{ fontSize: 13.5, fontWeight: 500 }}>
+                    {itemName}
+                    {ml.is_optional && (
+                      <span
+                        className="ml-2 uppercase"
+                        style={{
+                          fontSize: 10,
+                          color: 'var(--text-tertiary)',
+                          letterSpacing: '0.04em',
+                        }}
+                      >
+                        Optional
+                      </span>
+                    )}
+                  </span>
+                </Td>
+                <Td align="right">
+                  <span className="num" style={{ fontSize: 13 }}>
+                    {ml.qty_required}
+                  </span>
+                </Td>
+                <Td align="right">
+                  <span className="num" style={{ fontSize: 13 }}>
+                    {ml.qty_issued}
+                  </span>
+                </Td>
+                <Td align="right">
+                  <span className="num" style={{ fontSize: 13, fontWeight: 500 }}>
+                    {remaining}
+                  </span>
+                </Td>
+                <Td align="right">
+                  <span className="num" style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
+                    {ml.qty_scrap}
+                  </span>
+                </Td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -604,6 +755,241 @@ function CompleteMoDialog({ mo, onClose }: { mo: BackendMoResponse; onClose: () 
         )}
 
         {previewQuery.data && <PreviewBlock preview={previewQuery.data} />}
+
+        {error && (
+          <div
+            role="alert"
+            className="flex items-start gap-2"
+            style={{
+              padding: '10px 12px',
+              background: 'var(--danger-subtle)',
+              color: 'var(--danger-text)',
+              borderRadius: 6,
+              fontSize: 12.5,
+            }}
+          >
+            <AlertCircle size={14} color="var(--danger)" />
+            <span>{error}</span>
+          </div>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+function StartMoButton({
+  mo,
+  canStart,
+  blockedReason,
+}: {
+  mo: BackendMoResponse;
+  canStart: boolean;
+  blockedReason: string | undefined;
+}) {
+  const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
+  const startMo = useStartMo();
+  const [error, setError] = React.useState<string | null>(null);
+
+  const onClick = () => {
+    setError(null);
+    startMo.mutate(
+      { moId: mo.manufacturing_order_id, idempotencyKey },
+      {
+        onSuccess: () => {
+          resetKey();
+        },
+        onError: (err) => {
+          resetKey();
+          if (err instanceof ApiError) {
+            setError(`${err.code}: ${err.detail || err.title}`);
+          } else {
+            setError(err.message);
+          }
+        },
+      },
+    );
+  };
+
+  const disabled = !canStart || startMo.isPending;
+  // Tooltip falls back to surfaced error message — so a failed POST is
+  // visible without claiming a new screen region. Hover/focus also
+  // reveals the original blocked-reason when there's no live error.
+  const tooltip = error ?? blockedReason;
+
+  return (
+    <Button
+      variant="outline"
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={tooltip}
+      aria-label={error ? `Start MO — error: ${error}` : 'Start MO'}
+    >
+      <ArrowRight size={14} />
+      {startMo.isPending ? 'Starting…' : 'Start MO'}
+    </Button>
+  );
+}
+
+function IssueMaterialsDialog({
+  mo,
+  itemNameById,
+  onClose,
+}: {
+  mo: BackendMoResponse;
+  itemNameById: Map<string, string>;
+  onClose: () => void;
+}) {
+  const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
+  const mutation = useIssueMaterials(mo.manufacturing_order_id);
+
+  // Pre-populate qty_to_issue per line with the BE-side remaining
+  // (qty_required - qty_issued). Operator can edit before confirming.
+  // Lines with no remaining are still listed but disabled — keeps the
+  // dialog deterministic and easy to skim for what's outstanding.
+  type DraftLine = {
+    mo_material_line_id: string;
+    item_id: string;
+    qty_required: string;
+    qty_issued: string;
+    qty_to_issue: string;
+  };
+  const initialLines: DraftLine[] = React.useMemo(
+    () =>
+      mo.material_lines.map((ml) => {
+        const remaining = Number(ml.qty_required) - Number(ml.qty_issued);
+        return {
+          mo_material_line_id: ml.mo_material_line_id,
+          item_id: ml.item_id,
+          qty_required: ml.qty_required,
+          qty_issued: ml.qty_issued,
+          // toFixed(4) keeps the input deterministic at 4-decimal
+          // precision (matches the BE's NUMERIC display elsewhere).
+          qty_to_issue: remaining > 0 ? remaining.toFixed(4) : '0.0000',
+        };
+      }),
+    [mo.material_lines],
+  );
+  const [lines, setLines] = React.useState<DraftLine[]>(initialLines);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const setLineQty = (idx: number, value: string) => {
+    setLines((prev) => prev.map((l, i) => (i === idx ? { ...l, qty_to_issue: value } : l)));
+  };
+
+  const positiveLines = lines.filter((l) => Number(l.qty_to_issue) > 0);
+  const canSubmit = positiveLines.length > 0 && !mutation.isPending;
+
+  const onConfirm = () => {
+    if (!canSubmit) return;
+    setError(null);
+    const payloadLines: BackendMaterialIssueLineInput[] = positiveLines.map((l) => ({
+      mo_material_line_id: l.mo_material_line_id,
+      qty_to_issue: l.qty_to_issue,
+    }));
+    mutation.mutate(
+      {
+        moId: mo.manufacturing_order_id,
+        lines: payloadLines,
+        idempotencyKey,
+      },
+      {
+        onSuccess: () => {
+          resetKey();
+          onClose();
+        },
+        onError: (err) => {
+          resetKey();
+          if (err instanceof ApiError) {
+            const fieldList = Object.entries(err.field_errors)
+              .map(([f, msgs]) => `${f}: ${msgs.join(', ')}`)
+              .join('; ');
+            const base = `${err.code}: ${err.detail || err.title}`;
+            setError(fieldList ? `${base} (${fieldList})` : base);
+          } else {
+            setError(err.message);
+          }
+        },
+      },
+    );
+  };
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Issue materials"
+      description={`Pull raw materials from stock into WIP for ${
+        mo.series ? `${mo.series}/${mo.number}` : mo.number
+      }.`}
+      width={620}
+      footer={
+        <>
+          <Button variant="outline" type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={onConfirm}
+            disabled={!canSubmit}
+            title={canSubmit ? undefined : 'Enter at least one positive qty to issue.'}
+          >
+            <Check size={14} />
+            {mutation.isPending ? 'Issuing…' : 'Confirm issue'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <table className="w-full text-left">
+          <thead style={{ background: 'var(--bg-sunken)' }}>
+            <tr style={{ color: 'var(--text-tertiary)' }}>
+              <Th>Item</Th>
+              <Th align="right">Planned</Th>
+              <Th align="right">Issued</Th>
+              <Th align="right">Issue now</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l, idx) => {
+              const itemName = itemNameById.get(l.item_id) ?? l.item_id.slice(0, 8);
+              const remaining = Number(l.qty_required) - Number(l.qty_issued);
+              const disabled = remaining <= 0;
+              return (
+                <tr
+                  key={l.mo_material_line_id}
+                  style={{ borderTop: '1px solid var(--border-subtle)' }}
+                >
+                  <Td>
+                    <span style={{ fontSize: 13.5, fontWeight: 500 }}>{itemName}</span>
+                  </Td>
+                  <Td align="right">
+                    <span className="num" style={{ fontSize: 13 }}>
+                      {l.qty_required}
+                    </span>
+                  </Td>
+                  <Td align="right">
+                    <span className="num" style={{ fontSize: 13 }}>
+                      {l.qty_issued}
+                    </span>
+                  </Td>
+                  <Td align="right">
+                    <Input
+                      aria-label={`Qty to issue for ${itemName}`}
+                      type="number"
+                      inputMode="decimal"
+                      step="0.0001"
+                      min="0"
+                      value={l.qty_to_issue}
+                      onChange={(e) => setLineQty(idx, e.target.value)}
+                      disabled={disabled}
+                    />
+                  </Td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
 
         {error && (
           <div

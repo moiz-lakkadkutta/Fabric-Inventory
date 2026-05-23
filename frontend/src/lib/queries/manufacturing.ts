@@ -83,6 +83,21 @@ export type BackendOperationMasterResponse = components['schemas']['OperationMas
 export type BackendOperationMasterListResponse =
   components['schemas']['OperationMasterListResponse'];
 
+// A3 operations drawer — request + response shapes for the start /
+// issue-materials / per-operation progress endpoints. Imported by the
+// drawer + Issue Materials dialog below.
+export type BackendMoTransitionRequest = components['schemas']['MoTransitionRequest'];
+export type BackendMaterialIssueCreateRequest = components['schemas']['MaterialIssueCreateRequest'];
+export type BackendMaterialIssueLineInput = components['schemas']['MaterialIssueLineInput'];
+export type BackendMaterialIssueResponse = components['schemas']['MaterialIssueResponse'];
+export type BackendOperationStartRequest = components['schemas']['OperationStartRequest'];
+export type BackendOperationQtyInRequest = components['schemas']['OperationQtyInRequest'];
+export type BackendOperationQtyOutRequest = components['schemas']['OperationQtyOutRequest'];
+export type BackendOperationCompleteRequest = components['schemas']['OperationCompleteRequest'];
+export type BackendOperationProgressResponse = components['schemas']['OperationProgressResponse'];
+export type BackendMoOperationState = components['schemas']['MoOperationState'];
+export type BackendOperationType = components['schemas']['OperationType'];
+
 // ── MO list ↔ Kanban view-model mapper ────────────────────────────────
 
 /**
@@ -479,6 +494,233 @@ export function useOperationMasters(params: ListOperationMastersParams = {}) {
   });
 }
 
+// ── A3 operations drawer (TASK-TR-A3) ────────────────────────────────
+//
+// Hooks for the missing MO-header /start action, the missing
+// /issue-materials UI on the Materials tab, and the per-operation
+// progress mutations (start / qty-in / qty-out / complete) that the
+// Operations drawer drives. Kept in one block to keep the diff narrow
+// for the parallel A1 / A2 worktrees that may also touch this file.
+
+export interface StartMoInput {
+  moId: string;
+  narration?: string;
+  idempotencyKey: string;
+}
+
+async function liveStartMo(input: StartMoInput): Promise<BackendMoResponse> {
+  const body: BackendMoTransitionRequest = {};
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendMoResponse>(`/manufacturing/mo/${input.moId}/start`, {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body,
+  });
+}
+
+export interface IssueMaterialsInput {
+  moId: string;
+  firm_id?: string;
+  lines: BackendMaterialIssueLineInput[];
+  issueDate?: string;
+  series?: string;
+  narration?: string;
+  idempotencyKey: string;
+}
+
+async function liveIssueMaterials(
+  input: IssueMaterialsInput,
+): Promise<BackendMaterialIssueResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendMaterialIssueCreateRequest = {
+    firm_id,
+    lines: input.lines,
+  };
+  if (input.issueDate !== undefined) body.issue_date = input.issueDate;
+  if (input.series !== undefined) body.series = input.series;
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendMaterialIssueResponse>(`/manufacturing/mo/${input.moId}/issue-materials`, {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body,
+  });
+}
+
+export interface OperationProgressInput {
+  moOperationId: string;
+  firm_id?: string;
+  narration?: string;
+  idempotencyKey: string;
+}
+
+async function liveStartOperation(
+  input: OperationProgressInput,
+): Promise<BackendOperationProgressResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendOperationStartRequest = { firm_id };
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendOperationProgressResponse>(
+    `/manufacturing/mo-operations/${input.moOperationId}/start`,
+    {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body,
+    },
+  );
+}
+
+export interface RecordQtyInInput extends OperationProgressInput {
+  qty_in: string | number;
+}
+
+async function liveRecordQtyIn(input: RecordQtyInInput): Promise<BackendOperationProgressResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendOperationQtyInRequest = {
+    firm_id,
+    qty_in: input.qty_in,
+  };
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendOperationProgressResponse>(
+    `/manufacturing/mo-operations/${input.moOperationId}/qty-in`,
+    {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body,
+    },
+  );
+}
+
+export interface RecordQtyOutInput extends OperationProgressInput {
+  qty_out: string | number;
+  qty_rejected?: string | number;
+  qty_byproduct?: string | number;
+  qty_wastage?: string | number;
+}
+
+async function liveRecordQtyOut(
+  input: RecordQtyOutInput,
+): Promise<BackendOperationProgressResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  // The BE schema names the rejected counter ``qty_scrap``. The FE
+  // input keeps ``qty_rejected`` for parity with the UI label, then
+  // maps to the wire field here. Anything not supplied defaults to 0.
+  const body: BackendOperationQtyOutRequest = {
+    firm_id,
+    qty_out: input.qty_out,
+    qty_scrap: input.qty_rejected ?? 0,
+    qty_byproduct: input.qty_byproduct ?? 0,
+    qty_wastage: input.qty_wastage ?? 0,
+  };
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendOperationProgressResponse>(
+    `/manufacturing/mo-operations/${input.moOperationId}/qty-out`,
+    {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body,
+    },
+  );
+}
+
+async function liveCompleteOperation(
+  input: OperationProgressInput,
+): Promise<BackendOperationProgressResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendOperationCompleteRequest = { firm_id };
+  if (input.narration !== undefined) body.narration = input.narration;
+  return api<BackendOperationProgressResponse>(
+    `/manufacturing/mo-operations/${input.moOperationId}/complete`,
+    {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body,
+    },
+  );
+}
+
+/**
+ * Cache helpers shared by every operation-progress mutation: refresh
+ * the MO detail (operations + material lines roll up), the MO list
+ * (status / progress may have changed) and the inventory namespace
+ * (qty-out can mint scrap, qty-in can short stock).
+ */
+function invalidateMoAndStock(
+  qc: ReturnType<typeof useQueryClient>,
+  moId: string | undefined,
+): void {
+  qc.invalidateQueries({ queryKey: MO_KEY });
+  if (moId) qc.invalidateQueries({ queryKey: [...MO_KEY, 'detail', moId] });
+  qc.invalidateQueries({ queryKey: ['inventory'] });
+}
+
+/**
+ * POST /manufacturing/mo/{id}/start (RELEASED → IN_PROGRESS). Side-
+ * effect-free as far as inventory goes, but it does flip the header
+ * status so we refresh the MO + the Kanban list. Material issues +
+ * operation progress remain RELEASED-or-IN_PROGRESS-permitted on the
+ * BE; this just makes the IN_PROGRESS-gated affordances visible.
+ */
+export function useStartMo() {
+  const qc = useQueryClient();
+  return useMutation<BackendMoResponse, Error, StartMoInput>({
+    mutationFn: (input) => liveStartMo(input),
+    onSuccess: (next) => {
+      qc.invalidateQueries({ queryKey: MO_KEY });
+      qc.setQueryData([...MO_KEY, 'detail', next.manufacturing_order_id], next);
+    },
+  });
+}
+
+/**
+ * POST /manufacturing/mo/{id}/issue-materials. Stock-touching — drains
+ * raw material from on-hand into WIP and bumps each line's qty_issued.
+ * The BE auto-starts a RELEASED MO on the first issue, so we always
+ * refetch the MO detail + invalidate stock.
+ */
+export function useIssueMaterials(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendMaterialIssueResponse, Error, IssueMaterialsInput>({
+    mutationFn: (input) => liveIssueMaterials(input),
+    onSuccess: () => invalidateMoAndStock(qc, moId),
+  });
+}
+
+/** POST /manufacturing/mo-operations/{id}/start (PENDING → IN_PROGRESS). */
+export function useStartOperation(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendOperationProgressResponse, Error, OperationProgressInput>({
+    mutationFn: (input) => liveStartOperation(input),
+    onSuccess: () => invalidateMoAndStock(qc, moId),
+  });
+}
+
+/** POST /manufacturing/mo-operations/{id}/qty-in (delta-additive). */
+export function useRecordQtyIn(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendOperationProgressResponse, Error, RecordQtyInInput>({
+    mutationFn: (input) => liveRecordQtyIn(input),
+    onSuccess: () => invalidateMoAndStock(qc, moId),
+  });
+}
+
+/** POST /manufacturing/mo-operations/{id}/qty-out (delta-additive). */
+export function useRecordQtyOut(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendOperationProgressResponse, Error, RecordQtyOutInput>({
+    mutationFn: (input) => liveRecordQtyOut(input),
+    onSuccess: () => invalidateMoAndStock(qc, moId),
+  });
+}
+
+/** POST /manufacturing/mo-operations/{id}/complete (→ CLOSED). */
+export function useCompleteOperation(moId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<BackendOperationProgressResponse, Error, OperationProgressInput>({
+    mutationFn: (input) => liveCompleteOperation(input),
+    onSuccess: () => invalidateMoAndStock(qc, moId),
+  });
+}
+
 // ── Test-only exports ────────────────────────────────────────────────
 
 /** Mappers exposed for the live-mapping unit tests. */
@@ -505,4 +747,11 @@ export const __live = {
   liveGetMoCompletionPreview,
   liveCompleteMo,
   liveListOperationMasters,
+  // A3:
+  liveStartMo,
+  liveIssueMaterials,
+  liveStartOperation,
+  liveRecordQtyIn,
+  liveRecordQtyOut,
+  liveCompleteOperation,
 };
