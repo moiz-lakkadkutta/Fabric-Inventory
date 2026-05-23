@@ -945,6 +945,38 @@
         "title": "BomResponse",
         "type": "object"
       },
+      "CanStartOperationResponse": {
+        "description": "GET /manufacturing/mo-operations/{id}/can-start \u2014 TR-A09.\n\nSurface the routing-DAG engine verdict for an operation so the FE\ncan disable a \"Start\" button (and show a hint) when an upstream\nedge is unsatisfied. ``reason`` is a human-readable description of\nthe first blocking constraint, ``None`` when ``allowed`` is True.\n\nIdempotent / read-only \u2014 does not transition the op. The state\nmachine guards in ``start_operation`` are still the source of\ntruth: a FE that ignored the can-start hint and POSTed /start\nwould still get a 422 with the same reason.",
+        "properties": {
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "mo_operation_id": {
+            "format": "uuid",
+            "title": "Mo Operation Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "mo_operation_id",
+          "allowed",
+          "reason"
+        ],
+        "title": "CanStartOperationResponse",
+        "type": "object"
+      },
       "ChequeCreateRequest": {
         "properties": {
           "amount": {
@@ -18285,6 +18317,51 @@
         "tags": [
           "manufacturing",
           "karigar"
+        ]
+      }
+    },
+    "/manufacturing/mo-operations/{mo_operation_id}/can-start": {
+      "get": {
+        "description": "TR-A09 \u2014 surface the edge-walking engine's verdict for an op so\nthe FE can disable a \"Start\" button (or pre-flight a karigar\ndispatch) when an upstream edge is unsatisfied.\n\nRead-only. The state-machine guards inside ``start_operation`` /\n``dispatch_to_karigar`` remain the source of truth: an over-eager\nPOST would still get a 422 with the same reason.",
+        "operationId": "can_start_mo_operation_manufacturing_mo_operations__mo_operation_id__can_start_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanStartOperationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Routing-DAG verdict: can this op start now?",
+        "tags": [
+          "manufacturing",
+          "operation_progress"
         ]
       }
     },

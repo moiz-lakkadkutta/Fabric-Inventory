@@ -42,18 +42,14 @@ Schema notes folded in from the A01 model + DDL:
     reworked is recorded by *creating* a new rework op via a future
     task (TR-A09 or similar). This is the v1 simplification.
 
-Predecessor check approach (v1 simplification): we use
-**sequence-based ordering** — every operation with
-``operation_sequence < this.operation_sequence`` must be in CLOSED
-state before this op can start. The MO-create path
-(``mo_service._topological_order_operations``) already lays out the
-sequence in a topologically-valid order, so sequence ordering is a
-valid linearisation of the DAG. The trade-off: parallel branches in
-a diamond DAG (A→B, A→C, B→D, C→D) would be linearised to
-A → B → C → D, forcing B to finish before C can start even though
-the DAG would allow them in parallel. Acceptable for v1; A09 or A10
-can switch to walking ``routing_edge`` rows directly if shops need
-true-parallel branches.
+Predecessor check approach (TR-A09): the edge-walking
+``routing_flow_service.can_start_operation`` engine replaces the
+v1 sequence-based check. It honours FINISH_TO_START /
+START_TO_START / PARTIAL_FINISH_TO_START semantics directly off the
+``routing_edge`` rows, so a diamond DAG (A→B, A→C, B→D, C→D) lets
+B and C run in parallel as the graph allows. See
+``routing_flow_service`` for the engine's docstring + edge-type
+semantics table.
 
 Over-receive tolerance: we accept up to ``planned_qty x 1.05`` of
 ``qty_in`` to give the routing a 5% "floor slack" — operators often
@@ -88,7 +84,7 @@ from app.models.manufacturing import (
     MoStatus,
     ProductionEvent,
 )
-from app.service import audit_service
+from app.service import audit_service, routing_flow_service
 
 # Allowed in-house executor sentinel. The DDL's `executor` column is
 # `VARCHAR(20) NOT NULL DEFAULT 'IN_HOUSE'`. A06 hardening pattern: we
@@ -100,22 +96,9 @@ _KARIGAR = "KARIGAR"
 # Over-receive tolerance at qty_in — see module docstring.
 _OVER_RECEIVE_TOLERANCE = Decimal("1.05")
 
-# Terminal predecessor states — any of these mean a predecessor is
-# "done enough" not to block its successor. CLOSED is the canonical
-# happy-path terminator; SKIPPED (operator deliberately bypassed the
-# op, e.g. fabric arrived pre-dyed) and CANCELLED (op aborted, no
-# rework) are equally final from the successor's point of view —
-# nothing more will ever happen on that op. Treating only CLOSED as
-# terminal would wedge a routing whose first op was legitimately
-# skipped or cancelled. Hoisted to a module-level constant so the
-# predecessor check has a single source of truth.
-_TERMINAL_PREDECESSOR_STATES: frozenset[MoOperationState] = frozenset(
-    {
-        MoOperationState.CLOSED,
-        MoOperationState.SKIPPED,
-        MoOperationState.CANCELLED,
-    }
-)
+# Predecessor terminal set (CLOSED / SKIPPED / CANCELLED) lives in
+# ``routing_flow_service.TERMINAL_STATES`` post-TR-A09 — the
+# edge-walking engine owns the predecessor check.
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -229,34 +212,12 @@ def _ensure_in_house(op: MoOperation) -> None:
         )
 
 
-def _predecessors_closed(session: Session, *, op: MoOperation) -> bool:
-    """All operations on the same MO with a smaller operation_sequence
-    must be in a terminal state (CLOSED / SKIPPED / CANCELLED).
-    Sequence-based predecessor check — see module docstring for the
-    simplification choice.
-
-    A predecessor is "closed enough" iff its state is in
-    ``_TERMINAL_PREDECESSOR_STATES``. SKIPPED and CANCELLED are
-    treated as logically-closed: no further activity will occur on
-    that op, so a successor is free to start.
-
-    Operations with ``operation_sequence IS NULL`` (defensive — shouldn't
-    happen for MOs created via ``mo_service.create_mo``) are treated as
-    not-yet-ordered and therefore not-yet-closed: the caller cannot
-    start an op whose sequence is unknown either.
-    """
-    if op.operation_sequence is None:
-        return False
-    pending_count = session.execute(
-        select(func.count(MoOperation.mo_operation_id)).where(
-            MoOperation.manufacturing_order_id == op.manufacturing_order_id,
-            MoOperation.deleted_at.is_(None),
-            MoOperation.operation_sequence.is_not(None),
-            MoOperation.operation_sequence < op.operation_sequence,
-            MoOperation.state.not_in(_TERMINAL_PREDECESSOR_STATES),
-        )
-    ).scalar_one()
-    return int(pending_count or 0) == 0
+# Note: the sequence-based ``_predecessors_closed`` helper was removed
+# in TR-A09. The edge-walking ``routing_flow_service.can_start_operation``
+# engine subsumes it (including the "no incoming edges → allowed" base
+# case that this module relied on for single-op routings) and honours
+# each ``routing_edge``'s actual semantic instead of linearising the
+# DAG to ``operation_sequence``.
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -300,9 +261,11 @@ def start_operation(
       - Parent MO is in ``IN_PROGRESS`` — the MO must have been started
         (typically via the first material issue's auto-start path)
         before per-op progress can be recorded.
-      - All operations with a smaller ``operation_sequence`` on the
-        same MO are in a terminal state (``CLOSED``, ``SKIPPED``, or
-        ``CANCELLED``) — see ``_TERMINAL_PREDECESSOR_STATES``.
+      - All incoming routing-edge predecessors satisfy the routing-DAG
+        engine (``routing_flow_service.can_start_operation``). TR-A09
+        replaced the sequence-based check; the edge-walking engine
+        honours FINISH_TO_START / START_TO_START / PARTIAL_FINISH_TO_START
+        semantics per the routing graph.
 
     Emits ``OPERATION_STARTED`` event + audit row.
     """
@@ -324,12 +287,13 @@ def start_operation(
             "Issue materials (which auto-starts the MO) or start the MO first."
         )
 
-    if not _predecessors_closed(session, op=op):
-        raise AppValidationError(
-            f"Cannot start operation {mo_operation_id}: a predecessor (smaller "
-            f"operation_sequence than {op.operation_sequence}) is not in a "
-            "terminal state (CLOSED / SKIPPED / CANCELLED) yet."
-        )
+    # TR-A09: edge-walking DAG engine replaces the sequence-based
+    # predecessor check. Honours FINISH_TO_START / START_TO_START /
+    # PARTIAL_FINISH_TO_START semantics per the routing graph, so
+    # diamond DAGs allow legitimate parallel branches.
+    allowed, reason = routing_flow_service.can_start_operation(session, op=op)
+    if not allowed:
+        raise AppValidationError(f"Cannot start operation {mo_operation_id}: {reason}.")
 
     now = datetime.now(tz=UTC)
     op.state = MoOperationState.IN_PROGRESS

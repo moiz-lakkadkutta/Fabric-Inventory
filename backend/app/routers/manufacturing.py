@@ -50,6 +50,7 @@ from app.schemas.manufacturing import (
     BomLineResponse,
     BomListResponse,
     BomResponse,
+    CanStartOperationResponse,
     CostCentreCreateRequest,
     CostCentreListResponse,
     CostCentreResponse,
@@ -99,6 +100,7 @@ from app.service import (
     material_issue_service,
     mo_service,
     operation_progress_service,
+    routing_flow_service,
     routing_service,
 )
 from app.service.identity_service import TokenPayload
@@ -1548,6 +1550,37 @@ def get_mo_operation(
     return OperationDetailResponse(
         operation=_to_progress_response(op),
         events=[_to_event_response(ev) for ev in events],
+    )
+
+
+@operation_progress_router.get(
+    "/mo-operations/{mo_operation_id}/can-start",
+    response_model=CanStartOperationResponse,
+    summary="Routing-DAG verdict: can this op start now?",
+)
+def can_start_mo_operation(
+    mo_operation_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[
+        TokenPayload, Depends(require_permission("manufacturing.operation.read"))
+    ],
+) -> CanStartOperationResponse:
+    """TR-A09 — surface the edge-walking engine's verdict for an op so
+    the FE can disable a "Start" button (or pre-flight a karigar
+    dispatch) when an upstream edge is unsatisfied.
+
+    Read-only. The state-machine guards inside ``start_operation`` /
+    ``dispatch_to_karigar`` remain the source of truth: an over-eager
+    POST would still get a 422 with the same reason.
+    """
+    op = operation_progress_service.get_operation(
+        db, org_id=current_user.org_id, mo_operation_id=mo_operation_id
+    )
+    allowed, reason = routing_flow_service.can_start_operation(db, op=op)
+    return CanStartOperationResponse(
+        mo_operation_id=op.mo_operation_id,
+        allowed=allowed,
+        reason=reason,
     )
 
 
