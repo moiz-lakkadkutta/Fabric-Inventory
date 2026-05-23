@@ -704,6 +704,16 @@ class MoOperation(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         DateTime(timezone=True), nullable=True
     )
     version: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    # TR-A07 polish: dedicated counter for "how many times has record_qty_in
+    # been called against this op?". The service uses 0 → "first call,
+    # overwrite the planning figure" and >0 → "subsequent call, add to the
+    # cumulative". Originally the first-call branch was detected by counting
+    # OPERATION_QTY_IN_RECORDED events; that heuristic broke as soon as any
+    # other code path emitted the same event_type. Counter column = single
+    # source of truth.
+    qty_in_record_count: Mapped[int] = mapped_column(
+        Integer, server_default=text("0"), nullable=False
+    )
 
     manufacturing_order: Mapped[ManufacturingOrder] = relationship(back_populates="operations")
 

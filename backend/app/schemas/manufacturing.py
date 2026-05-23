@@ -529,6 +529,11 @@ class OperationProgressResponse(BaseModel):
     than ``MoOperationResponse`` (which is used inside MoResponse) —
     surfaces the scrap/wastage/byproduct counters and the state column
     that the FE shop-floor view needs.
+
+    ``version`` is the optimistic-concurrency counter on
+    ``MoOperation``; the FE can stamp it into a future
+    ``If-Match`` / ``X-Expected-Version`` header so a stale shop-floor
+    tablet doesn't clobber a parallel update.
     """
 
     mo_operation_id: uuid.UUID
@@ -546,6 +551,7 @@ class OperationProgressResponse(BaseModel):
     end_date: datetime.datetime | None
     created_at: datetime.datetime
     updated_at: datetime.datetime
+    version: int
 
 
 class OperationProgressListResponse(BaseModel):

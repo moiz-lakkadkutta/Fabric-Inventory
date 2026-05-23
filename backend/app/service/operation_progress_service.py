@@ -78,7 +78,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select, text
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
 from app.models.manufacturing import (
@@ -390,6 +390,11 @@ def record_qty_in(
         FIRST ``record_qty_in`` call we OVERWRITE that planning figure
         with the actual qty (so the running sum tracks reality, not
         intent). Subsequent calls ADD.
+      - "First call" is detected via ``op.qty_in_record_count == 0``
+        — a dedicated counter column added in the A07 polish migration.
+        The earlier heuristic (counting prior ``OPERATION_QTY_IN_RECORDED``
+        events) was fragile: any future code path that emits the same
+        event_type would silently flip the first-call branch off.
       - Each addition is checked against the planning figure x 1.05:
         the cumulative actual cannot exceed the plan by more than 5%.
 
@@ -400,6 +405,16 @@ def record_qty_in(
       - Tolerance: ``new_cumulative_qty_in ≤ planned x 1.05`` where
         ``planned = ManufacturingOrder.planned_qty`` (the "planned in"
         for the op — same value the MO seeded ``qty_in`` with at create).
+
+    **Known A10 gap — rework-op tolerance baseline.** For a rework
+    operation (created with ``rework_of_mo_operation_id`` pointing back
+    to a parent op), ``mo.planned_qty`` is the *original* MO's plan,
+    not the qty that was actually rejected and needs reworking. So the
+    5% tolerance against ``planned_qty`` is loose for rework ops — it
+    permits up to 5% over the *full* MO qty, not 5% over the rework
+    qty. This is acceptable in v1 because no service creates rework
+    operations today; A09/A10 will revisit (likely deriving the
+    baseline from the parent op's ``qty_rejected`` instead).
 
     Emits ``OPERATION_QTY_IN_RECORDED``.
     """
@@ -423,17 +438,12 @@ def record_qty_in(
     ceiling = (planned * _OVER_RECEIVE_TOLERANCE).quantize(Decimal("0.0001"))
 
     # First call OVERWRITES the planning figure that MO-create seeded
-    # into qty_in (== planned_qty); subsequent calls ADD. We detect
-    # "first call" by checking whether any prior OPERATION_QTY_IN_RECORDED
-    # event exists for this op. Pure book-keeping; the running total
-    # column ends up reflecting *actual* receipt regardless.
-    has_prior = session.execute(
-        select(func.count(ProductionEvent.event_id)).where(
-            ProductionEvent.mo_operation_id == op.mo_operation_id,
-            ProductionEvent.event_type == _EventType.OPERATION_QTY_IN_RECORDED,
-        )
-    ).scalar_one()
-    new_total = qty_in_dec if int(has_prior or 0) == 0 else Decimal(op.qty_in or 0) + qty_in_dec
+    # into qty_in (== planned_qty); subsequent calls ADD. Single source
+    # of truth = the ``qty_in_record_count`` counter column (== 0 on a
+    # fresh op). See module docstring for the heuristic-vs-counter
+    # rationale.
+    is_first_call = (op.qty_in_record_count or 0) == 0
+    new_total = qty_in_dec if is_first_call else Decimal(op.qty_in or 0) + qty_in_dec
 
     if new_total > ceiling:
         raise AppValidationError(
@@ -442,6 +452,7 @@ def record_qty_in(
         )
 
     op.qty_in = new_total
+    op.qty_in_record_count = (op.qty_in_record_count or 0) + 1
     op.updated_at = datetime.now(tz=UTC)
     if recorded_by is not None:
         op.updated_by = recorded_by
@@ -723,24 +734,25 @@ def list_events_for_operation(
     """Return the production events for an operation, oldest first. The
     event log is append-only — no pagination cursor needed at v1 scale
     (a typical op sees < 50 events even in a busy month).
+
+    Defense-in-depth: load the operation under the org-scoped session
+    first (so RLS + ``_load_operation``'s org guard runs), then resolve
+    its ``firm_id`` and filter events by both ``org_id`` AND ``firm_id``.
+    Mirrors the explicit-firm-filter pattern in ``list_operations``.
     """
+    op = _load_operation(session, org_id=org_id, mo_operation_id=mo_operation_id)
     return list(
         session.execute(
             select(ProductionEvent)
             .where(
                 ProductionEvent.org_id == org_id,
+                ProductionEvent.firm_id == op.firm_id,
                 ProductionEvent.mo_operation_id == mo_operation_id,
             )
             .order_by(ProductionEvent.occurred_at.asc())
             .limit(limit)
         ).scalars()
     )
-
-
-# selectinload imported lazily — only needed if a future caller wants
-# eager loads on get_operation. Keeping it out of the per-call path
-# avoids the unused-import warning from ruff.
-_ = selectinload
 
 
 __all__ = [
