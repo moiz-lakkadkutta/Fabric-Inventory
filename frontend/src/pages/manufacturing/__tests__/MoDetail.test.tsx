@@ -208,7 +208,16 @@ describe('MoDetail (live-mode integration, TASK-TR-A14-FU)', () => {
       org_id: ORG_ID,
       firm_id: FIRM_ID,
       email: 'u@example.com',
-      permissions: ['manufacturing.mo.read', 'manufacturing.mo.complete'],
+      // A3: complete + start + issue + per-op progress all live under
+      // these slugs on the backend. Granting them here unblocks the
+      // existing complete-flow tests (which used to use a placeholder
+      // `manufacturing.mo.complete`) and the new A3 affordances.
+      permissions: [
+        'manufacturing.mo.read',
+        'manufacturing.mo.write',
+        'manufacturing.material_issue.write',
+        'manufacturing.operation.progress',
+      ],
       flags: {},
       available_firms: [{ firm_id: FIRM_ID, code: 'F1', name: 'F1' }],
       token_expires_at: '2099-01-01T00:00:00Z',
@@ -394,5 +403,285 @@ describe('MoDetail (live-mode integration, TASK-TR-A14-FU)', () => {
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: /complete mo/i })).not.toBeInTheDocument(),
     );
+  });
+
+  // ── A3 operations drawer + start + issue-materials ────────────────
+
+  it('A3: Start MO button is disabled unless status === RELEASED', async () => {
+    fetchMock.mockImplementation(defaultFetchImpl(buildMo({ status: 'DRAFT' })));
+    renderMoDetail();
+
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+
+    const startBtn = screen.getByRole('button', { name: /^start mo$/i });
+    expect(startBtn).toBeDisabled();
+    // Tooltip surfaces the blocking reason.
+    expect(startBtn.getAttribute('title')).toMatch(/release the mo|cannot be started/i);
+  });
+
+  it('A3: Start MO POSTs /start with idempotency-key when RELEASED', async () => {
+    let startPath: string | null = null;
+    let startIdem: string | null = null;
+    let startPayload: unknown = null;
+    fetchMock.mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (u.endsWith('/start') && method === 'POST') {
+        startPath = u;
+        startIdem =
+          (init?.headers as Record<string, string> | undefined)?.['Idempotency-Key'] ?? null;
+        startPayload = JSON.parse((init?.body as string) ?? '{}');
+        return jsonResponse(200, buildMo({ status: 'IN_PROGRESS' }));
+      }
+      return defaultFetchImpl(buildMo({ status: 'RELEASED' }))(url);
+    });
+
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+
+    const startBtn = screen.getByRole('button', { name: /^start mo$/i });
+    expect(startBtn).not.toBeDisabled();
+    fireEvent.click(startBtn);
+
+    await waitFor(() => expect(startPath).not.toBeNull());
+    expect(startPath).toContain(`/manufacturing/mo/${MO_ID}/start`);
+    expect(startIdem).toMatch(/^[0-9a-f-]{36}$/i);
+    // Empty narration body — MoTransitionRequest is just `{}`.
+    expect(startPayload).toEqual({});
+  });
+
+  it('A3: Issue Materials button opens dialog with remaining qty pre-populated', async () => {
+    fetchMock.mockImplementation(defaultFetchImpl(buildMo({ status: 'IN_PROGRESS' })));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: /materials/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /issue all remaining/i })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /issue all remaining/i }));
+
+    const dialog = await screen.findByRole('dialog', { name: /issue materials/i });
+    // qty_required = 50, qty_issued = 20 → remaining = 30.0000.
+    const qtyInput = within(dialog).getByLabelText(/Qty to issue for Cotton fabric/i);
+    expect((qtyInput as HTMLInputElement).value).toBe('30.0000');
+  });
+
+  it('A3: Issue Materials confirm POSTs lines with idempotency-key', async () => {
+    let issuePath: string | null = null;
+    let issueIdem: string | null = null;
+    let issuePayload: Record<string, unknown> | null = null;
+    fetchMock.mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (u.endsWith('/issue-materials') && method === 'POST') {
+        issuePath = u;
+        issueIdem =
+          (init?.headers as Record<string, string> | undefined)?.['Idempotency-Key'] ?? null;
+        issuePayload = JSON.parse((init?.body as string) ?? '{}');
+        return jsonResponse(201, {
+          created_at: '2026-05-01T00:00:00Z',
+          firm_id: FIRM_ID,
+          issue_date: '2026-05-01',
+          lines: [],
+          manufacturing_order_id: MO_ID,
+          material_issue_id: 'mi000000-0000-0000-0000-000000000001',
+        });
+      }
+      return defaultFetchImpl(buildMo({ status: 'IN_PROGRESS' }))(url);
+    });
+
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: /materials/i }));
+    fireEvent.click(screen.getByRole('button', { name: /issue all remaining/i }));
+
+    const dialog = await screen.findByRole('dialog', { name: /issue materials/i });
+    fireEvent.click(within(dialog).getByRole('button', { name: /confirm issue/i }));
+
+    await waitFor(() => expect(issuePath).not.toBeNull());
+    expect(issuePath).toContain(`/manufacturing/mo/${MO_ID}/issue-materials`);
+    expect(issueIdem).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(issuePayload).toMatchObject({
+      firm_id: FIRM_ID,
+      lines: [
+        {
+          mo_material_line_id: MO_MAT_LINE_ID,
+          qty_to_issue: '30.0000',
+        },
+      ],
+    });
+  });
+
+  it('A3: clicking an operation row opens the drawer with snapshot', async () => {
+    fetchMock.mockImplementation(defaultFetchImpl(buildMo({ status: 'IN_PROGRESS' })));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    // The Stitching row is rendered as role="button" via the row click
+    // affordance (aria-label "Open Stitching operation").
+    const row = await screen.findByRole('button', { name: /open stitching operation/i });
+    fireEvent.click(row);
+
+    const drawer = await screen.findByRole('dialog', { name: /operation stitching/i });
+    // Snapshot shows the op's qty_in / qty_out.
+    expect(within(drawer).getByText(/Snapshot/i)).toBeInTheDocument();
+    expect(within(drawer).getByText(/^100\.0000$/)).toBeInTheDocument();
+    expect(within(drawer).getByText(/^95\.0000$/)).toBeInTheDocument();
+    // Sequence + executor surfaced.
+    expect(within(drawer).getByText(/#10 of 1/)).toBeInTheDocument();
+  });
+
+  it('A3: PENDING IN_HOUSE op shows the Start operation button only', async () => {
+    const mo = buildMo({ status: 'IN_PROGRESS' });
+    // PENDING op hasn't recorded any qty yet; the BE shape allows null
+    // here even though the fixture's inferred type narrowed to string.
+    mo.operations[0] = {
+      ...mo.operations[0],
+      qty_in: null as unknown as string,
+      qty_out: null as unknown as string,
+      state: 'PENDING',
+    };
+    fetchMock.mockImplementation(defaultFetchImpl(mo));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open stitching operation/i }));
+
+    const drawer = await screen.findByRole('dialog', { name: /operation stitching/i });
+    expect(within(drawer).getByRole('button', { name: /start operation/i })).toBeInTheDocument();
+    // qty-in form not present for PENDING op.
+    expect(within(drawer).queryByLabelText(/^qty added$/i)).not.toBeInTheDocument();
+  });
+
+  it('A3: IN_PROGRESS IN_HOUSE op shows qty-in / qty-out / complete forms', async () => {
+    fetchMock.mockImplementation(defaultFetchImpl(buildMo({ status: 'IN_PROGRESS' })));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open stitching operation/i }));
+
+    const drawer = await screen.findByRole('dialog', { name: /operation stitching/i });
+    expect(within(drawer).getByLabelText(/^qty added$/i)).toBeInTheDocument();
+    expect(within(drawer).getByLabelText(/^qty produced$/i)).toBeInTheDocument();
+    // qty_out > 0 in fixture, so Complete operation surfaces too.
+    expect(within(drawer).getByRole('button', { name: /complete operation/i })).toBeInTheDocument();
+  });
+
+  it('A3: qty-in POSTs delta with idempotency-key', async () => {
+    let qtyInPath: string | null = null;
+    let qtyInIdem: string | null = null;
+    let qtyInBody: Record<string, unknown> | null = null;
+    fetchMock.mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (u.endsWith('/qty-in') && method === 'POST') {
+        qtyInPath = u;
+        qtyInIdem =
+          (init?.headers as Record<string, string> | undefined)?.['Idempotency-Key'] ?? null;
+        qtyInBody = JSON.parse((init?.body as string) ?? '{}');
+        return jsonResponse(200, {
+          created_at: '2026-05-01T00:00:00Z',
+          end_date: null,
+          executor: 'IN_HOUSE',
+          is_rework_paid: false,
+          manufacturing_order_id: MO_ID,
+          mo_operation_id: MO_OP_ID,
+          operation_master_id: OP_MASTER_ID,
+          operation_sequence: 10,
+          qty_byproduct: '0.0000',
+          qty_in: '105.0000',
+          qty_out: '95.0000',
+          qty_rejected: '0.0000',
+          qty_wastage: '0.0000',
+          start_date: '2026-05-01',
+          state: 'IN_PROGRESS',
+          updated_at: '2026-05-01T00:00:00Z',
+          version: 2,
+        });
+      }
+      return defaultFetchImpl(buildMo({ status: 'IN_PROGRESS' }))(url);
+    });
+
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open stitching operation/i }));
+
+    const drawer = await screen.findByRole('dialog', { name: /operation stitching/i });
+    const qtyInput = within(drawer).getByLabelText(/^qty added$/i);
+    fireEvent.change(qtyInput, { target: { value: '5' } });
+    // The Add button next to qty-in is the first "Add" button in the
+    // drawer (qty-out also has one, but in DOM order the qty-in form
+    // ships first).
+    const addButtons = within(drawer).getAllByRole('button', { name: /^add$/i });
+    fireEvent.click(addButtons[0]);
+
+    await waitFor(() => expect(qtyInPath).not.toBeNull());
+    expect(qtyInPath).toContain(`/manufacturing/mo-operations/${MO_OP_ID}/qty-in`);
+    expect(qtyInIdem).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(qtyInBody).toMatchObject({
+      firm_id: FIRM_ID,
+      qty_in: '5',
+    });
+  });
+
+  it('A3: conservation indicator warns when projected qty-out exceeds qty-in', async () => {
+    fetchMock.mockImplementation(defaultFetchImpl(buildMo({ status: 'IN_PROGRESS' })));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open stitching operation/i }));
+
+    const drawer = await screen.findByRole('dialog', { name: /operation stitching/i });
+    // qty_in=100, qty_out=95; adding qty_out=10 → projected 105 > 100.
+    const qtyOut = within(drawer).getByLabelText(/^qty produced$/i);
+    fireEvent.change(qtyOut, { target: { value: '10' } });
+    await waitFor(() =>
+      expect(within(drawer).getByText(/conservation: total qty-out/i)).toBeInTheDocument(),
+    );
+  });
+
+  it('A3: KARIGAR op renders A4 placeholder', async () => {
+    const mo = buildMo({ status: 'IN_PROGRESS' });
+    mo.operations[0] = {
+      ...mo.operations[0],
+      executor: 'KARIGAR',
+      state: 'PENDING',
+    };
+    fetchMock.mockImplementation(defaultFetchImpl(mo));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open stitching operation/i }));
+
+    const drawer = await screen.findByRole('dialog', { name: /operation stitching/i });
+    expect(within(drawer).getByText(/Karigar actions ship in TASK-TR-A4/i)).toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: /start operation/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('A3: QC op renders A5 placeholder', async () => {
+    const mo = buildMo({ status: 'IN_PROGRESS' });
+    mo.operations[0] = {
+      ...mo.operations[0],
+      executor: 'IN_HOUSE',
+      state: 'QC_PENDING',
+    };
+    fetchMock.mockImplementation(async (url: RequestInfo) => {
+      const u = String(url);
+      if (u.includes('/operation-masters')) {
+        // Operation master returns operation_type=QC so the drawer
+        // takes the QC branch.
+        return jsonResponse(200, {
+          items: [{ ...buildOperationMaster(), operation_type: 'QC' }],
+          count: 1,
+          limit: 200,
+          offset: 0,
+        });
+      }
+      return defaultFetchImpl(mo)(url);
+    });
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open stitching operation/i }));
+
+    const drawer = await screen.findByRole('dialog', { name: /operation stitching/i });
+    expect(within(drawer).getByText(/QC actions ship in TASK-TR-A5/i)).toBeInTheDocument();
   });
 });
