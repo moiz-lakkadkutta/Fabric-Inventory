@@ -738,9 +738,11 @@ def test_accountant_can_read_operation_but_not_progress(
 def test_record_qty_in_overwrites_first_then_adds(
     http_client: TestClient, sync_engine: Engine
 ) -> None:
-    """The first ``record_qty_in`` call overwrites the planning figure;
-    subsequent calls add to the cumulative. Two posts of 30 should
-    leave qty_in at 60, not 30. Locks in the counter-column branch.
+    """Post TR-A08-FU: qty_in is seeded to 0 at MO-create, so the first
+    call's "overwrite" branch is numerically identical to "add 30 to
+    0". The branch is still there as a sanity check for legacy MOs
+    that may have been created before the followup migration. Two
+    posts of 30 should leave qty_in at 60.
     """
     me, mo_id, _ops = _seed_world_one_line_two_ops(http_client, sync_engine)
     _release_mo(http_client, owner=me, mo_id=mo_id)
@@ -756,7 +758,7 @@ def test_record_qty_in_overwrites_first_then_adds(
     )
     assert r_start.status_code == 200, r_start.text
 
-    # First record_qty_in: overwrites planning figure (planned=100) → 30
+    # First record_qty_in: qty_in (seeded to 0 post TR-A08-FU) becomes 30
     r1 = http_client.post(
         f"/manufacturing/mo-operations/{op1_id}/qty-in",
         headers=_auth(me["access_token"]),

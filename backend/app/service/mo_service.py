@@ -444,8 +444,51 @@ def create_mo(
     # via topological sort. Empty routings (no edges) produce zero ops
     # — surfaced in the retro as a known gap; A07 will add per-MO
     # operation patching.
+    #
+    # TR-A08 followup:
+    #   - ``qty_in`` is now seeded to 0 (not ``planned_qty``). The A05
+    #     "seed to planned_qty" pattern was an in-house artefact —
+    #     ``operation_progress_service.record_qty_in`` overwrote it on
+    #     the first call anyway, and ``karigar_send_out_service`` had to
+    #     reset it back to 0 on the first dispatch. Seeding 0 here makes
+    #     the in-house first-call branch a simple add (still guarded by
+    #     ``qty_in_record_count`` for the over-receive ceiling logic)
+    #     and removes the karigar reset entirely.
+    #   - ``input_item_id`` / ``output_item_id`` are populated per-op:
+    #       * output_item_id = MO's finished_item_id for every op (v1:
+    #         routing produces the finished item end-to-end; per-op
+    #         intermediate items are A11 follow-up).
+    #       * input_item_id for the FIRST op = first non-deleted BOM
+    #         line's item_id (the "primary raw"). For subsequent ops it
+    #         inherits from the previous op's output_item_id (same
+    #         finished item in v1).
+    #     Karigar dispatch reads ``input_item_id`` so multi-op routings
+    #     dispatch the right physical item — e.g. cut → stitch ships raw
+    #     fabric (input) for the cut op, not the finished garment.
     op_order = _topological_order_operations(list(routing.edges))
+    # Pick the "primary raw" for the first op = first non-deleted,
+    # non-optional BOM line's item_id. Fall back to the first non-deleted
+    # line if every line is somehow optional (defensive — the M4 check
+    # above already rejects all-optional BOMs).
+    primary_raw_item_id: uuid.UUID | None = None
+    for line in bom.lines:
+        if line.deleted_at is not None:
+            continue
+        if not bool(line.is_optional):
+            primary_raw_item_id = line.item_id
+            break
+    if primary_raw_item_id is None:
+        for line in bom.lines:
+            if line.deleted_at is None:
+                primary_raw_item_id = line.item_id
+                break
+
+    prev_output_item_id: uuid.UUID | None = None
     for seq, op_id in enumerate(op_order, start=1):
+        # First op consumes the BOM's primary raw; subsequent ops
+        # consume the previous op's output.
+        op_input_item_id = primary_raw_item_id if seq == 1 else prev_output_item_id
+        op_output_item_id = finished_item_id
         session.add(
             MoOperation(
                 org_id=org_id,
@@ -455,12 +498,15 @@ def create_mo(
                 firm_id=firm_id,
                 state=MoOperationState.PENDING,
                 executor="IN_HOUSE",
-                qty_in=qty_to_produce,
+                qty_in=Decimal("0"),
                 qty_out=Decimal("0"),
+                input_item_id=op_input_item_id,
+                output_item_id=op_output_item_id,
                 created_by=created_by,
                 updated_by=created_by,
             )
         )
+        prev_output_item_id = op_output_item_id
 
     session.flush()
 
