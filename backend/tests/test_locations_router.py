@@ -55,8 +55,17 @@ def _bootstrap_default_location(sync_engine: Engine, org_id: str, firm_id: str) 
         return str(loc.location_id)
 
 
-def test_list_locations_empty_for_fresh_firm(http_client: TestClient) -> None:
-    """A fresh firm with no locations returns an empty list (no auto-create)."""
+def test_list_locations_returns_seeded_default_for_fresh_firm(
+    http_client: TestClient,
+) -> None:
+    """TASK-TR-C1: signup auto-seeds the firm's default MAIN warehouse.
+
+    Pre-C1 contract was "fresh firm has 0 locations until the user
+    manually creates one" — that left fresh signups stranded on every
+    location-picker dropdown and there was no FE path to create one.
+    The new contract: signup seeds exactly one row (code='MAIN',
+    WAREHOUSE) so inventory/jobwork/GRN flows work from minute one.
+    """
     me = _signup_owner(http_client)
     resp = http_client.get(
         "/locations",
@@ -65,8 +74,11 @@ def test_list_locations_empty_for_fresh_firm(http_client: TestClient) -> None:
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["count"] == 0
-    assert body["items"] == []
+    assert body["count"] == 1
+    row = body["items"][0]
+    assert row["code"] == "MAIN"
+    assert row["location_type"] == "WAREHOUSE"
+    assert row["is_active"] is True
 
 
 def test_list_locations_returns_main_warehouse(
@@ -131,6 +143,9 @@ def test_list_locations_firm_filter_excludes_other_firms(
 
 
 def test_create_location_returns_201_with_full_row(http_client: TestClient) -> None:
+    # TASK-TR-C1: signup pre-seeds code='MAIN'. Pick a distinct code
+    # here so this test exercises the create-success path (not the
+    # duplicate-code 409 path covered separately below).
     me = _signup_owner(http_client)
     resp = http_client.post(
         "/locations",
@@ -140,15 +155,15 @@ def test_create_location_returns_201_with_full_row(http_client: TestClient) -> N
         },
         json={
             "firm_id": me["firm_id"],
-            "code": "MAIN",
-            "name": "Main Warehouse",
+            "code": "GODOWN-B",
+            "name": "Secondary Warehouse",
             "location_type": "WAREHOUSE",
         },
     )
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["code"] == "MAIN"
-    assert body["name"] == "Main Warehouse"
+    assert body["code"] == "GODOWN-B"
+    assert body["name"] == "Secondary Warehouse"
     assert body["location_type"] == "WAREHOUSE"
     assert body["firm_id"] == me["firm_id"]
     assert body["is_active"] is True
@@ -188,26 +203,24 @@ def test_create_location_duplicate_code_returns_envelope_error(
     http_client: TestClient,
 ) -> None:
     """Two locations with the same code under the same firm must not collide.
-    (Service enforces; we surface a clean 409.)"""
+    (Service enforces; we surface a clean 409.)
+
+    TASK-TR-C1: signup pre-seeds code='MAIN', so re-posting MAIN is
+    already a duplicate on the very first POST. That's actually a
+    stronger version of this test — the unique-code constraint
+    survives the seeded row.
+    """
     me = _signup_owner(http_client)
     headers = {
         **_auth(me["access_token"]),
         "Idempotency-Key": str(uuid.uuid4()),
     }
     body = {"firm_id": me["firm_id"], "code": "MAIN", "name": "Main Warehouse"}
+    # First POST against an already-seeded MAIN must 409 (not 201).
     first = http_client.post("/locations", headers=headers, json=body)
-    assert first.status_code == 201, first.text
-
-    # Same code, fresh idempotency key — must NOT be a 201 silently
-    # creating a duplicate.
-    second_headers = {
-        **_auth(me["access_token"]),
-        "Idempotency-Key": str(uuid.uuid4()),
-    }
-    second = http_client.post("/locations", headers=second_headers, json=body)
-    assert second.status_code == 409, second.text
-    assert "code" in second.json()
-    assert "MAIN" in second.text
+    assert first.status_code == 409, first.text
+    assert "code" in first.json()
+    assert "MAIN" in first.text
 
 
 def test_create_location_without_auth_returns_401(http_client: TestClient) -> None:
