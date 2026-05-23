@@ -1,21 +1,25 @@
 /*
- * OperationDrawer — A3 in-house non-QC operation actions.
+ * OperationDrawer — A3 in-house actions + A4 karigar actions.
  *
  * Right-side sheet (~480px) opened from the Operations tab row click.
- * Renders the per-state action surface for IN_HOUSE non-QC ops:
+ * Renders the per-state action surface for the open operation. The
+ * action surface is selected by ``executor`` × ``operation_type``:
  *
- *   PENDING  : "Start operation" button
- *   IN_PROGRESS : qty-in / qty-out / complete forms
- *   CLOSED   : read-only snapshot
- *   other (DISPATCHED / ACKNOWLEDGED / RECEIVED_PARTIAL / RECEIVED_FULL /
- *           QC_PENDING / REWORK / ...): KARIGAR / QC ops show an A4/A5
- *           placeholder until those PRs land.
+ *   IN_HOUSE non-QC (A3):
+ *     PENDING       : "Start operation" button.
+ *     IN_PROGRESS   : qty-in / qty-out / complete forms.
+ *     CLOSED        : read-only snapshot.
+ *   KARIGAR (A4):
+ *     handled by ``KarigarActions`` — dispatch / acknowledge / receive
+ *     / close, with a linked-challan card surfacing the auto-minted JWO.
+ *   QC operation_type (A5 — placeholder until that PR lands):
+ *     start QC / record verdict.
  *
  * The drawer stays open across successful mutations: the operator can
- * chain qty-in → qty-out → complete without re-clicking the row. The
- * parent MO query is invalidated on every mutation (see
- * `manufacturing.ts`), so the snapshot block re-renders from fresh data
- * after each step.
+ * chain qty-in → qty-out → complete (or dispatch → acknowledge →
+ * receive → close) without re-clicking the row. The parent MO query is
+ * invalidated on every mutation (see `manufacturing.ts`), so the
+ * snapshot block re-renders from fresh data after each step.
  *
  * Errors come back as ApiError with the Q8a envelope. We surface
  * `title: detail` in an inline alert at the bottom of each form, plus
@@ -46,6 +50,8 @@ import {
   type BackendMoResponse,
   type BackendOperationMasterResponse,
 } from '@/lib/queries/manufacturing';
+
+import { KarigarActions } from './KarigarActions';
 
 const STATE_PILL: Record<BackendMoOperationState, { kind: PillKind; label: string }> = {
   PENDING: { kind: 'draft', label: 'Pending' },
@@ -171,11 +177,11 @@ export function OperationDrawer(props: OperationDrawerProps) {
               onSuccess={() => {
                 // Keep the drawer open so the operator can land a
                 // verdict, see the clone-chain refresh, then click
-                // through to drive the clone (A4 path).
+                // through to drive the clone (A4 karigar path).
               }}
             />
           ) : isKarigar ? (
-            <PlaceholderForKarigarOrQc isQc={false} isKarigar={true} state={op.state} />
+            <KarigarActions op={op} moId={mo.manufacturing_order_id} canWrite={canWrite} />
           ) : (
             <InHouseActions
               op={op}
@@ -312,62 +318,6 @@ function SnapshotItem({ label, value }: { label: string; value: string }) {
         {value}
       </div>
     </div>
-  );
-}
-
-function PlaceholderForKarigarOrQc({
-  isQc,
-  isKarigar,
-  state,
-}: {
-  isQc: boolean;
-  isKarigar: boolean;
-  state: BackendMoOperationState;
-}) {
-  // QC is now handled by QcActions in the outer branch; this remains for
-  // karigar-only ops until A4 lands.
-  const label = isQc ? 'QC actions' : 'Karigar actions';
-  const taskRef = isQc ? 'A5' : 'A4';
-  // If the op is already CLOSED / SKIPPED / CANCELLED there's nothing
-  // to do regardless — surface that instead of the A4 teaser.
-  if (state === 'CLOSED' || state === 'SKIPPED' || state === 'CANCELLED') {
-    return (
-      <section aria-label="Closed operation">
-        <p
-          style={{
-            fontSize: 13,
-            color: 'var(--text-secondary)',
-            lineHeight: 1.55,
-            margin: 0,
-          }}
-        >
-          This operation is {state.toLowerCase()}; no further actions are available.
-        </p>
-      </section>
-    );
-  }
-  return (
-    <section aria-label={`${label} placeholder`}>
-      <div
-        className="flex items-start gap-2 rounded-md p-3"
-        style={{
-          background: 'var(--bg-sunken)',
-          border: '1px dashed var(--border-default)',
-        }}
-      >
-        <AlertCircle size={14} color="var(--text-tertiary)" />
-        <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>
-          <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-            {label} ship in TASK-TR-{taskRef}.
-          </div>
-          <div className="mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-            {isKarigar
-              ? 'Dispatch / acknowledge / receive-back lands in the karigar drawer extension.'
-              : 'Start QC / record verdict lands in the QC drawer extension.'}
-          </div>
-        </div>
-      </div>
-    </section>
   );
 }
 

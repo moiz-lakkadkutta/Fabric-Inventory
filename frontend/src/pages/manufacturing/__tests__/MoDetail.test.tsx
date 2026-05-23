@@ -637,24 +637,11 @@ describe('MoDetail (live-mode integration, TASK-TR-A14-FU)', () => {
     );
   });
 
-  it('A3: KARIGAR op renders A4 placeholder', async () => {
-    const mo = buildMo({ status: 'IN_PROGRESS' });
-    mo.operations[0] = {
-      ...mo.operations[0],
-      executor: 'KARIGAR',
-      state: 'PENDING',
-    };
-    fetchMock.mockImplementation(defaultFetchImpl(mo));
-    renderMoDetail();
-    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
-    fireEvent.click(await screen.findByRole('button', { name: /open stitching operation/i }));
-
-    const drawer = await screen.findByRole('dialog', { name: /operation stitching/i });
-    expect(within(drawer).getByText(/Karigar actions ship in TASK-TR-A4/i)).toBeInTheDocument();
-    expect(
-      within(drawer).queryByRole('button', { name: /start operation/i }),
-    ).not.toBeInTheDocument();
-  });
+  // A4 shipped real KarigarActions (replacing the A3 placeholder). The
+  // associated A3 placeholder test is removed because the assertion
+  // `Karigar actions ship in TASK-TR-A4` no longer holds. Re-add karigar
+  // drawer coverage as a follow-up if the existing KarigarActions code
+  // path needs broader vitest coverage.
 
   // ── A5 QC actions + REWORK chain UI ───────────────────────────────
   //
