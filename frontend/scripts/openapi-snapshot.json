@@ -4787,6 +4787,412 @@
         "title": "JournalVoucherResponse",
         "type": "object"
       },
+      "KarigarAcknowledgeRequest": {
+        "description": "POST /manufacturing/mo-operations/{id}/acknowledge-karigar.\n\nThe karigar's \"received your goods, started work\" beat.",
+        "properties": {
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          }
+        },
+        "required": [
+          "firm_id"
+        ],
+        "title": "KarigarAcknowledgeRequest",
+        "type": "object"
+      },
+      "KarigarCloseRequest": {
+        "description": "POST /manufacturing/mo-operations/{id}/close-karigar.",
+        "properties": {
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          }
+        },
+        "required": [
+          "firm_id"
+        ],
+        "title": "KarigarCloseRequest",
+        "type": "object"
+      },
+      "KarigarDispatchRequest": {
+        "description": "POST /manufacturing/mo-operations/{id}/dispatch-karigar.\n\n``firm_id`` is defense-in-depth on top of RLS \u2014 when the session\ncarries a firm scope the body must match (see router).\n\n``item_id`` + ``uom``: what physical item is being sent out to the\nkarigar. The MoOperation row does NOT carry an item_id \u2014 operations\ntransform materials and the \"input item\" varies by op (raw at op1,\ndyed-fabric at op2, etc.). When omitted, the service defaults to the\nMO's finished item (best-fit for the simplest case where the\noperation's input IS the finished item, e.g. a stitched garment going\nto an embroiderer). Operators with multi-op routings should pass\n``item_id`` explicitly.",
+        "properties": {
+          "dispatch_date": {
+            "format": "date",
+            "title": "Dispatch Date",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "karigar_party_id": {
+            "format": "uuid",
+            "title": "Karigar Party Id",
+            "type": "string"
+          },
+          "lot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lot Id"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "qty_dispatched": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Qty Dispatched"
+          },
+          "uom": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uom"
+          }
+        },
+        "required": [
+          "firm_id",
+          "karigar_party_id",
+          "qty_dispatched",
+          "dispatch_date"
+        ],
+        "title": "KarigarDispatchRequest",
+        "type": "object"
+      },
+      "KarigarOperationResponse": {
+        "description": "Shape returned by every karigar mutation + the karigar detail\nendpoint. Wider than ``OperationProgressResponse`` \u2014 also surfaces\nthe outward/inward challan ids + the karigar party (needed by the\nshop-floor view).",
+        "properties": {
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Date"
+          },
+          "executor": {
+            "title": "Executor",
+            "type": "string"
+          },
+          "inward_challan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inward Challan Id"
+          },
+          "karigar_party_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Karigar Party Id"
+          },
+          "manufacturing_order_id": {
+            "format": "uuid",
+            "title": "Manufacturing Order Id",
+            "type": "string"
+          },
+          "mo_operation_id": {
+            "format": "uuid",
+            "title": "Mo Operation Id",
+            "type": "string"
+          },
+          "operation_master_id": {
+            "format": "uuid",
+            "title": "Operation Master Id",
+            "type": "string"
+          },
+          "operation_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Sequence"
+          },
+          "outward_challan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outward Challan Id"
+          },
+          "qty_byproduct": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Byproduct",
+            "type": "string"
+          },
+          "qty_in": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty In",
+            "type": "string"
+          },
+          "qty_out": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Out",
+            "type": "string"
+          },
+          "qty_rejected": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Rejected",
+            "type": "string"
+          },
+          "qty_wastage": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Qty Wastage",
+            "type": "string"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MoOperationState"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mo_operation_id",
+          "manufacturing_order_id",
+          "operation_master_id",
+          "operation_sequence",
+          "state",
+          "executor",
+          "karigar_party_id",
+          "outward_challan_id",
+          "inward_challan_id",
+          "qty_in",
+          "qty_out",
+          "qty_rejected",
+          "qty_byproduct",
+          "qty_wastage",
+          "start_date",
+          "end_date",
+          "acknowledged_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "KarigarOperationResponse",
+        "type": "object"
+      },
+      "KarigarReceiveRequest": {
+        "description": "POST /manufacturing/mo-operations/{id}/receive-karigar.\n\nQuantities are deltas (added to the cumulative running totals on the\nmo_operation row). At least one of ``qty_received`` / ``qty_scrap``\n/ ``qty_byproduct`` / ``qty_wastage`` must be > 0 \u2014 the service\nenforces this.",
+        "properties": {
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "qty_byproduct": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "0",
+            "title": "Qty Byproduct"
+          },
+          "qty_received": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "0",
+            "title": "Qty Received"
+          },
+          "qty_scrap": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "0",
+            "title": "Qty Scrap"
+          },
+          "qty_wastage": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "0",
+            "title": "Qty Wastage"
+          },
+          "receipt_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receipt Date"
+          }
+        },
+        "required": [
+          "firm_id"
+        ],
+        "title": "KarigarReceiveRequest",
+        "type": "object"
+      },
       "KpiListResponse": {
         "properties": {
           "items": {
@@ -17812,6 +18218,146 @@
         ]
       }
     },
+    "/manufacturing/mo-operations/{mo_operation_id}/acknowledge-karigar": {
+      "post": {
+        "operationId": "acknowledge_karigar_manufacturing_mo_operations__mo_operation_id__acknowledge_karigar_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KarigarAcknowledgeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KarigarOperationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge a karigar dispatch (DISPATCHED \u2192 ACKNOWLEDGED)",
+        "tags": [
+          "manufacturing",
+          "karigar"
+        ]
+      }
+    },
+    "/manufacturing/mo-operations/{mo_operation_id}/close-karigar": {
+      "post": {
+        "operationId": "close_karigar_manufacturing_mo_operations__mo_operation_id__close_karigar_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KarigarCloseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KarigarOperationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close a karigar MO operation (RECEIVED_FULL \u2192 CLOSED)",
+        "tags": [
+          "manufacturing",
+          "karigar"
+        ]
+      }
+    },
     "/manufacturing/mo-operations/{mo_operation_id}/complete": {
       "post": {
         "operationId": "complete_operation_manufacturing_mo_operations__mo_operation_id__complete_post",
@@ -17879,6 +18425,76 @@
         "tags": [
           "manufacturing",
           "operation_progress"
+        ]
+      }
+    },
+    "/manufacturing/mo-operations/{mo_operation_id}/dispatch-karigar": {
+      "post": {
+        "operationId": "dispatch_karigar_manufacturing_mo_operations__mo_operation_id__dispatch_karigar_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KarigarDispatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KarigarOperationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dispatch a karigar (job-work) MO operation (PENDING/RECEIVED_FULL \u2192 DISPATCHED)",
+        "tags": [
+          "manufacturing",
+          "karigar"
         ]
       }
     },
@@ -18019,6 +18635,76 @@
         "tags": [
           "manufacturing",
           "operation_progress"
+        ]
+      }
+    },
+    "/manufacturing/mo-operations/{mo_operation_id}/receive-karigar": {
+      "post": {
+        "operationId": "receive_karigar_manufacturing_mo_operations__mo_operation_id__receive_karigar_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KarigarReceiveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KarigarOperationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Receive back from karigar (ACKNOWLEDGED/RECEIVED_PARTIAL \u2192 RECEIVED_PARTIAL or RECEIVED_FULL)",
+        "tags": [
+          "manufacturing",
+          "karigar"
         ]
       }
     },

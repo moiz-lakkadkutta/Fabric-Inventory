@@ -1184,6 +1184,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/manufacturing/mo-operations/{mo_operation_id}/acknowledge-karigar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Acknowledge a karigar dispatch (DISPATCHED → ACKNOWLEDGED) */
+        post: operations["acknowledge_karigar_manufacturing_mo_operations__mo_operation_id__acknowledge_karigar_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo-operations/{mo_operation_id}/close-karigar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close a karigar MO operation (RECEIVED_FULL → CLOSED) */
+        post: operations["close_karigar_manufacturing_mo_operations__mo_operation_id__close_karigar_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/manufacturing/mo-operations/{mo_operation_id}/complete": {
         parameters: {
             query?: never;
@@ -1195,6 +1229,23 @@ export interface paths {
         put?: never;
         /** Close an in-house MO operation (IN_PROGRESS → CLOSED) */
         post: operations["complete_operation_manufacturing_mo_operations__mo_operation_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo-operations/{mo_operation_id}/dispatch-karigar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Dispatch a karigar (job-work) MO operation (PENDING/RECEIVED_FULL → DISPATCHED) */
+        post: operations["dispatch_karigar_manufacturing_mo_operations__mo_operation_id__dispatch_karigar_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1229,6 +1280,23 @@ export interface paths {
         put?: never;
         /** Record qty_out / scrap / byproduct / wastage on an in-progress MO operation */
         post: operations["record_qty_out_manufacturing_mo_operations__mo_operation_id__qty_out_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/manufacturing/mo-operations/{mo_operation_id}/receive-karigar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Receive back from karigar (ACKNOWLEDGED/RECEIVED_PARTIAL → RECEIVED_PARTIAL or RECEIVED_FULL) */
+        post: operations["receive_karigar_manufacturing_mo_operations__mo_operation_id__receive_karigar_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4032,6 +4100,178 @@ export interface components {
              * @constant
              */
             voucher_type: "JOURNAL";
+        };
+        /**
+         * KarigarAcknowledgeRequest
+         * @description POST /manufacturing/mo-operations/{id}/acknowledge-karigar.
+         *
+         *     The karigar's "received your goods, started work" beat.
+         */
+        KarigarAcknowledgeRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
+        };
+        /**
+         * KarigarCloseRequest
+         * @description POST /manufacturing/mo-operations/{id}/close-karigar.
+         */
+        KarigarCloseRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
+        };
+        /**
+         * KarigarDispatchRequest
+         * @description POST /manufacturing/mo-operations/{id}/dispatch-karigar.
+         *
+         *     ``firm_id`` is defense-in-depth on top of RLS — when the session
+         *     carries a firm scope the body must match (see router).
+         *
+         *     ``item_id`` + ``uom``: what physical item is being sent out to the
+         *     karigar. The MoOperation row does NOT carry an item_id — operations
+         *     transform materials and the "input item" varies by op (raw at op1,
+         *     dyed-fabric at op2, etc.). When omitted, the service defaults to the
+         *     MO's finished item (best-fit for the simplest case where the
+         *     operation's input IS the finished item, e.g. a stitched garment going
+         *     to an embroiderer). Operators with multi-op routings should pass
+         *     ``item_id`` explicitly.
+         */
+        KarigarDispatchRequest: {
+            /**
+             * Dispatch Date
+             * Format: date
+             */
+            dispatch_date: string;
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Item Id */
+            item_id?: string | null;
+            /**
+             * Karigar Party Id
+             * Format: uuid
+             */
+            karigar_party_id: string;
+            /** Lot Id */
+            lot_id?: string | null;
+            /** Narration */
+            narration?: string | null;
+            /** Qty Dispatched */
+            qty_dispatched: number | string;
+            /** Uom */
+            uom?: string | null;
+        };
+        /**
+         * KarigarOperationResponse
+         * @description Shape returned by every karigar mutation + the karigar detail
+         *     endpoint. Wider than ``OperationProgressResponse`` — also surfaces
+         *     the outward/inward challan ids + the karigar party (needed by the
+         *     shop-floor view).
+         */
+        KarigarOperationResponse: {
+            /** Acknowledged At */
+            acknowledged_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** End Date */
+            end_date: string | null;
+            /** Executor */
+            executor: string;
+            /** Inward Challan Id */
+            inward_challan_id: string | null;
+            /** Karigar Party Id */
+            karigar_party_id: string | null;
+            /**
+             * Manufacturing Order Id
+             * Format: uuid
+             */
+            manufacturing_order_id: string;
+            /**
+             * Mo Operation Id
+             * Format: uuid
+             */
+            mo_operation_id: string;
+            /**
+             * Operation Master Id
+             * Format: uuid
+             */
+            operation_master_id: string;
+            /** Operation Sequence */
+            operation_sequence: number | null;
+            /** Outward Challan Id */
+            outward_challan_id: string | null;
+            /** Qty Byproduct */
+            qty_byproduct: string;
+            /** Qty In */
+            qty_in: string;
+            /** Qty Out */
+            qty_out: string;
+            /** Qty Rejected */
+            qty_rejected: string;
+            /** Qty Wastage */
+            qty_wastage: string;
+            /** Start Date */
+            start_date: string | null;
+            state: components["schemas"]["MoOperationState"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * KarigarReceiveRequest
+         * @description POST /manufacturing/mo-operations/{id}/receive-karigar.
+         *
+         *     Quantities are deltas (added to the cumulative running totals on the
+         *     mo_operation row). At least one of ``qty_received`` / ``qty_scrap``
+         *     / ``qty_byproduct`` / ``qty_wastage`` must be > 0 — the service
+         *     enforces this.
+         */
+        KarigarReceiveRequest: {
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Narration */
+            narration?: string | null;
+            /**
+             * Qty Byproduct
+             * @default 0
+             */
+            qty_byproduct: number | string;
+            /**
+             * Qty Received
+             * @default 0
+             */
+            qty_received: number | string;
+            /**
+             * Qty Scrap
+             * @default 0
+             */
+            qty_scrap: number | string;
+            /**
+             * Qty Wastage
+             * @default 0
+             */
+            qty_wastage: number | string;
+            /** Receipt Date */
+            receipt_date?: string | null;
         };
         /** KpiListResponse */
         KpiListResponse: {
@@ -9901,6 +10141,80 @@ export interface operations {
             };
         };
     };
+    acknowledge_karigar_manufacturing_mo_operations__mo_operation_id__acknowledge_karigar_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KarigarAcknowledgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KarigarOperationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_karigar_manufacturing_mo_operations__mo_operation_id__close_karigar_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KarigarCloseRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KarigarOperationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     complete_operation_manufacturing_mo_operations__mo_operation_id__complete_post: {
         parameters: {
             query?: never;
@@ -9925,6 +10239,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OperationProgressResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dispatch_karigar_manufacturing_mo_operations__mo_operation_id__dispatch_karigar_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KarigarDispatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KarigarOperationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -9999,6 +10350,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OperationProgressResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    receive_karigar_manufacturing_mo_operations__mo_operation_id__receive_karigar_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KarigarReceiveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KarigarOperationResponse"];
                 };
             };
             /** @description Validation Error */
