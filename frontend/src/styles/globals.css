@@ -165,3 +165,78 @@ textarea {
     background-position: -100% 0;
   }
 }
+
+/*
+  Print-only header surface used by /reports. Hidden on screen so it
+  only ever appears in the @media print pass below. Components opt in
+  by rendering a `.print-header` block (firm name + report title +
+  period + as-of date) immediately before the live page content.
+*/
+.print-header {
+  display: none;
+}
+
+/*
+  Browser-print path for /reports (TASK-TR-B1). The strategy is
+  "what you see is what prints, minus chrome": we hide the app shell
+  (TopBar / Sidebar / BottomNav), neutralise the canvas background,
+  and surface the `.print-header` block so the printout still
+  identifies the firm + report. Per-report custom templates are a
+  v2 polish; this generic pass is enough for the trial customer's
+  monthly Trial Balance run.
+
+  Any caller can opt a node out of print by adding `class="no-print"`.
+*/
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  /* Hide app chrome: TopBar/BottomNav/Sidebar all render as the only
+     <nav>/<aside> elements at the layout level, so blanket-hiding them
+     is safe. .no-print is the escape hatch for in-page chrome (the
+     Reports header row with Print / Export buttons). */
+  aside,
+  nav,
+  .no-print {
+    display: none !important;
+  }
+
+  /* Reveal the print-only header surface. */
+  .print-header {
+    display: block !important;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #888;
+  }
+  .print-header-firm {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .print-header-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin-top: 2px;
+  }
+  .print-header-meta {
+    font-size: 12px;
+    color: #444;
+    margin-top: 2px;
+  }
+
+  /* Don't split table rows across pages; let the table itself flow. */
+  table {
+    page-break-inside: auto;
+  }
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+  thead {
+    display: table-header-group;
+  }
+  tfoot {
+    display: table-footer-group;
+  }
+}

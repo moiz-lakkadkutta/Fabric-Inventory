@@ -2,7 +2,6 @@ import { Download, Printer } from 'lucide-react';
 import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
-import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { downloadExport, type ExportFormat } from '@/lib/api/download';
 import { IS_LIVE } from '@/lib/api/mode';
@@ -131,14 +130,27 @@ export default function ReportsHub() {
   const [itc04Period, setItc04Period] = useState<string>(currentPeriod());
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  // CSV/Excel export is wired live (per-tab). PDF "Print" via WeasyPrint
-  // is a v2 polish — operators use browser-print (Cmd-P) today and the
-  // CSV/Excel exports are the system of record for filing. Replace
-  // when a customer asks for branded PDF report rendering.
-  const print = useComingSoon({
-    feature: 'Print report (PDF)',
-    task: 'v2 (PDF report rendering — CSV/Excel already live)',
+  // Print uses the browser's native `window.print()` — the global
+  // `@media print` rules in `styles/globals.css` hide the chrome
+  // (sidebar, top bar, bottom nav, action buttons) and surface the
+  // `.print-header` block (firm + report + period). Operators use
+  // the resulting browser preview to "Save as PDF" or send to a
+  // physical printer. Branded PDF rendering via WeasyPrint is a v2
+  // polish; CSV/Excel exports remain the system of record for filing.
+  const me = useMe();
+  const currentFirm = me?.available_firms.find((f) => f.firm_id === me?.firm_id) ?? null;
+  const firmName = currentFirm?.name ?? 'Firm';
+  const tabLabel = TABS.find((t) => t.id === tab)?.label ?? 'Report';
+  const asOfDate = new Date().toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
   });
+  const periodLabel = tab === 'gstr1' ? gstr1Period : PERIOD;
+  const handlePrint = () => {
+    window.print();
+  };
   const exportEndpoint = reportExportEndpoint(tab, gstr1Period);
   const exportSupported = exportEndpoint !== null;
 
@@ -168,13 +180,27 @@ export default function ReportsHub() {
 
   return (
     <div className="space-y-4">
-      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      {/*
+        Print-only header. Hidden in normal screen view (display: none in
+        the base stylesheet) and revealed under @media print, so a Cmd-P
+        / window.print() produces a printout that still identifies the
+        firm, report, period, and run date. Keeps PDFs/printouts useful
+        once the on-screen chrome (sidebar, top bar) is stripped.
+      */}
+      <div className="print-header">
+        <div className="print-header-firm">{firmName}</div>
+        <div className="print-header-title">{tabLabel}</div>
+        <div className="print-header-meta">
+          Period: {periodLabel} · As of: {asOfDate}
+        </div>
+      </div>
+      <header className="no-print flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.015em' }}>Reports</h1>
         <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
           {PERIOD} · {COMPARE}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" {...print.triggerProps}>
+          <Button variant="outline" onClick={handlePrint} aria-label="Print report">
             <Printer size={14} />
             Print
           </Button>
@@ -200,7 +226,6 @@ export default function ReportsHub() {
           </Button>
         </div>
       </header>
-      {print.dialog}
       {exportError && (
         <div
           role="alert"
