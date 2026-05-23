@@ -1204,4 +1204,711 @@ describe('MoDetail (live-mode integration, TASK-TR-A14-FU)', () => {
     // And the "Free rework" pill renders on its executor cell.
     expect(screen.getByText(/free rework/i)).toBeInTheDocument();
   });
+
+  // ── A4 karigar drawer paths (TASK-TR-A4-FU) ──────────────────────────
+  //
+  // KarigarActions ships the karigar lifecycle UI inside OperationDrawer
+  // for ops with `executor === 'KARIGAR'`. State machine per the
+  // component docstring:
+  //   PENDING            → "Dispatch to karigar" form (mints a JWO).
+  //   DISPATCHED         → Acknowledge button + Receive form.
+  //   IN_PROGRESS / ACKNOWLEDGED / RECEIVED_PARTIAL
+  //                      → optional Acknowledge button OR ack badge,
+  //                        Receive form, Close button (gated on
+  //                        qty_in >= qty_dispatched).
+  //   RECEIVED_FULL      → Close button (enabled).
+  //   CLOSED/SKIPPED/CANCELLED → read-only summary.
+  //
+  // We drive each state by setting op.state + op.qty_in on the MO
+  // fixture and seeding the events log on GET /mo-operations/{id} so
+  // `deriveKarigarStateFromEvents` reconstructs qty_dispatched +
+  // outward_challan_id + acknowledged_at.
+
+  const KARIGAR_OP_MASTER_ID = 'op000000-0000-0000-0000-000000000003';
+  const KARIGAR_OP_ID = 'mp000000-0000-0000-0000-000000000005';
+  const KARIGAR_PARTY_ID = 'pk000000-0000-0000-0000-000000000001';
+  const OUTWARD_CHALLAN_ID = 'oc000000-0000-0000-0000-000000000001';
+
+  function buildKarigarOperationMaster() {
+    return {
+      org_id: ORG_ID,
+      firm_id: FIRM_ID,
+      operation_master_id: KARIGAR_OP_MASTER_ID,
+      code: 'EMB',
+      name: 'Embroidery',
+      operation_type: 'STITCHING',
+      default_duration_mins: null,
+      cost_centre_id: null,
+      is_active: true,
+      created_at: '2026-04-01T00:00:00Z',
+      updated_at: '2026-04-01T00:00:00Z',
+      deleted_at: null,
+    };
+  }
+
+  function buildKarigarParty() {
+    return {
+      party_id: KARIGAR_PARTY_ID,
+      org_id: ORG_ID,
+      firm_id: FIRM_ID,
+      code: 'KAR-01',
+      name: 'Rashid Tailors',
+      legal_name: null,
+      is_supplier: false,
+      is_customer: false,
+      is_karigar: true,
+      is_transporter: false,
+      tax_status: 'UNREGISTERED',
+      gstin: null,
+      pan: null,
+      phone: null,
+      email: null,
+      state_code: null,
+      contact_person: null,
+      credit_limit: null,
+      notes: null,
+      is_active: true,
+      created_at: '2026-04-01T00:00:00Z',
+      updated_at: '2026-04-01T00:00:00Z',
+      deleted_at: null,
+    };
+  }
+
+  function buildMoWithKarigar(opts: {
+    state:
+      | 'PENDING'
+      | 'DISPATCHED'
+      | 'IN_PROGRESS'
+      | 'RECEIVED_PARTIAL'
+      | 'RECEIVED_FULL'
+      | 'CLOSED';
+    qtyIn?: string | null;
+  }) {
+    const mo = buildMo({ status: 'IN_PROGRESS' });
+    // Replace the default stitching op with a karigar op so the only
+    // row in the table is the karigar one we want to test.
+    mo.operations[0] = {
+      manufacturing_order_id: MO_ID,
+      mo_operation_id: KARIGAR_OP_ID,
+      operation_master_id: KARIGAR_OP_MASTER_ID,
+      operation_sequence: 10,
+      executor: 'KARIGAR',
+      qty_in: opts.qtyIn ?? null,
+      qty_out: null,
+      state: opts.state,
+    } as unknown as (typeof mo.operations)[number];
+    return mo;
+  }
+
+  /**
+   * Events-log seeding helper. Returns the JSON shape the FE expects
+   * from GET /manufacturing/mo-operations/{id}. `events` are walked
+   * oldest-first by deriveKarigarStateFromEvents.
+   */
+  function buildOpDetail(opts: {
+    state:
+      | 'PENDING'
+      | 'DISPATCHED'
+      | 'IN_PROGRESS'
+      | 'RECEIVED_PARTIAL'
+      | 'RECEIVED_FULL'
+      | 'CLOSED';
+    qtyIn?: string;
+    events?: Array<{
+      event_type: 'OPERATION_DISPATCHED' | 'OPERATION_ACKNOWLEDGED';
+      occurred_at: string;
+      payload: Record<string, unknown>;
+    }>;
+  }) {
+    return {
+      operation: {
+        created_at: '2026-05-01T00:00:00Z',
+        end_date: null,
+        executor: 'KARIGAR',
+        is_rework_paid: false,
+        manufacturing_order_id: MO_ID,
+        mo_operation_id: KARIGAR_OP_ID,
+        operation_master_id: KARIGAR_OP_MASTER_ID,
+        operation_sequence: 10,
+        qty_byproduct: '0.0000',
+        qty_in: opts.qtyIn ?? '0.0000',
+        qty_out: '0.0000',
+        qty_rejected: '0.0000',
+        qty_wastage: '0.0000',
+        start_date: '2026-05-01',
+        state: opts.state,
+        updated_at: '2026-05-01T00:00:00Z',
+        version: 1,
+      },
+      events: (opts.events ?? []).map((e, idx) => ({
+        event_id: `ev000000-0000-0000-0000-00000000000${idx + 1}`,
+        event_type: e.event_type,
+        actor_user_id: null,
+        manufacturing_order_id: MO_ID,
+        mo_operation_id: KARIGAR_OP_ID,
+        occurred_at: e.occurred_at,
+        payload: e.payload,
+      })),
+    };
+  }
+
+  function buildKarigarOpResponse(
+    overrides: Partial<{
+      state: string;
+      qty_in: string;
+      acknowledged_at: string | null;
+      outward_challan_id: string | null;
+      karigar_party_id: string | null;
+    }> = {},
+  ) {
+    return {
+      created_at: '2026-05-01T00:00:00Z',
+      end_date: null,
+      executor: 'KARIGAR',
+      manufacturing_order_id: MO_ID,
+      mo_operation_id: KARIGAR_OP_ID,
+      operation_master_id: KARIGAR_OP_MASTER_ID,
+      operation_sequence: 10,
+      operation_type: 'STITCHING',
+      acknowledged_at: overrides.acknowledged_at ?? null,
+      outward_challan_id: overrides.outward_challan_id ?? null,
+      karigar_party_id: overrides.karigar_party_id ?? KARIGAR_PARTY_ID,
+      qty_byproduct: '0.0000',
+      qty_dispatched: '50.0000',
+      qty_in: overrides.qty_in ?? '0.0000',
+      qty_out: '0.0000',
+      qty_rejected: '0.0000',
+      qty_scrap: '0.0000',
+      qty_wastage: '0.0000',
+      start_date: '2026-05-01',
+      state: overrides.state ?? 'DISPATCHED',
+      updated_at: '2026-05-01T00:00:00Z',
+      version: 2,
+    };
+  }
+
+  /**
+   * Karigar-flavored fetch mock layered on top of `defaultFetchImpl`.
+   * Adds the karigar op master to the masters list, fields the parties
+   * GET (so useKarigars resolves), serves the op-detail / events log,
+   * and hands back a canned KarigarOperationResponse on every karigar
+   * mutation. Per-call hooks let tests inspect URLs / bodies / idem keys.
+   */
+  function withKarigarMasters(
+    mo: ReturnType<typeof buildMoWithKarigar>,
+    options: {
+      opDetail?: ReturnType<typeof buildOpDetail> | null;
+      onDispatch?: (init: RequestInit, url: string) => void;
+      onAcknowledge?: (init: RequestInit, url: string) => void;
+      onReceive?: (init: RequestInit, url: string) => void;
+      onClose?: (init: RequestInit, url: string) => void;
+      dispatchResponse?: ReturnType<typeof buildKarigarOpResponse>;
+      receiveResponse?: ReturnType<typeof buildKarigarOpResponse>;
+      acknowledgeResponse?: ReturnType<typeof buildKarigarOpResponse>;
+      closeResponse?: ReturnType<typeof buildKarigarOpResponse>;
+    } = {},
+  ) {
+    return async (url: RequestInfo, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (u.includes('/operation-masters')) {
+        return jsonResponse(200, {
+          items: [buildOperationMaster(), buildKarigarOperationMaster()],
+          count: 2,
+          limit: 200,
+          offset: 0,
+        });
+      }
+      // useKarigars hits /parties?party_type=karigar
+      if (u.includes('/parties') && u.includes('party_type=karigar')) {
+        return jsonResponse(200, {
+          items: [buildKarigarParty()],
+          count: 1,
+          limit: 200,
+          offset: 0,
+        });
+      }
+      // GET /manufacturing/mo-operations/{id} — drawer reads event log
+      // off this when state ≠ PENDING.
+      if (
+        u.includes('/manufacturing/mo-operations/') &&
+        !u.includes('/dispatch-karigar') &&
+        !u.includes('/acknowledge-karigar') &&
+        !u.includes('/receive-karigar') &&
+        !u.includes('/close-karigar') &&
+        method === 'GET'
+      ) {
+        if (options.opDetail === null) return jsonResponse(404, {});
+        return jsonResponse(
+          200,
+          options.opDetail ?? buildOpDetail({ state: mo.operations[0].state as 'PENDING' }),
+        );
+      }
+      if (u.endsWith('/dispatch-karigar') && method === 'POST') {
+        options.onDispatch?.(init ?? {}, u);
+        return jsonResponse(
+          200,
+          options.dispatchResponse ??
+            buildKarigarOpResponse({
+              state: 'DISPATCHED',
+              outward_challan_id: OUTWARD_CHALLAN_ID,
+            }),
+        );
+      }
+      if (u.endsWith('/acknowledge-karigar') && method === 'POST') {
+        options.onAcknowledge?.(init ?? {}, u);
+        return jsonResponse(
+          200,
+          options.acknowledgeResponse ??
+            buildKarigarOpResponse({
+              state: 'IN_PROGRESS',
+              acknowledged_at: '2026-05-02T10:30:00Z',
+              outward_challan_id: OUTWARD_CHALLAN_ID,
+            }),
+        );
+      }
+      if (u.endsWith('/receive-karigar') && method === 'POST') {
+        options.onReceive?.(init ?? {}, u);
+        return jsonResponse(
+          200,
+          options.receiveResponse ??
+            buildKarigarOpResponse({
+              state: 'RECEIVED_PARTIAL',
+              qty_in: '20.0000',
+              outward_challan_id: OUTWARD_CHALLAN_ID,
+            }),
+        );
+      }
+      if (u.endsWith('/close-karigar') && method === 'POST') {
+        options.onClose?.(init ?? {}, u);
+        return jsonResponse(
+          200,
+          options.closeResponse ??
+            buildKarigarOpResponse({
+              state: 'CLOSED',
+              qty_in: '50.0000',
+              outward_challan_id: OUTWARD_CHALLAN_ID,
+            }),
+        );
+      }
+      return defaultFetchImpl(mo)(url);
+    };
+  }
+
+  it('A4: PENDING KARIGAR op shows Dispatch form (no Start operation button)', async () => {
+    const mo = buildMoWithKarigar({ state: 'PENDING' });
+    fetchMock.mockImplementation(withKarigarMasters(mo));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open embroidery operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation embroidery/i });
+
+    // Dispatch form fields are present.
+    expect(within(drawer).getByLabelText(/^karigar$/i)).toBeInTheDocument();
+    expect(within(drawer).getByLabelText(/qty to dispatch/i)).toBeInTheDocument();
+    expect(within(drawer).getByLabelText(/expected return date/i)).toBeInTheDocument();
+    expect(
+      within(drawer).getByRole('button', { name: /dispatch to karigar/i }),
+    ).toBeInTheDocument();
+
+    // The A3 in-house "Start operation" button MUST NOT be there.
+    expect(
+      within(drawer).queryByRole('button', { name: /^start operation$/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('A4: Dispatch POST hits /dispatch-karigar with party_id + qty + idempotency-key', async () => {
+    const mo = buildMoWithKarigar({ state: 'PENDING' });
+    let dispatchPath: string | null = null;
+    let dispatchIdem: string | null = null;
+    let dispatchBody: Record<string, unknown> | null = null;
+    fetchMock.mockImplementation(
+      withKarigarMasters(mo, {
+        onDispatch: (init, url) => {
+          dispatchPath = url;
+          dispatchIdem =
+            (init.headers as Record<string, string> | undefined)?.['Idempotency-Key'] ?? null;
+          dispatchBody = JSON.parse((init.body as string) ?? '{}');
+        },
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open embroidery operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation embroidery/i });
+
+    // Wait for useKarigars to populate the select with the karigar party.
+    await waitFor(() =>
+      expect(within(drawer).getByRole('option', { name: /rashid tailors/i })).toBeInTheDocument(),
+    );
+
+    fireEvent.change(within(drawer).getByLabelText(/^karigar$/i), {
+      target: { value: KARIGAR_PARTY_ID },
+    });
+    fireEvent.change(within(drawer).getByLabelText(/qty to dispatch/i), {
+      target: { value: '50' },
+    });
+    fireEvent.change(within(drawer).getByLabelText(/expected return date/i), {
+      target: { value: '2026-05-30' },
+    });
+    fireEvent.click(within(drawer).getByRole('button', { name: /dispatch to karigar/i }));
+
+    await waitFor(() => expect(dispatchPath).not.toBeNull());
+    expect(dispatchPath).toContain(
+      `/manufacturing/mo-operations/${KARIGAR_OP_ID}/dispatch-karigar`,
+    );
+    expect(dispatchIdem).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(dispatchBody).toMatchObject({
+      firm_id: FIRM_ID,
+      karigar_party_id: KARIGAR_PARTY_ID,
+      qty_dispatched: '50',
+    });
+  });
+
+  it('A4: Linked-challan card renders outward_challan_id from event log', async () => {
+    // DISPATCHED state with a seeded OPERATION_DISPATCHED event so the
+    // drawer derives outward_challan_id off the event log without
+    // needing a mutation to fire first.
+    const mo = buildMoWithKarigar({ state: 'DISPATCHED' });
+    fetchMock.mockImplementation(
+      withKarigarMasters(mo, {
+        opDetail: buildOpDetail({
+          state: 'DISPATCHED',
+          events: [
+            {
+              event_type: 'OPERATION_DISPATCHED',
+              occurred_at: '2026-05-02T09:00:00Z',
+              payload: {
+                qty_dispatched: '50.0000',
+                outward_challan_id: OUTWARD_CHALLAN_ID,
+                karigar_party_id: KARIGAR_PARTY_ID,
+                dispatch_date: '2026-05-02',
+              },
+            },
+          ],
+        }),
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open embroidery operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation embroidery/i });
+
+    // The challan card surfaces the first 8 chars of outward_challan_id.
+    await waitFor(() => expect(within(drawer).getByText(/linked challan/i)).toBeInTheDocument());
+    expect(
+      within(drawer).getByText(new RegExp(`JWO #${OUTWARD_CHALLAN_ID.slice(0, 8)}`, 'i')),
+    ).toBeInTheDocument();
+  });
+
+  it('A4: DISPATCHED (no ack) shows BOTH Acknowledge button and Receive form, no ack badge', async () => {
+    const mo = buildMoWithKarigar({ state: 'DISPATCHED' });
+    fetchMock.mockImplementation(
+      withKarigarMasters(mo, {
+        opDetail: buildOpDetail({
+          state: 'DISPATCHED',
+          events: [
+            {
+              event_type: 'OPERATION_DISPATCHED',
+              occurred_at: '2026-05-02T09:00:00Z',
+              payload: {
+                qty_dispatched: '50.0000',
+                outward_challan_id: OUTWARD_CHALLAN_ID,
+                karigar_party_id: KARIGAR_PARTY_ID,
+                dispatch_date: '2026-05-02',
+              },
+            },
+          ],
+        }),
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open embroidery operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation embroidery/i });
+
+    // Acknowledge button is present.
+    await waitFor(() =>
+      expect(
+        within(drawer).getByRole('button', { name: /karigar acknowledged/i }),
+      ).toBeInTheDocument(),
+    );
+    // Receive form is present.
+    expect(within(drawer).getByLabelText(/qty received/i)).toBeInTheDocument();
+    expect(within(drawer).getByRole('button', { name: /receive batch/i })).toBeInTheDocument();
+    // No "Acknowledged at <ts>" badge yet.
+    expect(within(drawer).queryByText(/acknowledged at/i)).not.toBeInTheDocument();
+  });
+
+  it('A4: pre-seeded OPERATION_ACKNOWLEDGED event surfaces the "Acknowledged at …" badge', async () => {
+    const mo = buildMoWithKarigar({ state: 'IN_PROGRESS' });
+    fetchMock.mockImplementation(
+      withKarigarMasters(mo, {
+        opDetail: buildOpDetail({
+          state: 'IN_PROGRESS',
+          events: [
+            {
+              event_type: 'OPERATION_DISPATCHED',
+              occurred_at: '2026-05-02T09:00:00Z',
+              payload: {
+                qty_dispatched: '50.0000',
+                outward_challan_id: OUTWARD_CHALLAN_ID,
+                karigar_party_id: KARIGAR_PARTY_ID,
+                dispatch_date: '2026-05-02',
+              },
+            },
+            {
+              event_type: 'OPERATION_ACKNOWLEDGED',
+              occurred_at: '2026-05-02T10:30:00Z',
+              payload: {},
+            },
+          ],
+        }),
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open embroidery operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation embroidery/i });
+
+    await waitFor(() => expect(within(drawer).getByText(/acknowledged at/i)).toBeInTheDocument());
+    // The button is gone now.
+    expect(
+      within(drawer).queryByRole('button', { name: /karigar acknowledged/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('A4: partial receive POSTs /receive-karigar with idempotency key; Close stays disabled', async () => {
+    // RECEIVED_PARTIAL with qty_in=20 < qty_dispatched=50 — close
+    // should be disabled.
+    const mo = buildMoWithKarigar({ state: 'RECEIVED_PARTIAL', qtyIn: '20.0000' });
+    let receivePath: string | null = null;
+    let receiveIdem: string | null = null;
+    let receiveBody: Record<string, unknown> | null = null;
+    fetchMock.mockImplementation(
+      withKarigarMasters(mo, {
+        opDetail: buildOpDetail({
+          state: 'RECEIVED_PARTIAL',
+          qtyIn: '20.0000',
+          events: [
+            {
+              event_type: 'OPERATION_DISPATCHED',
+              occurred_at: '2026-05-02T09:00:00Z',
+              payload: {
+                qty_dispatched: '50.0000',
+                outward_challan_id: OUTWARD_CHALLAN_ID,
+                karigar_party_id: KARIGAR_PARTY_ID,
+                dispatch_date: '2026-05-02',
+              },
+            },
+            {
+              event_type: 'OPERATION_ACKNOWLEDGED',
+              occurred_at: '2026-05-02T10:30:00Z',
+              payload: {},
+            },
+          ],
+        }),
+        onReceive: (init, url) => {
+          receivePath = url;
+          receiveIdem =
+            (init.headers as Record<string, string> | undefined)?.['Idempotency-Key'] ?? null;
+          receiveBody = JSON.parse((init.body as string) ?? '{}');
+        },
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open embroidery operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation embroidery/i });
+
+    await waitFor(() => expect(within(drawer).getByLabelText(/qty received/i)).toBeInTheDocument());
+
+    // Enter a partial qty (15) — total received (20 cumulative + 15
+    // delta = 35) still < dispatched (50).
+    fireEvent.change(within(drawer).getByLabelText(/qty received/i), {
+      target: { value: '15' },
+    });
+    fireEvent.click(within(drawer).getByRole('button', { name: /receive batch/i }));
+
+    await waitFor(() => expect(receivePath).not.toBeNull());
+    expect(receivePath).toContain(`/manufacturing/mo-operations/${KARIGAR_OP_ID}/receive-karigar`);
+    expect(receiveIdem).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(receiveBody).toMatchObject({
+      firm_id: FIRM_ID,
+      qty_received: '15',
+    });
+
+    // Close button is rendered but disabled (qty_in 20 < qty_dispatched 50).
+    const closeBtn = within(drawer).getByRole('button', { name: /close karigar operation/i });
+    expect(closeBtn).toBeDisabled();
+  });
+
+  it('A4: Close enabled at full receipt; POSTs /close-karigar with idempotency key', async () => {
+    // qty_in 50 >= qty_dispatched 50 → close enabled.
+    const mo = buildMoWithKarigar({ state: 'RECEIVED_FULL', qtyIn: '50.0000' });
+    let closePath: string | null = null;
+    let closeIdem: string | null = null;
+    let closeBody: Record<string, unknown> | null = null;
+    fetchMock.mockImplementation(
+      withKarigarMasters(mo, {
+        opDetail: buildOpDetail({
+          state: 'RECEIVED_FULL',
+          qtyIn: '50.0000',
+          events: [
+            {
+              event_type: 'OPERATION_DISPATCHED',
+              occurred_at: '2026-05-02T09:00:00Z',
+              payload: {
+                qty_dispatched: '50.0000',
+                outward_challan_id: OUTWARD_CHALLAN_ID,
+                karigar_party_id: KARIGAR_PARTY_ID,
+                dispatch_date: '2026-05-02',
+              },
+            },
+            {
+              event_type: 'OPERATION_ACKNOWLEDGED',
+              occurred_at: '2026-05-02T10:30:00Z',
+              payload: {},
+            },
+          ],
+        }),
+        onClose: (init, url) => {
+          closePath = url;
+          closeIdem =
+            (init.headers as Record<string, string> | undefined)?.['Idempotency-Key'] ?? null;
+          closeBody = JSON.parse((init.body as string) ?? '{}');
+        },
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open embroidery operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation embroidery/i });
+
+    const closeBtn = await within(drawer).findByRole('button', {
+      name: /close karigar operation/i,
+    });
+    await waitFor(() => expect(closeBtn).not.toBeDisabled());
+    fireEvent.click(closeBtn);
+
+    await waitFor(() => expect(closePath).not.toBeNull());
+    expect(closePath).toContain(`/manufacturing/mo-operations/${KARIGAR_OP_ID}/close-karigar`);
+    expect(closeIdem).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(closeBody).toMatchObject({ firm_id: FIRM_ID });
+  });
+
+  it('A4: CLOSED karigar op renders read-only summary; no Dispatch/Ack/Receive/Close buttons', async () => {
+    const mo = buildMoWithKarigar({ state: 'CLOSED', qtyIn: '50.0000' });
+    fetchMock.mockImplementation(
+      withKarigarMasters(mo, {
+        opDetail: buildOpDetail({
+          state: 'CLOSED',
+          qtyIn: '50.0000',
+          events: [
+            {
+              event_type: 'OPERATION_DISPATCHED',
+              occurred_at: '2026-05-02T09:00:00Z',
+              payload: {
+                qty_dispatched: '50.0000',
+                outward_challan_id: OUTWARD_CHALLAN_ID,
+                karigar_party_id: KARIGAR_PARTY_ID,
+                dispatch_date: '2026-05-02',
+              },
+            },
+            {
+              event_type: 'OPERATION_ACKNOWLEDGED',
+              occurred_at: '2026-05-02T10:30:00Z',
+              payload: {},
+            },
+          ],
+        }),
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open embroidery operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation embroidery/i });
+
+    // Summary section is rendered with the dispatched/received counters.
+    // The section header reads "Summary"; the counter labels render in
+    // an uppercase mini-grid inside it. "Dispatched" also surfaces on
+    // the linked-challan pill, so the "Received" assertion is the
+    // unambiguous one and proves we got the summary card.
+    await waitFor(() =>
+      expect(
+        within(drawer).getByRole('region', { name: /karigar operation summary/i }),
+      ).toBeInTheDocument(),
+    );
+    const summary = within(drawer).getByRole('region', {
+      name: /karigar operation summary/i,
+    });
+    expect(within(summary).getByText(/^received$/i)).toBeInTheDocument();
+    // "no further actions" copy is summary-only.
+    expect(within(summary).getByText(/no further actions are available/i)).toBeInTheDocument();
+
+    // No action buttons / forms.
+    expect(
+      within(drawer).queryByRole('button', { name: /dispatch to karigar/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: /karigar acknowledged/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: /receive batch/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: /close karigar operation/i }),
+    ).not.toBeInTheDocument();
+    expect(within(drawer).queryByLabelText(/qty received/i)).not.toBeInTheDocument();
+  });
+
+  it('A4 regression: IN_HOUSE op renders no karigar section', async () => {
+    // Existing fixture is IN_HOUSE — assert no karigar surfaces leak.
+    fetchMock.mockImplementation(defaultFetchImpl(buildMo({ status: 'IN_PROGRESS' })));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open stitching operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation stitching/i });
+
+    expect(
+      within(drawer).queryByRole('button', { name: /dispatch to karigar/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: /karigar acknowledged/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: /receive batch/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: /close karigar operation/i }),
+    ).not.toBeInTheDocument();
+    expect(within(drawer).queryByText(/linked challan/i)).not.toBeInTheDocument();
+  });
+
+  it('A4 regression: QC op renders the QC section (not karigar)', async () => {
+    // QC op (executor IN_HOUSE, operation_type QC) → A5 drawer, not A4.
+    grantQcWrite();
+    const mo = buildMoWithQc({ qcState: 'QC_PENDING' });
+    fetchMock.mockImplementation(
+      withQcMasters(mo, { qcResult: buildQcResult({ predecessorQtyOut: '95.0000' }) }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+
+    // QC inputs surface.
+    await waitFor(() => expect(within(drawer).getByLabelText(/^passed$/i)).toBeInTheDocument());
+    // None of the karigar action surfaces leaked in.
+    expect(
+      within(drawer).queryByRole('button', { name: /dispatch to karigar/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: /karigar acknowledged/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: /close karigar operation/i }),
+    ).not.toBeInTheDocument();
+    expect(within(drawer).queryByText(/linked challan/i)).not.toBeInTheDocument();
+  });
 });
