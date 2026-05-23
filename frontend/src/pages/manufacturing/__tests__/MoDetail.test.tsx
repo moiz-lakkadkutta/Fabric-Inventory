@@ -656,32 +656,565 @@ describe('MoDetail (live-mode integration, TASK-TR-A14-FU)', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('A3: QC op renders A5 placeholder', async () => {
-    const mo = buildMo({ status: 'IN_PROGRESS' });
+  // ── A5 QC actions + REWORK chain UI ───────────────────────────────
+  //
+  // The A5 drawer covers four lifecycle states (PENDING / QC_PENDING /
+  // REWORK / CLOSED) and the rework-chain card that walks the
+  // `rework_of_mo_operation_id` graph. Each test pins the QC op's state
+  // + mocks the relevant endpoints so we don't depend on a real BE.
+
+  const PRED_MO_OP_ID = 'mp000000-0000-0000-0000-000000000002';
+  const QC_OP_MASTER_ID = 'op000000-0000-0000-0000-000000000002';
+  const CLONE_MO_OP_ID = 'mp000000-0000-0000-0000-000000000003';
+  const CLONE_2_MO_OP_ID = 'mp000000-0000-0000-0000-000000000004';
+
+  function buildMoWithQc(opts: {
+    status?: 'DRAFT' | 'RELEASED' | 'IN_PROGRESS' | 'COMPLETED' | 'CLOSED';
+    qcState: 'PENDING' | 'QC_PENDING' | 'REWORK' | 'CLOSED';
+    clones?: Array<{
+      mo_operation_id: string;
+      rework_of_mo_operation_id: string;
+      state: 'PENDING' | 'IN_PROGRESS' | 'CLOSED';
+      executor?: 'IN_HOUSE' | 'KARIGAR';
+      is_rework_paid?: boolean;
+      qty_in?: string | null;
+      qty_out?: string | null;
+    }>;
+  }) {
+    const mo = buildMo({ status: opts.status ?? 'IN_PROGRESS' });
+    // Predecessor op (the stitching row already in the fixture) — leave
+    // sequence 10, qty_out=95 so the conservation check has a known
+    // target.
     mo.operations[0] = {
       ...mo.operations[0],
-      executor: 'IN_HOUSE',
-      state: 'QC_PENDING',
+      mo_operation_id: PRED_MO_OP_ID,
+      operation_master_id: OP_MASTER_ID,
     };
-    fetchMock.mockImplementation(async (url: RequestInfo) => {
+    // QC op feeding off the stitch.
+    mo.operations.push({
+      manufacturing_order_id: MO_ID,
+      mo_operation_id: MO_OP_ID,
+      operation_master_id: QC_OP_MASTER_ID,
+      operation_sequence: 20,
+      executor: 'IN_HOUSE',
+      qty_in: opts.qcState === 'PENDING' ? null : '95.0000',
+      qty_out: opts.qcState === 'CLOSED' ? '90.0000' : null,
+      state: opts.qcState,
+      is_rework_paid: false,
+    } as unknown as (typeof mo.operations)[number]);
+    for (const c of opts.clones ?? []) {
+      mo.operations.push({
+        manufacturing_order_id: MO_ID,
+        mo_operation_id: c.mo_operation_id,
+        operation_master_id: OP_MASTER_ID,
+        operation_sequence: null,
+        executor: c.executor ?? 'IN_HOUSE',
+        qty_in: c.qty_in ?? null,
+        qty_out: c.qty_out ?? null,
+        state: c.state,
+        is_rework_paid: c.is_rework_paid ?? false,
+        rework_of_mo_operation_id: c.rework_of_mo_operation_id,
+      } as unknown as (typeof mo.operations)[number]);
+    }
+    return mo;
+  }
+
+  function buildQcOperationMaster() {
+    return {
+      org_id: ORG_ID,
+      firm_id: FIRM_ID,
+      operation_master_id: QC_OP_MASTER_ID,
+      code: 'QC',
+      name: 'Quality Check',
+      operation_type: 'QC',
+      default_duration_mins: null,
+      cost_centre_id: null,
+      is_active: true,
+      created_at: '2026-04-01T00:00:00Z',
+      updated_at: '2026-04-01T00:00:00Z',
+      deleted_at: null,
+    };
+  }
+
+  function buildQcResult(opts: {
+    recorded?: boolean;
+    predecessorQtyOut: string;
+    verdict?: 'PASS' | 'REWORK' | null;
+    qtyPassed?: string;
+    qtyRejected?: string;
+    qtyByproduct?: string;
+    qtyWastage?: string;
+    qtyRework?: string;
+    predecessorId?: string;
+  }) {
+    return {
+      mo_operation_id: MO_OP_ID,
+      occurred_at: opts.recorded ? '2026-05-01T00:00:00Z' : null,
+      predecessor_mo_operation_id: opts.predecessorId ?? PRED_MO_OP_ID,
+      predecessor_qty_out: opts.predecessorQtyOut,
+      qty_byproduct: opts.qtyByproduct ?? '0.0000',
+      qty_passed: opts.qtyPassed ?? '0.0000',
+      qty_rejected: opts.qtyRejected ?? '0.0000',
+      qty_rework: opts.qtyRework ?? '0.0000',
+      qty_wastage: opts.qtyWastage ?? '0.0000',
+      recorded: opts.recorded ?? false,
+      verdict: opts.verdict ?? null,
+    };
+  }
+
+  function withQcMasters(
+    mo: ReturnType<typeof buildMoWithQc>,
+    options: {
+      qcResult?: ReturnType<typeof buildQcResult> | null;
+      onStartQc?: (init: RequestInit) => void;
+      onRecord?: (init: RequestInit) => Response | Promise<Response> | undefined | void;
+    } = {},
+  ) {
+    return async (url: RequestInfo, init?: RequestInit) => {
       const u = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
       if (u.includes('/operation-masters')) {
-        // Operation master returns operation_type=QC so the drawer
-        // takes the QC branch.
         return jsonResponse(200, {
-          items: [{ ...buildOperationMaster(), operation_type: 'QC' }],
-          count: 1,
+          items: [buildOperationMaster(), buildQcOperationMaster()],
+          count: 2,
           limit: 200,
           offset: 0,
         });
       }
+      if (u.includes('/qc-result') && method === 'GET') {
+        if (options.qcResult === null) return jsonResponse(404, {});
+        return jsonResponse(
+          200,
+          options.qcResult ?? buildQcResult({ predecessorQtyOut: '95.0000' }),
+        );
+      }
+      if (u.endsWith('/start-qc') && method === 'POST') {
+        options.onStartQc?.(init ?? {});
+        return jsonResponse(200, {
+          created_at: '2026-05-01T00:00:00Z',
+          end_date: null,
+          executor: 'IN_HOUSE',
+          manufacturing_order_id: MO_ID,
+          mo_operation_id: MO_OP_ID,
+          operation_master_id: QC_OP_MASTER_ID,
+          operation_sequence: 20,
+          operation_type: 'QC',
+          qty_byproduct: '0.0000',
+          qty_in: '95.0000',
+          qty_out: '0.0000',
+          qty_rejected: '0.0000',
+          qty_wastage: '0.0000',
+          start_date: '2026-05-01',
+          state: 'QC_PENDING',
+          updated_at: '2026-05-01T00:00:00Z',
+          version: 2,
+        });
+      }
+      if (u.endsWith('/record-qc-result') && method === 'POST') {
+        const overridden = options.onRecord?.(init ?? {});
+        if (overridden) return overridden;
+        return jsonResponse(200, {
+          created_at: '2026-05-01T00:00:00Z',
+          end_date: '2026-05-01',
+          executor: 'IN_HOUSE',
+          manufacturing_order_id: MO_ID,
+          mo_operation_id: MO_OP_ID,
+          operation_master_id: QC_OP_MASTER_ID,
+          operation_sequence: 20,
+          operation_type: 'QC',
+          qty_byproduct: '0.0000',
+          qty_in: '95.0000',
+          qty_out: '95.0000',
+          qty_rejected: '0.0000',
+          qty_wastage: '0.0000',
+          start_date: '2026-05-01',
+          state: 'CLOSED',
+          updated_at: '2026-05-01T00:00:00Z',
+          version: 3,
+        });
+      }
       return defaultFetchImpl(mo)(url);
+    };
+  }
+
+  function grantQcWrite() {
+    authStore.setMe({
+      ...(authStore.get().me as NonNullable<ReturnType<typeof authStore.get>['me']>),
+      permissions: [
+        'manufacturing.mo.read',
+        'manufacturing.mo.write',
+        'manufacturing.material_issue.write',
+        'manufacturing.operation.progress',
+        'manufacturing.qc.write',
+        'manufacturing.qc.read',
+      ],
     });
+  }
+
+  it('A5: PENDING QC op shows "Start QC inspection" button', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({ qcState: 'PENDING' });
+    fetchMock.mockImplementation(withQcMasters(mo));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    // Open the QC op row (sequence 20, "Quality Check").
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    expect(
+      within(drawer).getByRole('button', { name: /start qc inspection/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('A5: Start QC POSTs /start-qc with firm_id + idempotency-key', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({ qcState: 'PENDING' });
+    let startBody: Record<string, unknown> | null = null;
+    let startIdem: string | null = null;
+    fetchMock.mockImplementation(
+      withQcMasters(mo, {
+        onStartQc: (init) => {
+          startIdem =
+            (init.headers as Record<string, string> | undefined)?.['Idempotency-Key'] ?? null;
+          startBody = JSON.parse((init.body as string) ?? '{}');
+        },
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    fireEvent.click(within(drawer).getByRole('button', { name: /start qc inspection/i }));
+    await waitFor(() => expect(startBody).not.toBeNull());
+    expect(startBody).toMatchObject({ firm_id: FIRM_ID });
+    expect(startIdem).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
+  it('A5: QC_PENDING op renders 5 bucket inputs with conservation indicator', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({ qcState: 'QC_PENDING' });
+    fetchMock.mockImplementation(
+      withQcMasters(mo, { qcResult: buildQcResult({ predecessorQtyOut: '95.0000' }) }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    await waitFor(() => expect(within(drawer).getByLabelText(/^passed$/i)).toBeInTheDocument());
+    expect(within(drawer).getByLabelText(/^rejected$/i)).toBeInTheDocument();
+    expect(within(drawer).getByLabelText(/^by-product$/i)).toBeInTheDocument();
+    expect(within(drawer).getByLabelText(/^wastage$/i)).toBeInTheDocument();
+    expect(within(drawer).getByLabelText(/^rework$/i)).toBeInTheDocument();
+    // Surface the source qty so the operator knows the target.
+    const sourceLine = within(drawer).getByText(/source qty arriving/i);
+    expect(sourceLine).toBeInTheDocument();
+    expect(sourceLine.textContent).toContain('95.0000');
+  });
+
+  it('A5: submit is disabled when bucket sum != predecessor qty_out', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({ qcState: 'QC_PENDING' });
+    fetchMock.mockImplementation(
+      withQcMasters(mo, { qcResult: buildQcResult({ predecessorQtyOut: '95.0000' }) }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    await waitFor(() => expect(within(drawer).getByLabelText(/^passed$/i)).toBeInTheDocument());
+    fireEvent.change(within(drawer).getByLabelText(/^passed$/i), { target: { value: '50' } });
+    // Sum is 50 != 95 → mismatch indicator + disabled submit.
+    const conservation = within(drawer).getByRole('status');
+    expect(conservation.getAttribute('data-conservation-state')).toBe('mismatch');
+    const submitBtn = within(drawer).getByRole('button', { name: /record verdict/i });
+    expect(submitBtn).toBeDisabled();
+  });
+
+  it('A5: PASS verdict (rework=0) enables submit when sum == predecessor', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({ qcState: 'QC_PENDING' });
+    let recordBody: Record<string, unknown> | null = null;
+    let recordIdem: string | null = null;
+    fetchMock.mockImplementation(
+      withQcMasters(mo, {
+        qcResult: buildQcResult({ predecessorQtyOut: '95.0000' }),
+        onRecord: (init) => {
+          recordIdem =
+            (init.headers as Record<string, string> | undefined)?.['Idempotency-Key'] ?? null;
+          recordBody = JSON.parse((init.body as string) ?? '{}');
+          return undefined;
+        },
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    await waitFor(() => expect(within(drawer).getByLabelText(/^passed$/i)).toBeInTheDocument());
+    // 90 passed + 3 rejected + 2 wastage = 95 → conservation OK.
+    fireEvent.change(within(drawer).getByLabelText(/^passed$/i), { target: { value: '90' } });
+    fireEvent.change(within(drawer).getByLabelText(/^rejected$/i), { target: { value: '3' } });
+    fireEvent.change(within(drawer).getByLabelText(/^wastage$/i), { target: { value: '2' } });
+    const conservation = within(drawer).getByRole('status');
+    expect(conservation.getAttribute('data-conservation-state')).toBe('ok');
+    const submitBtn = within(drawer).getByRole('button', { name: /record verdict \(pass\)/i });
+    expect(submitBtn).not.toBeDisabled();
+    fireEvent.click(submitBtn);
+    await waitFor(() => expect(recordBody).not.toBeNull());
+    expect(recordBody).toMatchObject({
+      firm_id: FIRM_ID,
+      qty_passed: '90',
+      qty_rejected: '3',
+      qty_byproduct: 0,
+      qty_wastage: '2',
+      qty_rework: 0,
+    });
+    expect(recordIdem).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
+  it('A5: REWORK verdict button label flips to "Record verdict (REWORK)" when rework > 0', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({ qcState: 'QC_PENDING' });
+    fetchMock.mockImplementation(
+      withQcMasters(mo, { qcResult: buildQcResult({ predecessorQtyOut: '95.0000' }) }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    await waitFor(() => expect(within(drawer).getByLabelText(/^passed$/i)).toBeInTheDocument());
+    fireEvent.change(within(drawer).getByLabelText(/^passed$/i), { target: { value: '80' } });
+    fireEvent.change(within(drawer).getByLabelText(/^rework$/i), { target: { value: '15' } });
+    expect(
+      within(drawer).getByRole('button', { name: /record verdict \(rework\)/i }),
+    ).not.toBeDisabled();
+  });
+
+  it('A5: REWORK state + non-CLOSED clone disables verdict form with tooltip', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({
+      qcState: 'REWORK',
+      clones: [
+        {
+          mo_operation_id: CLONE_MO_OP_ID,
+          rework_of_mo_operation_id: PRED_MO_OP_ID,
+          state: 'IN_PROGRESS',
+          qty_in: '15.0000',
+        },
+      ],
+    });
+    fetchMock.mockImplementation(
+      withQcMasters(mo, {
+        qcResult: buildQcResult({
+          predecessorQtyOut: '95.0000',
+          recorded: true,
+          verdict: 'REWORK',
+          qtyPassed: '80.0000',
+          qtyRework: '15.0000',
+        }),
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    // Two ops with name "Quality Check" would conflict — the parent
+    // stitching row is "Stitching" so QC name is unique. Clone shares
+    // the parent's master so its row is also "Stitching".
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    await waitFor(() =>
+      expect(within(drawer).getByText(/finish the rework operation/i)).toBeInTheDocument(),
+    );
+    const submitBtn = within(drawer).getByRole('button', { name: /record verdict/i });
+    expect(submitBtn).toBeDisabled();
+    expect(submitBtn.getAttribute('title')).toMatch(/finish the rework operation/i);
+  });
+
+  it('A5: REWORK + CLOSED clone re-enables the verdict form with Round 2 header', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({
+      qcState: 'REWORK',
+      clones: [
+        {
+          mo_operation_id: CLONE_MO_OP_ID,
+          rework_of_mo_operation_id: PRED_MO_OP_ID,
+          state: 'CLOSED',
+          qty_in: '15.0000',
+          qty_out: '15.0000',
+        },
+      ],
+    });
+    fetchMock.mockImplementation(
+      withQcMasters(mo, {
+        // For a re-record, predecessor_qty_out comes from the CLOSED
+        // clone's qty_out (15.0000), per A10-FU.
+        qcResult: buildQcResult({
+          predecessorQtyOut: '15.0000',
+          recorded: true,
+          verdict: 'REWORK',
+        }),
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    await waitFor(() => expect(within(drawer).getByText(/round 2 verdict/i)).toBeInTheDocument());
+    // Form inputs are enabled now.
+    const passed = within(drawer).getByLabelText(/^passed$/i) as HTMLInputElement;
+    expect(passed.disabled).toBe(false);
+  });
+
+  it('A5: rework chain card walks multiple rounds', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({
+      qcState: 'REWORK',
+      clones: [
+        {
+          mo_operation_id: CLONE_MO_OP_ID,
+          rework_of_mo_operation_id: PRED_MO_OP_ID,
+          state: 'CLOSED',
+          is_rework_paid: false,
+          qty_in: '15.0000',
+          qty_out: '15.0000',
+        },
+        {
+          mo_operation_id: CLONE_2_MO_OP_ID,
+          rework_of_mo_operation_id: CLONE_MO_OP_ID,
+          state: 'IN_PROGRESS',
+          is_rework_paid: true,
+          qty_in: '5.0000',
+        },
+      ],
+    });
+    fetchMock.mockImplementation(
+      withQcMasters(mo, {
+        qcResult: buildQcResult({ predecessorQtyOut: '15.0000', verdict: 'REWORK' }),
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    await waitFor(() => expect(within(drawer).getByText(/rework chain/i)).toBeInTheDocument());
+    expect(within(drawer).getByText(/2 rounds/i)).toBeInTheDocument();
+    expect(within(drawer).getByText(/round 1/i)).toBeInTheDocument();
+    expect(within(drawer).getByText(/round 2/i)).toBeInTheDocument();
+    // Both rounds have "View op →" navigation.
+    const viewLinks = within(drawer).getAllByRole('button', { name: /view round \d+ operation/i });
+    expect(viewLinks).toHaveLength(2);
+    // Round 1 is free rework, round 2 is billable.
+    expect(within(drawer).getByText(/free rework/i)).toBeInTheDocument();
+    expect(within(drawer).getByText(/billable rework/i)).toBeInTheDocument();
+  });
+
+  it('A5: clicking "View op →" swaps the drawer to the clone op', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({
+      qcState: 'REWORK',
+      clones: [
+        {
+          mo_operation_id: CLONE_MO_OP_ID,
+          rework_of_mo_operation_id: PRED_MO_OP_ID,
+          state: 'IN_PROGRESS',
+          qty_in: '15.0000',
+        },
+      ],
+    });
+    fetchMock.mockImplementation(
+      withQcMasters(mo, {
+        qcResult: buildQcResult({ predecessorQtyOut: '95.0000', verdict: 'REWORK' }),
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    const viewLink = await within(drawer).findByRole('button', {
+      name: /view round 1 operation/i,
+    });
+    fireEvent.click(viewLink);
+    // Drawer aria-label flips to the clone op's name. The clone shares
+    // the original op_master (Stitching) so the dialog name changes.
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: /operation stitching/i })).toBeInTheDocument(),
+    );
+  });
+
+  it('A5: CLOSED QC op shows the verdict summary (no editable form)', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({ qcState: 'CLOSED' });
+    fetchMock.mockImplementation(
+      withQcMasters(mo, {
+        qcResult: buildQcResult({
+          predecessorQtyOut: '95.0000',
+          recorded: true,
+          verdict: 'PASS',
+          qtyPassed: '90.0000',
+          qtyRejected: '3.0000',
+          qtyWastage: '2.0000',
+        }),
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    await waitFor(() => expect(within(drawer).getByText(/^PASS$/)).toBeInTheDocument());
+    expect(within(drawer).queryByLabelText(/^passed$/i)).not.toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: /record verdict/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('A5: salesperson without manufacturing.qc.write sees disabled Start QC', async () => {
+    // Default beforeEach permissions DON'T include qc.write.
+    const mo = buildMoWithQc({ qcState: 'PENDING' });
+    fetchMock.mockImplementation(withQcMasters(mo));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open quality check operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation quality check/i });
+    const startBtn = within(drawer).getByRole('button', { name: /start qc inspection/i });
+    expect(startBtn).toBeDisabled();
+    expect(startBtn.getAttribute('title')).toMatch(/permission/i);
+  });
+
+  it('A5: IN_HOUSE non-QC op does NOT render the QC section (regression)', async () => {
+    // Same as the A3 IN_PROGRESS test, but explicitly assert the QC
+    // form's "Passed" input is absent so we don't regress on the
+    // operation_type routing.
+    fetchMock.mockImplementation(defaultFetchImpl(buildMo({ status: 'IN_PROGRESS' })));
     renderMoDetail();
     await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
     fireEvent.click(await screen.findByRole('button', { name: /open stitching operation/i }));
-
     const drawer = await screen.findByRole('dialog', { name: /operation stitching/i });
-    expect(within(drawer).getByText(/QC actions ship in TASK-TR-A5/i)).toBeInTheDocument();
+    expect(within(drawer).queryByLabelText(/^passed$/i)).not.toBeInTheDocument();
+    expect(within(drawer).queryByText(/source qty arriving/i)).not.toBeInTheDocument();
+  });
+
+  it('A5: clones appear inline in the Operations table beneath their parent', async () => {
+    grantQcWrite();
+    const mo = buildMoWithQc({
+      qcState: 'REWORK',
+      clones: [
+        {
+          mo_operation_id: CLONE_MO_OP_ID,
+          rework_of_mo_operation_id: PRED_MO_OP_ID,
+          state: 'IN_PROGRESS',
+          is_rework_paid: false,
+          qty_in: '15.0000',
+        },
+      ],
+    });
+    fetchMock.mockImplementation(
+      withQcMasters(mo, {
+        qcResult: buildQcResult({ predecessorQtyOut: '95.0000', verdict: 'REWORK' }),
+      }),
+    );
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    // Indented clone row carries the "Rework of #10" label.
+    expect(await screen.findByText(/rework of #10/i)).toBeInTheDocument();
+    // And the "Free rework" pill renders on its executor cell.
+    expect(screen.getByText(/free rework/i)).toBeInTheDocument();
   });
 });

@@ -24,7 +24,7 @@
  * in MoDetail.tsx).
  */
 
-import { AlertCircle, ArrowRight, Check, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, CornerDownRight, X } from 'lucide-react';
 import * as React from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -36,9 +36,12 @@ import { ApiError } from '@/lib/api/errors';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
 import {
   useCompleteOperation,
+  useQcResult,
+  useRecordQcResult,
   useRecordQtyIn,
   useRecordQtyOut,
   useStartOperation,
+  useStartQc,
   type BackendMoOperationState,
   type BackendMoResponse,
   type BackendOperationMasterResponse,
@@ -69,10 +72,32 @@ export interface OperationDrawerProps {
   opMaster: BackendOperationMasterResponse | undefined;
   totalOps: number;
   canWrite: boolean;
+  /** QC operator's `manufacturing.qc.write` permission. Defaults to
+   * `canWrite` so older callers (in-house non-QC paths) keep behaving;
+   * MoDetail passes a distinct slug for the QC drawer surface. */
+  canQcWrite?: boolean;
+  /**
+   * Rework-chain navigation. When a QC verdict spawns a clone (or a
+   * deeper round in the chain), the drawer surfaces "View op →" links
+   * that swap the drawer to the clone op without closing it. The parent
+   * (MoDetail) keeps `drawerOpId` state so this is just a setter.
+   */
+  onSelectOperation?: (moOperationId: string) => void;
 }
 
 export function OperationDrawer(props: OperationDrawerProps) {
-  const { open, onClose, mo, operationId, opMaster, totalOps, canWrite } = props;
+  const {
+    open,
+    onClose,
+    mo,
+    operationId,
+    opMaster,
+    totalOps,
+    canWrite,
+    canQcWrite,
+    onSelectOperation,
+  } = props;
+  const qcWrite = canQcWrite ?? canWrite;
 
   // Re-find the op from the MO every render so successful mutations
   // (which refetch the MO) refresh the snapshot block in place.
@@ -137,8 +162,20 @@ export function OperationDrawer(props: OperationDrawerProps) {
 
           <div className="my-4" style={{ borderTop: '1px solid var(--border-subtle)' }} />
 
-          {isKarigar || isQc ? (
-            <PlaceholderForKarigarOrQc isQc={isQc} isKarigar={isKarigar} state={op.state} />
+          {isQc ? (
+            <QcActions
+              op={op}
+              mo={mo}
+              canWrite={qcWrite}
+              onSelectOperation={onSelectOperation}
+              onSuccess={() => {
+                // Keep the drawer open so the operator can land a
+                // verdict, see the clone-chain refresh, then click
+                // through to drive the clone (A4 path).
+              }}
+            />
+          ) : isKarigar ? (
+            <PlaceholderForKarigarOrQc isQc={false} isKarigar={true} state={op.state} />
           ) : (
             <InHouseActions
               op={op}
@@ -287,10 +324,12 @@ function PlaceholderForKarigarOrQc({
   isKarigar: boolean;
   state: BackendMoOperationState;
 }) {
+  // QC is now handled by QcActions in the outer branch; this remains for
+  // karigar-only ops until A4 lands.
   const label = isQc ? 'QC actions' : 'Karigar actions';
   const taskRef = isQc ? 'A5' : 'A4';
   // If the op is already CLOSED / SKIPPED / CANCELLED there's nothing
-  // to do regardless — surface that instead of the A4/A5 teaser.
+  // to do regardless — surface that instead of the A4 teaser.
   if (state === 'CLOSED' || state === 'SKIPPED' || state === 'CANCELLED') {
     return (
       <section aria-label="Closed operation">
@@ -828,6 +867,644 @@ function ErrorBanner({ children }: { children: React.ReactNode }) {
       <AlertCircle size={14} color="var(--danger)" />
       <span>{children}</span>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// QC actions (A5)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Lifecycle the drawer drives:
+//   PENDING / READY   → "Start QC inspection" button (→ QC_PENDING)
+//   QC_PENDING        → first-round verdict form (5 buckets)
+//   REWORK            → re-record form once the latest clone has CLOSED;
+//                       otherwise disabled with a "finish the rework" tooltip
+//   CLOSED            → read-only summary of the latest verdict
+//
+// The verdict form fetches GET /qc-result to know the conservation
+// target (`predecessor_qty_out`). For first-round QC the BE returns the
+// upstream op's qty_out; for a re-record it returns the latest CLOSED
+// clone's qty_out. This means the FE doesn't have to replicate the
+// routing-edge walk or the clone-chain leaf-finder — it just submits
+// what the inputs sum to and lets the BE verify.
+
+type MoOperation = BackendMoResponse['operations'][number];
+
+interface CloneChainNode {
+  op: MoOperation;
+  round: number;
+}
+
+/**
+ * Walk every clone descended from the QC predecessor + return rounds in
+ * order. Each clone has `rework_of_mo_operation_id` pointing back to its
+ * parent (the original predecessor on round 1, the previous clone on
+ * round 2+). We walk forward by indexing on that field.
+ */
+function buildCloneChain(
+  mo: BackendMoResponse,
+  predecessorMoOperationId: string | null,
+): CloneChainNode[] {
+  if (!predecessorMoOperationId) return [];
+  const childrenOf = new Map<string, MoOperation>();
+  for (const o of mo.operations) {
+    if (o.rework_of_mo_operation_id) {
+      // A10-FU is one-clone-per-parent (one redo per operator). If the
+      // BE ever spawns siblings the latest one wins; the BE only ever
+      // surfaces a single non-CLOSED clone per parent anyway.
+      childrenOf.set(o.rework_of_mo_operation_id, o);
+    }
+  }
+  const out: CloneChainNode[] = [];
+  let cursor = childrenOf.get(predecessorMoOperationId);
+  let round = 1;
+  // Hard guard: the BE depth-guards at 5 levels; we cap higher so the
+  // FE never spins if data is somehow malformed.
+  while (cursor && round <= 20) {
+    out.push({ op: cursor, round });
+    cursor = childrenOf.get(cursor.mo_operation_id);
+    round += 1;
+  }
+  return out;
+}
+
+function QcActions({
+  op,
+  mo,
+  canWrite,
+  onSuccess,
+  onSelectOperation,
+}: {
+  op: MoOperation;
+  mo: BackendMoResponse;
+  canWrite: boolean;
+  onSuccess: () => void;
+  onSelectOperation?: (moOperationId: string) => void;
+}) {
+  // Pull the latest QC verdict + predecessor qty for this op. The hook
+  // is enabled in every state except PENDING / READY — at that point
+  // there's no event log to read, and the BE returns recorded=false.
+  // We still fetch on QC_PENDING / REWORK / CLOSED so the chain card
+  // can compute who the predecessor is for chain navigation.
+  const needsQcResult = op.state === 'QC_PENDING' || op.state === 'REWORK' || op.state === 'CLOSED';
+  const qcResultQuery = useQcResult(op.mo_operation_id, { enabled: needsQcResult });
+
+  const chain = buildCloneChain(mo, qcResultQuery.data?.predecessor_mo_operation_id ?? null);
+  const latestClone = chain.length > 0 ? chain[chain.length - 1] : null;
+  const reworkCloneStillOpen =
+    op.state === 'REWORK' && latestClone !== null && latestClone.op.state !== 'CLOSED';
+
+  return (
+    <div className="space-y-5">
+      {op.state === 'PENDING' || op.state === 'READY' ? (
+        <StartQcForm
+          op={op}
+          moId={mo.manufacturing_order_id}
+          canWrite={canWrite}
+          onSuccess={onSuccess}
+        />
+      ) : op.state === 'QC_PENDING' || op.state === 'REWORK' ? (
+        <QcVerdictForm
+          op={op}
+          moId={mo.manufacturing_order_id}
+          canWrite={canWrite}
+          qcResult={qcResultQuery.data}
+          loading={qcResultQuery.isPending}
+          error={qcResultQuery.error}
+          reworkCloneStillOpen={reworkCloneStillOpen}
+          round={chain.length + 1}
+          onSuccess={onSuccess}
+        />
+      ) : op.state === 'CLOSED' ? (
+        <QcClosedSummary op={op} qcResult={qcResultQuery.data} />
+      ) : (
+        <section aria-label="Unsupported QC state">
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            No QC actions for state{' '}
+            <strong style={{ color: 'var(--text-primary)' }}>{op.state}</strong>.
+          </p>
+        </section>
+      )}
+
+      {chain.length > 0 && <CloneChainCard chain={chain} onSelectOperation={onSelectOperation} />}
+    </div>
+  );
+}
+
+function StartQcForm({
+  op,
+  moId,
+  canWrite,
+  onSuccess,
+}: {
+  op: MoOperation;
+  moId: string;
+  canWrite: boolean;
+  onSuccess: () => void;
+}) {
+  const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
+  const mutation = useStartQc(moId);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const onStart = () => {
+    setError(null);
+    mutation.mutate(
+      { moOperationId: op.mo_operation_id, idempotencyKey },
+      {
+        onSuccess: () => {
+          resetKey();
+          onSuccess();
+        },
+        onError: (err) => {
+          resetKey();
+          setError(formatApiError(err));
+        },
+      },
+    );
+  };
+
+  return (
+    <section className="space-y-3" aria-label="Start QC inspection">
+      <SectionTitle>Start QC inspection</SectionTitle>
+      <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+        Move this QC operation from <strong>PENDING</strong> to <strong>QC_PENDING</strong>. Once
+        started you can record a verdict (passed / rejected / by-product / wastage / rework) against
+        the qty arriving from the upstream operation.
+      </p>
+      <Button
+        type="button"
+        onClick={onStart}
+        disabled={!canWrite || mutation.isPending}
+        title={canWrite ? undefined : 'You do not have permission to start QC.'}
+      >
+        <ArrowRight size={14} />
+        {mutation.isPending ? 'Starting…' : 'Start QC inspection'}
+      </Button>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+function QcVerdictForm({
+  op,
+  moId,
+  canWrite,
+  qcResult,
+  loading,
+  error: fetchError,
+  reworkCloneStillOpen,
+  round,
+  onSuccess,
+}: {
+  op: MoOperation;
+  moId: string;
+  canWrite: boolean;
+  qcResult: ReturnType<typeof useQcResult>['data'];
+  loading: boolean;
+  error: Error | null;
+  reworkCloneStillOpen: boolean;
+  round: number;
+  onSuccess: () => void;
+}) {
+  const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
+  const mutation = useRecordQcResult(moId);
+
+  const [qtyPassed, setQtyPassed] = React.useState<string>('');
+  const [qtyRejected, setQtyRejected] = React.useState<string>('');
+  const [qtyByproduct, setQtyByproduct] = React.useState<string>('');
+  const [qtyWastage, setQtyWastage] = React.useState<string>('');
+  const [qtyRework, setQtyRework] = React.useState<string>('');
+  const [narration, setNarration] = React.useState<string>('');
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
+
+  const headerLabel = op.state === 'REWORK' ? `Round ${round} verdict` : 'Record QC verdict';
+
+  // Source qty is the qty arriving at this round of QC:
+  //   first round  → upstream predecessor's qty_out
+  //   re-record    → latest CLOSED clone's qty_out
+  // The BE surfaces this as `predecessor_qty_out`; same field, different
+  // upstream selection logic.
+  const sourceQtyOutStr = qcResult?.predecessor_qty_out ?? null;
+  const sourceQtyOut = sourceQtyOutStr ? Number(sourceQtyOutStr) : null;
+
+  const bucketSum =
+    Number(qtyPassed || 0) +
+    Number(qtyRejected || 0) +
+    Number(qtyByproduct || 0) +
+    Number(qtyWastage || 0) +
+    Number(qtyRework || 0);
+
+  const inConservation =
+    sourceQtyOut !== null &&
+    Number.isFinite(sourceQtyOut) &&
+    sourceQtyOut > 0 &&
+    Number.isFinite(bucketSum) &&
+    Math.abs(bucketSum - sourceQtyOut) < 1e-6;
+
+  const canSubmit =
+    canWrite &&
+    !mutation.isPending &&
+    !reworkCloneStillOpen &&
+    sourceQtyOut !== null &&
+    sourceQtyOut > 0 &&
+    inConservation;
+
+  const submitDisabledReason = !canWrite
+    ? 'You do not have permission to record QC verdicts.'
+    : reworkCloneStillOpen
+      ? 'Finish the rework operation before re-inspecting.'
+      : sourceQtyOut === null || sourceQtyOut <= 0
+        ? 'Upstream qty_out is not yet recorded; cannot inspect.'
+        : !inConservation
+          ? `Buckets must sum to ${sourceQtyOut}.`
+          : undefined;
+
+  const onSubmit = () => {
+    if (!canSubmit) return;
+    setSubmitError(null);
+    mutation.mutate(
+      {
+        moOperationId: op.mo_operation_id,
+        qty_passed: qtyPassed || 0,
+        qty_rejected: qtyRejected || 0,
+        qty_byproduct: qtyByproduct || 0,
+        qty_wastage: qtyWastage || 0,
+        qty_rework: qtyRework || 0,
+        narration: narration || undefined,
+        idempotencyKey,
+      },
+      {
+        onSuccess: () => {
+          setQtyPassed('');
+          setQtyRejected('');
+          setQtyByproduct('');
+          setQtyWastage('');
+          setQtyRework('');
+          setNarration('');
+          resetKey();
+          onSuccess();
+        },
+        onError: (err) => {
+          resetKey();
+          setSubmitError(formatApiError(err));
+        },
+      },
+    );
+  };
+
+  return (
+    <section className="space-y-3" aria-label="QC verdict form">
+      <SectionTitle>{headerLabel}</SectionTitle>
+
+      {loading && (
+        <p style={{ fontSize: 12.5, color: 'var(--text-tertiary)', margin: 0 }}>
+          Loading source qty…
+        </p>
+      )}
+
+      {fetchError && <ErrorBanner>{formatApiError(fetchError)}</ErrorBanner>}
+
+      {reworkCloneStillOpen && (
+        <div
+          role="status"
+          style={{
+            fontSize: 12.5,
+            color: 'var(--text-secondary)',
+            background: 'var(--bg-sunken)',
+            border: '1px dashed var(--border-default)',
+            borderRadius: 6,
+            padding: '8px 10px',
+          }}
+        >
+          Finish the rework operation in this chain before re-inspecting. The verdict form re-opens
+          once the latest clone is CLOSED.
+        </div>
+      )}
+
+      {sourceQtyOut !== null && (
+        <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', margin: 0 }}>
+          Source qty arriving at this {op.state === 'REWORK' ? 'round' : 'inspection'}:{' '}
+          <strong className="num">{sourceQtyOutStr}</strong>. All five buckets must sum to this
+          value exactly.
+        </p>
+      )}
+
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Passed" htmlFor={`qc-pass-${op.mo_operation_id}`}>
+          <Input
+            id={`qc-pass-${op.mo_operation_id}`}
+            type="number"
+            inputMode="decimal"
+            step="0.0001"
+            min="0"
+            value={qtyPassed}
+            onChange={(e) => setQtyPassed(e.target.value)}
+            disabled={!canWrite || reworkCloneStillOpen}
+          />
+        </Field>
+        <Field label="Rejected" htmlFor={`qc-rej-${op.mo_operation_id}`}>
+          <Input
+            id={`qc-rej-${op.mo_operation_id}`}
+            type="number"
+            inputMode="decimal"
+            step="0.0001"
+            min="0"
+            value={qtyRejected}
+            onChange={(e) => setQtyRejected(e.target.value)}
+            disabled={!canWrite || reworkCloneStillOpen}
+          />
+        </Field>
+        <Field label="By-product" htmlFor={`qc-byp-${op.mo_operation_id}`}>
+          <Input
+            id={`qc-byp-${op.mo_operation_id}`}
+            type="number"
+            inputMode="decimal"
+            step="0.0001"
+            min="0"
+            value={qtyByproduct}
+            onChange={(e) => setQtyByproduct(e.target.value)}
+            disabled={!canWrite || reworkCloneStillOpen}
+          />
+        </Field>
+        <Field label="Wastage" htmlFor={`qc-was-${op.mo_operation_id}`}>
+          <Input
+            id={`qc-was-${op.mo_operation_id}`}
+            type="number"
+            inputMode="decimal"
+            step="0.0001"
+            min="0"
+            value={qtyWastage}
+            onChange={(e) => setQtyWastage(e.target.value)}
+            disabled={!canWrite || reworkCloneStillOpen}
+          />
+        </Field>
+        <Field label="Rework" htmlFor={`qc-rwk-${op.mo_operation_id}`}>
+          <Input
+            id={`qc-rwk-${op.mo_operation_id}`}
+            type="number"
+            inputMode="decimal"
+            step="0.0001"
+            min="0"
+            value={qtyRework}
+            onChange={(e) => setQtyRework(e.target.value)}
+            disabled={!canWrite || reworkCloneStillOpen}
+          />
+        </Field>
+      </div>
+
+      <ConservationIndicator
+        sourceQtyOut={sourceQtyOut}
+        bucketSum={bucketSum}
+        inConservation={inConservation}
+        anyInput={
+          qtyPassed !== '' ||
+          qtyRejected !== '' ||
+          qtyByproduct !== '' ||
+          qtyWastage !== '' ||
+          qtyRework !== ''
+        }
+      />
+
+      <Field label="Narration (optional)" htmlFor={`qc-narr-${op.mo_operation_id}`}>
+        <textarea
+          id={`qc-narr-${op.mo_operation_id}`}
+          rows={2}
+          value={narration}
+          onChange={(e) => setNarration(e.target.value)}
+          disabled={!canWrite || reworkCloneStillOpen}
+          className="w-full"
+          style={{
+            background: 'var(--bg-canvas)',
+            border: '1px solid var(--border-default)',
+            borderRadius: 6,
+            padding: '6px 10px',
+            fontSize: 13,
+            color: 'var(--text-primary)',
+            resize: 'vertical',
+            minHeight: 48,
+          }}
+        />
+      </Field>
+
+      <Button type="button" onClick={onSubmit} disabled={!canSubmit} title={submitDisabledReason}>
+        <Check size={14} />
+        {mutation.isPending
+          ? 'Recording…'
+          : Number(qtyRework || 0) > 0
+            ? 'Record verdict (REWORK)'
+            : 'Record verdict (PASS)'}
+      </Button>
+
+      {submitError && <ErrorBanner>{submitError}</ErrorBanner>}
+    </section>
+  );
+}
+
+function ConservationIndicator({
+  sourceQtyOut,
+  bucketSum,
+  inConservation,
+  anyInput,
+}: {
+  sourceQtyOut: number | null;
+  bucketSum: number;
+  inConservation: boolean;
+  anyInput: boolean;
+}) {
+  if (sourceQtyOut === null) return null;
+  if (!anyInput) {
+    return (
+      <div
+        role="status"
+        style={{
+          fontSize: 12,
+          color: 'var(--text-tertiary)',
+          padding: '4px 0',
+        }}
+      >
+        Bucket sum: 0 / {sourceQtyOut}
+      </div>
+    );
+  }
+  const delta = bucketSum - sourceQtyOut;
+  return (
+    <div
+      role="status"
+      data-conservation-state={inConservation ? 'ok' : 'mismatch'}
+      style={{
+        fontSize: 12,
+        color: inConservation ? 'var(--success-text)' : 'var(--danger-text)',
+        background: inConservation ? 'var(--success-subtle)' : 'var(--danger-subtle)',
+        padding: '6px 10px',
+        borderRadius: 4,
+      }}
+    >
+      {inConservation
+        ? `Conservation OK: ${bucketSum} / ${sourceQtyOut}`
+        : `Conservation off by ${delta > 0 ? '+' : ''}${delta.toFixed(4)} (sum ${bucketSum}, expected ${sourceQtyOut}).`}
+    </div>
+  );
+}
+
+function QcClosedSummary({
+  op,
+  qcResult,
+}: {
+  op: MoOperation;
+  qcResult: ReturnType<typeof useQcResult>['data'];
+}) {
+  // Latest verdict comes off the event log (qcResult). If it hasn't
+  // loaded we fall back to the columns surfaced on the op snapshot.
+  // qty_rework is NOT a column — only the GET endpoint carries it.
+  const verdict = qcResult?.verdict;
+  const isPass = verdict === 'PASS';
+  const isRework = verdict === 'REWORK';
+  return (
+    <section aria-label="QC verdict summary" className="space-y-3">
+      <SectionTitle>QC verdict</SectionTitle>
+      <div className="flex items-center gap-2">
+        {isPass && <Pill kind="paid">PASS</Pill>}
+        {isRework && <Pill kind="scrap">REWORK — clone spawned</Pill>}
+        {!verdict && (
+          <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+            Awaiting verdict event log…
+          </span>
+        )}
+      </div>
+      <div
+        className="grid grid-cols-3 gap-2 p-3"
+        style={{
+          background: 'var(--bg-sunken)',
+          borderRadius: 6,
+          border: '1px solid var(--border-subtle)',
+        }}
+      >
+        <BucketReadout label="Passed" value={qcResult?.qty_passed ?? '—'} />
+        <BucketReadout label="Rejected" value={qcResult?.qty_rejected ?? op.qty_out ?? '—'} />
+        <BucketReadout label="By-product" value={qcResult?.qty_byproduct ?? '—'} />
+        <BucketReadout label="Wastage" value={qcResult?.qty_wastage ?? '—'} />
+        <BucketReadout label="Rework" value={qcResult?.qty_rework ?? '—'} />
+      </div>
+      <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: 0, lineHeight: 1.5 }}>
+        Detailed bucket breakdown is read from the latest QC_RESULT_RECORDED event log entry for
+        this op.
+      </p>
+    </section>
+  );
+}
+
+function BucketReadout({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div
+        className="uppercase"
+        style={{
+          fontSize: 10,
+          color: 'var(--text-tertiary)',
+          letterSpacing: '.04em',
+          fontWeight: 600,
+        }}
+      >
+        {label}
+      </div>
+      <div className="num mt-0.5" style={{ fontSize: 13, fontWeight: 500 }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function CloneChainCard({
+  chain,
+  onSelectOperation,
+}: {
+  chain: CloneChainNode[];
+  onSelectOperation?: ((moOperationId: string) => void) | undefined;
+}) {
+  return (
+    <section
+      aria-label="Rework chain"
+      className="space-y-2"
+      style={{
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 8,
+        padding: 12,
+        background: 'var(--bg-sunken)',
+      }}
+    >
+      <div className="flex items-center justify-between">
+        <SectionTitle>Rework chain</SectionTitle>
+        <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+          {chain.length} round{chain.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      <ul className="space-y-2" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {chain.map((node) => (
+          <li
+            key={node.op.mo_operation_id}
+            className="flex items-start gap-2"
+            style={{
+              padding: '8px 10px',
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 6,
+            }}
+          >
+            <CornerDownRight size={14} color="var(--text-tertiary)" style={{ marginTop: 2 }} />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span style={{ fontSize: 12.5, fontWeight: 600 }}>Round {node.round}</span>
+                <Pill
+                  kind={
+                    node.op.state === 'CLOSED'
+                      ? 'paid'
+                      : node.op.state === 'IN_PROGRESS'
+                        ? 'finalized'
+                        : 'draft'
+                  }
+                >
+                  {node.op.state}
+                </Pill>
+                <Pill kind={node.op.is_rework_paid ? 'karigar' : 'draft'}>
+                  {node.op.is_rework_paid ? 'Billable rework' : 'Free rework'}
+                </Pill>
+                <span
+                  className="uppercase"
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: 'var(--text-tertiary)',
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  {node.op.executor}
+                </span>
+              </div>
+              <div className="mt-1 num" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                qty_in {node.op.qty_in ?? '—'} · qty_out {node.op.qty_out ?? '—'}
+              </div>
+            </div>
+            {onSelectOperation && (
+              <button
+                type="button"
+                onClick={() => onSelectOperation(node.op.mo_operation_id)}
+                aria-label={`View round ${node.round} operation`}
+                style={{
+                  fontSize: 12,
+                  color: 'var(--accent)',
+                  background: 'transparent',
+                  border: 0,
+                  padding: '2px 4px',
+                  cursor: 'pointer',
+                }}
+              >
+                View op →
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

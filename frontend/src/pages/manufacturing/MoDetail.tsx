@@ -86,6 +86,9 @@ export default function MoDetail() {
   const canMoWrite = permissions.includes('manufacturing.mo.write');
   const canIssueMaterials = permissions.includes('manufacturing.material_issue.write');
   const canOperationWrite = permissions.includes('manufacturing.operation.progress');
+  // A5: QC mutations live under a distinct permission slug. Granted to
+  // OWNER + Production roles by the seed RBAC; salesperson gets 403.
+  const canQcWrite = permissions.includes('manufacturing.qc.write');
 
   if (moQuery.isError) {
     return <QueryError error={moQuery.error} onRetry={() => moQuery.refetch()} />;
@@ -295,6 +298,8 @@ export default function MoDetail() {
         opMaster={drawerOpMaster}
         totalOps={orderedOps.length}
         canWrite={canOperationWrite}
+        canQcWrite={canQcWrite}
+        onSelectOperation={(id) => setDrawerOpId(id)}
       />
     </div>
   );
@@ -397,12 +402,54 @@ function OperationsTab({
     );
   }
 
-  // Sort by operation_sequence; nulls sink. Stable on equal seq via index.
-  const ordered = [...mo.operations].sort((a, b) => {
-    const aSeq = a.operation_sequence ?? Number.MAX_SAFE_INTEGER;
-    const bSeq = b.operation_sequence ?? Number.MAX_SAFE_INTEGER;
-    return aSeq - bSeq;
-  });
+  // A5: clones (rework_of_mo_operation_id != null) have no
+  // operation_sequence — they live alongside their parent. We render
+  // the routing-graph ops in seq order, then immediately interleave any
+  // clones whose ancestry traces back to that op. Each clone row gets
+  // indented + tagged "↪ Rework of #N" so the chain is visible inline.
+  type Row = { op: BackendMoResponse['operations'][number]; depth: number };
+
+  const ordered = [...mo.operations]
+    .filter((o) => !o.rework_of_mo_operation_id)
+    .sort((a, b) => {
+      const aSeq = a.operation_sequence ?? Number.MAX_SAFE_INTEGER;
+      const bSeq = b.operation_sequence ?? Number.MAX_SAFE_INTEGER;
+      return aSeq - bSeq;
+    });
+
+  // Map from parent id → child clone. Each parent has at most one clone
+  // (one redo per operator) per A10-FU.
+  const childOf = new Map<string, BackendMoResponse['operations'][number]>();
+  for (const o of mo.operations) {
+    if (o.rework_of_mo_operation_id) {
+      childOf.set(o.rework_of_mo_operation_id, o);
+    }
+  }
+  // Walk depth-first from each routing-graph op into its clone chain so
+  // round-2 clones land directly beneath round-1, etc.
+  const opIdToSeq = new Map<string, number | null>();
+  for (const o of mo.operations) {
+    opIdToSeq.set(o.mo_operation_id, o.operation_sequence ?? null);
+  }
+  const rows: Row[] = [];
+  for (const root of ordered) {
+    rows.push({ op: root, depth: 0 });
+    let cursor = childOf.get(root.mo_operation_id);
+    let depth = 1;
+    // Cap at 20 (BE depth-guards at 5) so malformed data can't loop.
+    while (cursor && depth <= 20) {
+      rows.push({ op: cursor, depth });
+      cursor = childOf.get(cursor.mo_operation_id);
+      depth += 1;
+    }
+  }
+  // Also include any orphaned clones whose parent is missing from the
+  // current ops list (defensive — shouldn't happen, but it keeps the
+  // count tab-label consistent with the visible row count).
+  const renderedIds = new Set(rows.map((r) => r.op.mo_operation_id));
+  for (const o of mo.operations) {
+    if (!renderedIds.has(o.mo_operation_id)) rows.push({ op: o, depth: 0 });
+  }
 
   return (
     <table className="w-full text-left" style={{ minWidth: 720 }}>
@@ -417,41 +464,84 @@ function OperationsTab({
         </tr>
       </thead>
       <tbody>
-        {ordered.map((op) => {
+        {rows.map(({ op, depth }) => {
           const opName =
             opNameById.get(op.operation_master_id) ?? op.operation_master_id.slice(0, 8);
-          // executor is a free string at the BE level — usually
-          // IN_HOUSE / KARIGAR. Render as a pill so the visual weight
-          // matches other status chips.
           const executorPill: PillKind = op.executor === 'KARIGAR' ? 'karigar' : 'finalized';
+          const isClone = depth > 0 && Boolean(op.rework_of_mo_operation_id);
+          // Trace the clone back to the routing-graph parent for the
+          // "Rework of #N" label. The clone's `rework_of_mo_operation_id`
+          // points one round up; we want the original op's sequence.
+          let parentSeq: number | null = null;
+          if (isClone) {
+            let parentId: string | null | undefined = op.rework_of_mo_operation_id;
+            while (parentId) {
+              const seq = opIdToSeq.get(parentId);
+              if (seq !== undefined && seq !== null) {
+                parentSeq = seq;
+                break;
+              }
+              // climb to the parent's parent
+              const next = mo.operations.find((o) => o.mo_operation_id === parentId);
+              parentId = next?.rework_of_mo_operation_id ?? null;
+            }
+          }
           return (
             <tr
               key={op.mo_operation_id}
               onClick={() => onRowClick(op.mo_operation_id)}
               role="button"
               tabIndex={0}
-              aria-label={`Open ${opName} operation`}
+              aria-label={`Open ${opName} operation${isClone ? ' (rework)' : ''}`}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   onRowClick(op.mo_operation_id);
                 }
               }}
+              data-rework-of={op.rework_of_mo_operation_id ?? undefined}
               style={{
                 borderTop: '1px solid var(--border-subtle)',
                 cursor: 'pointer',
+                // Indent the seq cell to make the chain visually obvious.
+                // The TR-level indent doesn't render on tables; we apply
+                // padding-left to the first <td> via the depth marker.
+                background: isClone ? 'var(--bg-sunken)' : undefined,
               }}
             >
               <Td>
-                <span className="num" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                  {op.operation_sequence ?? '—'}
-                </span>
+                {isClone ? (
+                  <span
+                    style={{
+                      paddingLeft: `${depth * 1.5}rem`,
+                      fontSize: 11.5,
+                      color: 'var(--text-tertiary)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                  >
+                    <span aria-hidden>↪</span>
+                    Rework of #{parentSeq ?? '—'}
+                  </span>
+                ) : (
+                  <span className="num" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                    {op.operation_sequence ?? '—'}
+                  </span>
+                )}
               </Td>
               <Td>
                 <span style={{ fontSize: 13.5, fontWeight: 500 }}>{opName}</span>
               </Td>
               <Td>
-                <Pill kind={executorPill}>{op.executor}</Pill>
+                <div className="flex items-center gap-2">
+                  <Pill kind={executorPill}>{op.executor}</Pill>
+                  {isClone && (
+                    <Pill kind={op.is_rework_paid ? 'karigar' : 'draft'}>
+                      {op.is_rework_paid ? 'Billable rework' : 'Free rework'}
+                    </Pill>
+                  )}
+                </div>
               </Td>
               <Td align="right">
                 <span className="num" style={{ fontSize: 13 }}>
