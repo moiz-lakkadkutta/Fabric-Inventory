@@ -1,9 +1,8 @@
-import { Building2, Plus, Search } from 'lucide-react';
+import { Building2, Plus, Search, Upload } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
-import { useComingSoon } from '@/components/ui/coming-soon-dialog';
 import { Dialog } from '@/components/ui/dialog';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Field } from '@/components/ui/field';
@@ -18,6 +17,10 @@ import { IS_LIVE } from '@/lib/api/mode';
 import { formatINRCompact } from '@/lib/format';
 import { useCreateParty, useParties } from '@/lib/queries/parties';
 import type { Party, PartyKind, PartyRole } from '@/lib/mock/types';
+import { useMe } from '@/store/auth';
+import { useQueryClient } from '@tanstack/react-query';
+
+import { PartyImportDialog } from './_components/PartyImportDialog';
 
 const KIND_PILL: Record<PartyKind, { kind: PillKind; label: string }> = {
   customer: { kind: 'finalized', label: 'Customer' },
@@ -36,17 +39,18 @@ const FILTERS: Array<{ key: PartyKind | 'all'; label: string }> = [
 
 export default function PartyList() {
   const partiesQuery = useParties();
+  const me = useMe();
+  const qc = useQueryClient();
   const [filter, setFilter] = useState<PartyKind | 'all'>('all');
   const [query, setQuery] = useState('');
   const [newOpen, setNewOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  // Import (Vyapar .vyp / CSV upload) is still a coming-soon — Wave 5
-  // migration tooling. The Export side ships in TASK-CUT-403.
-  const importParties = useComingSoon({
-    feature: 'Import parties (CSV / Vyapar .vyp)',
-    task: 'TASK-CUT-502 (Cutover runbook)',
-  });
+  // TASK-TR-B2: Import is now a real CSV bulk-upload flow. Gated on
+  // `masters.party.create` so unprivileged users can't kick off an
+  // import that would only fail server-side row-by-row.
+  const canImport = (me?.permissions ?? []).includes('masters.party.create');
 
   const handleExport = async (format: 'csv' | 'xlsx') => {
     if (!IS_LIVE) {
@@ -96,7 +100,18 @@ export default function PartyList() {
           {partiesQuery.isPending ? '—' : `${rows.length} of ${partiesQuery.data?.length ?? 0}`}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" {...importParties.triggerProps}>
+          <Button
+            variant="outline"
+            onClick={() => setImportOpen(true)}
+            disabled={!canImport}
+            aria-label="Import parties from CSV"
+            title={
+              canImport
+                ? undefined
+                : 'You need the masters.party.create permission to import parties.'
+            }
+          >
+            <Upload />
             Import
           </Button>
           <Button
@@ -121,7 +136,11 @@ export default function PartyList() {
           </Button>
         </div>
       </header>
-      {importParties.dialog}
+      <PartyImportDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => qc.invalidateQueries({ queryKey: ['parties'] })}
+      />
       <NewPartyDialog open={newOpen} onClose={() => setNewOpen(false)} />
       {exportError && (
         <div

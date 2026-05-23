@@ -35,6 +35,9 @@ function buildMockMe(): MeResponse {
       'sales.invoice.finalize',
       'accounting.voucher.post',
       'admin.user.invite',
+      // TASK-TR-B2: needed so the click-dummy "Import parties" button
+      // isn't permanently disabled in mock mode.
+      'masters.party.create',
     ],
     flags: {},
     available_firms: firms.map((f) => ({ firm_id: f.firm_id, code: f.code, name: f.name })),
