@@ -7618,7 +7618,7 @@
         "type": "object"
       },
       "MoListItem": {
-        "description": "List view: lighter than ``MoResponse`` \u2014 no nested children.",
+        "description": "List view: lighter than ``MoResponse`` \u2014 no nested children.\n\nTASK-TR-A1: optionally carries ``operations`` (only when the caller\npasses ``?include=operations``) so the Kanban can drive stage lanes\noff real op state. ``finished_item_name`` is always populated via a\nsingle LEFT JOIN with ``item`` so the card shows the product name\nrather than a placeholder.",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -7634,6 +7634,17 @@
             "format": "uuid",
             "title": "Finished Item Id",
             "type": "string"
+          },
+          "finished_item_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished Item Name"
           },
           "firm_id": {
             "format": "uuid",
@@ -7654,10 +7665,36 @@
             "title": "Number",
             "type": "string"
           },
+          "operations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MoOperationListItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operations"
+          },
           "org_id": {
             "format": "uuid",
             "title": "Org Id",
             "type": "string"
+          },
+          "planned_end_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned End Date"
           },
           "planned_qty": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -7771,6 +7808,77 @@
           "is_optional"
         ],
         "title": "MoMaterialLineResponse",
+        "type": "object"
+      },
+      "MoOperationListItem": {
+        "description": "Lean per-operation row used by the Kanban view (TASK-TR-A1).\n\nMirrors a subset of ``MoOperationResponse`` plus the resolved\n``operation_type`` / ``operation_master_name`` so the FE can drive\nKanban-lane placement without an N+1 fetch against the operation\nmaster catalogue. Only populated when ``GET /manufacturing/mo`` is\ncalled with ``?include=operations``; absent otherwise to preserve\nthe lean default shape.",
+        "properties": {
+          "executor": {
+            "title": "Executor",
+            "type": "string"
+          },
+          "mo_operation_id": {
+            "format": "uuid",
+            "title": "Mo Operation Id",
+            "type": "string"
+          },
+          "operation_master_id": {
+            "format": "uuid",
+            "title": "Operation Master Id",
+            "type": "string"
+          },
+          "operation_master_name": {
+            "title": "Operation Master Name",
+            "type": "string"
+          },
+          "operation_sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Sequence"
+          },
+          "operation_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OperationType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MoOperationState"
+          }
+        },
+        "required": [
+          "mo_operation_id",
+          "operation_master_id",
+          "operation_sequence",
+          "state",
+          "executor",
+          "operation_type",
+          "operation_master_name",
+          "start_date"
+        ],
+        "title": "MoOperationListItem",
         "type": "object"
       },
       "MoOperationResponse": {
@@ -19715,6 +19823,24 @@
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated list of expansions. Currently supported: ``operations`` \u2014 eager-loads each MO's operations + operation_master so the Kanban can drive lane placement off real per-op state. Off by default to preserve the lean response shape (TASK-TR-A1).",
+            "in": "query",
+            "name": "include",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated list of expansions. Currently supported: ``operations`` \u2014 eager-loads each MO's operations + operation_master so the Kanban can drive lane placement off real per-op state. Off by default to preserve the lean response shape (TASK-TR-A1).",
+              "title": "Include"
             }
           }
         ],
