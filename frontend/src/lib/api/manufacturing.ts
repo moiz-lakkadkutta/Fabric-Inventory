@@ -61,3 +61,74 @@ export async function createCostCentre(
     body,
   });
 }
+
+/* ─────────────────────────────────────────────────────────────
+ * Operation masters (E1-OPERATIONS, PR #166)
+ * ───────────────────────────────────────────────────────────── */
+
+export type BackendOperationMaster = components['schemas']['OperationMasterResponse'];
+export type BackendOperationMasterList = components['schemas']['OperationMasterListResponse'];
+export type BackendOperationMasterCreateBody =
+  components['schemas']['OperationMasterCreateRequest'];
+export type BackendOperationMasterPatchBody = components['schemas']['OperationMasterUpdateRequest'];
+export type BackendOperationType = components['schemas']['OperationType'];
+
+export interface ListOperationMastersQuery {
+  firm_id?: string;
+  operation_type?: BackendOperationType;
+  is_active?: boolean;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+function buildOperationMasterQuery(params: ListOperationMastersQuery): string {
+  const usp = new URLSearchParams();
+  if (params.firm_id) usp.set('firm_id', params.firm_id);
+  if (params.operation_type) usp.set('operation_type', params.operation_type);
+  if (params.is_active !== undefined) usp.set('is_active', String(params.is_active));
+  if (params.search) usp.set('search', params.search);
+  usp.set('limit', String(params.limit ?? 200));
+  if (params.offset !== undefined) usp.set('offset', String(params.offset));
+  return usp.toString();
+}
+
+export async function liveListOperationMasters(
+  params: ListOperationMastersQuery = {},
+): Promise<BackendOperationMasterList> {
+  const qs = buildOperationMasterQuery(params);
+  return api<BackendOperationMasterList>(`/operation-masters?${qs}`);
+}
+
+export async function liveCreateOperationMaster(
+  body: BackendOperationMasterCreateBody,
+  idempotencyKey: string,
+): Promise<BackendOperationMaster> {
+  return api<BackendOperationMaster>('/operation-masters', {
+    method: 'POST',
+    idempotencyKey,
+    body,
+  });
+}
+
+export async function livePatchOperationMaster(
+  operationMasterId: string,
+  body: BackendOperationMasterPatchBody,
+  idempotencyKey: string,
+): Promise<BackendOperationMaster> {
+  return api<BackendOperationMaster>(`/operation-masters/${operationMasterId}`, {
+    method: 'PATCH',
+    idempotencyKey,
+    body,
+  });
+}
+
+export async function liveDeleteOperationMaster(
+  operationMasterId: string,
+  idempotencyKey: string,
+): Promise<void> {
+  await api<void>(`/operation-masters/${operationMasterId}`, {
+    method: 'DELETE',
+    idempotencyKey,
+  });
+}

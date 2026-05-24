@@ -533,6 +533,7 @@ async function liveCompleteMo(input: CompleteMoInput): Promise<BackendMoResponse
 export interface ListOperationMastersParams {
   firm_id?: string;
   is_active?: boolean;
+  operation_type?: BackendOperationType;
   search?: string;
   limit?: number;
   offset?: number;
@@ -545,6 +546,7 @@ async function liveListOperationMasters(
   const firm_id = authStore.get().me?.firm_id ?? params.firm_id;
   if (firm_id) usp.set('firm_id', firm_id);
   if (params.is_active !== undefined) usp.set('is_active', String(params.is_active));
+  if (params.operation_type) usp.set('operation_type', params.operation_type);
   if (params.search) usp.set('search', params.search);
   usp.set('limit', String(params.limit ?? 200));
   usp.set('offset', String(params.offset ?? 0));
@@ -552,6 +554,46 @@ async function liveListOperationMasters(
     `/operation-masters?${usp.toString()}`,
   );
   return data.items;
+}
+
+// ── Operation masters: create (TASK-TR-E1) ────────────────────────────
+
+export type BackendOperationMasterCreateRequest =
+  components['schemas']['OperationMasterCreateRequest'];
+
+export interface CreateOperationMasterInput {
+  firm_id?: string;
+  code: string;
+  name: string;
+  operation_type: BackendOperationType;
+  default_duration_mins?: string | number | null;
+  cost_centre_id?: string | null;
+  is_active?: boolean;
+  idempotencyKey: string;
+}
+
+async function liveCreateOperationMaster(
+  input: CreateOperationMasterInput,
+): Promise<BackendOperationMasterResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendOperationMasterCreateRequest = {
+    firm_id,
+    code: input.code,
+    name: input.name,
+    operation_type: input.operation_type,
+    is_active: input.is_active ?? true,
+  };
+  if (input.default_duration_mins !== undefined && input.default_duration_mins !== null) {
+    body.default_duration_mins = input.default_duration_mins;
+  }
+  if (input.cost_centre_id !== undefined && input.cost_centre_id !== null) {
+    body.cost_centre_id = input.cost_centre_id;
+  }
+  return api<BackendOperationMasterResponse>('/operation-masters', {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body,
+  });
 }
 
 // ── Public hooks ──────────────────────────────────────────────────────
@@ -735,6 +777,21 @@ export function useOperationMasters(params: ListOperationMastersParams = {}) {
       IS_LIVE
         ? liveListOperationMasters(params)
         : fakeFetch([] as BackendOperationMasterResponse[]),
+  });
+}
+
+/**
+ * POST /operation-masters (TASK-TR-E1). Pure-metadata mutation — no
+ * GL / stock posting. On success we invalidate the operation-masters
+ * namespace so the list page + the MO-detail lookup both re-fetch.
+ */
+export function useCreateOperationMaster() {
+  const qc = useQueryClient();
+  return useMutation<BackendOperationMasterResponse, Error, CreateOperationMasterInput>({
+    mutationFn: (input) => liveCreateOperationMaster(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: OPERATION_MASTER_KEY });
+    },
   });
 }
 
@@ -1486,6 +1543,7 @@ export const __live = {
   liveGetMoCompletionPreview,
   liveCompleteMo,
   liveListOperationMasters,
+  liveCreateOperationMaster,
   // A3:
   liveStartMo,
   liveIssueMaterials,

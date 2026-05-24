@@ -50,6 +50,9 @@ const MANUFACTURING_NAV: NavItem = {
     // Manufacturing — the only consumers (operation masters, MO cost
     // rollups) are manufacturing-scoped.
     { to: '/manufacturing/cost-centres', label: 'Cost centres' },
+    // TASK-TR-E1-OPERATIONS: operation-master registry consumed by
+    // routing graphs in the MO wizard.
+    { to: '/manufacturing/operations', label: 'Operations' },
   ],
 };
 

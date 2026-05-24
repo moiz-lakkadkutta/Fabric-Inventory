@@ -26,6 +26,7 @@ import ManufacturingPipeline from '@/pages/manufacturing/ManufacturingPipeline';
 import MoCreateWizard from '@/pages/manufacturing/MoCreateWizard';
 import MoDetail from '@/pages/manufacturing/MoDetail';
 import MoList from '@/pages/manufacturing/MoList';
+import OperationsList from '@/pages/manufacturing/OperationsList';
 import ItemDetail from '@/pages/masters/ItemDetail';
 import ItemList from '@/pages/masters/ItemList';
 import PartyDetail from '@/pages/masters/PartyDetail';
@@ -121,6 +122,9 @@ const router = createBrowserRouter([
       // (lives under Manufacturing because the only consumers are
       // operation masters / MO rollups).
       { path: 'manufacturing/cost-centres', element: <CostCentresList /> },
+      // TASK-TR-E1-OPERATIONS: operation-master registry feeding the
+      // routing graph in the MO wizard.
+      { path: 'manufacturing/operations', element: <OperationsList /> },
       { path: 'jobwork', element: <JobWorkOverview /> },
       { path: 'accounting', element: <AccountingHub /> },
       // TR-B3: full-page bank-statement reconciliation flow. Lives
