@@ -61,9 +61,7 @@ export default function CostCentresList() {
       if (filter === 'active' && !cc.is_active) return false;
       if (filter === 'inactive' && cc.is_active) return false;
       if (!q) return true;
-      return (
-        cc.code.toLowerCase().includes(q) || cc.name.toLowerCase().includes(q)
-      );
+      return cc.code.toLowerCase().includes(q) || cc.name.toLowerCase().includes(q);
     });
   }, [allRows, filter, query]);
 
@@ -240,10 +238,7 @@ function CostCentreRow({ cc }: { cc: BackendCostCentre }) {
       }}
     >
       <Td>
-        <span
-          className="mono"
-          style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}
-        >
+        <span className="mono" style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>
           {cc.code}
         </span>
       </Td>
@@ -258,20 +253,11 @@ function CostCentreRow({ cc }: { cc: BackendCostCentre }) {
         <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>—</span>
       </Td>
       <Td align="right">
-        <span
-          className="num"
-          style={{ fontSize: 13, color: 'var(--text-tertiary)' }}
-        >
+        <span className="num" style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
           —
         </span>
       </Td>
-      <Td>
-        {active ? (
-          <Pill kind="paid">Active</Pill>
-        ) : (
-          <Pill kind="scrap">Inactive</Pill>
-        )}
-      </Td>
+      <Td>{active ? <Pill kind="paid">Active</Pill> : <Pill kind="scrap">Inactive</Pill>}</Td>
       <Td>
         <span
           className="num"
@@ -296,13 +282,7 @@ function formatDate(iso: string): string {
   });
 }
 
-function Th({
-  children,
-  align = 'left',
-}: {
-  children: React.ReactNode;
-  align?: 'left' | 'right';
-}) {
+function Th({ children, align = 'left' }: { children: React.ReactNode; align?: 'left' | 'right' }) {
   return (
     <th
       className="px-3 py-2.5"
@@ -319,13 +299,7 @@ function Th({
   );
 }
 
-function Td({
-  children,
-  align = 'left',
-}: {
-  children: React.ReactNode;
-  align?: 'left' | 'right';
-}) {
+function Td({ children, align = 'left' }: { children: React.ReactNode; align?: 'left' | 'right' }) {
   return (
     <td className="px-3 py-3" style={{ textAlign: align, verticalAlign: 'middle' }}>
       {children}

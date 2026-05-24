@@ -39,12 +39,7 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-function buildCc(opts: {
-  id: string;
-  code: string;
-  name: string;
-  is_active?: boolean;
-}) {
+function buildCc(opts: { id: string; code: string; name: string; is_active?: boolean }) {
   return {
     cost_centre_id: opts.id,
     org_id: ORG_ID,
@@ -196,9 +191,7 @@ describe('CostCentresList (live-mode integration, TASK-TR-E1-COSTCENTRES)', () =
 
     renderList();
 
-    await waitFor(() =>
-      expect(screen.getByText(/Track where work happens/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Track where work happens/i)).toBeInTheDocument());
     // EmptyState CTA opens the dialog.
     const ctas = screen.getAllByRole('button', { name: /new cost centre/i });
     fireEvent.click(ctas[ctas.length - 1]);
@@ -210,9 +203,7 @@ describe('CostCentresList (live-mode integration, TASK-TR-E1-COSTCENTRES)', () =
       const u = String(url);
       if (u.includes('/cost-centres')) {
         return jsonResponse(200, {
-          items: [
-            buildCc({ id: CC_ACTIVE, code: 'CC-INH-STC', name: 'In-house stitching' }),
-          ],
+          items: [buildCc({ id: CC_ACTIVE, code: 'CC-INH-STC', name: 'In-house stitching' })],
           count: 1,
           limit: 200,
           offset: 0,
@@ -244,8 +235,6 @@ describe('CostCentresList (live-mode integration, TASK-TR-E1-COSTCENTRES)', () =
     );
 
     renderList();
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument());
   });
 });

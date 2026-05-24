@@ -17,9 +17,8 @@ vi.mock('@/lib/api/mode', () => ({
 }));
 
 const { authStore } = await import('@/store/auth');
-const { NewCostCentreDialog, suggestCostCentreCode } = await import(
-  '@/pages/manufacturing/NewCostCentreDialog'
-);
+const { NewCostCentreDialog, suggestCostCentreCode } =
+  await import('@/pages/manufacturing/NewCostCentreDialog');
 
 const FIRM_ID = 'f0000000-0000-0000-0000-000000000001';
 const ORG_ID = 'o0000000-0000-0000-0000-000000000001';

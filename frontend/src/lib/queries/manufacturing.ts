@@ -67,11 +67,7 @@ export type { ManufacturingOrder, MoStage };
 
 // Cost centres — re-export the BE shapes so list / dialog can import
 // them from one place.
-export type {
-  BackendCostCentre,
-  BackendCostCentreCreateBody,
-  ListCostCentresParams,
-};
+export type { BackendCostCentre, BackendCostCentreCreateBody, ListCostCentresParams };
 
 // ── BE types (sourced from the OpenAPI snapshot) ──────────────────────
 
