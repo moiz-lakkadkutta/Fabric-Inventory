@@ -46,6 +46,10 @@ const MANUFACTURING_NAV: NavItem = {
     // (operations, cost centres, BOMs, routings) land alongside via
     // sibling tasks.
     { to: '/manufacturing/designs', label: 'Designs' },
+    // TASK-TR-E1-COSTCENTRES: cost-centre master-data lives under
+    // Manufacturing — the only consumers (operation masters, MO cost
+    // rollups) are manufacturing-scoped.
+    { to: '/manufacturing/cost-centres', label: 'Cost centres' },
   ],
 };
 
