@@ -14,7 +14,7 @@
  */
 
 import { Cog, ListFilter, Plus, Search } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -78,7 +78,6 @@ export default function OperationsList() {
   const typePopoverRef = useClickOutside<HTMLDivElement>(typePopoverOpen, () =>
     setTypePopoverOpen(false),
   );
-  const typeButtonRef = useRef<HTMLButtonElement>(null);
 
   const rows = useMemo(() => {
     const all = opsQuery.data ?? [];
@@ -180,7 +179,6 @@ export default function OperationsList() {
 
           <div className="relative" ref={typePopoverRef}>
             <button
-              ref={typeButtonRef}
               type="button"
               onClick={() => setTypePopoverOpen((v) => !v)}
               aria-expanded={typePopoverOpen}
