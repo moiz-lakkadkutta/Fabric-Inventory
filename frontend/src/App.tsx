@@ -29,6 +29,8 @@ import MoCreateWizard from '@/pages/manufacturing/MoCreateWizard';
 import MoDetail from '@/pages/manufacturing/MoDetail';
 import MoList from '@/pages/manufacturing/MoList';
 import OperationsList from '@/pages/manufacturing/OperationsList';
+import RoutingCreateWizard from '@/pages/manufacturing/RoutingCreateWizard';
+import RoutingsList from '@/pages/manufacturing/RoutingsList';
 import ItemDetail from '@/pages/masters/ItemDetail';
 import ItemList from '@/pages/masters/ItemList';
 import PartyDetail from '@/pages/masters/PartyDetail';
@@ -130,6 +132,10 @@ const router = createBrowserRouter([
       // TASK-TR-E1-BOMS: BOM list grouped by design + 3-tab create wizard.
       { path: 'manufacturing/boms', element: <BomsList /> },
       { path: 'manufacturing/boms/new', element: <BomCreateWizard /> },
+      // TASK-TR-E1-ROUTINGS: routing master list + 3-tab create wizard
+      // (DAG editor in the operations tab).
+      { path: 'manufacturing/routings', element: <RoutingsList /> },
+      { path: 'manufacturing/routings/new', element: <RoutingCreateWizard /> },
       { path: 'jobwork', element: <JobWorkOverview /> },
       { path: 'accounting', element: <AccountingHub /> },
       // TR-B3: full-page bank-statement reconciliation flow. Lives

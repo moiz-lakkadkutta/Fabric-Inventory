@@ -55,6 +55,8 @@ const MANUFACTURING_NAV: NavItem = {
     { to: '/manufacturing/operations', label: 'Operations' },
     // TASK-TR-E1-BOMS: BOM master grouped by design.
     { to: '/manufacturing/boms', label: 'BOMs' },
+    // TASK-TR-E1-ROUTINGS: routing master with DAG editor.
+    { to: '/manufacturing/routings', label: 'Routings' },
   ],
 };
 

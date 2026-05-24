@@ -46,12 +46,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api/client';
 import {
   activateBom as liveActivateBom,
+  activateRouting as apiActivateRouting,
   createBom as liveCreateBom,
   createCostCentre as liveCreateCostCentre,
+  createRouting as apiCreateRouting,
   listCostCentres as liveListCostCentres,
   type BackendBomCreateRequest,
   type BackendCostCentre,
   type BackendCostCentreCreateBody,
+  type CreateRoutingBody,
   type ListCostCentresParams,
 } from '@/lib/api/manufacturing';
 import { IS_LIVE } from '@/lib/api/mode';
@@ -1105,6 +1108,50 @@ export function useReleaseMo() {
     onSuccess: (mo) => {
       qc.invalidateQueries({ queryKey: MO_KEY });
       qc.setQueryData([...MO_KEY, 'detail', mo.manufacturing_order_id], mo);
+    },
+  });
+}
+
+// ── Routing create / activate (TASK-TR-E1-ROUTINGS) ──────────────────
+
+export interface CreateRoutingInput extends CreateRoutingBody {
+  idempotencyKey: string;
+}
+
+/**
+ * POST /routings — creates a routing version (the BE auto-bumps
+ * `version_number` and sets `is_active=true`, superseding the previous
+ * active version per design + code). The BE's
+ * `routing_service._detect_cycle` validation surfaces here as a 422 with
+ * a clear `detail` we propagate verbatim to the wizard so the operator
+ * sees the same message regardless of how the cycle was missed by the
+ * FE checker.
+ */
+export function useCreateRouting() {
+  const qc = useQueryClient();
+  return useMutation<BackendRoutingResponse, Error, CreateRoutingInput>({
+    mutationFn: ({ idempotencyKey, ...body }) => apiCreateRouting(body, { idempotencyKey }),
+    onSuccess: (routing) => {
+      qc.invalidateQueries({ queryKey: ROUTING_KEY });
+      qc.setQueryData([...ROUTING_KEY, 'detail', routing.routing_id], routing);
+    },
+  });
+}
+
+/**
+ * Activate hook. The BE has no /activate endpoint today — creating a
+ * routing version makes it active immediately. This hook exists so the
+ * wizard's "Set as active" toggle has a real call-site and so a future
+ * BE switch (activate-by-id without re-POSTing edges) drops in without
+ * touching the wizard.
+ */
+export function useActivateRouting() {
+  const qc = useQueryClient();
+  return useMutation<BackendRoutingResponse, Error, { routingId: string }>({
+    mutationFn: ({ routingId }) => apiActivateRouting(routingId),
+    onSuccess: (routing) => {
+      qc.invalidateQueries({ queryKey: ROUTING_KEY });
+      qc.setQueryData([...ROUTING_KEY, 'detail', routing.routing_id], routing);
     },
   });
 }
