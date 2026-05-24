@@ -20,6 +20,8 @@ import { useFeatureFlagWithDefault } from '@/store/auth';
 interface SubItem {
   to: string;
   label: string;
+  /** When true, the sub-link is active ONLY on an exact path match. */
+  end?: boolean;
 }
 
 interface NavItem {
@@ -35,6 +37,16 @@ const MANUFACTURING_NAV: NavItem = {
   to: '/manufacturing',
   label: 'Manufacturing',
   icon: Cog,
+  prefix: '/manufacturing',
+  sub: [
+    { to: '/manufacturing', label: 'Pipeline', end: true },
+    { to: '/manufacturing/mo', label: 'Manufacturing orders' },
+    // TASK-TR-E1: Designs master list — entry-point for the BOM /
+    // routing graph the MO wizard pulls from. Other E1 masters
+    // (operations, cost centres, BOMs, routings) land alongside via
+    // sibling tasks.
+    { to: '/manufacturing/designs', label: 'Designs' },
+  ],
 };
 
 function buildNav({ manufacturingEnabled }: { manufacturingEnabled: boolean }): NavItem[] {
@@ -143,6 +155,7 @@ export function Sidebar() {
                     <NavLink
                       key={s.to}
                       to={s.to}
+                      end={s.end}
                       className="flex h-8 items-center rounded px-3 text-[12.5px]"
                       style={({ isActive: subActive }) => ({
                         background: subActive ? 'var(--bg-sunken)' : 'transparent',
