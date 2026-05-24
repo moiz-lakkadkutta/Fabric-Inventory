@@ -53,6 +53,8 @@ const MANUFACTURING_NAV: NavItem = {
     // TASK-TR-E1-OPERATIONS: operation-master registry consumed by
     // routing graphs in the MO wizard.
     { to: '/manufacturing/operations', label: 'Operations' },
+    // TASK-TR-E1-BOMS: BOM master grouped by design.
+    { to: '/manufacturing/boms', label: 'BOMs' },
   ],
 };
 
