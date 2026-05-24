@@ -44,6 +44,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { api } from '@/lib/api/client';
+import {
+  createCostCentre as liveCreateCostCentre,
+  listCostCentres as liveListCostCentres,
+  type BackendCostCentre,
+  type BackendCostCentreCreateBody,
+  type ListCostCentresParams,
+} from '@/lib/api/manufacturing';
 import { IS_LIVE } from '@/lib/api/mode';
 import { fakeFetch } from '@/lib/mock/api';
 import {
@@ -57,6 +64,10 @@ import type { components } from '@/types/api';
 
 export { KANBAN_COLUMNS };
 export type { ManufacturingOrder, MoStage };
+
+// Cost centres — re-export the BE shapes so list / dialog can import
+// them from one place.
+export type { BackendCostCentre, BackendCostCentreCreateBody, ListCostCentresParams };
 
 // ── BE types (sourced from the OpenAPI snapshot) ──────────────────────
 
@@ -1374,6 +1385,77 @@ export function useCloseKarigar(moId: string | undefined) {
   });
 }
 
+// ── Cost centres (TASK-TR-E1-COSTCENTRES) ────────────────────────────
+//
+// Master-data list + create for the manufacturing cost-centre bucket.
+// Read endpoint is RLS-scoped to the current org and accepts a tri-state
+// `is_active` filter (omit = all, true = active only, false = inactive
+// only). Create requires `firm_id` and a unique `(firm_id, code)` pair —
+// the BE enforces the constraint and replies with the canonical row.
+//
+// Cost-centre rows do NOT carry a `description` column today. The create
+// dialog still surfaces a description field for UX parity with the
+// design spec; the FE drops it on the wire so the typed body stays in
+// sync with the OpenAPI snapshot. Wiring `description` end-to-end is a
+// follow-up that needs both a schema column and a migration.
+
+const COST_CENTRE_KEY = ['manufacturing', 'cost-centres'] as const;
+
+/**
+ * GET /cost-centres. Returns the list response (items + count). The
+ * adapter layer (`liveListCostCentres`) handles BE param mapping; this
+ * hook just hands the items array to consumers since the list page
+ * derives the filter counts client-side.
+ */
+export function useCostCentres(params: ListCostCentresParams = {}) {
+  return useQuery<BackendCostCentre[]>({
+    queryKey: [...COST_CENTRE_KEY, 'list', params],
+    queryFn: async () => {
+      if (!IS_LIVE) return fakeFetch([] as BackendCostCentre[]);
+      const data = await liveListCostCentres(params);
+      return data.items;
+    },
+  });
+}
+
+export interface CreateCostCentreInput {
+  firm_id?: string;
+  code: string;
+  name: string;
+  /**
+   * UI-only field — the BE schema has no `description` column today.
+   * Captured here so callers don't need to suppress lint warnings on
+   * the typed input; the wire body omits it.
+   */
+  description?: string;
+  idempotencyKey: string;
+}
+
+/**
+ * POST /cost-centres. The mutation auto-resolves `firm_id` from the
+ * session unless the caller overrides it (matches `useCreateMo` —
+ * the trial customer is single-firm today). On success we invalidate
+ * the list cache so the new row surfaces on the next render.
+ */
+export function useCreateCostCentre() {
+  const qc = useQueryClient();
+  return useMutation<BackendCostCentre, Error, CreateCostCentreInput>({
+    mutationFn: async (input) => {
+      const firm_id = requireFirmId(input.firm_id);
+      const body: BackendCostCentreCreateBody = {
+        firm_id,
+        code: input.code,
+        name: input.name,
+        is_active: true,
+      };
+      return liveCreateCostCentre(body, input.idempotencyKey);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: COST_CENTRE_KEY });
+    },
+  });
+}
+
 // ── Test-only exports ────────────────────────────────────────────────
 
 /** Mappers exposed for the live-mapping unit tests. */
@@ -1424,4 +1506,7 @@ export const __live = {
   liveAcknowledgeKarigar,
   liveReceiveKarigar,
   liveCloseKarigar,
+  // E1 cost centres:
+  liveListCostCentres,
+  liveCreateCostCentre,
 };
