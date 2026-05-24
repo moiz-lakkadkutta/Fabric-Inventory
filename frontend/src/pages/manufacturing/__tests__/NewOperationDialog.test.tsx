@@ -19,9 +19,7 @@ vi.mock('@/lib/api/mode', () => ({
 }));
 
 const { authStore } = await import('@/store/auth');
-const { NewOperationDialog } = await import(
-  '@/pages/manufacturing/NewOperationDialog'
-);
+const { NewOperationDialog } = await import('@/pages/manufacturing/NewOperationDialog');
 
 const FIRM_ID = 'f0000000-0000-0000-0000-000000000001';
 const ORG_ID = 'o0000000-0000-0000-0000-000000000001';
@@ -136,9 +134,7 @@ describe('NewOperationDialog (live-mode, TASK-TR-E1)', () => {
     fireEvent.click(submit);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const call = fetchMock.mock.calls.find(([url]) =>
-      String(url).includes('/operation-masters'),
-    );
+    const call = fetchMock.mock.calls.find(([url]) => String(url).includes('/operation-masters'));
     expect(call).toBeTruthy();
     const init = (call as unknown as [RequestInfo, RequestInit])[1];
     expect(init.method).toBe('POST');

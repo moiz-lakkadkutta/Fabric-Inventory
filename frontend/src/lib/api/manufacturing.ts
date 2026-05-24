@@ -70,8 +70,7 @@ export type BackendOperationMaster = components['schemas']['OperationMasterRespo
 export type BackendOperationMasterList = components['schemas']['OperationMasterListResponse'];
 export type BackendOperationMasterCreateBody =
   components['schemas']['OperationMasterCreateRequest'];
-export type BackendOperationMasterPatchBody =
-  components['schemas']['OperationMasterUpdateRequest'];
+export type BackendOperationMasterPatchBody = components['schemas']['OperationMasterUpdateRequest'];
 export type BackendOperationType = components['schemas']['OperationType'];
 
 export interface ListOperationMastersQuery {

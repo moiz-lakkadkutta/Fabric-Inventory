@@ -90,8 +90,7 @@ export default function OperationsList() {
       }
       if (query) {
         const q = query.toLowerCase();
-        const matches =
-          op.code.toLowerCase().includes(q) || op.name.toLowerCase().includes(q);
+        const matches = op.code.toLowerCase().includes(q) || op.name.toLowerCase().includes(q);
         if (!matches) return false;
       }
       return true;
@@ -99,8 +98,7 @@ export default function OperationsList() {
   }, [opsQuery.data, activeFilter, typeFilter, query]);
 
   const totalLoaded = opsQuery.data?.length ?? 0;
-  const hasActiveFilter =
-    activeFilter !== 'all' || typeFilter.size > 0 || query.trim().length > 0;
+  const hasActiveFilter = activeFilter !== 'all' || typeFilter.size > 0 || query.trim().length > 0;
 
   const toggleType = (t: OperationType) => {
     setTypeFilter((prev) => {
@@ -119,10 +117,7 @@ export default function OperationsList() {
 
   return (
     <div className="space-y-4">
-      <nav
-        aria-label="Breadcrumb"
-        style={{ fontSize: 12, color: 'var(--text-tertiary)' }}
-      >
+      <nav aria-label="Breadcrumb" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
         <span>Masters</span>
         <span style={{ padding: '0 6px' }} aria-hidden>
           ›
@@ -353,15 +348,10 @@ export default function OperationsList() {
                     <span style={{ fontSize: 13.5, fontWeight: 500 }}>{op.name}</span>
                   </Td>
                   <Td>
-                    <OpTypePill
-                      type={(op.operation_type ?? 'OTHER') as OperationType}
-                    />
+                    <OpTypePill type={(op.operation_type ?? 'OTHER') as OperationType} />
                   </Td>
                   <Td align="right">
-                    <span
-                      className="num"
-                      style={{ fontSize: 13, color: 'var(--text-secondary)' }}
-                    >
+                    <span className="num" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                       {formatDuration(op.default_duration_mins)}
                     </span>
                   </Td>
@@ -369,9 +359,7 @@ export default function OperationsList() {
                     <span
                       style={{
                         fontSize: 12.5,
-                        color: op.cost_centre_id
-                          ? 'var(--text-secondary)'
-                          : 'var(--text-tertiary)',
+                        color: op.cost_centre_id ? 'var(--text-secondary)' : 'var(--text-tertiary)',
                       }}
                     >
                       {op.cost_centre_id ? (

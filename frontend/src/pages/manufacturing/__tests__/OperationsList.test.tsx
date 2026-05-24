@@ -21,9 +21,7 @@ vi.mock('@/lib/api/mode', () => ({
 }));
 
 const { authStore } = await import('@/store/auth');
-const { default: OperationsList } = await import(
-  '@/pages/manufacturing/OperationsList'
-);
+const { default: OperationsList } = await import('@/pages/manufacturing/OperationsList');
 
 const FIRM_ID = 'f0000000-0000-0000-0000-000000000001';
 const ORG_ID = 'o0000000-0000-0000-0000-000000000001';
@@ -39,15 +37,7 @@ function buildOp(opts: {
   id: string;
   code: string;
   name: string;
-  type?:
-    | 'WEAVING'
-    | 'DYEING'
-    | 'EMBROIDERY'
-    | 'STITCHING'
-    | 'QC'
-    | 'PACKING'
-    | 'OTHER'
-    | null;
+  type?: 'WEAVING' | 'DYEING' | 'EMBROIDERY' | 'STITCHING' | 'QC' | 'PACKING' | 'OTHER' | null;
   dur?: string | null;
   active?: boolean;
 }) {
@@ -100,10 +90,7 @@ describe('OperationsList (live-mode, TASK-TR-E1)', () => {
       org_id: ORG_ID,
       firm_id: FIRM_ID,
       email: 'u@example.com',
-      permissions: [
-        'manufacturing.operation_master.read',
-        'manufacturing.operation_master.create',
-      ],
+      permissions: ['manufacturing.operation_master.read', 'manufacturing.operation_master.create'],
       flags: {},
       available_firms: [{ firm_id: FIRM_ID, code: 'F1', name: 'F1' }],
       token_expires_at: '2099-01-01T00:00:00Z',
@@ -179,9 +166,7 @@ describe('OperationsList (live-mode, TASK-TR-E1)', () => {
       jsonResponse(503, { title: 'Service Unavailable', detail: 'down' }),
     );
     renderList();
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument());
   });
 
   // --- 4: Empty state --------------------------------------------------
@@ -219,9 +204,7 @@ describe('OperationsList (live-mode, TASK-TR-E1)', () => {
     await waitFor(() => expect(screen.getByText('OP-EMB-AAR')).toBeInTheDocument());
     const search = screen.getByRole('searchbox', { name: /search operations/i });
     fireEvent.change(search, { target: { value: 'screen printing' } });
-    await waitFor(() =>
-      expect(screen.getByText(/No operations match/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/No operations match/i)).toBeInTheDocument());
     // The Clear-filter affordance is visible.
     expect(screen.getByRole('button', { name: /clear filter/i })).toBeInTheDocument();
   });

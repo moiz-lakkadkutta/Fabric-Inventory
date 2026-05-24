@@ -19,11 +19,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import {
-  OP_TYPE_TOK,
-  OpTypePill,
-  type OperationType,
-} from '@/components/manufacturing/OpTypePill';
+import { OP_TYPE_TOK, OpTypePill, type OperationType } from '@/components/manufacturing/OpTypePill';
 import { ApiError } from '@/lib/api/client';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { useCreateOperationMaster } from '@/lib/queries/manufacturing';
@@ -100,10 +96,7 @@ export function NewOperationDialog({ open, onClose }: NewOperationDialogProps) {
   };
 
   const canSubmit =
-    code.trim().length > 0 &&
-    name.trim().length > 0 &&
-    opType !== '' &&
-    !create.isPending;
+    code.trim().length > 0 && name.trim().length > 0 && opType !== '' && !create.isPending;
 
   const submit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -166,12 +159,7 @@ export function NewOperationDialog({ open, onClose }: NewOperationDialogProps) {
           <Button variant="outline" type="button" onClick={close} disabled={create.isPending}>
             Cancel
           </Button>
-          <Button
-            type="submit"
-            form="new-op-form"
-            disabled={!canSubmit}
-            aria-disabled={!canSubmit}
-          >
+          <Button type="submit" form="new-op-form" disabled={!canSubmit} aria-disabled={!canSubmit}>
             {create.isPending ? 'Creating…' : 'Create operation'}
           </Button>
         </>
@@ -352,9 +340,7 @@ export function NewOperationDialog({ open, onClose }: NewOperationDialogProps) {
                 background: 'var(--bg-surface)',
                 color: 'var(--text-primary)',
                 border: `1px solid ${
-                  fieldErrors.cost_centre_id
-                    ? 'var(--danger)'
-                    : 'var(--border-default)'
+                  fieldErrors.cost_centre_id ? 'var(--danger)' : 'var(--border-default)'
                 }`,
                 padding: '0 12px',
                 fontSize: 14,
