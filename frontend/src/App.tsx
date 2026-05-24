@@ -20,6 +20,7 @@ import Migrations from '@/pages/admin/Migrations';
 import InventoryList from '@/pages/inventory/InventoryList';
 import LotDetail from '@/pages/inventory/LotDetail';
 import JobWorkOverview from '@/pages/jobwork/JobWorkOverview';
+import DesignsList from '@/pages/manufacturing/DesignsList';
 import ManufacturingPipeline from '@/pages/manufacturing/ManufacturingPipeline';
 import MoCreateWizard from '@/pages/manufacturing/MoCreateWizard';
 import MoDetail from '@/pages/manufacturing/MoDetail';
@@ -112,6 +113,9 @@ const router = createBrowserRouter([
       { path: 'manufacturing/mo', element: <MoList /> },
       { path: 'manufacturing/mo/new', element: <MoCreateWizard /> },
       { path: 'manufacturing/mo/:id', element: <MoDetail /> },
+      // TASK-TR-E1: Designs master list. Sits under /manufacturing for
+      // navigation locality (the MO wizard reads from this list).
+      { path: 'manufacturing/designs', element: <DesignsList /> },
       { path: 'jobwork', element: <JobWorkOverview /> },
       { path: 'accounting', element: <AccountingHub /> },
       // TR-B3: full-page bank-statement reconciliation flow. Lives

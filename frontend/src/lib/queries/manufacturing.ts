@@ -71,6 +71,7 @@ export type BackendMoOperationListItem = components['schemas']['MoOperationListI
 
 export type BackendDesignResponse = components['schemas']['DesignResponse'];
 export type BackendDesignListResponse = components['schemas']['DesignListResponse'];
+export type BackendDesignCreateRequest = components['schemas']['DesignCreateRequest'];
 
 export type BackendBomResponse = components['schemas']['BomResponse'];
 export type BackendBomListResponse = components['schemas']['BomListResponse'];
@@ -389,6 +390,40 @@ async function liveGetDesign(designId: string): Promise<BackendDesignResponse> {
   return api<BackendDesignResponse>(`/designs/${designId}`);
 }
 
+// E1: POST /designs — creates a Design master row. The BE schema is
+// {code, name, firm_id, description?, cost_centre_id?}; the FE form
+// also collects a "finished item" hint for the operator but the BE
+// design row doesn't persist that link (it's a BOM-level relation),
+// so the typeahead's chosen item is dropped at the wire.
+export interface CreateDesignInput {
+  firm_id?: string;
+  code: string;
+  name: string;
+  description?: string | null;
+  cost_centre_id?: string | null;
+  idempotencyKey: string;
+}
+
+async function liveCreateDesign(input: CreateDesignInput): Promise<BackendDesignResponse> {
+  const firm_id = requireFirmId(input.firm_id);
+  const body: BackendDesignCreateRequest = {
+    firm_id,
+    code: input.code,
+    name: input.name,
+  };
+  if (input.description !== undefined && input.description !== null) {
+    body.description = input.description;
+  }
+  if (input.cost_centre_id !== undefined && input.cost_centre_id !== null) {
+    body.cost_centre_id = input.cost_centre_id;
+  }
+  return api<BackendDesignResponse>('/designs', {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body,
+  });
+}
+
 export interface ListBomsParams {
   firm_id?: string;
   design_id?: string;
@@ -572,6 +607,25 @@ export function useDesign(designId: string | undefined) {
     enabled: designId !== undefined,
     queryFn: () =>
       IS_LIVE ? liveGetDesign(designId as string) : fakeFetch<BackendDesignResponse | null>(null),
+  });
+}
+
+/**
+ * POST /designs (TASK-TR-E1). Mints a fresh Design master row scoped
+ * to the active firm. Mirrors the `useCreateMo` shape: the caller
+ * supplies an Idempotency-Key (via `useIdempotencyKey`) so retries
+ * are de-duplicated by the BE replay-cache. On success we invalidate
+ * the design list keys so the new row surfaces immediately and prime
+ * the detail cache.
+ */
+export function useCreateDesign() {
+  const qc = useQueryClient();
+  return useMutation<BackendDesignResponse, Error, CreateDesignInput>({
+    mutationFn: (input) => liveCreateDesign(input),
+    onSuccess: (design) => {
+      qc.invalidateQueries({ queryKey: DESIGN_KEY });
+      qc.setQueryData([...DESIGN_KEY, 'detail', design.design_id], design);
+    },
   });
 }
 
@@ -1342,6 +1396,7 @@ export const __live = {
   liveGetMo,
   liveListDesigns,
   liveGetDesign,
+  liveCreateDesign,
   liveListBoms,
   liveGetBom,
   liveListRoutings,
