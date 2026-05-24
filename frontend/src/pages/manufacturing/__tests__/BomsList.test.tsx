@@ -40,12 +40,7 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-function buildBom(opts: {
-  id: string;
-  version: number;
-  is_active: boolean;
-  line_count?: number;
-}) {
+function buildBom(opts: { id: string; version: number; is_active: boolean; line_count?: number }) {
   const lines = Array.from({ length: opts.line_count ?? 3 }).map((_, i) => ({
     bom_id: opts.id,
     bom_line_id: `${opts.id}-${i}`,
@@ -314,7 +309,9 @@ describe('BomsList (live-mode integration, TASK-TR-E1-BOMS)', () => {
       target: { value: 'zzznomatch' },
     });
 
-    await waitFor(() => expect(screen.getByText(/No BOMs match "zzznomatch"/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/No BOMs match "zzznomatch"/i)).toBeInTheDocument(),
+    );
     fireEvent.click(screen.getByRole('button', { name: /clear filter/i }));
     await waitFor(() => expect(screen.getAllByTestId('bom-version-row')).toHaveLength(1));
   });

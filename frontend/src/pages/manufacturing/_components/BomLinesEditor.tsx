@@ -111,7 +111,10 @@ function parseNum(s: string): number {
 }
 
 /** Per-line raw paise: qty × std cost × (1 + scrap%/100). 0 if cost missing. */
-export function computeLineCostPaise(line: BomLineDraft, item: BomLineItemChoice | undefined): number {
+export function computeLineCostPaise(
+  line: BomLineDraft,
+  item: BomLineItemChoice | undefined,
+): number {
   if (!item || item.standard_cost_paise == null) return 0;
   const qty = parseNum(line.qty_per_unit);
   const scrap = parseNum(line.scrap_pct);
@@ -280,9 +283,7 @@ export default function BomLinesEditor({
                       step="0.0001"
                       value={line.qty_per_unit}
                       disabled={disabled}
-                      onChange={(e) =>
-                        updateLine(line.draft_id, { qty_per_unit: e.target.value })
-                      }
+                      onChange={(e) => updateLine(line.draft_id, { qty_per_unit: e.target.value })}
                       style={{ width: '100%', textAlign: 'right' }}
                     />
                   </Td>
@@ -317,9 +318,7 @@ export default function BomLinesEditor({
                       step="0.01"
                       value={line.scrap_pct}
                       disabled={disabled}
-                      onChange={(e) =>
-                        updateLine(line.draft_id, { scrap_pct: e.target.value })
-                      }
+                      onChange={(e) => updateLine(line.draft_id, { scrap_pct: e.target.value })}
                       style={{ width: '100%', textAlign: 'right' }}
                     />
                   </Td>

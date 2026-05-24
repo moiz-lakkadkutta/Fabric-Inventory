@@ -355,9 +355,7 @@ export default function BomCreateWizard() {
               style={{
                 background: active ? 'var(--accent-subtle)' : 'transparent',
                 color: active ? 'var(--accent)' : 'var(--text-secondary)',
-                border: active
-                  ? '1px solid var(--accent)'
-                  : '1px solid var(--border-default)',
+                border: active ? '1px solid var(--accent)' : '1px solid var(--border-default)',
                 fontSize: 13,
                 fontWeight: 500,
               }}
@@ -494,7 +492,11 @@ export default function BomCreateWizard() {
         </Button>
         {step === 'review' ? (
           <Button onClick={submit} disabled={submitting || !canCreate}>
-            {submitting ? 'Submitting…' : setAsActive ? `Activate v${nextVersion}` : `Save v${nextVersion}`}
+            {submitting
+              ? 'Submitting…'
+              : setAsActive
+                ? `Activate v${nextVersion}`
+                : `Save v${nextVersion}`}
           </Button>
         ) : (
           <Button
@@ -547,15 +549,12 @@ function TabA(props: TabAProps) {
   }, [props.designs, props.designSearch]);
 
   return (
-    <div
-      className="space-y-4"
-      style={{ padding: '20px 24px', maxWidth: 760, margin: '0 auto' }}
-    >
+    <div className="space-y-4" style={{ padding: '20px 24px', maxWidth: 760, margin: '0 auto' }}>
       <div>
         <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>Design & version</h2>
         <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)', marginTop: 4 }}>
-          Pick the design and finished item this BOM produces. Version auto-bumps from the
-          existing active version.
+          Pick the design and finished item this BOM produces. Version auto-bumps from the existing
+          active version.
         </div>
       </div>
 
@@ -680,9 +679,8 @@ function TabA(props: TabAProps) {
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>
               Pre-fills the Lines tab with the {props.activeBom.lines.length} line
-              {props.activeBom.lines.length === 1 ? '' : 's'} from v
-              {props.activeBom.version_number}. You can edit, add, or remove rows before
-              activating.
+              {props.activeBom.lines.length === 1 ? '' : 's'} from v{props.activeBom.version_number}
+              . You can edit, add, or remove rows before activating.
             </div>
           </div>
         </label>
@@ -851,9 +849,7 @@ function TabC(props: TabCProps) {
       >
         <div>
           <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Design</div>
-          <div style={{ fontWeight: 600 }}>
-            {design ? `${design.code} — ${design.name}` : '—'}
-          </div>
+          <div style={{ fontWeight: 600 }}>{design ? `${design.code} — ${design.name}` : '—'}</div>
         </div>
         <div>
           <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Finished item</div>
@@ -862,9 +858,7 @@ function TabC(props: TabCProps) {
           </div>
         </div>
         <div className="ml-auto">
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-            Total raw cost / unit
-          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Total raw cost / unit</div>
           <div className="num" style={{ fontWeight: 700, color: 'var(--accent)' }}>
             {rollup.totalCostPaise > 0
               ? (rollup.totalCostPaise / 100).toLocaleString('en-IN', {

@@ -28,11 +28,7 @@ import { Pill } from '@/components/ui/pill';
 import { QueryError } from '@/components/ui/query-error';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatDateShort } from '@/lib/format';
-import {
-  useBoms,
-  useDesigns,
-  type BackendBomResponse,
-} from '@/lib/queries/manufacturing';
+import { useBoms, useDesigns, type BackendBomResponse } from '@/lib/queries/manufacturing';
 import { useItems } from '@/lib/queries/items';
 
 type FilterKey = 'all' | 'active' | 'design';
@@ -125,9 +121,7 @@ export default function BomsList() {
     }
     // Sort design groups by design code A-Z so the list is stable
     // across refetches.
-    return Array.from(map.values()).sort((a, b) =>
-      a.design_code.localeCompare(b.design_code),
-    );
+    return Array.from(map.values()).sort((a, b) => a.design_code.localeCompare(b.design_code));
   }, [filtered, designsById]);
 
   const activeCount = allBoms.filter((b) => b.is_active).length;
@@ -281,10 +275,7 @@ export default function BomsList() {
             <tbody>
               {grouped.map((g) => (
                 <React.Fragment key={g.design_id}>
-                  <tr
-                    data-testid="bom-design-header"
-                    style={{ background: 'var(--bg-sunken)' }}
-                  >
+                  <tr data-testid="bom-design-header" style={{ background: 'var(--bg-sunken)' }}>
                     <td
                       colSpan={6}
                       style={{
@@ -357,8 +348,7 @@ function BomVersionRow({ bom, itemName }: { bom: BackendBomResponse; itemName: s
             borderRadius: 4,
             fontSize: 11.5,
             fontWeight: 700,
-            border:
-              '1px solid ' + (bom.is_active ? 'transparent' : 'var(--border-subtle)'),
+            border: '1px solid ' + (bom.is_active ? 'transparent' : 'var(--border-subtle)'),
           }}
         >
           v{bom.version_number}
@@ -375,11 +365,7 @@ function BomVersionRow({ bom, itemName }: { bom: BackendBomResponse; itemName: s
         </span>
       </Td>
       <Td>
-        {bom.is_active ? (
-          <Pill kind="paid">Active</Pill>
-        ) : (
-          <Pill kind="scrap">Superseded</Pill>
-        )}
+        {bom.is_active ? <Pill kind="paid">Active</Pill> : <Pill kind="scrap">Superseded</Pill>}
       </Td>
       <Td>
         <span

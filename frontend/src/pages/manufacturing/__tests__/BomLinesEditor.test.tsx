@@ -185,9 +185,7 @@ describe('computeLineCostPaise (pure)', () => {
       item_id: 'i-fab',
       qty_per_unit: '5',
     };
-    expect(
-      computeLineCostPaise(draft, { ...FABRIC, standard_cost_paise: null }),
-    ).toBe(0);
+    expect(computeLineCostPaise(draft, { ...FABRIC, standard_cost_paise: null })).toBe(0);
   });
 
   it('compounds scrap multiplicatively (5% of 100 = 105)', () => {

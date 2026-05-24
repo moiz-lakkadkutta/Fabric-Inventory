@@ -238,9 +238,7 @@ describe('BomCreateWizard — tab progress + nav', () => {
     fetchMock.mockImplementation(impl);
     renderWizard();
 
-    expect(
-      await screen.findByRole('tab', { name: /design & version/i }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: /design & version/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /^lines$/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /review & activate/i })).toBeInTheDocument();
   });
@@ -274,10 +272,7 @@ describe('BomCreateWizard — tab progress + nav', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: /^Next/i }));
-    expect(screen.getByRole('tab', { name: /^Lines$/i })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    expect(screen.getByRole('tab', { name: /^Lines$/i })).toHaveAttribute('aria-selected', 'true');
 
     // Click back to Tab A.
     fireEvent.click(screen.getByRole('tab', { name: /design & version/i }));
@@ -367,9 +362,7 @@ describe('BomCreateWizard — submit', () => {
     await waitFor(() => expect(screen.getByText('LIST_REACHED')).toBeInTheDocument());
 
     // Find the POST /boms call.
-    const post = calls.find(
-      (c) => c.init?.method === 'POST' && c.url.endsWith('/boms'),
-    );
+    const post = calls.find((c) => c.init?.method === 'POST' && c.url.endsWith('/boms'));
     expect(post).toBeTruthy();
     const headers = (post!.init!.headers ?? {}) as Record<string, string>;
     expect(headers['Idempotency-Key']).toMatch(/[0-9a-f-]{36}/);
@@ -411,9 +404,6 @@ describe('BomCreateWizard — submit', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Next/i }));
     expect(await screen.findByTestId('wizard-banner-error')).toBeInTheDocument();
     // Active tab is still Lines.
-    expect(screen.getByRole('tab', { name: /^Lines$/i })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    expect(screen.getByRole('tab', { name: /^Lines$/i })).toHaveAttribute('aria-selected', 'true');
   });
 });
