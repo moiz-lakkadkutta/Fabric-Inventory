@@ -45,8 +45,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { api } from '@/lib/api/client';
 import {
+  activateBom as liveActivateBom,
+  createBom as liveCreateBom,
   createCostCentre as liveCreateCostCentre,
   listCostCentres as liveListCostCentres,
+  type BackendBomCreateRequest,
   type BackendCostCentre,
   type BackendCostCentreCreateBody,
   type ListCostCentresParams,
@@ -1439,6 +1442,67 @@ export function useCloseKarigar(moId: string | undefined) {
   return useMutation<BackendKarigarOperationResponse, Error, CloseKarigarInput>({
     mutationFn: (input) => liveCloseKarigar(input),
     onSuccess: (_resp, input) => invalidateKarigarFanout(qc, moId, input.moOperationId),
+  });
+}
+
+// ── BOM mutations (TASK-TR-E1-BOMS) ──────────────────────────────────
+//
+// `useBoms` / `useBom` (read-side) already live above; create + activate
+// land here so the BOM Create wizard can mint new versions and flip the
+// active flag without touching the wider manufacturing queries.
+
+export interface CreateBomInput {
+  firm_id?: string;
+  design_id: string;
+  finished_item_id: string;
+  lines: BackendBomCreateRequest['lines'];
+  idempotencyKey: string;
+}
+
+/**
+ * POST /boms. Always invalidates the BOM list cache because the server
+ * auto-promotes the new version to active (and demotes the prior one
+ * in the same transaction), so any other BOM in the same finished-item
+ * partition that's currently in cache is stale.
+ */
+export function useCreateBom() {
+  const qc = useQueryClient();
+  return useMutation<BackendBomResponse, Error, CreateBomInput>({
+    mutationFn: async (input) => {
+      const firm_id = requireFirmId(input.firm_id);
+      const body: BackendBomCreateRequest = {
+        firm_id,
+        design_id: input.design_id,
+        finished_item_id: input.finished_item_id,
+        lines: input.lines,
+      };
+      return liveCreateBom(body, input.idempotencyKey);
+    },
+    onSuccess: (bom) => {
+      qc.invalidateQueries({ queryKey: BOM_KEY });
+      qc.setQueryData([...BOM_KEY, 'detail', bom.bom_id], bom);
+    },
+  });
+}
+
+export interface ActivateBomInput {
+  bomId: string;
+  idempotencyKey: string;
+}
+
+/**
+ * POST /boms/{id}/activate. Demotes the prior active version in the
+ * same partition, so the whole BOM list cache is invalidated to
+ * re-sync the chips on the list page.
+ */
+export function useActivateBom() {
+  const qc = useQueryClient();
+  return useMutation<BackendBomResponse, Error, ActivateBomInput>({
+    mutationFn: (input) => liveActivateBom(input.bomId, input.idempotencyKey),
+    onSuccess: (bom) => {
+      qc.invalidateQueries({ queryKey: BOM_KEY });
+      qc.setQueryData([...BOM_KEY, 'detail', bom.bom_id], bom);
+    },
   });
 }
 

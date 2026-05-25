@@ -20,6 +20,8 @@ import Migrations from '@/pages/admin/Migrations';
 import InventoryList from '@/pages/inventory/InventoryList';
 import LotDetail from '@/pages/inventory/LotDetail';
 import JobWorkOverview from '@/pages/jobwork/JobWorkOverview';
+import BomCreateWizard from '@/pages/manufacturing/BomCreateWizard';
+import BomsList from '@/pages/manufacturing/BomsList';
 import CostCentresList from '@/pages/manufacturing/CostCentresList';
 import DesignsList from '@/pages/manufacturing/DesignsList';
 import ManufacturingPipeline from '@/pages/manufacturing/ManufacturingPipeline';
@@ -125,6 +127,9 @@ const router = createBrowserRouter([
       // TASK-TR-E1-OPERATIONS: operation-master registry feeding the
       // routing graph in the MO wizard.
       { path: 'manufacturing/operations', element: <OperationsList /> },
+      // TASK-TR-E1-BOMS: BOM list grouped by design + 3-tab create wizard.
+      { path: 'manufacturing/boms', element: <BomsList /> },
+      { path: 'manufacturing/boms/new', element: <BomCreateWizard /> },
       { path: 'jobwork', element: <JobWorkOverview /> },
       { path: 'accounting', element: <AccountingHub /> },
       // TR-B3: full-page bank-statement reconciliation flow. Lives

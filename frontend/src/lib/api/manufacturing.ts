@@ -63,6 +63,51 @@ export async function createCostCentre(
 }
 
 /* ─────────────────────────────────────────────────────────────
+ * BOMs (E1-BOMS, PR #169)
+ *
+ * The live-mode helpers `liveListBoms` + `liveGetBom` are already
+ * inline-defined in `lib/queries/manufacturing.ts` and stay there.
+ * This file is the canonical home for the mutation wrappers.
+ * ───────────────────────────────────────────────────────────── */
+
+export type BackendBomCreateRequest = components['schemas']['BomCreateRequest'];
+export type BackendBomLineInput = components['schemas']['BomLineInput'];
+export type BackendBomResponse = components['schemas']['BomResponse'];
+
+/**
+ * POST /boms. Server auto-bumps `version_number` per (firm,
+ * finished_item) partition and promotes the new row to active in the
+ * same transaction. The wire body does NOT carry `scrap_pct` (the BE
+ * has no column for it); the wizard computes scrap allowance for the
+ * cost-rollup UI only.
+ */
+export async function createBom(
+  body: BackendBomCreateRequest,
+  idempotencyKey: string,
+): Promise<BackendBomResponse> {
+  return api<BackendBomResponse>('/boms', {
+    method: 'POST',
+    idempotencyKey,
+    body,
+  });
+}
+
+/**
+ * POST /boms/{id}/activate. Demotes every other version in the same
+ * (firm, finished_item) partition and flips this BOM's `is_active=true`.
+ */
+export async function activateBom(
+  bomId: string,
+  idempotencyKey: string,
+): Promise<BackendBomResponse> {
+  return api<BackendBomResponse>(`/boms/${bomId}/activate`, {
+    method: 'POST',
+    idempotencyKey,
+    body: {},
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────
  * Operation masters (E1-OPERATIONS, PR #166)
  * ───────────────────────────────────────────────────────────── */
 
