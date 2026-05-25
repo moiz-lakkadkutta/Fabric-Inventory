@@ -177,3 +177,38 @@ export async function liveDeleteOperationMaster(
     idempotencyKey,
   });
 }
+
+/* ─────────────────────────────────────────────────────────────
+ * Routings (E1-ROUTINGS, PR #168)
+ * ───────────────────────────────────────────────────────────── */
+
+export interface CreateRoutingBody {
+  firm_id: string;
+  design_id: string;
+  code: string;
+  edges: components['schemas']['RoutingEdgeInput'][];
+}
+
+export async function createRouting(
+  body: CreateRoutingBody,
+  options: { idempotencyKey: string },
+): Promise<components['schemas']['RoutingResponse']> {
+  return api<components['schemas']['RoutingResponse']>('/routings', {
+    method: 'POST',
+    idempotencyKey: options.idempotencyKey,
+    body,
+  });
+}
+
+/**
+ * No-op stub today — the BE auto-activates a freshly-created routing
+ * (newest version_number per design wins). Wired as a separate hook so
+ * the wizard's "Set as active" toggle has a real call-site that can be
+ * upgraded the moment the BE ships a real /activate handler. Returns
+ * the routing unchanged so the caller's cache update is consistent.
+ */
+export async function activateRouting(
+  routingId: string,
+): Promise<components['schemas']['RoutingResponse']> {
+  return api<components['schemas']['RoutingResponse']>(`/routings/${routingId}`);
+}
