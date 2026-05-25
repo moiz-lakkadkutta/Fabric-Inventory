@@ -56,11 +56,23 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Item, Party, PurchaseInvoice, PurchaseOrder, SalesInvoice
+from app.models.manufacturing import (
+    Bom,
+    Design,
+    ManufacturingOrder,
+    MoOperation,
+    OperationMaster,
+    OperationType,
+    Routing,
+    RoutingEdgeType,
+)
 from app.models.masters import (
+    CostCentre,
+    CostCentreType,
     ItemType,
     TaxStatus,
     TrackingType,
@@ -70,12 +82,21 @@ from app.models.sales import (
     InvoiceLifecycleStatus,
 )
 from app.service import (
+    bom_service,
     inventory_service,
     items_service,
     jobwork_service,
+    karigar_send_out_service,
+    manufacturing_masters_service,
     masters_service,
+    material_issue_service,
+    mo_completion_service,
+    mo_service,
+    operation_progress_service,
     procurement_service,
+    qc_service,
     receipt_service,
+    routing_service,
     sales_service,
     stock_service,
 )
@@ -451,6 +472,12 @@ class _SeedResult:
     sales_invoices: int = 0
     receipts: int = 0
     job_work_orders: int = 0
+    cost_centres: int = 0
+    operation_masters: int = 0
+    designs: int = 0
+    boms: int = 0
+    routings: int = 0
+    manufacturing_orders: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -465,6 +492,12 @@ class _SeedResult:
             "sales_invoices": self.sales_invoices,
             "receipts": self.receipts,
             "job_work_orders": self.job_work_orders,
+            "cost_centres": self.cost_centres,
+            "operation_masters": self.operation_masters,
+            "designs": self.designs,
+            "boms": self.boms,
+            "routings": self.routings,
+            "manufacturing_orders": self.manufacturing_orders,
         }
 
 
@@ -518,6 +551,15 @@ def seed_demo(
         result=result,
     )
     _seed_jobwork(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        parties=parties,
+        items=items,
+        today=today,
+        result=result,
+    )
+    _seed_manufacturing(
         session,
         org_id=org_id,
         firm_id=firm_id,
@@ -1282,6 +1324,1006 @@ def _seed_jobwork(
     )
 
     result.job_work_orders = 1
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Manufacturing: cost centres → ops → designs → BOMs → routings → MOs
+# ──────────────────────────────────────────────────────────────────────
+#
+# What gets seeded (TASK-TR-E1-SEED-MFG):
+#   - 4 cost centres mirroring phase6-shared.jsx vocabulary.
+#   - 8 operation masters covering WEAVING/DYEING/EMBROIDERY/STITCHING
+#     (3 STITCHING = cut + stitch + finishing), QC, PACKING.
+#   - 4 designs, each tied to an existing finished-suit item.
+#   - 4 active BOMs (one per design) + 2 historic versions on the
+#     Anarkali design so the BOM list shows version history.
+#   - 4 active routings (one per design), each a 4-6 node DAG.
+#   - 7 MOs distributed across the 4 designs, in 7 different states:
+#     DRAFT, RELEASED, IN_PROGRESS-material-issued,
+#     IN_PROGRESS-cut-done-stitch-pending, IN_PROGRESS-karigar-dispatched,
+#     IN_PROGRESS-qc-pending, COMPLETED.
+#
+# Idempotency: each layer is skip-if-exists keyed on
+# ``(org, firm, code)`` for masters and a "seed_demo" marker for MOs.
+# Re-running ``seed_demo`` against the same firm returns the same
+# counts.
+#
+# Each MO lifecycle state is driven through the REAL service functions
+# (mo_service.create_mo, material_issue_service.issue_materials, etc.)
+# so the demo exercises the same code paths the FE drives.
+
+
+@dataclass(frozen=True)
+class _CostCentreSpec:
+    code: str
+    name: str
+    cost_centre_type: CostCentreType
+
+
+_COST_CENTRES: tuple[_CostCentreSpec, ...] = (
+    _CostCentreSpec("CC-INH-STC", "In-house stitching", CostCentreType.DEPARTMENT),
+    _CostCentreSpec("CC-KAR-RSD", "Karigar embroidery — Rashid Tailors", CostCentreType.DEPARTMENT),
+    _CostCentreSpec("CC-PCK-MGD", "Packing — main godown", CostCentreType.DEPARTMENT),
+    _CostCentreSpec("CC-QC-INH", "In-house QC", CostCentreType.DEPARTMENT),
+)
+
+
+@dataclass(frozen=True)
+class _OperationMasterSpec:
+    code: str
+    name: str
+    operation_type: OperationType
+    cost_centre_code: str
+    default_duration_mins: Decimal
+
+
+_OPERATION_MASTERS: tuple[_OperationMasterSpec, ...] = (
+    _OperationMasterSpec(
+        "OP-WEV-CTN", "Cotton Voile weaving", OperationType.WEAVING, "CC-INH-STC", Decimal("240")
+    ),
+    _OperationMasterSpec(
+        "OP-DYE-BAT",
+        "Batch dyeing — reactive",
+        OperationType.DYEING,
+        "CC-INH-STC",
+        Decimal("720"),
+    ),
+    _OperationMasterSpec(
+        "OP-EMB-ZRD",
+        "Hand Embroidery — Zardosi",
+        OperationType.EMBROIDERY,
+        "CC-KAR-RSD",
+        Decimal("600"),
+    ),
+    _OperationMasterSpec(
+        "OP-CUT-STD", "Cut to pattern", OperationType.STITCHING, "CC-INH-STC", Decimal("45")
+    ),
+    _OperationMasterSpec(
+        "OP-STC-MNL",
+        "Stitch — straight assembly",
+        OperationType.STITCHING,
+        "CC-INH-STC",
+        Decimal("90"),
+    ),
+    _OperationMasterSpec(
+        "OP-STC-FNS",
+        "Stitch — finishing & trim",
+        OperationType.STITCHING,
+        "CC-INH-STC",
+        Decimal("60"),
+    ),
+    _OperationMasterSpec(
+        "OP-QC-VIS", "Quality Check — visual", OperationType.QC, "CC-QC-INH", Decimal("15")
+    ),
+    _OperationMasterSpec(
+        "OP-PCK-FLD", "Fold & poly-pack", OperationType.PACKING, "CC-PCK-MGD", Decimal("8")
+    ),
+)
+
+
+@dataclass(frozen=True)
+class _DesignSpec:
+    code: str
+    name: str
+    finished_item_code: str
+    description: str | None = None
+
+
+_DESIGNS: tuple[_DesignSpec, ...] = (
+    _DesignSpec(
+        "DSN-ANK-PNK",
+        "Anarkali Pink Embroidered",
+        "SUIT-CHAN-001",
+        description="Pink embroidered Anarkali set — Chanderi base with zardosi work.",
+    ),
+    _DesignSpec(
+        "DSN-SHR-GLD",
+        "Sharara Set Gold",
+        "SUIT-BANA-001",
+        description="Gold Banarasi sharara with zari border and pearl finish.",
+    ),
+    _DesignSpec(
+        "DSN-SLW-BLU",
+        "Salwar Kameez Blue Cotton",
+        "SUIT-COTT-001",
+        description="Daily-wear cotton salwar kameez in blue floral.",
+    ),
+    _DesignSpec(
+        "DSN-LHG-MRN",
+        "Lehenga Maroon Banarasi",
+        "SUIT-SILK-001",
+        description="Maroon Banarasi-style lehenga with silver sequins.",
+    ),
+)
+
+
+# Per-design BOM line plan. Each entry is (item_code, qty_required_per_unit, UOM).
+# Lines must reference items that have on-hand stock with non-zero
+# weighted-average cost (opening_stock + procurement seed both populate
+# ``stock_position.current_cost`` on every line item below).
+_BOM_LINES_BY_DESIGN: dict[str, list[tuple[str, Decimal, UomType]]] = {
+    "DSN-ANK-PNK": [
+        ("FAB-COTT-44", Decimal("2.4"), UomType.METER),
+        ("FAB-CHIF-44", Decimal("1.8"), UomType.METER),
+        ("TRIM-LACE-GOLD", Decimal("1.5"), UomType.METER),
+        ("TRIM-BUTTON-PEARL", Decimal("4"), UomType.PIECE),
+    ],
+    "DSN-SHR-GLD": [
+        ("FAB-SILK-44", Decimal("3.2"), UomType.METER),
+        ("TRIM-LACE-GOLD", Decimal("2.0"), UomType.METER),
+        ("TRIM-ZARI-RED", Decimal("1.2"), UomType.METER),
+    ],
+    "DSN-SLW-BLU": [
+        ("FAB-COTT-PRT", Decimal("3.0"), UomType.METER),
+        ("TRIM-LACE-SILV", Decimal("0.8"), UomType.METER),
+        ("TRIM-BUTTON-PEARL", Decimal("6"), UomType.PIECE),
+    ],
+    "DSN-LHG-MRN": [
+        ("FAB-SILK-44", Decimal("4.5"), UomType.METER),
+        ("FAB-CHIF-44", Decimal("2.0"), UomType.METER),
+        ("TRIM-ZARI-RED", Decimal("3.0"), UomType.METER),
+        ("TRIM-LACE-SILV", Decimal("1.2"), UomType.METER),
+    ],
+}
+
+
+# Per-design routing operation sequence + edge type. Each routing is a
+# FINISH_TO_START linear chain (the simplest valid DAG): the DSN-ANK-PNK
+# and DSN-LHG-MRN routings reserve the embroidery op (OP-EMB-ZRD) as
+# the candidate KARIGAR step on the MO side. ``op_codes`` is the list
+# of ``OperationMaster.code`` values in topological order.
+_ROUTING_OP_CODES_BY_DESIGN: dict[str, list[str]] = {
+    "DSN-ANK-PNK": ["OP-CUT-STD", "OP-EMB-ZRD", "OP-STC-MNL", "OP-QC-VIS", "OP-PCK-FLD"],
+    "DSN-SHR-GLD": ["OP-CUT-STD", "OP-STC-MNL", "OP-STC-FNS", "OP-QC-VIS", "OP-PCK-FLD"],
+    "DSN-SLW-BLU": ["OP-CUT-STD", "OP-STC-MNL", "OP-QC-VIS", "OP-PCK-FLD"],
+    "DSN-LHG-MRN": ["OP-CUT-STD", "OP-EMB-ZRD", "OP-STC-MNL", "OP-QC-VIS", "OP-PCK-FLD"],
+}
+
+
+_DEMO_MO_SERIES = "MO-DEMO"
+
+
+def _seed_manufacturing(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    parties: dict[str, Party],
+    items: dict[str, Item],
+    today: datetime.date,
+    result: _SeedResult,
+) -> None:
+    """Seed the manufacturing master layer + 7 MOs covering every state.
+
+    The function is idempotent: masters are skip-if-exists, MOs are
+    skipped if any MO under the demo series already exists for the firm
+    (the lifecycle setup is non-trivial to "re-create from where we are";
+    a full rerun without a fresh DB is best handled by drop-and-recreate
+    via ``docker compose down -v``).
+    """
+    cost_centres = _seed_cost_centres(session, org_id=org_id, firm_id=firm_id, result=result)
+    operation_masters = _seed_operation_masters(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        cost_centres=cost_centres,
+        result=result,
+    )
+    designs = _seed_designs(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        items=items,
+        result=result,
+    )
+    boms = _seed_boms(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        items=items,
+        designs=designs,
+        result=result,
+    )
+    routings = _seed_routings(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        designs=designs,
+        operation_masters=operation_masters,
+        result=result,
+    )
+    _seed_manufacturing_orders(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        parties=parties,
+        items=items,
+        designs=designs,
+        boms=boms,
+        routings=routings,
+        operation_masters=operation_masters,
+        today=today,
+        result=result,
+    )
+
+
+def _seed_cost_centres(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    result: _SeedResult,
+) -> dict[str, CostCentre]:
+    """Create the cost centres, skip-if-exists on ``(firm, code)``."""
+    existing = {
+        cc.code: cc
+        for cc in session.execute(
+            select(CostCentre).where(
+                CostCentre.org_id == org_id,
+                CostCentre.firm_id == firm_id,
+                CostCentre.deleted_at.is_(None),
+            )
+        ).scalars()
+    }
+    out: dict[str, CostCentre] = dict(existing)
+    for spec in _COST_CENTRES:
+        if spec.code in existing:
+            continue
+        cc = manufacturing_masters_service.create_cost_centre(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            code=spec.code,
+            name=spec.name,
+            cost_centre_type=spec.cost_centre_type,
+        )
+        out[spec.code] = cc
+    # Re-count only the demo cost centres so the summary stays meaningful
+    # if the firm has its own cost centres.
+    result.cost_centres = sum(1 for c in _COST_CENTRES if c.code in out)
+    return out
+
+
+def _seed_operation_masters(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    cost_centres: dict[str, CostCentre],
+    result: _SeedResult,
+) -> dict[str, OperationMaster]:
+    """Create operation masters, linked to the cost centres seeded above.
+
+    Skip-if-exists on ``(firm, code)``.
+    """
+    existing = {
+        op.code: op
+        for op in session.execute(
+            select(OperationMaster).where(
+                OperationMaster.org_id == org_id,
+                OperationMaster.firm_id == firm_id,
+                OperationMaster.deleted_at.is_(None),
+            )
+        ).scalars()
+    }
+    out: dict[str, OperationMaster] = dict(existing)
+    for spec in _OPERATION_MASTERS:
+        if spec.code in existing:
+            continue
+        cc = cost_centres.get(spec.cost_centre_code)
+        op = manufacturing_masters_service.create_operation_master(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            code=spec.code,
+            name=spec.name,
+            operation_type=spec.operation_type,
+            default_duration_mins=spec.default_duration_mins,
+            cost_centre_id=cc.cost_centre_id if cc else None,
+        )
+        out[spec.code] = op
+    result.operation_masters = sum(1 for o in _OPERATION_MASTERS if o.code in out)
+    return out
+
+
+def _seed_designs(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    items: dict[str, Item],
+    result: _SeedResult,
+) -> dict[str, Design]:
+    """Create designs, linked to existing finished-suit items."""
+    existing = {
+        d.code: d
+        for d in session.execute(
+            select(Design).where(
+                Design.org_id == org_id,
+                Design.firm_id == firm_id,
+                Design.deleted_at.is_(None),
+            )
+        ).scalars()
+    }
+    out: dict[str, Design] = dict(existing)
+    for spec in _DESIGNS:
+        if spec.code in existing:
+            continue
+        # The design table doesn't reference the finished item directly —
+        # that link lives on the BOM. We still skip designs whose intended
+        # finished item is missing so downstream BOM creation has a clean
+        # mapping.
+        if spec.finished_item_code not in items:
+            continue
+        design = manufacturing_masters_service.create_design(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            code=spec.code,
+            name=spec.name,
+            description=spec.description,
+        )
+        out[spec.code] = design
+    result.designs = sum(1 for d in _DESIGNS if d.code in out)
+    return out
+
+
+def _seed_boms(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    items: dict[str, Item],
+    designs: dict[str, Design],
+    result: _SeedResult,
+) -> dict[str, Bom]:
+    """Create one active BOM per design, plus 2 historic versions on the
+    Anarkali design so the BOM list has visible version history.
+
+    Returns a dict keyed by design code, pointing at the active BOM.
+    """
+    out: dict[str, Bom] = {}
+    boms_total = 0
+    for design_spec in _DESIGNS:
+        design = designs.get(design_spec.code)
+        if design is None:
+            continue
+        finished_item = items.get(design_spec.finished_item_code)
+        if finished_item is None:
+            continue
+        line_specs = _BOM_LINES_BY_DESIGN.get(design_spec.code, [])
+        if not line_specs:
+            continue
+
+        # Check for existing BOMs on this partition so the rerun path is
+        # clean. If any active BOM exists for (design, finished_item) we
+        # don't re-mint — the active uniqueness invariant lives in
+        # bom_service.
+        existing_active = session.execute(
+            select(Bom).where(
+                Bom.org_id == org_id,
+                Bom.firm_id == firm_id,
+                Bom.design_id == design.design_id,
+                Bom.finished_item_id == finished_item.item_id,
+                Bom.is_active.is_(True),
+                Bom.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if existing_active is not None:
+            out[design_spec.code] = existing_active
+            boms_total += int(
+                session.execute(
+                    select(func.count(Bom.bom_id)).where(
+                        Bom.org_id == org_id,
+                        Bom.firm_id == firm_id,
+                        Bom.design_id == design.design_id,
+                        Bom.finished_item_id == finished_item.item_id,
+                        Bom.deleted_at.is_(None),
+                    )
+                ).scalar_one()
+                or 0
+            )
+            continue
+
+        # Anarkali gets two prior versions so the version history list
+        # has something to render. They auto-deactivate when the next
+        # create_bom flips the active flag — bom_service handles the
+        # atomic demote.
+        if design_spec.code == "DSN-ANK-PNK":
+            # v1 — single fabric base, minimal lines.
+            bom_service.create_bom(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                design_id=design.design_id,
+                finished_item_id=finished_item.item_id,
+                lines=[
+                    bom_service.BomLineInput(
+                        item_id=items["FAB-COTT-44"].item_id,
+                        qty_required=Decimal("2.6"),
+                        uom=UomType.METER,
+                    ),
+                    bom_service.BomLineInput(
+                        item_id=items["TRIM-LACE-GOLD"].item_id,
+                        qty_required=Decimal("1.2"),
+                        uom=UomType.METER,
+                    ),
+                ],
+            )
+            # v2 — slightly richer (still archived once v3 lands).
+            bom_service.create_bom(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                design_id=design.design_id,
+                finished_item_id=finished_item.item_id,
+                lines=[
+                    bom_service.BomLineInput(
+                        item_id=items["FAB-COTT-44"].item_id,
+                        qty_required=Decimal("2.5"),
+                        uom=UomType.METER,
+                    ),
+                    bom_service.BomLineInput(
+                        item_id=items["FAB-CHIF-44"].item_id,
+                        qty_required=Decimal("1.5"),
+                        uom=UomType.METER,
+                    ),
+                    bom_service.BomLineInput(
+                        item_id=items["TRIM-LACE-GOLD"].item_id,
+                        qty_required=Decimal("1.4"),
+                        uom=UomType.METER,
+                    ),
+                ],
+            )
+
+        line_inputs: list[bom_service.BomLineInput] = []
+        for line_code, qty, uom in line_specs:
+            line_item = items.get(line_code)
+            if line_item is None:
+                continue
+            line_inputs.append(
+                bom_service.BomLineInput(
+                    item_id=line_item.item_id,
+                    qty_required=qty,
+                    uom=uom,
+                )
+            )
+        if not line_inputs:
+            continue
+        bom = bom_service.create_bom(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            design_id=design.design_id,
+            finished_item_id=finished_item.item_id,
+            lines=line_inputs,
+        )
+        out[design_spec.code] = bom
+        boms_total += int(
+            session.execute(
+                select(func.count(Bom.bom_id)).where(
+                    Bom.org_id == org_id,
+                    Bom.firm_id == firm_id,
+                    Bom.design_id == design.design_id,
+                    Bom.finished_item_id == finished_item.item_id,
+                    Bom.deleted_at.is_(None),
+                )
+            ).scalar_one()
+            or 0
+        )
+
+    result.boms = boms_total
+    return out
+
+
+def _seed_routings(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    designs: dict[str, Design],
+    operation_masters: dict[str, OperationMaster],
+    result: _SeedResult,
+) -> dict[str, Routing]:
+    """Create one active routing per design as a FINISH_TO_START chain.
+
+    Skip-if-exists on ``(firm, code)``: routing.code is derived from the
+    design code so reruns find the existing routing and short-circuit.
+    """
+    out: dict[str, Routing] = {}
+    for design_spec in _DESIGNS:
+        design = designs.get(design_spec.code)
+        if design is None:
+            continue
+        op_codes = _ROUTING_OP_CODES_BY_DESIGN.get(design_spec.code, [])
+        if len(op_codes) < 2:
+            continue
+        # Routing code: ``RTG-<design code without DSN- prefix>``.
+        routing_code = f"RTG-{design_spec.code.removeprefix('DSN-')}"
+
+        existing = session.execute(
+            select(Routing).where(
+                Routing.org_id == org_id,
+                Routing.firm_id == firm_id,
+                Routing.code == routing_code,
+                Routing.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            out[design_spec.code] = existing
+            continue
+
+        # Build the FINISH_TO_START chain (linear DAG).
+        edges: list[routing_service.RoutingEdgeInput] = []
+        for idx in range(len(op_codes) - 1):
+            from_op = operation_masters.get(op_codes[idx])
+            to_op = operation_masters.get(op_codes[idx + 1])
+            if from_op is None or to_op is None:
+                continue
+            edges.append(
+                routing_service.RoutingEdgeInput(
+                    from_operation_id=from_op.operation_master_id,
+                    to_operation_id=to_op.operation_master_id,
+                    edge_type=RoutingEdgeType.FINISH_TO_START,
+                    sequence=idx + 1,
+                )
+            )
+        if not edges:
+            continue
+        routing = routing_service.create_routing(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            design_id=design.design_id,
+            code=routing_code,
+            edges=edges,
+        )
+        out[design_spec.code] = routing
+
+    result.routings = sum(1 for d in _DESIGNS if d.code in out)
+    return out
+
+
+def _set_op_executor_karigar(*, op: MoOperation, karigar_party_id: uuid.UUID) -> None:
+    """Flip an MoOperation's executor to KARIGAR in-place. ``mo_service``
+    seeds every op as IN_HOUSE; the seed script needs to demote one
+    embroidery op to KARIGAR so the dispatch demo MO can drive the
+    karigar_send_out_service path.
+
+    No dedicated service exists for this column flip (it's a planning-
+    time tweak, not a state-machine transition), so the seed mutates the
+    column directly. Matches the test fixtures' pattern in
+    ``test_qc_rework_clone.py``.
+    """
+    op.executor = "KARIGAR"
+    op.karigar_party_id = karigar_party_id
+
+
+def _find_op_by_code(
+    *,
+    operations: list[MoOperation],
+    operation_masters: dict[str, OperationMaster],
+    code: str,
+) -> MoOperation | None:
+    """Look up an MoOperation by the OperationMaster code that it
+    references. The seed needs this to drive per-op state transitions
+    (start Cut, dispatch Embroidery to karigar, etc.) without leaking
+    op-master-id lookup into every transition.
+    """
+    target = operation_masters.get(code)
+    if target is None:
+        return None
+    for op in operations:
+        if op.operation_master_id == target.operation_master_id:
+            return op
+    return None
+
+
+def _seed_manufacturing_orders(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    parties: dict[str, Party],
+    items: dict[str, Item],
+    designs: dict[str, Design],
+    boms: dict[str, Bom],
+    routings: dict[str, Routing],
+    operation_masters: dict[str, OperationMaster],
+    today: datetime.date,
+    result: _SeedResult,
+) -> None:
+    """Create 7 MOs spanning every lifecycle state.
+
+    Idempotency gate: if any MO under the demo series already exists for
+    the firm, skip the entire section. The MO lifecycle setup is not
+    cleanly rerunnable in-place (e.g. you can't "re-issue materials"
+    against an already-issued MO without re-creating it from scratch).
+    Drop the dev DB if you need a fresh run.
+    """
+    existing = list(
+        session.execute(
+            select(ManufacturingOrder).where(
+                ManufacturingOrder.org_id == org_id,
+                ManufacturingOrder.firm_id == firm_id,
+                ManufacturingOrder.series == _DEMO_MO_SERIES,
+                ManufacturingOrder.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    if existing:
+        result.manufacturing_orders = len(existing)
+        return
+
+    karigar = parties.get("K001") or parties.get("K002")
+    if karigar is None:
+        return
+
+    # Pick an in-stock raw fabric for the karigar-dispatch demo MO. The
+    # raw fabrics seeded in opening stock + PI all have ample on-hand;
+    # the dispatch only needs ~5m so any of them works. Prefer COTT-44
+    # (largest opening stock); fall back to whatever the seed loaded.
+    dispatch_item = items.get("FAB-COTT-44") or items.get("FAB-SILK-44") or items.get("FAB-CHIF-44")
+    if dispatch_item is None:
+        # No raw fabric available — skip the entire manufacturing section
+        # rather than crash. This branch is defensive; the items seed
+        # always loads the cotton fabric.
+        return
+
+    planned_start = today - datetime.timedelta(days=5)
+    planned_end = today + datetime.timedelta(days=10)
+    planned_qty = Decimal("10")
+
+    # 7 MO specs: (design_code, planned_qty, state_label). The state
+    # label drives how far we walk the lifecycle for that MO.
+    mo_specs: list[tuple[str, Decimal, str]] = [
+        ("DSN-SLW-BLU", planned_qty, "DRAFT"),
+        ("DSN-SHR-GLD", planned_qty, "RELEASED"),
+        ("DSN-ANK-PNK", planned_qty, "MATERIAL_ISSUED"),
+        ("DSN-SHR-GLD", planned_qty, "CUT_DONE_STITCH_PENDING"),
+        ("DSN-ANK-PNK", planned_qty, "KARIGAR_DISPATCHED"),
+        ("DSN-SLW-BLU", planned_qty, "QC_PENDING"),
+        ("DSN-LHG-MRN", planned_qty, "COMPLETED"),
+    ]
+
+    mos_created = 0
+    for design_code, qty, state_label in mo_specs:
+        design = designs.get(design_code)
+        bom = boms.get(design_code)
+        routing = routings.get(design_code)
+        if design is None or bom is None or routing is None:
+            continue
+
+        finished_item = items[design_code_to_finished_item_code()[design_code]]
+        try:
+            _drive_mo_to_state(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                design_id=design.design_id,
+                finished_item_id=finished_item.item_id,
+                qty=qty,
+                bom_id=bom.bom_id,
+                routing_id=routing.routing_id,
+                state_label=state_label,
+                karigar_party_id=karigar.party_id,
+                operation_masters=operation_masters,
+                planned_start_date=planned_start,
+                planned_end_date=planned_end,
+                karigar_dispatch_item_id=dispatch_item.item_id,
+            )
+            mos_created += 1
+        except Exception:  # pragma: no cover — defensive
+            # If any single MO fails to drive (e.g. insufficient stock
+            # after concurrent demo reruns), keep the others.
+            raise
+
+    result.manufacturing_orders = mos_created
+
+
+def design_code_to_finished_item_code() -> dict[str, str]:
+    """Return ``{design_code: finished_item_code}`` for the 4 demo designs."""
+    return {spec.code: spec.finished_item_code for spec in _DESIGNS}
+
+
+def _drive_mo_to_state(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    design_id: uuid.UUID,
+    finished_item_id: uuid.UUID,
+    qty: Decimal,
+    bom_id: uuid.UUID,
+    routing_id: uuid.UUID,
+    state_label: str,
+    karigar_party_id: uuid.UUID,
+    operation_masters: dict[str, OperationMaster],
+    planned_start_date: datetime.date,
+    planned_end_date: datetime.date,
+    karigar_dispatch_item_id: uuid.UUID,
+) -> ManufacturingOrder:
+    """Drive a freshly-created MO through the lifecycle to ``state_label``.
+
+    Each state is the cumulative sum of transitions that came before it
+    in the canonical chain: DRAFT → RELEASED → MATERIAL_ISSUED →
+    CUT_DONE_STITCH_PENDING / KARIGAR_DISPATCHED → QC_PENDING →
+    COMPLETED.
+    """
+    mo = mo_service.create_mo(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        design_id=design_id,
+        finished_item_id=finished_item_id,
+        qty_to_produce=qty,
+        bom_id=bom_id,
+        routing_id=routing_id,
+        planned_start_date=planned_start_date,
+        planned_end_date=planned_end_date,
+        narration=f"seed_demo · {state_label}",
+        series=_DEMO_MO_SERIES,
+    )
+
+    if state_label == "DRAFT":
+        return mo
+
+    mo_service.release_mo(session, org_id=org_id, mo_id=mo.manufacturing_order_id)
+    if state_label == "RELEASED":
+        return mo
+
+    # KARIGAR_DISPATCHED takes a different path: it skips material_issue
+    # (which would consume raw fabric from MAIN inventory) and instead
+    # drives the MO state via ``start_mo``. The dispatch then ships a
+    # small qty of an in-stock raw fabric to the karigar. The textile-
+    # trade reality is that pieces would already have been cut + the
+    # karigar would be receiving cut pieces; we approximate with a raw-
+    # fabric dispatch so the demo doesn't need an in-stock finished item.
+    if state_label == "KARIGAR_DISPATCHED":
+        mo = mo_service.get_mo(session, org_id=org_id, mo_id=mo.manufacturing_order_id)
+        emb_op = _find_op_by_code(
+            operations=list(mo.operations),
+            operation_masters=operation_masters,
+            code="OP-EMB-ZRD",
+        )
+        if emb_op is not None:
+            _set_op_executor_karigar(op=emb_op, karigar_party_id=karigar_party_id)
+            session.flush()
+        # Move MO to IN_PROGRESS without touching inventory.
+        mo_service.start_mo(session, org_id=org_id, mo_id=mo.manufacturing_order_id)
+        mo = mo_service.get_mo(session, org_id=org_id, mo_id=mo.manufacturing_order_id)
+        ops = list(mo.operations)
+        cut_op = _find_op_by_code(
+            operations=ops, operation_masters=operation_masters, code="OP-CUT-STD"
+        )
+        if cut_op is not None:
+            _drive_op_in_house_close(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                op_id=cut_op.mo_operation_id,
+                qty=qty,
+            )
+        emb_op = _find_op_by_code(
+            operations=ops, operation_masters=operation_masters, code="OP-EMB-ZRD"
+        )
+        if emb_op is not None:
+            # Override the dispatch item to a raw fabric we have plenty
+            # of (FAB-COTT-44 / FAB-SILK-44 — both seeded with 100+ on
+            # hand). The default item resolution would pick the finished
+            # item, which the MAIN warehouse hasn't produced yet.
+            karigar_send_out_service.dispatch_to_karigar(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                mo_operation_id=emb_op.mo_operation_id,
+                karigar_party_id=karigar_party_id,
+                qty_dispatched=Decimal("5"),
+                dispatch_date=planned_start_date,
+                dispatched_by=None,
+                item_id=karigar_dispatch_item_id,
+                uom="METER",
+                narration="seed_demo · karigar dispatch",
+            )
+        return mo
+
+    # Issue ALL materials in one shot — auto-transitions MO to IN_PROGRESS
+    # and posts the DR 1310 WIP / CR 1300 Inventory voucher.
+    mo = mo_service.get_mo(session, org_id=org_id, mo_id=mo.manufacturing_order_id)
+    material_lines = [
+        material_issue_service.MaterialIssueLineInput(
+            mo_material_line_id=line.mo_material_line_id,
+            qty_to_issue=Decimal(line.qty_required or 0),
+        )
+        for line in mo.material_lines
+        if line.deleted_at is None and Decimal(line.qty_required or 0) > 0
+    ]
+    if not material_lines:
+        return mo
+    material_issue_service.issue_materials(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        mo_id=mo.manufacturing_order_id,
+        lines=material_lines,
+        issued_by=None,
+        narration=f"seed_demo · issue against {state_label}",
+    )
+
+    if state_label == "MATERIAL_ISSUED":
+        return mo
+
+    # Reload MO so we have fresh operations + state.
+    mo = mo_service.get_mo(session, org_id=org_id, mo_id=mo.manufacturing_order_id)
+    ops = list(mo.operations)
+
+    cut_op = _find_op_by_code(
+        operations=ops, operation_masters=operation_masters, code="OP-CUT-STD"
+    )
+
+    # CUT_DONE_STITCH_PENDING: walk Cut to CLOSED, leave Stitch in PENDING.
+    if state_label == "CUT_DONE_STITCH_PENDING":
+        if cut_op is not None:
+            _drive_op_in_house_close(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                op_id=cut_op.mo_operation_id,
+                qty=qty,
+            )
+        return mo
+
+    # QC_PENDING + COMPLETED: walk every non-QC, non-Pack production op
+    # to CLOSED in topological order (by operation_sequence), then start
+    # the QC inspection. For COMPLETED we additionally PASS the QC
+    # verdict + close any Pack op + drain the WIP pool.
+    #
+    # Looking up by ``OperationMaster.code`` would miss any op the
+    # routing happens to carry that isn't in our hard-coded list; walking
+    # ``ops`` sorted by ``operation_sequence`` keeps the FINISH_TO_START
+    # predecessor invariant satisfied for every routing variant.
+    qc_op = _find_op_by_code(operations=ops, operation_masters=operation_masters, code="OP-QC-VIS")
+    pack_op = _find_op_by_code(
+        operations=ops, operation_masters=operation_masters, code="OP-PCK-FLD"
+    )
+    pre_qc_ops = sorted(
+        (
+            o
+            for o in ops
+            if o.deleted_at is None
+            and o.executor == "IN_HOUSE"
+            and (qc_op is None or o.mo_operation_id != qc_op.mo_operation_id)
+            and (pack_op is None or o.mo_operation_id != pack_op.mo_operation_id)
+        ),
+        key=lambda o: (o.operation_sequence or 0, o.created_at),
+    )
+    for op in pre_qc_ops:
+        _drive_op_in_house_close(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            op_id=op.mo_operation_id,
+            qty=qty,
+        )
+
+    # Start the QC inspection.
+    if qc_op is not None:
+        qc_service.start_qc_inspection(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            mo_operation_id=qc_op.mo_operation_id,
+            started_by=None,
+            narration="seed_demo · QC start",
+        )
+
+    if state_label == "QC_PENDING":
+        return mo
+
+    # COMPLETED — record QC PASS, close Pack, then drain WIP.
+    if qc_op is not None:
+        qc_service.record_qc_result(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            mo_operation_id=qc_op.mo_operation_id,
+            qty_passed=qty,
+            qty_rejected=Decimal("0"),
+            qty_byproduct=Decimal("0"),
+            qty_wastage=Decimal("0"),
+            qty_rework=Decimal("0"),
+            narration="seed_demo · QC PASS",
+            recorded_by=None,
+        )
+
+    # Close any remaining in-house ops (Pack).
+    mo = mo_service.get_mo(session, org_id=org_id, mo_id=mo.manufacturing_order_id)
+    for op in mo.operations:
+        if op.deleted_at is not None:
+            continue
+        if op.state.value in {"CLOSED", "SKIPPED", "CANCELLED"}:
+            continue
+        if op.executor != "IN_HOUSE":
+            continue
+        _drive_op_in_house_close(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            op_id=op.mo_operation_id,
+            qty=qty,
+        )
+
+    mo_completion_service.complete_mo_with_settlement(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        mo_id=mo.manufacturing_order_id,
+        produced_qty=qty,
+        completed_by=None,
+        narration="seed_demo · MO completion",
+    )
+    return mo
+
+
+def _drive_op_in_house_close(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    op_id: uuid.UUID,
+    qty: Decimal,
+) -> None:
+    """PENDING → IN_PROGRESS → CLOSED for one in-house op at full qty."""
+    operation_progress_service.start_operation(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        mo_operation_id=op_id,
+        started_by=None,
+    )
+    operation_progress_service.record_qty_in(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        mo_operation_id=op_id,
+        qty_in=qty,
+        recorded_by=None,
+    )
+    operation_progress_service.record_qty_out(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        mo_operation_id=op_id,
+        qty_out=qty,
+        recorded_by=None,
+    )
+    operation_progress_service.complete_operation(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        mo_operation_id=op_id,
+        completed_by=None,
+    )
 
 
 __all__ = ["seed_demo"]

@@ -202,8 +202,49 @@ def main(argv: list[str] | None = None) -> int:
         engine.dispose()
 
     print("seed_demo: done. summary:")
-    for k, v in summary.items():
-        print(f"  {k}: {v}")
+    # Group the summary keys so the operator sees masters → transactions →
+    # manufacturing at a glance. New keys land in the [other] section.
+    sections: list[tuple[str, tuple[str, ...]]] = [
+        ("masters", ("parties", "items", "skus")),
+        (
+            "transactions",
+            (
+                "stock_adjustments",
+                "purchase_orders",
+                "purchase_invoices",
+                "sales_orders",
+                "delivery_challans",
+                "sales_invoices",
+                "receipts",
+                "job_work_orders",
+            ),
+        ),
+        (
+            "manufacturing",
+            (
+                "cost_centres",
+                "operation_masters",
+                "designs",
+                "boms",
+                "routings",
+                "manufacturing_orders",
+            ),
+        ),
+    ]
+    seen: set[str] = set()
+    for section_name, keys in sections:
+        rendered = [(k, summary[k]) for k in keys if k in summary]
+        if not rendered:
+            continue
+        print(f"  [{section_name}]")
+        for k, v in rendered:
+            print(f"    {k}: {v}")
+            seen.add(k)
+    other = [(k, summary[k]) for k in summary if k not in seen]
+    if other:
+        print("  [other]")
+        for k, v in other:
+            print(f"    {k}: {v}")
     return 0
 
 
