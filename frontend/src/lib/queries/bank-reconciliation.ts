@@ -83,6 +83,8 @@ export interface ConfirmInput {
     statement_row_idx: number;
     voucher_id: string;
     statement_ref: string;
+    /** Rupees-as-string (positive magnitude from the statement row). */
+    statement_amount: string;
   }>;
   idempotencyKey: string;
 }

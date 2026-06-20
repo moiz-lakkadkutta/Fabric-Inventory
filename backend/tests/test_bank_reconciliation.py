@@ -893,10 +893,7 @@ def test_bank_account_create_cross_org_ledger_returns_422(
     with sync_engine.connect() as conn:
         conn.execute(text(f"SET LOCAL app.current_org_id = '{me_a['org_id']}'"))
         ledger_id_from_a = conn.execute(
-            text(
-                "SELECT ledger_id FROM ledger "
-                "WHERE org_id = :oid AND code = '1000' LIMIT 1"
-            ),
+            text("SELECT ledger_id FROM ledger WHERE org_id = :oid AND code = '1000' LIMIT 1"),
             {"oid": me_a["org_id"]},
         ).scalar_one()
 
@@ -913,9 +910,7 @@ def test_bank_account_create_cross_org_ledger_returns_422(
     assert resp.status_code == 422, resp.text
 
 
-def test_confirm_amount_mismatch_returns_422(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_confirm_amount_mismatch_returns_422(http_client: TestClient, sync_engine: Engine) -> None:
     """BANK-4: confirm with statement_amount that differs from voucher
     by more than ₹1 must return 422.
 
@@ -941,6 +936,48 @@ def test_confirm_amount_mismatch_returns_422(
         },
     )
     assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.parametrize(
+    ("delta", "expected_status"),
+    [
+        ("0.50", 200),  # within ₹1 tolerance → PASS
+        ("1.50", 422),  # exceeds ₹1 tolerance → REJECT
+    ],
+)
+def test_confirm_amount_boundary_tolerance(
+    http_client: TestClient,
+    sync_engine: Engine,
+    delta: str,
+    expected_status: int,
+) -> None:
+    """BANK-4 boundary: |voucher - statement| <= Rs 1.00 passes; > Rs 1.00 fails.
+
+    Voucher is seeded at Rs 1000.00.
+    Rs 0.50 delta (statement = Rs 1000.50) must be accepted (200).
+    Rs 1.50 delta (statement = Rs 1001.50) must be rejected (422).
+    """
+    me = _signup_owner(http_client)
+    seed = _seed_bank_with_receipt(http_client, sync_engine, me, amount="1000.00")
+    statement_amount = str(Decimal("1000.00") + Decimal(delta))
+
+    resp = http_client.post(
+        "/bank-reconciliation/confirm",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "bank_account_id": seed["bank_account_id"],
+            "matches": [
+                {
+                    "statement_row_idx": 0,
+                    "voucher_id": seed["voucher_id"],
+                    "statement_ref": f"UTR-BOUNDARY-{delta}",
+                    "statement_amount": statement_amount,
+                }
+            ],
+        },
+    )
+    assert resp.status_code == expected_status, resp.text
 
 
 def test_unmatched_as_voucher_control_account_counter_ledger_returns_422(

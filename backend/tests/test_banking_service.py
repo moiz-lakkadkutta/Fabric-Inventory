@@ -320,9 +320,7 @@ def test_list_cheques_for_account(db_session: OrmSession, fresh_org_id: uuid.UUI
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _make_org_with_ledger(
-    db: OrmSession, org_id: uuid.UUID
-) -> uuid.UUID:
+def _make_org_with_ledger(db: OrmSession, org_id: uuid.UUID) -> uuid.UUID:
     """Insert a minimal Organisation + CoaGroup + Ledger under `org_id`;
     return the ledger_id. Uses whatever GUC the caller already set."""
     db.add(
@@ -373,7 +371,7 @@ def test_bank_account_create_with_foreign_org_ledger_raises(
     db_session.execute(text(f"SET LOCAL app.current_org_id = '{fresh_org_id}'"))
 
     # Org B tries to attach org A's ledger — must be rejected.
-    with pytest.raises(AppValidationError, match="[Ll]edger"):
+    with pytest.raises(AppValidationError, match=r"[Ll]edger"):
         banking_service.create_bank_account(
             db_session,
             org_id=fresh_org_id,
