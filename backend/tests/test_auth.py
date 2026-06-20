@@ -441,3 +441,140 @@ def test_reset_with_invalid_token_still_returns_400_not_timing_shortcut(
     )
     assert resp.status_code == 400, resp.text
     assert resp.json()["code"] == "INVALID_RESET_TOKEN"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# DOS-02 / API-7-03 CYCLE-2 — Spy tests: verify_password called on every
+# unknown path (org-missing, user-missing, invalid-reset-token).
+# DB-bound tests (skip locally without Postgres)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_unknown_org_login_calls_verify_password(http_client) -> None:  # type: ignore[no-untyped-def]
+    """Item 1 (blocker): login with a nonexistent org must call
+    identity_service.verify_password BEFORE raising so the ~100ms bcrypt
+    latency is present and the response is timing-indistinguishable from
+    the wrong-password path.
+
+    This test FAILS if _resolve_org_by_name raises before bcrypt runs.
+    """
+    from unittest.mock import patch
+
+    import app.service.identity_service as _ids
+
+    with patch.object(_ids, "verify_password", wraps=_ids.verify_password) as spy:
+        resp = http_client.post(
+            "/auth/login",
+            json={
+                "email": "nobody@example.com",
+                "password": "somepass123",
+                "org_name": "totally-nonexistent-org-zzz-xyz",
+            },
+        )
+    assert resp.status_code == 401, resp.text
+    (
+        spy.assert_called_once(),
+        ("verify_password was NOT called on unknown-org login — timing oracle remains open"),
+    )
+
+
+def test_unknown_user_login_calls_verify_password(http_client) -> None:  # type: ignore[no-untyped-def]
+    """Item 2a: login where org exists but user doesn't must call
+    verify_password (regression guard — must fail if dummy-bcrypt removed).
+    """
+    from unittest.mock import patch
+
+    import app.service.identity_service as _ids
+
+    email = _unique_email()
+    org_name = _unique_org_name()
+    signup = http_client.post("/auth/signup", json=_signup_body(email=email, org_name=org_name))
+    assert signup.status_code == 201
+
+    with patch.object(_ids, "verify_password", wraps=_ids.verify_password) as spy:
+        resp = http_client.post(
+            "/auth/login",
+            json={
+                "email": "no-such-user@example.com",  # not registered in this org
+                "password": "somepass123",
+                "org_name": org_name,  # org exists
+            },
+        )
+    assert resp.status_code == 401, resp.text
+    (
+        spy.assert_called_once(),
+        ("verify_password was NOT called on unknown-user login — timing oracle remains open"),
+    )
+
+
+def test_invalid_reset_token_calls_verify_password(http_client) -> None:  # type: ignore[no-untyped-def]
+    """Item 2b: invalid-reset-token path must call verify_password
+    (TS-06 regression spy — must fail if dummy-bcrypt removed from except block).
+    """
+    from unittest.mock import patch
+
+    import app.service.identity_service as _ids
+
+    with patch.object(_ids, "verify_password", wraps=_ids.verify_password) as spy:
+        resp = http_client.post(
+            "/auth/reset",
+            json={
+                "token": "completely-invalid-token-garbage-x1",
+                "org_name": "nonexistent-org-xyz",
+                "new_password": "newpassword12345",
+            },
+        )
+    assert resp.status_code == 400, resp.text
+    (
+        spy.assert_called_once(),
+        ("verify_password was NOT called on invalid-reset-token path — TS-06 timing fix missing"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Item 3 — PII audit: login_failed must NOT store raw email
+# DB-bound tests (skip locally without Postgres)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_login_failed_audit_omits_raw_email(http_client, sync_engine) -> None:  # type: ignore[no-untyped-def]
+    """Item 3: the login_failed audit row must NOT contain raw attacker-
+    supplied email in changes.after. Email is PII; the reset path already
+    omits it for consistency.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import select, text
+    from sqlalchemy.orm import Session as OrmSession
+
+    from app.models import AuditLog
+
+    email = _unique_email()
+    org_name = _unique_org_name()
+    signup = http_client.post("/auth/signup", json=_signup_body(email=email, org_name=org_name))
+    assert signup.status_code == 201
+    org_id = signup.json()["org_id"]
+
+    bad_login = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": "wrong-password-xyz", "org_name": org_name},
+    )
+    assert bad_login.status_code == 401
+
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        rows = list(
+            s.execute(
+                select(AuditLog).where(
+                    AuditLog.org_id == _uuid.UUID(org_id),
+                    AuditLog.action == "login_failed",
+                )
+            ).scalars()
+        )
+
+    assert len(rows) >= 1, "Expected at least one login_failed audit row"
+    for row in rows:
+        after = (row.changes or {}).get("after", {})
+        assert "email" not in after, (
+            f"Raw email found in login_failed audit changes.after: {after!r} — PII leak"
+        )

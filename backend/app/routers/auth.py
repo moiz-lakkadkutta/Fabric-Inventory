@@ -165,19 +165,24 @@ def _seconds_until(when: datetime.datetime) -> int:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _resolve_org_by_name(session: SyncDBSession, org_name: str) -> Organization:
+def _resolve_org_by_name(session: SyncDBSession, org_name: str) -> Organization | None:
+    """Return the Organization row for ``org_name``, or ``None`` if not found.
+
+    Returns None instead of raising so callers can run dummy bcrypt BEFORE
+    raising InvalidCredentialsError — otherwise the ~1ms org-lookup response
+    is distinguishable from the ~100ms bcrypt response by timing, leaking
+    whether an org name exists (DOS-02 / API-7-03).
+
+    When the org IS found, seeds the RLS GUC so subsequent queries against
+    org-scoped tables (app_user, session, etc.) can see this org's rows.
+    Under fabric_app (NOBYPASSRLS) the GUC must be set before any org-scoped
+    SELECT, otherwise the policy hides every row.
+    """
     org = session.execute(
         select(Organization).where(Organization.name == org_name)
     ).scalar_one_or_none()
     if org is None:
-        # Same generic message login uses — don't leak whether the org exists.
-        raise InvalidCredentialsError("Invalid email or password")
-    # Seed the RLS GUC for the rest of this request so subsequent queries
-    # against org-scoped tables (app_user, session, etc.) can see this
-    # org's rows. Pre-INT-9 the runtime role bypassed RLS, so unset GUC
-    # was harmless; under fabric_app the policy hides every row when the
-    # GUC is unset, which would make login appear to fail with
-    # "user not found" even when credentials are correct.
+        return None
     session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
     return org
 
@@ -348,6 +353,13 @@ def login(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> LoginResponse:
     org = _resolve_org_by_name(db, body.org_name)
+    if org is None:
+        # DOS-02 / API-7-03 — Timing oracle: run dummy bcrypt even when the
+        # org name doesn't exist so the ~1ms org-missing response is not
+        # distinguishable from the ~100ms wrong-password response by timing.
+        # Without this, an attacker can enumerate valid org names via latency.
+        identity_service.verify_password(body.password, identity_service.DUMMY_BCRYPT_HASH)
+        raise InvalidCredentialsError("Invalid email or password")
 
     user = db.execute(
         select(AppUser).where(
@@ -381,6 +393,10 @@ def login(
         # can detect credential-stuffing campaigns. We have org context even
         # when the user wasn't found (org was resolved above).
         #
+        # PII: the email is NOT stored in the audit blob — it is attacker-
+        # supplied plaintext that would accumulate victim emails in the audit
+        # table. The reset path already omits email for the same reason.
+        #
         # We call db.commit() (not just flush()) BEFORE raising so the audit
         # row persists despite the exception. The dependency's session context
         # manager calls session.rollback() on exception — which is a safe
@@ -393,13 +409,13 @@ def login(
             entity_type="auth.session",
             entity_id=user.user_id if user is not None else org.org_id,
             action="login_failed",
-            changes={"after": {"email": body.email}},
+            changes={"after": {}},
         )
         db.commit()
         raise InvalidCredentialsError("Invalid email or password")
 
     # Narrow type: credentials_ok is True iff user is not None.
-    assert user is not None  # noqa: S101  # type narrowing for mypy
+    assert user is not None  # type narrowing for mypy
 
     if user.mfa_enabled:
         # Caller must follow up with POST /auth/mfa-verify (which re-presents
@@ -472,6 +488,11 @@ def mfa_verify(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TokenPairResponse:
     org = _resolve_org_by_name(db, body.org_name)
+    if org is None:
+        # DOS-02 / API-7-03 — Timing oracle: same unknown-org dummy-bcrypt
+        # pattern as the login handler — see login for the full rationale.
+        identity_service.verify_password(body.password, identity_service.DUMMY_BCRYPT_HASH)
+        raise InvalidCredentialsError("Invalid email or password")
 
     user = db.execute(
         select(AppUser).where(
@@ -500,6 +521,7 @@ def mfa_verify(
     if not credentials_ok:
         # CRYPTO-02: audit failed MFA verify attempt (same commit-before-raise
         # pattern as login — see login handler comment above).
+        # PII: email omitted from changes.after — see login handler comment.
         audit_service.emit(
             db,
             org_id=org.org_id,
@@ -508,13 +530,13 @@ def mfa_verify(
             entity_type="auth.session",
             entity_id=user.user_id if user is not None else org.org_id,
             action="login_failed",
-            changes={"after": {"email": body.email, "mfa_stage": True}},
+            changes={"after": {"mfa_stage": True}},
         )
         db.commit()
         raise InvalidCredentialsError("Invalid email or password")
 
     # Narrow type: credentials_ok is True iff user is not None.
-    assert user is not None  # noqa: S101  # type narrowing for mypy
+    assert user is not None  # type narrowing for mypy
 
     if not user.mfa_enabled or user.mfa_secret is None:
         # Don't admit "MFA isn't on for that user"; treat as a generic auth fail.
