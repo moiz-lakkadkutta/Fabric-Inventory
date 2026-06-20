@@ -25,7 +25,9 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session as OrmSession
 
 from app.config import reset_settings
 
@@ -207,4 +209,143 @@ def test_invite_link_not_printed_to_stdout_in_non_dev(
     assert "[invite]" not in captured.out, (
         f"IDM-3 violation: invite link was printed to stdout in staging mode.\n"
         f"Captured: {captured.out!r}"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CRYPTO-02 — admin router RBAC mutations must attribute audit rows
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _query_audit_row(engine: Engine, *, org_id: str, action: str) -> uuid.UUID | None:
+    """Return the user_id from the most recent audit_log row for (org_id, action)."""
+    with OrmSession(engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        row = s.execute(
+            text(
+                "SELECT user_id FROM audit_log "
+                "WHERE org_id = :org_id AND action = :action "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"org_id": org_id, "action": action},
+        ).fetchone()
+    if row is None:
+        return None
+    return uuid.UUID(str(row[0])) if row[0] is not None else None
+
+
+def test_create_role_audit_row_carries_actor_user_id(
+    http_client: TestClient,
+    sync_engine: Engine,
+) -> None:
+    """POST /admin/roles must emit an audit row with user_id = acting owner's user_id."""
+    owner_body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    owner_user_id = uuid.UUID(owner_body["user_id"])
+    org_id = owner_body["org_id"]
+
+    resp = http_client.post(
+        "/admin/roles",
+        headers=_auth(owner_body["access_token"]),
+        json={
+            "code": f"audit_test_{uuid.uuid4().hex[:6]}",
+            "name": "Audit Test Role",
+            "permissions": ["masters.party.read"],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+    actor_in_audit = _query_audit_row(sync_engine, org_id=org_id, action="role_create")
+    assert actor_in_audit is not None, "No audit row found for role_create action"
+    assert actor_in_audit == owner_user_id, (
+        f"CRYPTO-02 violation: audit row user_id={actor_in_audit!r} != "
+        f"actor user_id={owner_user_id!r}; actor_user_id not threaded through router"
+    )
+
+
+def test_update_role_audit_row_carries_actor_user_id(
+    http_client: TestClient,
+    sync_engine: Engine,
+) -> None:
+    """PATCH /admin/roles/{id} must emit an audit row with user_id = acting owner's user_id."""
+    owner_body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    owner_user_id = uuid.UUID(owner_body["user_id"])
+    org_id = owner_body["org_id"]
+
+    # Create the role first
+    create_resp = http_client.post(
+        "/admin/roles",
+        headers=_auth(owner_body["access_token"]),
+        json={
+            "code": f"upd_audit_{uuid.uuid4().hex[:6]}",
+            "name": "Update Audit Role",
+            "permissions": ["masters.party.read"],
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    role_id = create_resp.json()["role_id"]
+
+    # Update it
+    upd_resp = http_client.patch(
+        f"/admin/roles/{role_id}",
+        headers=_auth(owner_body["access_token"]),
+        json={"name": "Updated Audit Role"},
+    )
+    assert upd_resp.status_code == 200, upd_resp.text
+
+    actor_in_audit = _query_audit_row(sync_engine, org_id=org_id, action="role_update")
+    assert actor_in_audit is not None, "No audit row found for role_update action"
+    assert actor_in_audit == owner_user_id, (
+        f"CRYPTO-02 violation: audit row user_id={actor_in_audit!r} != "
+        f"actor user_id={owner_user_id!r}; actor_user_id not threaded through router"
+    )
+
+
+def test_delete_role_audit_row_carries_actor_user_id(
+    http_client: TestClient,
+    sync_engine: Engine,
+) -> None:
+    """DELETE /admin/roles/{id} must emit an audit row with user_id = acting owner's user_id."""
+    owner_body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    owner_user_id = uuid.UUID(owner_body["user_id"])
+    org_id = owner_body["org_id"]
+
+    # Create a role with no users assigned so we can delete it
+    create_resp = http_client.post(
+        "/admin/roles",
+        headers=_auth(owner_body["access_token"]),
+        json={
+            "code": f"del_audit_{uuid.uuid4().hex[:6]}",
+            "name": "Delete Audit Role",
+            "permissions": ["masters.party.read"],
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    role_id = create_resp.json()["role_id"]
+
+    del_resp = http_client.delete(
+        f"/admin/roles/{role_id}",
+        headers=_auth(owner_body["access_token"]),
+    )
+    assert del_resp.status_code == 204, del_resp.text
+
+    actor_in_audit = _query_audit_row(sync_engine, org_id=org_id, action="role_delete")
+    assert actor_in_audit is not None, "No audit row found for role_delete action"
+    assert actor_in_audit == owner_user_id, (
+        f"CRYPTO-02 violation: audit row user_id={actor_in_audit!r} != "
+        f"actor user_id={owner_user_id!r}; actor_user_id not threaded through router"
     )

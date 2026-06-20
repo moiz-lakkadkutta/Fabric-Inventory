@@ -4,7 +4,7 @@ Exposes:
 
 - `seed_system_permissions(session, org_id)`
 - `seed_system_roles(session, org_id)`
-- `assign_role(session, user_id, role_id, firm_id, org_id)`
+- `assign_role(session, user_id, role_id, firm_id, org_id, actor_user_id=None)`
 - `get_user_permissions(session, user_id, firm_id)`
 - `has_permission(session, user_id, firm_id, permission_code)`
 - `create_custom_role(session, org_id, code, name, permission_codes, description)`
@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError, PermissionDeniedError
 from app.models import Permission, Role, RolePermission, UserRole
+from app.service import audit_service
 
 # ──────────────────────────────────────────────────────────────────────
 # System catalog — drives both seeding and the permission set we accept.
@@ -61,6 +62,11 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("masters.party", "create", "Create parties (customer/supplier/karigar/transporter)"),
     ("masters.party", "update", "Update parties"),
     ("masters.party", "read", "View parties"),
+    (
+        "masters.party.pii",
+        "read",
+        "View raw (unmasked) PII on parties: GSTIN, PAN, phone, bank account numbers",
+    ),
     ("masters.item", "create", "Create items / SKUs"),
     ("masters.item", "update", "Update items / SKUs"),
     ("masters.item", "read", "View items / SKUs"),
@@ -263,6 +269,7 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "identity.user.read",
                 "identity.role.read",
                 "masters.party.read",
+                "masters.party.pii.read",
                 "masters.item.read",
                 "masters.coa.manage",
                 "accounting.coa.read",
@@ -327,6 +334,7 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 "masters.party.create",
                 "masters.party.update",
                 "masters.party.read",
+                "masters.party.pii.read",
                 "masters.item.read",
                 "sales.quote.create",
                 "sales.order.create",
@@ -367,6 +375,7 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
             {
                 "masters.item.read",
                 "masters.party.read",
+                "masters.party.pii.read",
                 "purchase.po.read",
                 "purchase.grn.create",
                 "purchase.grn.read",
@@ -400,6 +409,7 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
             {
                 "masters.item.read",
                 "masters.party.read",
+                "masters.party.pii.read",
                 "inventory.stock.read",
                 "inventory.lot.read",
                 "jobwork.order.create",
@@ -567,10 +577,14 @@ def assign_role(
     role_id: uuid.UUID,
     firm_id: uuid.UUID | None,
     org_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
 ) -> UserRole:
     """Create a UserRole row. Idempotent on (user, role, firm) — `firm_id=None`
     means org-level scope (one-of-a-kind per user/role pair, enforced by the
     partial unique index `uq_user_role_user_role_firm`).
+
+    `actor_user_id` is the operator who triggered this assignment (used for
+    audit). None is acceptable for bootstrap paths where no human actor exists.
     """
     where = [UserRole.user_id == user_id, UserRole.role_id == role_id]
     if firm_id is None:
@@ -583,6 +597,16 @@ def assign_role(
     user_role = UserRole(org_id=org_id, user_id=user_id, role_id=role_id, firm_id=firm_id)
     session.add(user_role)
     session.flush()
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        user_id=actor_user_id,
+        entity_type="UserRole",
+        entity_id=user_role.user_role_id,
+        action="role_assign",
+        changes={"user_id": str(user_id), "role_id": str(role_id)},
+    )
     return user_role
 
 
@@ -637,6 +661,7 @@ def create_custom_role(
     name: str,
     permission_codes: Iterable[str],
     description: str | None = None,
+    actor_user_id: uuid.UUID | None = None,
 ) -> Role:
     """Create a non-system role with the given permission grants.
 
@@ -647,6 +672,7 @@ def create_custom_role(
 
     The Owner-only gate lives in the router that calls this — services
     don't enforce permissions on themselves (that would be circular).
+    `actor_user_id` is used for audit; None is accepted for system paths.
     """
     if not code or not name:
         raise AppValidationError("Custom role requires both `code` and `name`")
@@ -679,6 +705,17 @@ def create_custom_role(
     if grants:
         session.add_all(grants)
         session.flush()
+
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=None,
+        user_id=actor_user_id,
+        entity_type="Role",
+        entity_id=role.role_id,
+        action="role_create",
+        changes={"code": code, "name": name, "permissions": list(requested)},
+    )
     return role
 
 
@@ -698,6 +735,7 @@ def update_custom_role(
     name: str | None = None,
     description: str | None = None,
     permission_codes: Iterable[str] | None = None,
+    actor_user_id: uuid.UUID | None = None,
 ) -> Role:
     """Update name/description/permission grants on a non-system role.
 
@@ -766,6 +804,19 @@ def update_custom_role(
             session.add_all(new_grants)
             session.flush()
 
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=None,
+        user_id=actor_user_id,
+        entity_type="Role",
+        entity_id=role.role_id,
+        action="role_update",
+        changes={
+            "name": name,
+            "permission_codes": list(permission_codes) if permission_codes is not None else None,
+        },
+    )
     return role
 
 
@@ -774,6 +825,7 @@ def delete_custom_role(
     *,
     org_id: uuid.UUID,
     role_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
 ) -> None:
     """Soft-delete a non-system role.
 
@@ -783,6 +835,8 @@ def delete_custom_role(
       - No live `UserRole` rows reference it — refuse delete if users are
         still assigned (Admin must reassign first; saves us from leaving
         users with zero effective permissions).
+
+    `actor_user_id` is used for audit; None is accepted for system paths.
     """
     role = session.execute(
         select(Role).where(
@@ -808,6 +862,16 @@ def delete_custom_role(
 
     role.deleted_at = _dt.datetime.now(_dt.UTC)
     session.flush()
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=None,
+        user_id=actor_user_id,
+        entity_type="Role",
+        entity_id=role.role_id,
+        action="role_delete",
+        changes={"code": role.code, "name": role.name},
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
