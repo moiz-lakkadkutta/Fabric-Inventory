@@ -21,7 +21,6 @@ from app.models import Firm, Organization
 from app.service.common_guards import assert_firm_in_org
 from app.utils.crypto import generate_dek, wrap_dek
 
-
 # ──────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────
@@ -85,7 +84,7 @@ def test_soft_deleted_firm_raises(db_session: OrmSession) -> None:
     firm = _make_firm(db_session, org)
 
     # Soft-delete it.
-    firm.deleted_at = datetime.datetime.now(tz=datetime.timezone.utc)
+    firm.deleted_at = datetime.datetime.now(tz=datetime.UTC)
     db_session.flush()
 
     with pytest.raises(AppValidationError, match=str(firm.firm_id)):
