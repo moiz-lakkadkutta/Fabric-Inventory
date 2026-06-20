@@ -379,11 +379,15 @@ def change_user_role(
     `new_role_id`.
 
     Guards (PRIV-1 / IDM-1):
-      (a) actor == target → PermissionDeniedError("Cannot change your own role")
-          Prevents self-promotion regardless of what role the actor has.
-      (b) new role's permission set ⊆ actor's effective permissions (derived
+      (a) new role's permission set ⊆ actor's effective permissions (derived
           SERVER-SIDE from the DB, not from the JWT). Prevents a low-priv
-          caller from assigning a role whose perms exceed their own.
+          caller from assigning a role whose perms exceed their own — this
+          alone closes self-promotion (a low-priv actor's target Owner role
+          has perms ⊄ theirs).
+      (b) actor == target AND the change would escalate (new role grants perms
+          the actor lacks) → PermissionDeniedError with a self-specific message.
+          Self-DEMOTION (new role's perms ⊆ yours) is allowed, so an Owner can
+          step down once a second Owner exists.
 
     Last-Owner-demotion protection: if the target currently carries the
     Owner role AND the new role is NOT Owner AND they are the only Owner
@@ -399,11 +403,6 @@ def change_user_role(
 
     Audit emits `identity.user.change_role` with before/after role codes.
     """
-    # PRIV-1 / IDM-1 Vector C-a: self-promotion block.
-    # Must be checked BEFORE any DB lookups to short-circuit immediately.
-    if actor_user_id == target_user_id:
-        raise PermissionDeniedError("Cannot change your own role")
-
     target = session.execute(
         select(AppUser).where(
             AppUser.user_id == target_user_id,
@@ -428,6 +427,15 @@ def change_user_role(
     )
     offending = sorted(new_role_perms - actor_effective)
     if offending:
+        # PRIV-1 / IDM-1 Vector C: self-PROMOTION (escalating your own role)
+        # gets a clearer message. Self-DEMOTION (new role's perms ⊆ yours →
+        # no offending perms) is legitimate and falls through to the
+        # last-Owner guard below — so an Owner can still step down when a
+        # second Owner exists.
+        if actor_user_id == target_user_id:
+            raise PermissionDeniedError(
+                "Cannot change your own role to one with permissions you do not already hold"
+            )
         raise PermissionDeniedError(
             f"Cannot assign a role with permissions you don't hold: {offending}"
         )
