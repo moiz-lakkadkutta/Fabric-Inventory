@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.dependencies import SyncDBSession, require_permission
 from app.exceptions import NotFoundError
 from app.models import AppUser, Permission, Role, RolePermission, UserRole
@@ -139,6 +140,7 @@ def list_users(
 @router.post(
     "/invites",
     response_model=InviteCreateResponse,
+    response_model_exclude_none=True,
     status_code=status.HTTP_201_CREATED,
     summary="Invite a user by email to this organization",
 )
@@ -148,9 +150,16 @@ def create_invite(
     current_user: Annotated[TokenPayload, Depends(require_permission("admin.user.manage"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> InviteCreateResponse:
-    """Owner-initiated invite. Persists a single-use, 7-day token and
-    prints the FE URL to stdout (the dev console-log adapter). When
-    CUT-303's EmailAdapter ships, this swaps to a single
+    """Owner-initiated invite. Persists a single-use, 7-day token.
+
+    IDM-3: the raw invite token is NOT returned in the response body in
+    staging/production — it must travel exclusively via the email adapter
+    so it never appears in API logs or browser history. In dev mode
+    (ENVIRONMENT=dev) the invite link is included in the response as a
+    testing convenience (existing test_admin_invites.py relies on it).
+    The stdout print is likewise gated to dev.
+
+    When CUT-303's EmailAdapter ships, this swaps to a single
     `email_adapter.send_invite(...)` call.
     """
     result = invite_service.create_invite(
@@ -162,10 +171,14 @@ def create_invite(
         firm_id=body.firm_id,
     )
 
-    invite_link = invite_service._frontend_invite_url(result.raw_token)
-    # Console-log adapter: dev/test reads this off `tail -f uvicorn.log`
-    # to grab the invite link. Per the wave-4 demo flow.
-    print(f"[invite] {result.email}: {invite_link}", flush=True)
+    # IDM-3: gate the invite link to dev mode only.
+    settings = get_settings()
+    invite_link: str | None = None
+    if settings.environment == "dev":
+        invite_link = invite_service._frontend_invite_url(result.raw_token)
+        # Console-log adapter: dev/test reads this off stdout or capsys.
+        # Gated to dev so production logs never carry raw tokens.
+        print(f"[invite] {result.email}: {invite_link}", flush=True)
 
     return InviteCreateResponse(
         invite_id=result.invite_id,

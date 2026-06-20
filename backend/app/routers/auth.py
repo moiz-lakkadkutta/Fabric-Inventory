@@ -13,22 +13,23 @@ validator was removed in T-INT-1b.
 from __future__ import annotations
 
 import datetime
+import json as _json
 import uuid
 
-from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import select, text
 
 from app.config import get_settings
 from app.dependencies import CurrentUser, SyncDBSession
 from app.exceptions import (
-    AppValidationError,
     EmailTakenError,
     InvalidCredentialsError,
+    InvalidResetTokenError,
     NotFoundError,
     PermissionDeniedError,
     TokenInvalidError,
 )
-from app.middleware.rate_limit import rate_limit
+from app.middleware.rate_limit import _client_ip, rate_limit
 from app.models import AppUser, Firm, Organization, Role
 from app.models import Session as DbSession
 from app.schemas.auth import (
@@ -62,6 +63,72 @@ from app.service import (
 from app.utils.crypto import encrypt_pii, generate_dek, wrap_dek
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+# ──────────────────────────────────────────────────────────────────────
+# DOS-01 — Rate-limit deps for credential endpoints.
+#
+# Login / MFA-verify are keyed on (IP + email) so:
+#   - An attacker can't exhaust one victim's budget from many IPs.
+#   - An attacker can't rotate emails from one IP to bypass per-IP limits.
+# Signup / reset are IP-keyed (signup: no existing account context;
+# reset: token is the auth factor, no email in the request body).
+# ──────────────────────────────────────────────────────────────────────
+
+
+async def _ip_email_key(request: Request) -> str:
+    """Rate-limit key combining (IP + email) for credential endpoints.
+
+    Reads the JSON body to extract ``email``. FastAPI/Starlette caches
+    the raw body bytes after the first read so the route handler sees the
+    same body when it runs its Pydantic validation.
+    """
+    ip = _client_ip(request)
+    try:
+        body_bytes = await request.body()
+        data = _json.loads(body_bytes)
+        email = str(data.get("email", "")).lower().strip()
+    except Exception:
+        email = ""
+    return f"{ip}:{email}"
+
+
+# 10 login / MFA attempts per 60s per (IP + email) — generous enough for a
+# fat-fingered human (~10 fast retries), tight enough to block automated
+# credential stuffing. The forgot-password endpoint already has 5/60s;
+# we're slightly looser here because MFA codes have a 30s window and a
+# user might retry twice per window (old code / new code).
+_LOGIN_RATE_LIMIT = rate_limit(
+    bucket="auth.login",
+    max_requests=10,
+    window_seconds=60,
+    key_func=_ip_email_key,
+)
+
+_MFA_RATE_LIMIT = rate_limit(
+    bucket="auth.mfa_verify",
+    max_requests=10,
+    window_seconds=60,
+    key_func=_ip_email_key,
+)
+
+# Signup: 3 per hour per IP. Creating accounts at scale is the classic
+# trial-account-spam / resource-exhaustion vector.
+_SIGNUP_RATE_LIMIT = rate_limit(
+    bucket="auth.signup",
+    max_requests=3,
+    window_seconds=3600,
+)
+
+# Password reset consumption: 5 per 60s per IP. Same order of magnitude as
+# forgot; the token itself provides most of the security — this just prevents
+# brute-force against a short token format.
+_RESET_RATE_LIMIT = rate_limit(
+    bucket="auth.reset",
+    max_requests=5,
+    window_seconds=60,
+)
+
 
 # Per Q2 (hybrid token storage): refresh token in httpOnly Secure
 # SameSite=Lax cookie; access token in memory on the frontend.
@@ -98,19 +165,24 @@ def _seconds_until(when: datetime.datetime) -> int:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _resolve_org_by_name(session: SyncDBSession, org_name: str) -> Organization:
+def _resolve_org_by_name(session: SyncDBSession, org_name: str) -> Organization | None:
+    """Return the Organization row for ``org_name``, or ``None`` if not found.
+
+    Returns None instead of raising so callers can run dummy bcrypt BEFORE
+    raising InvalidCredentialsError — otherwise the ~1ms org-lookup response
+    is distinguishable from the ~100ms bcrypt response by timing, leaking
+    whether an org name exists (DOS-02 / API-7-03).
+
+    When the org IS found, seeds the RLS GUC so subsequent queries against
+    org-scoped tables (app_user, session, etc.) can see this org's rows.
+    Under fabric_app (NOBYPASSRLS) the GUC must be set before any org-scoped
+    SELECT, otherwise the policy hides every row.
+    """
     org = session.execute(
         select(Organization).where(Organization.name == org_name)
     ).scalar_one_or_none()
     if org is None:
-        # Same generic message login uses — don't leak whether the org exists.
-        raise InvalidCredentialsError("Invalid email or password")
-    # Seed the RLS GUC for the rest of this request so subsequent queries
-    # against org-scoped tables (app_user, session, etc.) can see this
-    # org's rows. Pre-INT-9 the runtime role bypassed RLS, so unset GUC
-    # was harmless; under fabric_app the policy hides every row when the
-    # GUC is unset, which would make login appear to fail with
-    # "user not found" even when credentials are correct.
+        return None
     session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
     return org
 
@@ -137,6 +209,7 @@ def _make_firm_code(firm_name: str) -> str:
     response_model=SignupResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create org + firm + Owner user; return tokens",
+    dependencies=[Depends(_SIGNUP_RATE_LIMIT)],
 )
 def signup(
     body: SignupRequest,
@@ -146,28 +219,20 @@ def signup(
 ) -> SignupResponse:
 
     # Per /grill-me Q6: the multi-tenancy model is per-org email scoping.
-    # Same email + different org → 201 (intentional). Same email + SAME
-    # org → 409 USER_EMAIL_TAKEN (this is a real collision, not a generic
-    # validation failure). Org-name uniqueness then catches the
-    # different-email/same-org case at 422.
+    # Same email + different org → 201 (intentional). Any collision under
+    # an EXISTING org name (whether the email collides too or not) collapses
+    # to a single generic 409 — IDM-6: don't reveal WHICH field collided or
+    # echo the submitted value in the error message.
     existing_org = db.execute(
         select(Organization).where(Organization.name == body.org_name)
     ).scalar_one_or_none()
     if existing_org is not None:
-        # Need to check inside that org for the email; signup hasn't set
-        # the GUC yet, so seed it for the lookup.
-        db.execute(text(f"SET LOCAL app.current_org_id = '{existing_org.org_id}'"))
-        existing_user = db.execute(
-            select(AppUser).where(
-                AppUser.org_id == existing_org.org_id,
-                AppUser.email == body.email,
-                AppUser.deleted_at.is_(None),
-            )
-        ).scalar_one_or_none()
-        if existing_user is not None:
-            raise EmailTakenError(f"User with email {body.email!r} already exists in this org")
-        # Email is new under an existing org name → still an org-name dup.
-        raise AppValidationError(f"Organization {body.org_name!r} already exists")
+        # IDM-6: collapse both branches (email collision AND org-only collision)
+        # to ONE generic 409 so a caller cannot probe whether a given email is
+        # already registered under an org, nor confirm the org's existence
+        # independently of the email. Neither the email nor the org name is
+        # echoed in the error detail.
+        raise EmailTakenError("An account with those credentials already exists")
 
     # Pre-mint the org_id and SET the RLS GUC BEFORE inserting. Under INT-9
     # the runtime role is `fabric_app` (NOBYPASSRLS); WITH CHECK clauses
@@ -275,7 +340,12 @@ def signup(
 # ──────────────────────────────────────────────────────────────────────
 
 
-@router.post("/login", response_model=LoginResponse, summary="Verify creds; gate on MFA")
+@router.post(
+    "/login",
+    response_model=LoginResponse,
+    summary="Verify creds; gate on MFA",
+    dependencies=[Depends(_LOGIN_RATE_LIMIT)],
+)
 def login(
     body: LoginRequest,
     db: SyncDBSession,
@@ -283,6 +353,13 @@ def login(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> LoginResponse:
     org = _resolve_org_by_name(db, body.org_name)
+    if org is None:
+        # DOS-02 / API-7-03 — Timing oracle: run dummy bcrypt even when the
+        # org name doesn't exist so the ~1ms org-missing response is not
+        # distinguishable from the ~100ms wrong-password response by timing.
+        # Without this, an attacker can enumerate valid org names via latency.
+        identity_service.verify_password(body.password, identity_service.DUMMY_BCRYPT_HASH)
+        raise InvalidCredentialsError("Invalid email or password")
 
     user = db.execute(
         select(AppUser).where(
@@ -292,14 +369,53 @@ def login(
         )
     ).scalar_one_or_none()
 
-    if (
-        user is None
-        or not user.password_hash
-        or not identity_service.verify_password(body.password, user.password_hash)
-        or not user.is_active
-        or user.is_suspended
-    ):
+    # DOS-02 / API-7-03 — Timing oracle: always run bcrypt regardless of
+    # whether the user was found. When the user doesn't exist we verify the
+    # supplied password against a pre-computed dummy hash so response latency
+    # is indistinguishable from the "wrong password" path.
+    hash_to_check = (
+        user.password_hash
+        if (user is not None and user.password_hash)
+        else identity_service.DUMMY_BCRYPT_HASH
+    )
+    bcrypt_ok = identity_service.verify_password(body.password, hash_to_check)
+
+    credentials_ok = (
+        user is not None
+        and bool(user.password_hash)
+        and bcrypt_ok
+        and user.is_active
+        and not user.is_suspended
+    )
+
+    if not credentials_ok:
+        # CRYPTO-02: emit a login_failed audit event so security monitoring
+        # can detect credential-stuffing campaigns. We have org context even
+        # when the user wasn't found (org was resolved above).
+        #
+        # PII: the email is NOT stored in the audit blob — it is attacker-
+        # supplied plaintext that would accumulate victim emails in the audit
+        # table. The reset path already omits email for the same reason.
+        #
+        # We call db.commit() (not just flush()) BEFORE raising so the audit
+        # row persists despite the exception. The dependency's session context
+        # manager calls session.rollback() on exception — which is a safe
+        # no-op after a successful commit.
+        audit_service.emit(
+            db,
+            org_id=org.org_id,
+            firm_id=None,
+            user_id=user.user_id if user is not None else None,
+            entity_type="auth.session",
+            entity_id=user.user_id if user is not None else org.org_id,
+            action="login_failed",
+            changes={"after": {}},
+        )
+        db.commit()
         raise InvalidCredentialsError("Invalid email or password")
+
+    # Narrow type: credentials_ok is True iff user is not None.
+    assert user is not None  # type narrowing for mypy
 
     if user.mfa_enabled:
         # Caller must follow up with POST /auth/mfa-verify (which re-presents
@@ -363,6 +479,7 @@ def login(
     "/mfa-verify",
     response_model=TokenPairResponse,
     summary="Complete login with TOTP; returns tokens",
+    dependencies=[Depends(_MFA_RATE_LIMIT)],
 )
 def mfa_verify(
     body: MfaVerifyRequest,
@@ -371,6 +488,11 @@ def mfa_verify(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> TokenPairResponse:
     org = _resolve_org_by_name(db, body.org_name)
+    if org is None:
+        # DOS-02 / API-7-03 — Timing oracle: same unknown-org dummy-bcrypt
+        # pattern as the login handler — see login for the full rationale.
+        identity_service.verify_password(body.password, identity_service.DUMMY_BCRYPT_HASH)
+        raise InvalidCredentialsError("Invalid email or password")
 
     user = db.execute(
         select(AppUser).where(
@@ -380,14 +502,41 @@ def mfa_verify(
         )
     ).scalar_one_or_none()
 
-    if (
-        user is None
-        or not user.password_hash
-        or not identity_service.verify_password(body.password, user.password_hash)
-        or not user.is_active
-        or user.is_suspended
-    ):
+    # DOS-02: always run bcrypt — see login handler comment.
+    hash_to_check = (
+        user.password_hash
+        if (user is not None and user.password_hash)
+        else identity_service.DUMMY_BCRYPT_HASH
+    )
+    bcrypt_ok = identity_service.verify_password(body.password, hash_to_check)
+
+    credentials_ok = (
+        user is not None
+        and bool(user.password_hash)
+        and bcrypt_ok
+        and user.is_active
+        and not user.is_suspended
+    )
+
+    if not credentials_ok:
+        # CRYPTO-02: audit failed MFA verify attempt (same commit-before-raise
+        # pattern as login — see login handler comment above).
+        # PII: email omitted from changes.after — see login handler comment.
+        audit_service.emit(
+            db,
+            org_id=org.org_id,
+            firm_id=None,
+            user_id=user.user_id if user is not None else None,
+            entity_type="auth.session",
+            entity_id=user.user_id if user is not None else org.org_id,
+            action="login_failed",
+            changes={"after": {"mfa_stage": True}},
+        )
+        db.commit()
         raise InvalidCredentialsError("Invalid email or password")
+
+    # Narrow type: credentials_ok is True iff user is not None.
+    assert user is not None  # type narrowing for mypy
 
     if not user.mfa_enabled or user.mfa_secret is None:
         # Don't admit "MFA isn't on for that user"; treat as a generic auth fail.
@@ -467,6 +616,7 @@ def forgot_password(body: ForgotPasswordRequest, db: SyncDBSession) -> ForgotPas
     "/reset",
     response_model=ResetPasswordResponse,
     summary="Consume a reset link and set a new password",
+    dependencies=[Depends(_RESET_RATE_LIMIT)],
 )
 def reset_password(body: ResetPasswordRequest, db: SyncDBSession) -> ResetPasswordResponse:
     """Validate the token + rotate the user's password. All failure
@@ -474,15 +624,29 @@ def reset_password(body: ResetPasswordRequest, db: SyncDBSession) -> ResetPasswo
     single 400 ``INVALID_RESET_TOKEN`` so the response never reveals
     WHICH branch tripped.
 
+    TS-06 — timing oracle: the happy path calls bcrypt (inside
+    ``password_reset_service.consume`` → ``hash_password``). The error
+    path previously returned fast without doing any crypto work, leaking
+    whether the token was valid via response latency. We now always call
+    ``verify_password`` against the module-level dummy hash on the error
+    path so timing is flat regardless of token validity.
+
     The audit emit records the password rotation against the user;
     no PII (email / new password) is captured in the changes blob.
     """
-    user = password_reset_service.consume(
-        db,
-        token=body.token,
-        org_name=body.org_name,
-        new_password=body.new_password,
-    )
+    try:
+        user = password_reset_service.consume(
+            db,
+            token=body.token,
+            org_name=body.org_name,
+            new_password=body.new_password,
+        )
+    except InvalidResetTokenError:
+        # TS-06: run equivalent bcrypt work so the error path is not
+        # distinguishably faster than the success path.
+        identity_service.verify_password(body.new_password, identity_service.DUMMY_BCRYPT_HASH)
+        raise
+
     audit_service.emit(
         db,
         org_id=user.org_id,
