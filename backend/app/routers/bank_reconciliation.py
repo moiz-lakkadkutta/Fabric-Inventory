@@ -147,6 +147,7 @@ def confirm_bank_reconciliation(
             statement_row_idx=m.statement_row_idx,
             voucher_id=m.voucher_id,
             statement_ref=m.statement_ref,
+            statement_amount=m.statement_amount,
         )
         for m in body.matches
     ]

@@ -258,8 +258,22 @@ def create_bom(
             f"finished_item_id {finished_item_id} does not belong to firm {firm_id}"
         )
 
-    # 3. Each line item — same firm-scope check as the finished item.
+    # 3. Each line item — self-reference, duplicate, and firm-scope checks.
+    seen_line_item_ids: set[uuid.UUID] = set()
     for line in lines:
+        # MFGC-5: finished good cannot be its own component.
+        if line.item_id == finished_item_id:
+            raise AppValidationError(
+                f"BOM line item_id {line.item_id} cannot equal finished_item_id"
+                " (a finished good cannot be its own component)"
+            )
+        # MFGC-6: duplicate component lines silently double material consumption.
+        if line.item_id in seen_line_item_ids:
+            raise AppValidationError(
+                f"Duplicate item_id {line.item_id} in BOM lines"
+                " — merge quantities into a single line"
+            )
+        seen_line_item_ids.add(line.item_id)
         line_item = items_service.get_item(session, org_id=org_id, item_id=line.item_id)
         if line_item.firm_id is not None and line_item.firm_id != firm_id:
             raise AppValidationError(

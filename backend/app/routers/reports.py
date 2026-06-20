@@ -68,6 +68,10 @@ from app.service.identity_service import TokenPayload
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
+# RPT-DoS: maximum allowed date span for range reports (PnL, ledger, party statement).
+# Requests wider than this are rejected with 422 to prevent full-table scans.
+MAX_REPORT_DATE_SPAN_DAYS = 366
+
 
 def _require_active_firm(current_user: TokenPayload) -> None:
     """Reports are firm-scoped; mirror the dashboard router's gate.
@@ -80,6 +84,38 @@ def _require_active_firm(current_user: TokenPayload) -> None:
         raise PermissionDeniedError(
             "No active firm in this session — switch to a firm first.",
             title="No active firm",
+        )
+
+
+def _check_date_span(
+    from_date: datetime.date | None,
+    to_date: datetime.date | None,
+    *,
+    today: datetime.date | None = None,
+) -> None:
+    """Reject date ranges wider than MAX_REPORT_DATE_SPAN_DAYS (RPT-DoS).
+
+    Only fires when both endpoints are provided or derivable. When either
+    is None the service itself resolves defaults (fiscal-year-start /
+    today), which are always within the limit.
+
+    FIX-2 (Tfix6): raises AppValidationError so the global error handler
+    wraps it in the Q8a envelope ({code, title, detail, status, …}).
+    Previously this raised a bare fastapi.HTTPException, which bypassed
+    the envelope and returned {"detail": "…"} — unhandleable by the FE
+    error-switcher.
+    """
+    from app.exceptions import AppValidationError
+
+    if from_date is None or to_date is None:
+        return
+    span = (to_date - from_date).days
+    if span > MAX_REPORT_DATE_SPAN_DAYS:
+        raise AppValidationError(
+            f"Date range {from_date} → {to_date} spans {span} days "
+            f"(limit: {MAX_REPORT_DATE_SPAN_DAYS}). "
+            "Narrow the range and paginate if you need more history.",
+            title="Date range too wide",
         )
 
 
@@ -103,6 +139,7 @@ def get_pnl(
     ] = None,
 ) -> PnlResponse | Response:
     _require_active_firm(current_user)
+    _check_date_span(from_date, to_date)
     assert current_user.firm_id is not None  # narrowed
     (
         resolved_from,
@@ -384,6 +421,7 @@ def get_ledger_statement(
     to_date: Annotated[datetime.date | None, Query(alias="to")] = None,
 ) -> LedgerStatementResponse:
     _require_active_firm(current_user)
+    _check_date_span(from_date, to_date)
     assert current_user.firm_id is not None
     result = reports_service.compute_ledger_statement(
         db,
@@ -474,6 +512,7 @@ def get_party_statement(
     to_date: Annotated[datetime.date | None, Query(alias="to")] = None,
 ) -> PartyStatementResponse:
     _require_active_firm(current_user)
+    _check_date_span(from_date, to_date)
     assert current_user.firm_id is not None
     result = reports_service.compute_party_statement(
         db,
@@ -538,11 +577,19 @@ def get_gstr1(
 ) -> Gstr1Response | Response:
     _require_active_firm(current_user)
     assert current_user.firm_id is not None
+    # RPT-02: only expose plaintext GSTIN to callers with masters.party.pii.read.
+    # Using the dedicated pii.read sub-permission (not the broader party.read)
+    # ensures consistent GSTIN masking across the party list AND GSTR-1 —
+    # an ACCOUNTANT with party.read but not pii.read sees masked GSTINs
+    # in both places. T5 introduces pii.read on the party-list endpoint;
+    # this gate keeps GSTR-1 in sync.
+    can_view_pii = "masters.party.pii.read" in current_user.permissions
     result = reports_service.compute_gstr1(
         db,
         org_id=current_user.org_id,
         firm_id=current_user.firm_id,
         period=period,
+        can_view_pii=can_view_pii,
     )
     if export_format is not None:
         sheets = gstr1_sheets(result)

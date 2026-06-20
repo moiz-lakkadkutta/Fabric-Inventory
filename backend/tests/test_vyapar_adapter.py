@@ -262,6 +262,195 @@ def test_d3_column_map_keys_lowercase_unique() -> None:
     assert len(_COLUMN_MAP) == len(set(_COLUMN_MAP.keys()))
 
 
+# ──────────────────────────────────────────────────────────────────────
+# MIG-5: formula-injection sanitisation in extract_parties
+# MIG-1: zip-bomb guard in _load_workbook
+# MIG-2: malformed-file → AppValidationError in _load_workbook
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _build_xlsx_with_formula_names() -> bytes:
+    """Build an in-memory xlsx whose name/code cells start with formula triggers.
+
+    The ``=EVIL()`` cell is written via the normal openpyxl value setter, which
+    stores it as a formula.  When the adapter reads the file with
+    ``data_only=True`` the cached formula result is absent (never evaluated),
+    so openpyxl returns ``None`` for that cell — and the adapter skips the row
+    entirely.  That leaves three parseable rows: ``+``, ``-``, and ``@``.
+
+    Tests that call this helper must therefore expect **3** parties, not 4.
+    """
+    import io
+
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    ws = wb.create_sheet("Parties")
+    ws.append(["Party Name", "Code", "Type"])
+
+    # Row 2: name starts with '=' — openpyxl stores this as a formula.
+    # When read back with data_only=True the result is None (no cached value),
+    # so the adapter drops the row.  This verifies the adapter doesn't crash on
+    # formula cells and doesn't execute the formula.
+    ws.cell(row=2, column=1).value = "=EVIL()"
+    ws.cell(row=2, column=2).value = "SAFE-CODE"
+    ws.cell(row=2, column=3).value = "Customer"
+
+    # Row 3: name and code start with '+'.
+    ws.cell(row=3, column=1).value = "+EVIL-NAME"
+    ws.cell(row=3, column=2).value = "+EVIL-CODE"
+    ws.cell(row=3, column=3).value = "Customer"
+
+    # Row 4: trigger '-'.
+    ws.cell(row=4, column=1).value = "-NEG"
+    ws.cell(row=4, column=2).value = "-NEGCODE"
+    ws.cell(row=4, column=3).value = "Customer"
+
+    # Row 5: trigger '@'.
+    ws.cell(row=5, column=1).value = "@SUM(A1)"
+    ws.cell(row=5, column=2).value = "NORM"
+    ws.cell(row=5, column=3).value = "Supplier"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_extract_parties_stores_raw_formula_name_unchanged() -> None:
+    """Party names with formula-trigger chars must be stored RAW — no ``'`` prefix.
+
+    The ``=EVIL()`` row is dropped entirely (openpyxl returns ``None`` for an
+    unevaluated formula cell with ``data_only=True``), leaving 3 parties.
+    The remaining trigger-prefixed names (``+``, ``-``, ``@``) must be stored
+    verbatim; the export layer is responsible for neutralising them at write time.
+    """
+    from app.service.migration import VyaparExcelAdapter
+
+    adapter = VyaparExcelAdapter()
+    parties = list(adapter.extract_parties(_build_xlsx_with_formula_names()))
+
+    # =EVIL() row yields None name → skipped; 3 rows remain.
+    assert len(parties) == 3, f"Expected 3 parties, got {len(parties)}: {[p.name for p in parties]}"
+    names = {p.name for p in parties}
+    # Raw values must be preserved — no apostrophe prefix injected at import.
+    assert "+EVIL-NAME" in names, f"Raw '+EVIL-NAME' missing; got: {names}"
+    assert "-NEG" in names, f"Raw '-NEG' missing; got: {names}"
+    assert "@SUM(A1)" in names, f"Raw '@SUM(A1)' missing; got: {names}"
+    for p in parties:
+        assert not p.name.startswith("'"), f"Adapter must NOT sanitize on import; got {p.name!r}"
+
+
+def test_extract_parties_stores_raw_formula_code_unchanged() -> None:
+    """Party codes with formula-trigger chars must be stored RAW — no ``'`` prefix."""
+    from app.service.migration import VyaparExcelAdapter
+
+    adapter = VyaparExcelAdapter()
+    parties = {p.name: p for p in adapter.extract_parties(_build_xlsx_with_formula_names())}
+
+    # Row 3 has name "+EVIL-NAME" and code "+EVIL-CODE" — both stored raw.
+    evil_plus = parties.get("+EVIL-NAME")
+    assert evil_plus is not None, f"Party '+EVIL-NAME' not found; names: {list(parties)}"
+    assert not evil_plus.code.startswith("'"), (
+        f"Adapter must NOT sanitize code on import; got {evil_plus.code!r}"
+    )
+    assert evil_plus.code == "+EVIL-CODE", (
+        f"Raw code must equal '+EVIL-CODE', got {evil_plus.code!r}"
+    )
+
+
+def test_validate_warns_on_formula_trigger_name() -> None:
+    """``validate`` must emit a warning when a party name starts with a formula-trigger char.
+
+    The raw value is stored unchanged; only the export layer neutralises it.
+    A FORMULA_TRIGGER_IN_NAME reconciliation row lets the operator know the
+    downstream export will prepend an apostrophe to that cell.
+    """
+    from io import BytesIO
+
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    ws = wb.create_sheet("Parties")
+    ws.append(["Party Name", "Type"])
+    ws.append(["+Suspicious Name", "Customer"])
+    ws.append(["Normal Name", "Customer"])
+    out = BytesIO()
+    wb.save(out)
+
+    report = VyaparExcelAdapter().validate(out.getvalue())
+    assert report.warnings >= 1, "Expected at least one warning for formula-trigger name"
+    trigger_warnings = [r for r in report.rows if r.code == "FORMULA_TRIGGER_IN_NAME"]
+    assert len(trigger_warnings) >= 1, (
+        f"Expected FORMULA_TRIGGER_IN_NAME warning; got rows: {[r.code for r in report.rows]}"
+    )
+
+
+def test_zip_bomb_raises_app_validation_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A zip whose uncompressed total exceeds the cap raises AppValidationError.
+
+    Uses a REAL in-memory zip (no zipfile.ZipFile patch) and monkeypatches
+    only the module-level cap constant to a small value so the test does not
+    need to allocate gigabytes.  A spy on ``openpyxl.load_workbook`` asserts
+    the guard fires BEFORE openpyxl is invoked — if the guard were absent the
+    spy would record a call and the assertion would fail.
+    """
+    import io
+    import zipfile
+    from unittest.mock import patch
+
+    import openpyxl as openpyxl_mod
+
+    import app.service.migration.vyapar_adapter as adapter_mod
+    from app.exceptions import AppValidationError
+    from app.service.migration.vyapar_adapter import _load_workbook
+
+    # Tiny cap: 40 KiB — well below our 50 KiB test zip.
+    monkeypatch.setattr(adapter_mod, "_MAX_DECOMPRESSED_BYTES", 40 * 1024)
+
+    # Real zip: 5 members x 10 KiB = 50 KiB uncompressed > 40 KiB cap.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for i in range(5):
+            zf.writestr(f"chunk_{i}.txt", "A" * 10 * 1024)
+    big_zip_bytes = buf.getvalue()
+
+    # Spy on openpyxl.load_workbook — wraps the real function so the test
+    # fails loudly if the guard lets through and openpyxl is reached.
+    with patch.object(openpyxl_mod, "load_workbook", wraps=openpyxl_mod.load_workbook) as spy:
+        with pytest.raises(AppValidationError, match="decompressed"):
+            _load_workbook(big_zip_bytes)
+        spy.assert_not_called()  # bomb guard must fire BEFORE openpyxl
+
+
+def test_bad_zip_file_raises_app_validation_error() -> None:
+    """Bytes that are not a zip (BadZipFile) become AppValidationError, not 500."""
+    from app.exceptions import AppValidationError
+    from app.service.migration.vyapar_adapter import _load_workbook
+
+    with pytest.raises(AppValidationError, match=r"[Rr]eadable|[Ee]xcel|[Ww]orkbook"):
+        _load_workbook(b"this is definitely not a zip file")
+
+
+def test_invalid_xlsx_raises_app_validation_error() -> None:
+    """A zip file that isn't a valid OOXML workbook raises AppValidationError."""
+    import io
+    import zipfile
+
+    from app.exceptions import AppValidationError
+    from app.service.migration.vyapar_adapter import _load_workbook
+
+    # A valid zip that contains garbage — not an xlsx.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("garbage.txt", "not an ooxml workbook")
+    fake_zip_bytes = buf.getvalue()
+
+    with pytest.raises(AppValidationError, match=r"[Rr]eadable|[Ee]xcel|[Ww]orkbook"):
+        _load_workbook(fake_zip_bytes)
+
+
 def test_d3_party_type_map_values_are_party_kinds() -> None:
     """Every _PARTY_TYPE_MAP value must be a non-empty tuple of valid
     PartyKind literals.  Same regression guard as _COLUMN_MAP — keeps

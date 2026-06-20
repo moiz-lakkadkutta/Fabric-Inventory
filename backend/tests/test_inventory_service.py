@@ -709,3 +709,66 @@ def test_stock_position_check_constraint_rejects_negative_on_insert(
         db_session.add(bad)
         db_session.flush()
     assert "stock_position_on_hand_qty_non_negative" in str(exc_info.value.orig)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# INV-P3: negative unit_cost must be rejected
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_add_stock_rejects_negative_unit_cost(
+    db_session: OrmSession, firm_and_item: tuple[Firm, Item, Location]
+) -> None:
+    """add_stock must raise AppValidationError for negative unit_cost.
+
+    Negative cost dilutes the weighted-average position cost into an
+    invalid state (e.g. cost goes negative). The docstring previously
+    said "negative cost is allowed" — that was a bug, not a feature.
+    """
+    firm, item, loc = firm_and_item
+    with pytest.raises(AppValidationError, match=r"[Nn]egative|unit_cost|cost"):
+        inventory_service.add_stock(
+            db_session,
+            org_id=firm.org_id,
+            firm_id=firm.firm_id,
+            item_id=item.item_id,
+            location_id=loc.location_id,
+            qty=Decimal("10"),
+            unit_cost=Decimal("-1"),
+            reference_type="ADJUSTMENT",
+            reference_id=uuid.uuid4(),
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# INV-P5: soft-deleted item must be rejected
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_add_stock_rejects_soft_deleted_item(
+    db_session: OrmSession, firm_and_item: tuple[Firm, Item, Location]
+) -> None:
+    """add_stock must raise AppValidationError for a soft-deleted item.
+
+    The _ensure_item_in_org query lacked `deleted_at IS NULL`, so a
+    soft-deleted item was still accessible. This test confirms the fix.
+    """
+    import datetime
+
+    firm, item, loc = firm_and_item
+    # Soft-delete the item.
+    item.deleted_at = datetime.datetime.now(tz=datetime.UTC)
+    db_session.flush()
+
+    with pytest.raises(AppValidationError, match=r"[Nn]ot found|deleted"):
+        inventory_service.add_stock(
+            db_session,
+            org_id=firm.org_id,
+            firm_id=firm.firm_id,
+            item_id=item.item_id,
+            location_id=loc.location_id,
+            qty=Decimal("10"),
+            unit_cost=Decimal("50"),
+            reference_type="ADJUSTMENT",
+            reference_id=uuid.uuid4(),
+        )

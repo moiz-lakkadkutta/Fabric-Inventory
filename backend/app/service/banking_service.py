@@ -20,7 +20,15 @@ from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
 from app.models.banking import BankAccount, Cheque, ChequeStatus
+from app.models.masters import Ledger
 from app.utils.crypto import encrypt_pii, get_org_dek
+
+# Statuses that are valid at cheque creation. Others (CLEARED, BOUNCED,
+# STOPPED, CANCELLED) are terminal states reached via state-machine
+# transitions, not via direct create. (TASK-056 / gated wave)
+_CHEQUE_INITIAL_STATUSES: frozenset[ChequeStatus] = frozenset(
+    {ChequeStatus.ISSUED, ChequeStatus.POST_DATED}
+)
 
 # ──────────────────────────────────────────────────────────────────────
 # BankAccount
@@ -45,7 +53,25 @@ def create_bank_account(
     `account_number` is PII — stored encrypted (BYTEA stub).
     Cross-org defense: caller must pass `org_id` from the authenticated
     JWT; the DB RLS policy enforces the same constraint at query time.
+
+    BANK-1: the ledger must belong to the same org as the caller. Without
+    this check a crafted request could attach a foreign-org ledger and
+    later corrupt that org's GL via reconciliation postings.
     """
+    # BANK-1: verify ledger belongs to this org before the INSERT.
+    ledger = session.execute(
+        select(Ledger).where(
+            Ledger.ledger_id == ledger_id,
+            Ledger.org_id == org_id,
+            Ledger.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if ledger is None:
+        raise AppValidationError(
+            f"Ledger {ledger_id} not found in this org; "
+            "cannot create a bank account linked to a foreign ledger."
+        )
+
     dek = get_org_dek(session, org_id=org_id)
     account = BankAccount(
         org_id=org_id,
@@ -191,6 +217,16 @@ def create_cheque(
     """
     if not cheque_number:
         raise AppValidationError("Cheque number is required")
+
+    # BANK-3a: reject terminal statuses at creation time. CLEARED, BOUNCED,
+    # STOPPED and CANCELLED are reached via state-machine transitions
+    # (TASK-056 / later gated wave); accepting them here would allow
+    # mass-assignment that bypasses the clear/bounce audit trail.
+    if status not in _CHEQUE_INITIAL_STATUSES:
+        raise AppValidationError(
+            f"Cheque initial status must be ISSUED or POST_DATED; got {status.value!r}. "
+            "Use the clear/bounce endpoints to transition to other statuses."
+        )
 
     # Cross-org defense: verify bank_account is in the same org and not soft-deleted.
     account = session.execute(

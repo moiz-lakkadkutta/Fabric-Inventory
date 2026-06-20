@@ -11,6 +11,7 @@ import datetime
 import uuid
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session as OrmSession
 
@@ -363,3 +364,55 @@ def test_create_draft_invoice_branch_transfer_same_gstin_is_not_a_supply(
     # at the header level. (Lines may still carry gst_rate in storage but
     # the header tax_type is the authoritative classifier.)
     assert invoice.tax_type == "NIL_NOT_A_SUPPLY"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BL-02: SiLineCreateRequest must reject qty / price values that would
+# overflow NUMERIC(15,4) — produce 422 at the Pydantic layer, not 500
+# from Postgres.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_si_line_qty_rejects_values_above_upper_bound() -> None:
+    """BL-02: qty=1e12 must raise pydantic ValidationError (wire: 422),
+    NOT overflow the NUMERIC(15,4) column and produce a 500."""
+    from pydantic import ValidationError
+
+    from app.schemas.sales import SiLineCreateRequest
+
+    with pytest.raises(ValidationError):
+        SiLineCreateRequest(
+            item_id=uuid.uuid4(),
+            qty=Decimal("1e12"),  # 10^12 >> upper bound of 1e9
+            price=Decimal("100"),
+        )
+
+
+def test_si_line_price_rejects_values_above_upper_bound() -> None:
+    """BL-02: price=1e12 must raise pydantic ValidationError (wire: 422),
+    NOT overflow the NUMERIC(15,4) column and produce a 500."""
+    from pydantic import ValidationError
+
+    from app.schemas.sales import SiLineCreateRequest
+
+    with pytest.raises(ValidationError):
+        SiLineCreateRequest(
+            item_id=uuid.uuid4(),
+            qty=Decimal("1"),
+            price=Decimal("1e12"),  # 10^12 >> upper bound of 1e9
+        )
+
+
+def test_si_line_qty_and_price_at_upper_bound_are_valid() -> None:
+    """BL-02 positive: values exactly at the 1e9 upper bound must still be
+    accepted by Pydantic (the column can hold them; only truly unbounded
+    inputs are rejected)."""
+    from app.schemas.sales import SiLineCreateRequest
+
+    line = SiLineCreateRequest(
+        item_id=uuid.uuid4(),
+        qty=Decimal("1000000000"),  # exactly 1e9
+        price=Decimal("1000000000"),
+    )
+    assert line.qty == Decimal("1000000000")
+    assert line.price == Decimal("1000000000")

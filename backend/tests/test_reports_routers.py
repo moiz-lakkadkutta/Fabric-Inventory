@@ -349,6 +349,10 @@ def test_stock_summary_reports_on_hand_and_valuation(
             lot_id=lot.lot_id,
             location_id=loc.location_id,
             on_hand_qty=Decimal("10"),
+            # INV-P4 fix: stock-summary now reads current_cost, not Lot.primary_cost.
+            # Set current_cost here to match lot.primary_cost so the valuation is
+            # still 10 x 50 = 500 as the test expects.
+            current_cost=Decimal("50.0000"),
         )
         session.add(pos)
         session.commit()
@@ -520,3 +524,195 @@ def test_reports_require_accounting_report_view_permission(
     )
     assert resp.status_code == 403, resp.text
     assert resp.json()["code"] == "PERMISSION_DENIED"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# INV-1 / INV-P4: stock-summary valuation from StockPosition.current_cost
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_stock_summary_uses_position_current_cost(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Valuation must come from StockPosition.current_cost, not Lot.primary_cost.
+
+    Bug: the report query joined Lot and used Lot.primary_cost, which is NULL
+    for stock inserted via add_stock (no lot) → 0 valuation despite real cost.
+    Fix: use StockPosition.current_cost directly; drop the Lot join.
+    """
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    firm_id = uuid.UUID(me["firm_id"])
+    _party_id, item_id = _seed_party_and_item(sync_engine, org_id=org_id)
+
+    from app.models import Location
+    from app.models.inventory import LocationType
+    from app.service import inventory_service
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        loc = Location(
+            org_id=org_id,
+            firm_id=firm_id,
+            code=f"WH-{uuid.uuid4().hex[:4].upper()}",
+            name="Test Warehouse",
+            location_type=LocationType.WAREHOUSE,
+            is_active=True,
+        )
+        session.add(loc)
+        session.flush()
+        # add_stock sets StockPosition.current_cost = unit_cost (weighted avg).
+        # No Lot involved → Lot.primary_cost is NULL for this position.
+        inventory_service.add_stock(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            item_id=item_id,
+            location_id=loc.location_id,
+            qty=Decimal("5"),
+            unit_cost=Decimal("100"),
+            reference_type="ADJUSTMENT",
+            reference_id=uuid.uuid4(),
+        )
+        session.commit()
+
+    resp = http_client.get(
+        "/reports/stock-summary?as_of=2099-01-01",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Valuation: qty=5 x cost=100 = 500. With the bug, 0 is returned because
+    # Lot.primary_cost is NULL (no Lot row), coalesced to 0.
+    assert Decimal(body["total_value"]) == Decimal("500.00"), (
+        f"Expected ₹500 from StockPosition.current_cost; "
+        f"got {body['total_value']} — still using Lot.primary_cost (NULL→0)"
+    )
+    rows = body["rows"]
+    assert any(r["item_id"] == str(item_id) for r in rows)
+    item_row = next(r for r in rows if r["item_id"] == str(item_id))
+    assert Decimal(item_row["valuation"]) == Decimal("500.00")
+    assert Decimal(item_row["avg_cost"]) == Decimal("100.0000")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# RPT-DoS: unbounded date-range guard (MAX_REPORT_DATE_SPAN_DAYS = 366)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_date_span_pnl_too_wide_returns_422(http_client: TestClient, sync_engine: Engine) -> None:
+    """A date range > 366 days on /reports/pnl must return 422, not 200.
+
+    Without the guard a single request can force multi-year full-table
+    scans of voucher_line — a DoS vector.
+
+    FIX-2 (Tfix6): the response body must use the structured error envelope
+    (``{code, title, detail, status, field_errors, request_id}``) rather than
+    FastAPI's bare ``{"detail": "..."}`` so the FE's error-handler can switch
+    on the stable ``code`` key.
+    """
+    me = _signup_owner(http_client)
+    resp = http_client.get(
+        "/reports/pnl?from=2020-01-01&to=2026-12-31",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 422, (
+        f"Expected 422 for >366-day span, got {resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    assert "code" in body, (
+        f"Response must use the Q8a error envelope with a 'code' field, got: {body}"
+    )
+    assert body["code"] == "VALIDATION_ERROR", (
+        f"Expected code='VALIDATION_ERROR', got {body.get('code')!r}"
+    )
+
+
+def test_date_span_ledger_too_wide_returns_422(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A date range > 366 days on /reports/ledger/{id} must return 422.
+
+    FIX-2 (Tfix6): envelope shape verified same as the PnL test.
+    """
+    me = _signup_owner(http_client)
+    # Use a random UUID; the guard fires before the ledger lookup.
+    dummy_ledger_id = uuid.uuid4()
+    resp = http_client.get(
+        f"/reports/ledger/{dummy_ledger_id}?from=2020-01-01&to=2026-12-31",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 422, (
+        f"Expected 422 for >366-day ledger span, got {resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    assert "code" in body, (
+        f"Response must use the Q8a error envelope with a 'code' field, got: {body}"
+    )
+    assert body["code"] == "VALIDATION_ERROR", (
+        f"Expected code='VALIDATION_ERROR', got {body.get('code')!r}"
+    )
+
+
+def test_date_span_within_limit_is_allowed(http_client: TestClient, sync_engine: Engine) -> None:
+    """A date range of exactly 366 days is permitted — only >366 is rejected."""
+    me = _signup_owner(http_client)
+    # 2026-01-01 to 2027-01-02 is 366 days (inclusive) — should succeed.
+    resp = http_client.get(
+        "/reports/pnl?from=2026-01-01&to=2027-01-01",
+        headers=_auth(me["access_token"]),
+    )
+    # 200 or any non-422 means the guard correctly allowed it.
+    assert resp.status_code == 200, (
+        f"Expected 200 for ≤366-day span, got {resp.status_code}: {resp.text}"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# RPT-DoS: exact off-by-one boundary pair (366 allowed, 367 rejected)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_date_span_exactly_366_days_is_allowed(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Span of exactly 366 days (= MAX_REPORT_DATE_SPAN_DAYS) must be ALLOWED.
+
+    2026-01-01 to 2027-01-02: (date(2027,1,2) - date(2026,1,1)).days == 366.
+    This is the last span that should pass; 367+ is rejected.
+    """
+    me = _signup_owner(http_client)
+    resp = http_client.get(
+        "/reports/pnl?from=2026-01-01&to=2027-01-02",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, (
+        f"A span of exactly 366 days must be ALLOWED, got {resp.status_code}: {resp.text}"
+    )
+
+
+def test_date_span_exactly_367_days_is_rejected(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Span of exactly 367 days (MAX + 1) must be REJECTED with 422.
+
+    2026-01-01 to 2027-01-03: (date(2027,1,3) - date(2026,1,1)).days == 367.
+    This is the first span that should fail; the boundary is at 366.
+
+    FIX-2 (Tfix6): envelope ``code`` field verified.
+    """
+    me = _signup_owner(http_client)
+    resp = http_client.get(
+        "/reports/pnl?from=2026-01-01&to=2027-01-03",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 422, (
+        f"A span of exactly 367 days must be REJECTED (422), got {resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    assert "code" in body, (
+        f"Response must use the Q8a error envelope with a 'code' field, got: {body}"
+    )
+    assert body["code"] == "VALIDATION_ERROR", (
+        f"Expected code='VALIDATION_ERROR', got {body.get('code')!r}"
+    )

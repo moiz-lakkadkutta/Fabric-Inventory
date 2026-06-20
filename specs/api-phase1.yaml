@@ -922,6 +922,222 @@ components:
           type: string
           format: date-time
 
+    # ── Bank reconciliation schemas (TASK-TR-B3) ──────────────────────────
+
+    ConfirmedMatchRequest:
+      type: object
+      required:
+        - statement_row_idx
+        - voucher_id
+        - statement_ref
+        - statement_amount
+      properties:
+        statement_row_idx:
+          type: integer
+          minimum: 0
+        voucher_id:
+          type: string
+          format: uuid
+        statement_ref:
+          type: string
+          minLength: 1
+          maxLength: 200
+        statement_amount:
+          type: number
+          format: double
+          description: >
+            Amount from the bank statement row (rupees, positive magnitude).
+            The service validates |voucher_total − |statement_amount|| ≤ ₹1.
+            Use absolute value — sign convention varies across banks.
+
+    BankReconciliationConfirmRequest:
+      type: object
+      required:
+        - firm_id
+        - bank_account_id
+        - matches
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        bank_account_id:
+          type: string
+          format: uuid
+        matches:
+          type: array
+          minItems: 1
+          maxItems: 2000
+          items:
+            $ref: '#/components/schemas/ConfirmedMatchRequest'
+
+    BankReconciliationConfirmResponse:
+      type: object
+      properties:
+        bank_account_id:
+          type: string
+          format: uuid
+        reconciled_voucher_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        skipped_already_reconciled:
+          type: integer
+
+    BankStatementRowRequest:
+      type: object
+      required:
+        - statement_date
+        - amount
+      properties:
+        statement_date:
+          type: string
+          format: date
+        description:
+          type: string
+          maxLength: 500
+          default: ''
+        amount:
+          type: number
+          format: double
+        balance:
+          type: number
+          format: double
+          nullable: true
+
+    BankReconciliationPreviewRequest:
+      type: object
+      required:
+        - firm_id
+        - bank_account_id
+        - statement_rows
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        bank_account_id:
+          type: string
+          format: uuid
+        statement_rows:
+          type: array
+          maxItems: 2000
+          items:
+            $ref: '#/components/schemas/BankStatementRowRequest'
+
+    BankReconciliationPreviewResponse:
+      type: object
+      properties:
+        bank_account_id:
+          type: string
+          format: uuid
+        statement_rows:
+          type: array
+          items:
+            type: object
+            properties:
+              statement_row_idx:
+                type: integer
+              statement_date:
+                type: string
+                format: date
+              description:
+                type: string
+              amount:
+                type: number
+                format: double
+              balance:
+                type: number
+                format: double
+                nullable: true
+              candidates:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    voucher_id:
+                      type: string
+                      format: uuid
+                    score:
+                      type: integer
+                    voucher_type:
+                      type: string
+                    voucher_date:
+                      type: string
+                      format: date
+                    series:
+                      type: string
+                    number:
+                      type: string
+                    narration:
+                      type: string
+                      nullable: true
+                    amount:
+                      type: number
+                      format: double
+
+    BankReconciliationUnmatchedAsVoucherRequest:
+      type: object
+      required:
+        - firm_id
+        - bank_account_id
+        - voucher_type
+        - party_id
+        - counter_ledger_id
+        - statement_date
+        - statement_ref
+        - amount
+      properties:
+        firm_id:
+          type: string
+          format: uuid
+        bank_account_id:
+          type: string
+          format: uuid
+        voucher_type:
+          type: string
+          enum: [RECEIPT, PAYMENT]
+        party_id:
+          type: string
+          format: uuid
+        counter_ledger_id:
+          type: string
+          format: uuid
+        statement_date:
+          type: string
+          format: date
+        statement_description:
+          type: string
+          maxLength: 500
+          default: ''
+        statement_ref:
+          type: string
+          minLength: 1
+          maxLength: 200
+        amount:
+          type: number
+          format: double
+
+    BankReconciliationUnmatchedAsVoucherResponse:
+      type: object
+      properties:
+        voucher_id:
+          type: string
+          format: uuid
+        series:
+          type: string
+        number:
+          type: string
+        voucher_date:
+          type: string
+          format: date
+        voucher_type:
+          type: string
+        bank_reconciled_at:
+          type: string
+          format: date-time
+        statement_ref:
+          type: string
+
 security:
   - bearerAuth: []
 
@@ -4204,6 +4420,96 @@ paths:
               schema:
                 type: object
       x-permission: accounting.bank.reconcile
+
+  # ── New bank-reconciliation endpoints (TASK-TR-B3) ────────────────────
+
+  /bank-reconciliation/preview:
+    post:
+      summary: Preview bank statement matches
+      operationId: previewBankReconciliation
+      tags:
+        - accounting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankReconciliationPreviewRequest'
+      responses:
+        '200':
+          description: Preview with candidate voucher matches per statement row
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankReconciliationPreviewResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: accounting.bank_recon.preview
+
+  /bank-reconciliation/confirm:
+    post:
+      summary: Confirm bank reconciliation matches
+      operationId: confirmBankReconciliation
+      tags:
+        - accounting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankReconciliationConfirmRequest'
+      responses:
+        '200':
+          description: Matched vouchers stamped with bank_reconciled_at
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankReconciliationConfirmResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: >
+            Unprocessable — returned when statement_amount differs from the
+            voucher total by more than ₹1.00, or when the voucher is not
+            found (cross-org RLS block).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: accounting.bank_recon.confirm
+
+  /bank-reconciliation/unmatched-as-voucher:
+    post:
+      summary: Create a new voucher from an unmatched bank statement row
+      operationId: createUnmatchedAsVoucher
+      tags:
+        - accounting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankReconciliationUnmatchedAsVoucherRequest'
+      responses:
+        '201':
+          description: Voucher created and immediately reconciled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankReconciliationUnmatchedAsVoucherResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: accounting.bank_recon.confirm
 
   /cheques:
     get:

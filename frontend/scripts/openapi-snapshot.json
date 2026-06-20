@@ -1002,6 +1002,7 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 9999999999.9999,
                 "type": "number"
               },
               {
@@ -1724,6 +1725,18 @@
       },
       "ConfirmedMatchRequest": {
         "properties": {
+          "statement_amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Statement Amount"
+          },
           "statement_ref": {
             "maxLength": 200,
             "minLength": 1,
@@ -1744,7 +1757,8 @@
         "required": [
           "statement_row_idx",
           "voucher_id",
-          "statement_ref"
+          "statement_ref",
+          "statement_amount"
         ],
         "title": "ConfirmedMatchRequest",
         "type": "object"
@@ -3871,15 +3885,21 @@
             "type": "string"
           },
           "invite_link": {
-            "title": "Invite Link",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invite Link"
           }
         },
         "required": [
           "invite_id",
           "email",
-          "expires_at",
-          "invite_link"
+          "expires_at"
         ],
         "title": "InviteCreateResponse",
         "type": "object"
@@ -12799,6 +12819,7 @@
           "price": {
             "anyOf": [
               {
+                "maximum": 1000000000.0,
                 "minimum": 0.0,
                 "type": "number"
               },
@@ -12813,6 +12834,7 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
@@ -13453,6 +13475,7 @@
           "unit_cost": {
             "anyOf": [
               {
+                "minimum": 0.0,
                 "type": "number"
               },
               {
@@ -13463,7 +13486,7 @@
                 "type": "null"
               }
             ],
-            "description": "Unit cost for inbound moves (INR). Defaults to 0.",
+            "description": "Unit cost for inbound moves (INR). Must be >= 0.",
             "title": "Unit Cost"
           }
         },
@@ -14275,7 +14298,7 @@
     },
     "/admin/invites": {
       "post": {
-        "description": "Owner-initiated invite. Persists a single-use, 7-day token and\nprints the FE URL to stdout (the dev console-log adapter). When\nCUT-303's EmailAdapter ships, this swaps to a single\n`email_adapter.send_invite(...)` call.",
+        "description": "Owner-initiated invite. Persists a single-use, 7-day token.\n\nIDM-3: the raw invite token is NOT returned in the response body in\nstaging/production \u2014 it must travel exclusively via the email adapter\nso it never appears in API logs or browser history. In dev mode\n(ENVIRONMENT=dev) the invite link is included in the response as a\ntesting convenience (existing test_admin_invites.py relies on it).\nThe stdout print is likewise gated to dev.\n\nWhen CUT-303's EmailAdapter ships, this swaps to a single\n`email_adapter.send_invite(...)` call.",
         "operationId": "create_invite_admin_invites_post",
         "parameters": [
           {
@@ -15391,7 +15414,7 @@
     },
     "/auth/reset": {
       "post": {
-        "description": "Validate the token + rotate the user's password. All failure\nmodes (unknown / expired / consumed / malformed) collapse to a\nsingle 400 ``INVALID_RESET_TOKEN`` so the response never reveals\nWHICH branch tripped.\n\nThe audit emit records the password rotation against the user;\nno PII (email / new password) is captured in the changes blob.",
+        "description": "Validate the token + rotate the user's password. All failure\nmodes (unknown / expired / consumed / malformed) collapse to a\nsingle 400 ``INVALID_RESET_TOKEN`` so the response never reveals\nWHICH branch tripped.\n\nTS-06 \u2014 timing oracle: the happy path calls bcrypt (inside\n``password_reset_service.consume`` \u2192 ``hash_password``). The error\npath previously returned fast without doing any crypto work, leaking\nwhether the token was valid via response latency. We now always call\n``verify_password`` against the module-level dummy hash on the error\npath so timing is flat regardless of token validity.\n\nThe audit emit records the password rotation against the user;\nno PII (email / new password) is captured in the changes blob.",
         "operationId": "reset_password_auth_reset_post",
         "requestBody": {
           "content": {

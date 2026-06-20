@@ -454,3 +454,133 @@ def test_get_adjustment_returns_none_for_wrong_org(
         db_session, org_id=uuid.uuid4(), adjustment_id=adj.stock_adjustment_id
     )
     assert result is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# INV-P7: COUNT_RESET lock guard — _lock_or_create_position regression
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_count_reset_on_fresh_item_creates_position_row(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    setup: tuple[Firm, Item, Location],
+) -> None:
+    """COUNT_RESET on a fresh item (no prior stock) must create a position row.
+
+    INV-P7 regression guard: the COUNT_RESET path calls
+    ``_lock_or_create_position`` (locking read + create-if-absent) rather
+    than the plain ``get_position`` (non-locking, returns None, creates
+    nothing). On the delta=0 (no-op) branch the ONLY observable difference
+    between the two paths is whether a ``StockPosition`` row exists
+    afterward — ``_lock_or_create_position`` materialises it; the old
+    ``get_position`` path would leave the table empty.
+
+    A silent revert of the locking path back to ``get_position`` would
+    make all other COUNT_RESET tests pass (they all pre-seed stock via
+    ``add_stock``, which creates the position row before COUNT_RESET runs)
+    but would fail here because there is no prior position to return.
+    """
+    firm, item, location = setup
+
+    # Verify precondition: fresh item has no stock position yet.
+    pos_before = inventory_service.get_position(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+    )
+    assert pos_before is None, "Fixture must start with no StockPosition row"
+
+    # COUNT_RESET to 0 on a fresh item → current=0, target=0, delta=0 → no-op.
+    stock_service.create_adjustment(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("0"),  # target qty = 0; delta = 0 - 0 = 0 → no-op branch
+        direction="COUNT_RESET",
+        reason="Physical count: empty shelf confirmed",
+    )
+
+    # _lock_or_create_position must have materialised the row even when delta=0.
+    # The old get_position path would leave pos_after == None (regression).
+    pos_after = inventory_service.get_position(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+    )
+    assert pos_after is not None, (
+        "COUNT_RESET on a fresh item must create a StockPosition row via "
+        "_lock_or_create_position. If this is None, the locking path has "
+        "been reverted to the non-locking get_position (INV-P7 regression)."
+    )
+    assert Decimal(pos_after.on_hand_qty) == Decimal("0"), (
+        f"Fresh COUNT_RESET to 0 must leave on_hand_qty=0, got {pos_after.on_hand_qty}"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# INV-P9: null unit_cost on INCREASE inherits existing position cost
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_increase_null_unit_cost_inherits_current_position_cost(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    setup: tuple[Firm, Item, Location],
+) -> None:
+    """INCREASE with unit_cost=None must inherit current_cost from the
+    existing position, NOT default to 0.
+
+    Bug: create_adjustment used effective_unit_cost=0 when unit_cost=None,
+    causing weighted-average cost dilution. Example: 10 units @ ₹50 in
+    stock, INCREASE by 5 with no declared cost → should stay at ₹50,
+    not drop to (10*50 + 5*0) / 15 = ₹33.33.
+    """
+    firm, item, location = setup
+    # Seed 10 units at ₹50 each → current_cost = 50
+    inventory_service.add_stock(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("10"),
+        unit_cost=Decimal("50"),
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+    )
+
+    # INCREASE 5 units with no declared cost → should use existing cost (50).
+    stock_service.create_adjustment(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("5"),
+        direction="INCREASE",
+        unit_cost=None,  # null → must inherit ₹50, not default to ₹0
+        reason="Found stock — cost unknown, inherit existing",
+    )
+
+    pos = inventory_service.get_position(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+    )
+    assert pos is not None
+    assert Decimal(pos.on_hand_qty) == Decimal("15")
+    # Weighted average when all units at ₹50: (10*50 + 5*50) / 15 = 50.
+    # With the bug: (10*50 + 5*0) / 15 = 33.33.
+    assert Decimal(pos.current_cost or 0) == Decimal("50"), (
+        f"Expected current_cost=50 (inherited), got {pos.current_cost} "
+        f"— null unit_cost still defaults to 0 (dilution bug)"
+    )

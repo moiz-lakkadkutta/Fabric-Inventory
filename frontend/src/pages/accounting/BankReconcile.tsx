@@ -153,6 +153,10 @@ export default function BankReconcile() {
         statement_row_idx: idx,
         voucher_id: sel.voucher_id as string,
         statement_ref: sel.statement_ref || `STMT-R${idx + 1}`,
+        // BANK-4: send statement amount so the service can validate the
+        // ±₹1 tolerance. Use the preview row's amount (mirrors the CSV
+        // value). Take absolute value — sign varies per bank CSV export.
+        statement_amount: String(Math.abs(parseFloat(previewResult[idx]?.amount ?? '0'))),
       }));
     if (matches.length === 0) {
       setError('Pick at least one voucher match before confirming.');

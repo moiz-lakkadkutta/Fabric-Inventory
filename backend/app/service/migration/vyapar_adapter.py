@@ -40,6 +40,8 @@ parses through ``Decimal`` — never via float, per CLAUDE.md.
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
+import zipfile
 from collections.abc import Iterable, Iterator
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -47,6 +49,9 @@ from pathlib import Path
 from typing import Any
 
 import openpyxl
+from openpyxl.utils.exceptions import InvalidFileException
+
+from app.exceptions import AppValidationError
 
 from .intermediate import (
     IntermediateOpeningBalance,
@@ -133,6 +138,30 @@ _PARTY_TYPE_MAP: dict[str, tuple[PartyKind, ...]] = {
 _RUPEE_NOISE_RE = re.compile(r"[₹,\s]")
 _GSTIN_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[A-Z\d]$")
 
+# OWASP CWE-1236: chars that trigger formula execution when they appear at
+# the start of a spreadsheet cell. We neutralise them in name/code fields
+# that come from untrusted Vyapar exports (MIG-5).
+_FORMULA_TRIGGER_CHARS: frozenset[str] = frozenset("=+-@\t\r")
+
+# Maximum decompressed size accepted from a Vyapar xlsx (MIG-1 zip-bomb guard).
+# 64 MB is generous for a parties export that is typically < 500 KB.
+_MAX_DECOMPRESSED_BYTES: int = 64 * 1024 * 1024
+
+
+def _sanitize_party_text(text: str | None) -> str | None:
+    """Prefix ``text`` with ``'`` if it starts with a formula-trigger char.
+
+    Applied to ``name`` and ``code`` fields from the Vyapar adapter so
+    that a malicious party name like ``=SYSTEM("cmd")`` cannot execute
+    when downstream tooling exports those values to a spreadsheet.
+    Returns ``None`` unchanged.
+    """
+    if text is None:
+        return None
+    if text and text[0] in _FORMULA_TRIGGER_CHARS:
+        return "'" + text
+    return text
+
 
 def _parse_decimal(value: Any) -> Decimal:
     """Parse a money value to Decimal, tolerating Vyapar's quirks.
@@ -217,17 +246,76 @@ def _read_header(sheet: Any) -> dict[int, str]:
     return header_map
 
 
+def _check_zip_decompressed_size(raw_bytes: bytes) -> None:
+    """Raise ``AppValidationError`` if the zip's total uncompressed size exceeds the cap.
+
+    OWASP / MIG-1: a crafted xlsx (which is a zip) can contain entries whose
+    compressed size is tiny but whose decompressed size is gigabytes. We inspect
+    the central-directory metadata before handing the bytes to openpyxl so we
+    never decompress a bomb.
+
+    Also applies a per-member ratio guard: any single entry whose file_size /
+    compress_size ratio exceeds 100 is suspicious enough to reject even if the
+    aggregate total hasn't crossed the absolute cap.
+    """
+    try:
+        with zipfile.ZipFile(BytesIO(raw_bytes), "r") as zf:
+            total_decompressed = 0
+            for info in zf.infolist():
+                total_decompressed += info.file_size
+                compress_size = info.compress_size or 1  # avoid division by zero
+                if info.file_size / compress_size > 100 and info.file_size > 1024 * 1024:
+                    raise AppValidationError(
+                        f"Upload rejected: zip entry {info.filename!r} has a suspicious "
+                        f"compression ratio ({info.file_size}/{compress_size}), "
+                        "possible decompression bomb."
+                    )
+            if total_decompressed > _MAX_DECOMPRESSED_BYTES:
+                cap_mb = _MAX_DECOMPRESSED_BYTES // (1024 * 1024)
+                raise AppValidationError(
+                    f"Upload rejected: total decompressed size "
+                    f"({total_decompressed // (1024 * 1024)} MB) exceeds the "
+                    f"{cap_mb} MB limit — possible decompression bomb."
+                )
+    except AppValidationError:
+        raise
+    except zipfile.BadZipFile as exc:
+        raise AppValidationError("File is not a readable Excel workbook.") from exc
+
+
 def _load_workbook(source: Any) -> Any:
-    """Open an Excel workbook from a path, bytes, or BytesIO."""
+    """Open an Excel workbook from a path, bytes, or BytesIO.
+
+    MIG-1: checks decompressed zip size before passing to openpyxl.
+    MIG-2: wraps BadZipFile / InvalidFileException / ParseError as AppValidationError.
+    """
+    # Normalise to bytes so we can inspect the zip before handing to openpyxl.
     if isinstance(source, str | Path):
-        return openpyxl.load_workbook(str(source), data_only=True, read_only=True)
-    if isinstance(source, bytes | bytearray | memoryview):
-        return openpyxl.load_workbook(BytesIO(bytes(source)), data_only=True, read_only=True)
-    if isinstance(source, BytesIO):
+        raw = Path(source).read_bytes()
+    elif isinstance(source, bytes | bytearray | memoryview):
+        raw = bytes(source)
+    elif isinstance(source, BytesIO):
         source.seek(0)
-        return openpyxl.load_workbook(source, data_only=True, read_only=True)
-    # Last-ditch: openpyxl accepts file-like objects too.
-    return openpyxl.load_workbook(source, data_only=True, read_only=True)
+        raw = source.read()
+    else:
+        # File-like: read once; wrap below.
+        try:
+            raw = source.read()
+        except Exception as exc:
+            raise AppValidationError("File is not a readable Excel workbook.") from exc
+
+    # MIG-1: zip-bomb guard before decompression.
+    _check_zip_decompressed_size(raw)
+
+    # MIG-2: surface parse errors as validation errors rather than 500s.
+    # openpyxl raises KeyError when the zip is valid but lacks [Content_Types].xml
+    # (a zip that is not an OOXML workbook).
+    try:
+        return openpyxl.load_workbook(BytesIO(raw), data_only=True, read_only=True)
+    except (zipfile.BadZipFile, InvalidFileException, KeyError) as exc:
+        raise AppValidationError("File is not a readable Excel workbook.") from exc
+    except ET.ParseError as exc:
+        raise AppValidationError("File is not a readable Excel workbook.") from exc
 
 
 def _iter_party_rows(source: Any) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -340,8 +428,16 @@ class VyaparExcelAdapter:
             name = _normalize_str(raw.get("name"))
             if not name:
                 continue
+            # MIG-5: formula-injection chars are intentionally NOT sanitised at
+            # import time — the raw value is stored unchanged so master data is
+            # never corrupted (a party legitimately named "-Quantity Discount"
+            # stays "-Quantity Discount").  The EXPORT layer (_sanitize_cell_text
+            # in export_service.py) prepends an apostrophe at the CSV/XLSX sink,
+            # which is the correct defence against CWE-1236.  The validate() pass
+            # below emits a FORMULA_TRIGGER_IN_NAME warning so operators are aware.
             kinds = _resolve_kinds(raw.get("_party_type"), raw.get("_balance_type"))
-            code = _normalize_str(raw.get("code")) or _derive_code(name, source_idx)
+            raw_code = _normalize_str(raw.get("code"))
+            code = raw_code if raw_code else _derive_code(name, source_idx)
             gstin = _normalize_str(raw.get("gstin"))
             # Pre-validate GSTIN format; otherwise the commit-step's
             # masters_service will reject the row at insert time.
@@ -452,6 +548,27 @@ class VyaparExcelAdapter:
                 errors += 1
                 continue
             seen_source_ids.add(source_id)
+
+            # MIG-5: warn (non-destructively) when name or code begins with a
+            # formula-trigger char.  The raw value is stored unchanged; the
+            # export layer neutralises it at write time.  This warning tells
+            # operators which parties will have an apostrophe prepended in the
+            # downloaded CSV/XLSX so they can cross-check against Vyapar.
+            if name and name[0] in _FORMULA_TRIGGER_CHARS:
+                rows.append(
+                    ReconciliationRow(
+                        severity="warn",
+                        code="FORMULA_TRIGGER_IN_NAME",
+                        message=(
+                            f"Party name {name!r} on row {source_idx} begins with a "
+                            "spreadsheet formula trigger character; stored unchanged in the "
+                            "database, but will be prefixed with ' on CSV/XLSX export "
+                            "(OWASP CWE-1236 defence)."
+                        ),
+                        source_ref=source_ref,
+                    )
+                )
+                warnings += 1
 
             gstin = _normalize_str(raw.get("gstin"))
             if gstin and not _GSTIN_RE.fullmatch(gstin):

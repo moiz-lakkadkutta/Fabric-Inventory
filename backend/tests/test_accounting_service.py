@@ -10,8 +10,10 @@ from __future__ import annotations
 import datetime
 import uuid
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
 
 from app.models import (
@@ -205,6 +207,102 @@ def test_finalize_invoice_writes_voucher_via_endpoint() -> None:
     this placeholder keeps the file's intent obvious in the table-of-contents.
     """
     _ = Voucher, VoucherLine
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BL-04 / BL-05: voucher-number allocator hardening
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_allocate_voucher_number_issues_firm_row_lock(
+    sync_engine: Engine, db_session: OrmSession
+) -> None:
+    """BL-04: _allocate_voucher_number must acquire a SELECT FOR UPDATE on
+    the firm row before the max-number query to prevent concurrent duplicate
+    allocation under concurrent load.
+
+    Proxy: intercept all SQLAlchemy statements submitted by the allocator
+    and assert that at least one is a SELECT...FOR UPDATE targeting the
+    firm table.
+    """
+    from sqlalchemy.dialects.postgresql import dialect as pg_dialect
+
+    org_id, firm_id, _, _ = _seed_org_with_coa(db_session)
+
+    captured_stmts: list[Any] = []
+    real_execute = db_session.execute
+
+    def _interceptor(stmt, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured_stmts.append(stmt)
+        return real_execute(stmt, *args, **kwargs)
+
+    db_session.execute = _interceptor  # type: ignore[assignment]
+    try:
+        accounting_service._allocate_voucher_number(
+            db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            voucher_type=VoucherType.SALES_INVOICE,
+            series="RT/2526",
+        )
+    finally:
+        db_session.execute = real_execute  # type: ignore[method-assign]
+
+    lock_found = False
+    for stmt in captured_stmts:
+        try:
+            sql_text = str(stmt.compile(dialect=pg_dialect()))  # type: ignore[no-untyped-call]
+            if "for update" in sql_text.lower() and "firm" in sql_text.lower():
+                lock_found = True
+                break
+        except Exception:
+            pass
+
+    assert lock_found, (
+        "BL-04: _allocate_voucher_number must issue SELECT firm FOR UPDATE "
+        "before the max-number query to prevent concurrent duplicate allocation.\n"
+        f"Captured {len(captured_stmts)} statement(s) — none had FOR UPDATE on firm."
+    )
+
+
+def test_allocate_voucher_number_numeric_max_after_9999(db_session: OrmSession) -> None:
+    """BL-05: when vouchers '9999' AND '10000' both exist, VARCHAR max is '9999'
+    (lexicographic) but numeric max is 10000. The allocator must use numeric
+    max so the next number is '10001', not a collision with '10000'.
+    """
+    org_id, firm_id, _, _ = _seed_org_with_coa(db_session)
+
+    series = "JV"
+    vtype = VoucherType.JOURNAL
+    for num in ("9999", "10000"):
+        db_session.add(
+            Voucher(
+                org_id=org_id,
+                firm_id=firm_id,
+                voucher_type=vtype,
+                series=series,
+                number=num,
+                voucher_date=datetime.date(2026, 1, 1),
+                status=VoucherStatus.POSTED,
+                total_debit=Decimal("100"),
+                total_credit=Decimal("100"),
+                reference_type="test",
+            )
+        )
+    db_session.flush()
+
+    next_num = accounting_service._allocate_voucher_number(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        voucher_type=vtype,
+        series=series,
+    )
+
+    assert next_num == "10001", (
+        f"BL-05: numeric max of ['9999','10000'] is 10000, so next must be '10001'; "
+        f"got {next_num!r}. VARCHAR max would return '9999' → next '10000' (collision!)."
+    )
 
 
 def test_sale_voucher_narration_uses_party_name(db_session: OrmSession) -> None:

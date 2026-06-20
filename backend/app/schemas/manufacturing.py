@@ -166,7 +166,7 @@ class BomLineInput(BaseModel):
     """Request component for a single BOM line."""
 
     item_id: uuid.UUID
-    qty_required: Decimal = Field(gt=Decimal("0"))
+    qty_required: Decimal = Field(gt=Decimal("0"), le=Decimal("9999999999.9999"))
     uom: UomType
     is_optional: bool = False
     part_role: str | None = Field(default=None, max_length=50)

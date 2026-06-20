@@ -69,6 +69,33 @@ def _autofill_encrypted_dek(_mapper: object, _connection: object, target: _Organ
     target.encrypted_dek = _wrap_dek(_generate_dek(), org_id=target.org_id)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_rate_limit() -> Iterator[None]:
+    """Give every test a private, empty rate-limit store.
+
+    DOS-01 added IP-keyed limits to login/signup/mfa/reset (e.g. signup is
+    3/3600s). The whole suite shares one client IP, so without per-test
+    isolation the 4th signup *anywhere* in the session trips 429 and breaks
+    every later test that authenticates. Inject a fresh in-memory fakeredis
+    per test (and reset after) so limits are hermetic: dedicated rate-limit
+    tests still drive their own fresh store to the threshold, while ordinary
+    tests get a clean budget and never hit the real Redis.
+    """
+    from app.middleware.rate_limit import set_redis_client_for_testing
+
+    try:
+        import fakeredis.aioredis as _fakeredis
+    except ModuleNotFoundError:  # pragma: no cover - fakeredis is a test dep
+        yield
+        return
+    fake = _fakeredis.FakeRedis(decode_responses=True)
+    set_redis_client_for_testing(fake)
+    try:
+        yield
+    finally:
+        set_redis_client_for_testing(None)
+
+
 @pytest.fixture
 async def client() -> AsyncIterator[AsyncClient]:
     """Async HTTP client over the FastAPI app's ASGI transport."""
