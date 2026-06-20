@@ -46,16 +46,14 @@ def _add_stock_adjustment_voucher_type() -> None:
     op.execute("ALTER TYPE voucher_type ADD VALUE IF NOT EXISTS 'STOCK_ADJUSTMENT'")
 
 
-def _backfill_inventory_adjustment_ledger(conn: object) -> None:
+def _backfill_inventory_adjustment_ledger(conn: sa.Connection) -> None:
     """Idempotent backfill: ensure the ``5350 Inventory Adjustment``
     ledger exists for every live org.
 
     ``seed_coa`` checks for existing ledger codes per org and only
     inserts rows that are absent — running this twice is a no-op.
     """
-    rows = conn.execute(  # type: ignore[union-attr]
-        sa.text("SELECT org_id FROM organization WHERE deleted_at IS NULL")
-    ).all()
+    rows = conn.execute(sa.text("SELECT org_id FROM organization WHERE deleted_at IS NULL")).all()
     org_ids: list[uuid.UUID] = [uuid.UUID(str(r[0])) for r in rows]
 
     if not org_ids:
@@ -65,7 +63,7 @@ def _backfill_inventory_adjustment_ledger(conn: object) -> None:
 
     from app.service.seed_service import seed_coa
 
-    with Session(bind=conn) as session:  # type: ignore[call-arg]
+    with Session(bind=conn) as session:
         for org_id in org_ids:
             seed_coa(session, org_id=org_id)  # idempotent; adds new row, skips existing
         session.flush()

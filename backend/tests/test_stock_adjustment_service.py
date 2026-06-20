@@ -791,10 +791,8 @@ def test_increase_with_cost_posts_balanced_sadj_voucher(
     vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
     assert len(vouchers) == 1, f"Expected 1 STOCK_ADJUSTMENT voucher, got {len(vouchers)}"
     v = vouchers[0]
-    assert Decimal(v.total_debit) == Decimal("5000.00"), f"total_debit={v.total_debit}, want 5000"
-    assert Decimal(v.total_credit) == Decimal("5000.00"), (
-        f"total_credit={v.total_credit}, want 5000"
-    )
+    assert v.total_debit == Decimal("5000.00"), f"total_debit={v.total_debit}, want 5000"
+    assert v.total_credit == Decimal("5000.00"), f"total_credit={v.total_credit}, want 5000"
     assert v.reference_type == "stock_adjustment"
     assert v.reference_id == _adj.stock_adjustment_id
 
@@ -856,8 +854,8 @@ def test_decrease_with_cost_posts_reversed_sadj_voucher(
     vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
     assert len(vouchers) == 1
     v = vouchers[0]
-    assert Decimal(v.total_debit) == Decimal("600.00"), f"total_debit={v.total_debit}, want 600"
-    assert Decimal(v.total_credit) == Decimal("600.00")
+    assert v.total_debit == Decimal("600.00"), f"total_debit={v.total_debit}, want 600"
+    assert v.total_credit == Decimal("600.00")
 
     lines = _fetch_voucher_lines(db_session, voucher_id=v.voucher_id)
     dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
@@ -990,12 +988,8 @@ def test_count_reset_increase_posts_balanced_sadj_voucher(
     v = vouchers[0]
 
     # value_delta = 10 units * ₹130 = ₹1300
-    assert Decimal(v.total_debit) == Decimal("1300.00"), (
-        f"total_debit={v.total_debit}, want 1300.00"
-    )
-    assert Decimal(v.total_credit) == Decimal("1300.00"), (
-        f"total_credit={v.total_credit}, want 1300.00"
-    )
+    assert v.total_debit == Decimal("1300.00"), f"total_debit={v.total_debit}, want 1300.00"
+    assert v.total_credit == Decimal("1300.00"), f"total_credit={v.total_credit}, want 1300.00"
 
     lines = _fetch_voucher_lines(db_session, voucher_id=v.voucher_id)
     dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
@@ -1061,10 +1055,8 @@ def test_count_reset_decrease_posts_balanced_sadj_voucher(
     v = vouchers[0]
 
     # value_delta = 10 units * ₹30 = ₹300
-    assert Decimal(v.total_debit) == Decimal("300.00"), f"total_debit={v.total_debit}, want 300.00"
-    assert Decimal(v.total_credit) == Decimal("300.00"), (
-        f"total_credit={v.total_credit}, want 300.00"
-    )
+    assert v.total_debit == Decimal("300.00"), f"total_debit={v.total_debit}, want 300.00"
+    assert v.total_credit == Decimal("300.00"), f"total_credit={v.total_credit}, want 300.00"
 
     lines = _fetch_voucher_lines(db_session, voucher_id=v.voucher_id)
     dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
