@@ -213,6 +213,4 @@ def test_xlsx_safe_text_values_unchanged() -> None:
         raw = to_xlsx([sheet])
         wb = load_workbook(io.BytesIO(raw))
         cell_val = wb["Safe"]["A2"].value
-        assert cell_val == safe, (
-            f"Safe value {safe!r} should be unchanged, got {cell_val!r}"
-        )
+        assert cell_val == safe, f"Safe value {safe!r} should be unchanged, got {cell_val!r}"

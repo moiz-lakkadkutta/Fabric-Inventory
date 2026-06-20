@@ -428,12 +428,16 @@ class VyaparExcelAdapter:
             name = _normalize_str(raw.get("name"))
             if not name:
                 continue
-            # MIG-5: neutralise formula-injection triggers in name/code before
-            # they can propagate to downstream spreadsheet exports.
-            name = _sanitize_party_text(name) or name
+            # MIG-5: formula-injection chars are intentionally NOT sanitised at
+            # import time — the raw value is stored unchanged so master data is
+            # never corrupted (a party legitimately named "-Quantity Discount"
+            # stays "-Quantity Discount").  The EXPORT layer (_sanitize_cell_text
+            # in export_service.py) prepends an apostrophe at the CSV/XLSX sink,
+            # which is the correct defence against CWE-1236.  The validate() pass
+            # below emits a FORMULA_TRIGGER_IN_NAME warning so operators are aware.
             kinds = _resolve_kinds(raw.get("_party_type"), raw.get("_balance_type"))
             raw_code = _normalize_str(raw.get("code"))
-            code = _sanitize_party_text(raw_code) or _derive_code(name, source_idx)
+            code = raw_code if raw_code else _derive_code(name, source_idx)
             gstin = _normalize_str(raw.get("gstin"))
             # Pre-validate GSTIN format; otherwise the commit-step's
             # masters_service will reject the row at insert time.
@@ -544,6 +548,27 @@ class VyaparExcelAdapter:
                 errors += 1
                 continue
             seen_source_ids.add(source_id)
+
+            # MIG-5: warn (non-destructively) when name or code begins with a
+            # formula-trigger char.  The raw value is stored unchanged; the
+            # export layer neutralises it at write time.  This warning tells
+            # operators which parties will have an apostrophe prepended in the
+            # downloaded CSV/XLSX so they can cross-check against Vyapar.
+            if name and name[0] in _FORMULA_TRIGGER_CHARS:
+                rows.append(
+                    ReconciliationRow(
+                        severity="warn",
+                        code="FORMULA_TRIGGER_IN_NAME",
+                        message=(
+                            f"Party name {name!r} on row {source_idx} begins with a "
+                            "spreadsheet formula trigger character; stored unchanged in the "
+                            "database, but will be prefixed with ' on CSV/XLSX export "
+                            "(OWASP CWE-1236 defence)."
+                        ),
+                        source_ref=source_ref,
+                    )
+                )
+                warnings += 1
 
             gstin = _normalize_str(raw.get("gstin"))
             if gstin and not _GSTIN_RE.fullmatch(gstin):
