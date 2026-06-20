@@ -716,8 +716,9 @@ def test_gstr1_gstin_masked_when_can_view_pii_false(
     full "27ABCDE1234F1Z5" — prevents PII leakage to lower-privilege
     accounting-report-view-only callers.
     """
-    from app.service import reports_service
     from sqlalchemy.orm import Session as OrmSession
+
+    from app.service import reports_service
 
     me = _signup_owner(http_client)
     org_id = uuid.UUID(me["org_id"])
@@ -739,7 +740,6 @@ def test_gstr1_gstin_masked_when_can_view_pii_false(
     )
 
     # Invoke service directly with can_view_pii=False (lower-privilege caller).
-    sync_url = sync_engine.url
     with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         result = reports_service.compute_gstr1(
@@ -757,20 +757,17 @@ def test_gstr1_gstin_masked_when_can_view_pii_false(
     assert masked_gstin.endswith(party_gstin[-3:]), (
         f"Expected masked GSTIN ending with {party_gstin[-3:]!r}, got {masked_gstin!r}"
     )
-    assert masked_gstin != party_gstin, (
-        f"GSTIN was not masked: got full plaintext {masked_gstin!r}"
-    )
-    assert "*" in masked_gstin, (
-        f"Expected '*' in masked GSTIN, got {masked_gstin!r}"
-    )
+    assert masked_gstin != party_gstin, f"GSTIN was not masked: got full plaintext {masked_gstin!r}"
+    assert "*" in masked_gstin, f"Expected '*' in masked GSTIN, got {masked_gstin!r}"
 
 
 def test_gstr1_gstin_full_when_can_view_pii_true(
     http_client: TestClient, sync_engine: Engine
 ) -> None:
     """compute_gstr1(can_view_pii=True) must return the full plaintext GSTIN."""
-    from app.service import reports_service
     from sqlalchemy.orm import Session as OrmSession
+
+    from app.service import reports_service
 
     me = _signup_owner(http_client)
     org_id = uuid.UUID(me["org_id"])
@@ -803,8 +800,7 @@ def test_gstr1_gstin_full_when_can_view_pii_true(
 
     assert len(result.b2b) == 1
     assert result.b2b[0].gstin == party_gstin, (
-        f"Expected full GSTIN {party_gstin!r} with can_view_pii=True, "
-        f"got {result.b2b[0].gstin!r}"
+        f"Expected full GSTIN {party_gstin!r} with can_view_pii=True, got {result.b2b[0].gstin!r}"
     )
 
 

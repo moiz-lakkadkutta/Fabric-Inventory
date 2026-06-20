@@ -726,7 +726,7 @@ def test_add_stock_rejects_negative_unit_cost(
     said "negative cost is allowed" — that was a bug, not a feature.
     """
     firm, item, loc = firm_and_item
-    with pytest.raises(AppValidationError, match="[Nn]egative|unit_cost|cost"):
+    with pytest.raises(AppValidationError, match=r"[Nn]egative|unit_cost|cost"):
         inventory_service.add_stock(
             db_session,
             org_id=firm.org_id,
@@ -757,10 +757,10 @@ def test_add_stock_rejects_soft_deleted_item(
 
     firm, item, loc = firm_and_item
     # Soft-delete the item.
-    item.deleted_at = datetime.datetime.now(tz=datetime.timezone.utc)
+    item.deleted_at = datetime.datetime.now(tz=datetime.UTC)
     db_session.flush()
 
-    with pytest.raises(AppValidationError, match="[Nn]ot found|deleted"):
+    with pytest.raises(AppValidationError, match=r"[Nn]ot found|deleted"):
         inventory_service.add_stock(
             db_session,
             org_id=firm.org_id,

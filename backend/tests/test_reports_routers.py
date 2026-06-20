@@ -351,7 +351,7 @@ def test_stock_summary_reports_on_hand_and_valuation(
             on_hand_qty=Decimal("10"),
             # INV-P4 fix: stock-summary now reads current_cost, not Lot.primary_cost.
             # Set current_cost here to match lot.primary_cost so the valuation is
-            # still 10 × 50 = 500 as the test expects.
+            # still 10 x 50 = 500 as the test expects.
             current_cost=Decimal("50.0000"),
         )
         session.add(pos)
@@ -582,7 +582,7 @@ def test_stock_summary_uses_position_current_cost(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    # Valuation: qty=5 × cost=100 = 500. With the bug, 0 is returned because
+    # Valuation: qty=5 x cost=100 = 500. With the bug, 0 is returned because
     # Lot.primary_cost is NULL (no Lot row), coalesced to 0.
     assert Decimal(body["total_value"]) == Decimal("500.00"), (
         f"Expected ₹500 from StockPosition.current_cost; "
@@ -600,9 +600,7 @@ def test_stock_summary_uses_position_current_cost(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_date_span_pnl_too_wide_returns_422(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_date_span_pnl_too_wide_returns_422(http_client: TestClient, sync_engine: Engine) -> None:
     """A date range > 366 days on /reports/pnl must return 422, not 200.
 
     Without the guard a single request can force multi-year full-table
@@ -634,9 +632,7 @@ def test_date_span_ledger_too_wide_returns_422(
     )
 
 
-def test_date_span_within_limit_is_allowed(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_date_span_within_limit_is_allowed(http_client: TestClient, sync_engine: Engine) -> None:
     """A date range of exactly 366 days is permitted — only >366 is rejected."""
     me = _signup_owner(http_client)
     # 2026-01-01 to 2027-01-02 is 366 days (inclusive) — should succeed.
