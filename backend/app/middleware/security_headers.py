@@ -63,11 +63,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 class ContentSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Reject request bodies that exceed ``max_bytes`` with HTTP 413.
+    """Reject oversized requests with HTTP 413 via a Content-Length fast-path.
 
-    Checks ``Content-Length`` header first (zero-copy fast path). For
-    chunked or streaming bodies without a ``Content-Length`` header, the
-    guard accumulates received bytes and rejects once the limit is exceeded.
+    This middleware only inspects the ``Content-Length`` request header.  If
+    the declared size exceeds ``max_bytes`` the request is rejected immediately
+    (zero-copy, before auth or any handler runs).  Requests that omit
+    ``Content-Length`` (e.g. chunked transfer encoding) are passed through
+    without any body accumulation — this middleware provides **no protection**
+    for those.  The authoritative streaming / chunked-body cap is enforced at
+    the edge by ``ops/Caddyfile`` (``request_body max_size``).
     """
 
     def __init__(self, app: ASGIApp, max_bytes: int = _MAX_BODY_BYTES) -> None:

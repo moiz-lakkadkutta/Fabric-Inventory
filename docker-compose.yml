@@ -17,13 +17,15 @@ services:
 
   redis:
     image: redis:7-alpine
-    # DOS-07: cap Redis memory and evict least-recently-used keys when the
-    # limit is approached. Prevents the idempotency / rate-limit cache from
-    # exhausting host memory under sustained load.
+    # DOS-07: cap Redis memory and evict least-recently-used *TTL-bearing* keys
+    # when the limit is approached. volatile-lru (not allkeys-lru) is used so
+    # idempotency keys that carry a 24h TTL can be evicted under OOM pressure
+    # while non-expiring keys (e.g. Lua scripts) are never silently dropped —
+    # preventing a retried mutating request from re-executing due to eviction.
     command: >
       redis-server
       --maxmemory 128mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy volatile-lru
     mem_limit: 160m
     ports:
       - "6379:6379"
