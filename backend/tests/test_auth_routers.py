@@ -91,7 +91,12 @@ def test_signup_returns_tokens_and_creates_org_firm_user(http_client: TestClient
     assert hsn_resp.json()["count"] == 10
 
 
-def test_signup_duplicate_org_name_returns_422(http_client: TestClient) -> None:
+def test_signup_duplicate_org_name_returns_generic_409(http_client: TestClient) -> None:
+    """IDM-6: a duplicate org name must return the SAME generic 409 as a
+    duplicate email, so an unauthenticated attacker cannot enumerate which
+    org names exist by status code / message. (Previously this leaked a
+    distinct 422 'organization already exists' response.)
+    """
     org_name = _unique_org_name()
     _signup(http_client, email=_unique_email(), password="strong-password-1", org_name=org_name)
     resp = http_client.post(
@@ -104,8 +109,10 @@ def test_signup_duplicate_org_name_returns_422(http_client: TestClient) -> None:
             "state_code": "MH",
         },
     )
-    assert resp.status_code == 422
-    assert resp.json()["code"] == "VALIDATION_ERROR"
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "USER_EMAIL_TAKEN"
+    # Must not leak which field collided (no org name echoed back).
+    assert org_name not in resp.text
 
 
 def test_signup_weak_password_rejected_by_pydantic(http_client: TestClient) -> None:
