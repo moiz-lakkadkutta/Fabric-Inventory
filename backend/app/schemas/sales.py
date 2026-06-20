@@ -212,8 +212,11 @@ class SalesInvoiceListResponse(BaseModel):
 
 class SiLineCreateRequest(BaseModel):
     item_id: uuid.UUID
-    qty: Annotated[Decimal, Field(gt=0)]
-    price: Annotated[Decimal, Field(ge=0)]
+    # BL-02: upper bound prevents values that would overflow NUMERIC(15,4)
+    # from reaching the DB (→ 422 instead of 500). 1e9 (₹1 billion) is a
+    # generous sane ceiling well within the column's 11-digit integer range.
+    qty: Annotated[Decimal, Field(gt=0, le=Decimal("1e9"))]
+    price: Annotated[Decimal, Field(ge=0, le=Decimal("1e9"))]
     gst_rate: Decimal | None = None
     sequence: int | None = None
 

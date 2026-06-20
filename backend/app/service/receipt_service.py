@@ -35,11 +35,12 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, func, select
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
 from app.models import (
+    Firm,
     Ledger,
     Party,
     PaymentAllocation,
@@ -90,8 +91,16 @@ def _allocate_voucher_number(
     voucher_type: VoucherType,
     series: str,
 ) -> str:
+    # BL-04: lock the firm row to serialise concurrent allocations so two
+    # simultaneous receipt posts can't race to insert duplicate numbers.
+    session.execute(
+        select(Firm).where(Firm.firm_id == firm_id).with_for_update()
+    ).scalar_one_or_none()
+
+    # BL-05: cast Voucher.number to Integer before taking the max so the
+    # comparison is numeric, not lexicographic VARCHAR order.
     last = session.execute(
-        select(func.coalesce(func.max(Voucher.number), "0")).where(
+        select(func.coalesce(func.max(func.cast(Voucher.number, Integer)), 0)).where(
             Voucher.org_id == org_id,
             Voucher.firm_id == firm_id,
             Voucher.voucher_type == voucher_type,

@@ -24,12 +24,12 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
-from app.models import Ledger, Party, SalesInvoice, Voucher, VoucherLine
+from app.models import Firm, Ledger, Party, SalesInvoice, Voucher, VoucherLine
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.service import audit_service
 
@@ -66,8 +66,21 @@ def _allocate_voucher_number(
     voucher_type: VoucherType,
     series: str,
 ) -> str:
+    # BL-04: lock the firm row to serialise concurrent allocations so two
+    # simultaneous posts to the same (org, firm, type, series) can't both
+    # read the same max and race to insert duplicate numbers.
+    session.execute(
+        select(Firm).where(Firm.firm_id == firm_id).with_for_update()
+    ).scalar_one_or_none()
+
+    # BL-05: cast Voucher.number to Integer before taking the max so the
+    # comparison is numeric, not lexicographic. Without the cast, after
+    # voucher "9999" exists a new "10000" would make VARCHAR max stay "9999"
+    # (since '9' > '1' in ASCII) and the next allocation would collide with
+    # the already-inserted "10000". COALESCE defaults to 0 (integer) so an
+    # empty table returns 1 as expected.
     last = session.execute(
-        select(func.coalesce(func.max(Voucher.number), "0")).where(
+        select(func.coalesce(func.max(func.cast(Voucher.number, Integer)), 0)).where(
             Voucher.org_id == org_id,
             Voucher.firm_id == firm_id,
             Voucher.voucher_type == voucher_type,
