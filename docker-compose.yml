@@ -17,6 +17,14 @@ services:
 
   redis:
     image: redis:7-alpine
+    # DOS-07: cap Redis memory and evict least-recently-used keys when the
+    # limit is approached. Prevents the idempotency / rate-limit cache from
+    # exhausting host memory under sustained load.
+    command: >
+      redis-server
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+    mem_limit: 160m
     ports:
       - "6379:6379"
     healthcheck:
