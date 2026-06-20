@@ -169,6 +169,7 @@ def create_invite(
         email=body.email,
         role_id=body.role_id,
         firm_id=body.firm_id,
+        actor_firm_id=current_user.firm_id,
     )
 
     # IDM-3: gate the invite link to dev mode only.
@@ -269,6 +270,7 @@ def update_user_role(
         actor_user_id=current_user.user_id,
         target_user_id=user_id,
         new_role_id=body.role_id,
+        actor_firm_id=current_user.firm_id,
     )
     return None
 
@@ -431,6 +433,7 @@ def create_role(
         permission_codes=body.permissions,
         description=body.description,
         actor_user_id=current_user.user_id,
+        actor_firm_id=current_user.firm_id,
     )
     return _load_role_with_permissions(db, org_id=current_user.org_id, role_id=role.role_id)
 
@@ -460,6 +463,7 @@ def update_role(
         description=body.description,
         permission_codes=body.permissions,
         actor_user_id=current_user.user_id,
+        actor_firm_id=current_user.firm_id,
     )
     return _load_role_with_permissions(db, org_id=current_user.org_id, role_id=role_id)
 

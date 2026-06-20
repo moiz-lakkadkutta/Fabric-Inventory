@@ -351,3 +351,205 @@ def test_delete_role_audit_row_carries_actor_user_id(
         f"CRYPTO-02 violation: audit row user_id={actor_in_audit!r} != "
         f"actor user_id={owner_user_id!r}; actor_user_id not threaded through router"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# PRIV-1 / IDM-1 — end-to-end privilege-escalation ceiling (HTTP layer)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _setup_low_priv_user(
+    client: TestClient,
+    owner_token: str,
+    low_priv_permissions: list[str],
+) -> tuple[str, str]:
+    """Create a custom role with limited perms, invite a user, accept, log in.
+
+    Returns (access_token, role_id_str) for the low-priv user.
+    Relies on ENVIRONMENT=dev so invite_link is returned in the response.
+    """
+    role_code = f"lp_{uuid.uuid4().hex[:6]}"
+    create_role_resp = client.post(
+        "/admin/roles",
+        headers=_auth(owner_token),
+        json={
+            "code": role_code,
+            "name": f"Low-Priv Role {role_code}",
+            "permissions": low_priv_permissions,
+        },
+    )
+    assert create_role_resp.status_code == 201, create_role_resp.text
+    low_priv_role_id = create_role_resp.json()["role_id"]
+
+    lp_email = _unique_email()
+    invite_resp = client.post(
+        "/admin/invites",
+        headers=_auth(owner_token),
+        json={"email": lp_email, "role_id": low_priv_role_id},
+    )
+    assert invite_resp.status_code == 201, invite_resp.text
+    invite_link = invite_resp.json().get("invite_link")
+    assert invite_link, f"invite_link missing (need ENVIRONMENT=dev): {invite_resp.json()}"
+    raw_token = invite_link.split("/invite/")[-1]
+
+    accept_resp = client.post(
+        "/admin/invites/accept",
+        json={"token": raw_token, "name": "Low Priv User", "password": "TestLowPriv1!"},
+    )
+    assert accept_resp.status_code == 201, accept_resp.text
+    org_name = accept_resp.json()["org_name"]
+
+    login_resp = client.post(
+        "/auth/login",
+        json={"email": lp_email, "password": "TestLowPriv1!", "org_name": org_name},
+    )
+    assert login_resp.status_code == 200, login_resp.text
+    return login_resp.json()["access_token"], low_priv_role_id
+
+
+def test_idm1_low_priv_cannot_create_role_exceeding_own_perms(
+    http_client: TestClient,
+    sync_engine: Engine,
+) -> None:
+    """PRIV-1 / IDM-1 E2E: a user holding only {identity.role.create, admin.user.manage}
+    receives 403 when attempting to create a role containing perms they don't hold.
+    """
+    owner_body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="OwnerPass1!",
+        org_name=_unique_org_name(),
+    )
+    owner_token = owner_body["access_token"]
+
+    lp_token, _ = _setup_low_priv_user(
+        http_client,
+        owner_token,
+        ["identity.role.create", "admin.user.manage"],
+    )
+
+    # Attempt to create a role with admin.firm.manage (not in lp's perms)
+    resp = http_client.post(
+        "/admin/roles",
+        headers=_auth(lp_token),
+        json={
+            "code": f"priv_esc_{uuid.uuid4().hex[:6]}",
+            "name": "Privilege Escalation Role",
+            "permissions": ["identity.role.create", "admin.firm.manage"],
+        },
+    )
+    assert resp.status_code == 403, (
+        f"PRIV-1/IDM-1 violation: low-priv user created a role with elevated perms! "
+        f"status={resp.status_code}, body={resp.text}"
+    )
+
+
+def test_idm1_low_priv_cannot_invite_into_owner_role(
+    http_client: TestClient,
+    sync_engine: Engine,
+) -> None:
+    """PRIV-1 / IDM-1 E2E: a user holding only {admin.user.manage}
+    receives 403 when attempting to invite someone into the OWNER role.
+    """
+    owner_body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="OwnerPass1!",
+        org_name=_unique_org_name(),
+    )
+    owner_token = owner_body["access_token"]
+    org_id = owner_body["org_id"]
+
+    lp_token, _ = _setup_low_priv_user(
+        http_client,
+        owner_token,
+        ["admin.user.manage"],
+    )
+
+    owner_role_id = _role_id_by_code(sync_engine, org_id=org_id, role_code="OWNER")
+
+    resp = http_client.post(
+        "/admin/invites",
+        headers=_auth(lp_token),
+        json={"email": _unique_email(), "role_id": owner_role_id},
+    )
+    assert resp.status_code == 403, (
+        f"PRIV-1/IDM-1 violation: low-priv user invited someone as OWNER! "
+        f"status={resp.status_code}, body={resp.text}"
+    )
+
+
+def test_idm1_self_promotion_via_change_role_blocked(
+    http_client: TestClient,
+    sync_engine: Engine,
+) -> None:
+    """PRIV-1 / IDM-1 E2E: a low-priv user cannot change their own role to OWNER."""
+    owner_body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="OwnerPass1!",
+        org_name=_unique_org_name(),
+    )
+    owner_token = owner_body["access_token"]
+    org_id = owner_body["org_id"]
+
+    lp_token, _ = _setup_low_priv_user(
+        http_client,
+        owner_token,
+        ["admin.user.manage"],
+    )
+
+    # Identify the low-priv user's user_id from the /auth/me or /admin/users endpoint
+    users_resp = http_client.get(
+        "/admin/users",
+        headers=_auth(owner_token),
+    )
+    assert users_resp.status_code == 200, users_resp.text
+    # Find the low-priv user (not the owner) — they have role != "Owner"
+    lp_user_id: str | None = None
+    for u in users_resp.json()["items"]:
+        if u["role"] != "Owner":
+            lp_user_id = u["user_id"]
+            break
+    assert lp_user_id is not None, "Could not find low-priv user in user list"
+
+    owner_role_id = _role_id_by_code(sync_engine, org_id=org_id, role_code="OWNER")
+
+    # Low-priv user tries to change their own role to OWNER
+    resp = http_client.patch(
+        f"/admin/users/{lp_user_id}/role",
+        headers=_auth(lp_token),
+        json={"role_id": owner_role_id},
+    )
+    assert resp.status_code == 403, (
+        f"PRIV-1/IDM-1 violation: low-priv user changed their own role to OWNER! "
+        f"status={resp.status_code}, body={resp.text}"
+    )
+
+
+def test_idm1_owner_can_create_any_role(
+    http_client: TestClient,
+    sync_engine: Engine,
+) -> None:
+    """PRIV-1 positive: Owner can create a role with any permissions — no false reject."""
+    owner_body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="OwnerPass1!",
+        org_name=_unique_org_name(),
+    )
+    owner_token = owner_body["access_token"]
+
+    resp = http_client.post(
+        "/admin/roles",
+        headers=_auth(owner_token),
+        json={
+            "code": f"owner_any_{uuid.uuid4().hex[:6]}",
+            "name": "Owner Any Role",
+            "permissions": ["admin.firm.manage", "accounting.period.close", "identity.role.create"],
+        },
+    )
+    assert resp.status_code == 201, (
+        f"PRIV-1 false-reject: Owner should be able to create any role. "
+        f"status={resp.status_code}, body={resp.text}"
+    )
