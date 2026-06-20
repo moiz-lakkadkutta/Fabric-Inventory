@@ -140,7 +140,7 @@ from app.models.manufacturing import (
     ProductionEvent,
     RoutingEdge,
 )
-from app.service import audit_service
+from app.service import audit_service, routing_flow_service
 
 # ──────────────────────────────────────────────────────────────────────
 # Event types
@@ -560,6 +560,16 @@ def start_qc_inspection(
             f"Cannot start QC on operation {mo_operation_id}: parent MO is in "
             f"status {mo.status.value if mo.status else None}, expected IN_PROGRESS."
         )
+
+    # MFG-S2: enforce routing FINISH_TO_START before the qty_out check.
+    # Every other in-house start_operation (operation_progress_service)
+    # calls routing_flow_service.can_start_operation which requires all
+    # FINISH_TO_START predecessors to be in a terminal state (CLOSED /
+    # SKIPPED / CANCELLED). QC previously bypassed this, allowing QC to
+    # start while the predecessor was still IN_PROGRESS with partial output.
+    allowed, reason = routing_flow_service.can_start_operation(session, op=op)
+    if not allowed:
+        raise AppValidationError(f"Cannot start QC on operation {mo_operation_id}: {reason}.")
 
     pred = _find_qc_predecessor(session, org_id=org_id, op=op)
     pred_qty_out = Decimal(pred.qty_out or 0)

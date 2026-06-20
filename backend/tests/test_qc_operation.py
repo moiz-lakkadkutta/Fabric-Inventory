@@ -626,7 +626,13 @@ def test_start_qc_rejects_when_predecessor_has_no_output(
         json={"firm_id": me["firm_id"]},
     )
     assert r.status_code == 422, r.text
-    assert "qty_out" in r.json()["detail"]
+    # MFG-S2: routing_flow_service.can_start_operation now fires before the
+    # qty_out guard. When upstream is PENDING (not yet started), FINISH_TO_START
+    # blocks first — accept either message; both correctly reject QC start.
+    detail = r.json()["detail"]
+    assert (
+        "qty_out" in detail or "finish_to_start" in detail.lower() or "closed" in detail.lower()
+    ), f"Expected qty_out or FINISH_TO_START/CLOSED in detail, got: {detail!r}"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -829,3 +835,67 @@ def test_accountant_can_read_qc_but_not_start(http_client: TestClient, sync_engi
     )
     assert r_start.status_code == 403, r_start.text
     assert r_start.json()["code"] == "PERMISSION_DENIED"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# MFG-S2: QC start must enforce FINISH_TO_START (predecessor not yet CLOSED)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_start_qc_blocked_when_predecessor_still_in_progress(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Upstream op is IN_PROGRESS with qty_out > 0 (partial output) but NOT
+    CLOSED. The FINISH_TO_START routing edge requires the predecessor to be
+    in a terminal state (CLOSED/SKIPPED/CANCELLED) before QC can begin.
+    /start-qc must return 422 referencing the FINISH_TO_START constraint.
+
+    MFG-S2 regression: previously, qc_service only checked pred.qty_out > 0
+    and did NOT call routing_flow_service.can_start_operation, so QC could
+    start while the predecessor was still IN_PROGRESS — uninspected units
+    could reach FG. This test encodes the fix.
+    """
+    me, mo_id, masters = _seed_world_qc(http_client, sync_engine)
+    _upstream_master, qc_master = masters
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+    ops = _list_ops(http_client, owner=me, mo_id=mo_id)
+    upstream_op_id = _upstream_op_id(ops, qc_master)
+    qc_op_id = _qc_op_id(ops, qc_master)
+
+    # Start the upstream op → IN_PROGRESS
+    h = _auth(me["access_token"])
+    r_start_up = http_client.post(
+        f"/manufacturing/mo-operations/{upstream_op_id}/start",
+        headers=h,
+        json={"firm_id": me["firm_id"]},
+    )
+    assert r_start_up.status_code == 200, r_start_up.text
+
+    # Record partial qty_in + qty_out (makes pred.qty_out > 0)
+    r_in = http_client.post(
+        f"/manufacturing/mo-operations/{upstream_op_id}/qty-in",
+        headers=h,
+        json={"firm_id": me["firm_id"], "qty_in": "50.0000"},
+    )
+    assert r_in.status_code == 200, r_in.text
+    r_out = http_client.post(
+        f"/manufacturing/mo-operations/{upstream_op_id}/qty-out",
+        headers=h,
+        json={"firm_id": me["firm_id"], "qty_out": "50.0000"},
+    )
+    assert r_out.status_code == 200, r_out.text
+    # Predecessor is now IN_PROGRESS with qty_out=50 — deliberately NOT closed.
+
+    # Attempt to start QC — must be blocked by FINISH_TO_START enforcement.
+    r_qc = http_client.post(
+        f"/manufacturing/mo-operations/{qc_op_id}/start-qc",
+        headers=h,
+        json={"firm_id": me["firm_id"]},
+    )
+    assert r_qc.status_code == 422, r_qc.text
+    detail = r_qc.json()["detail"].lower()
+    # The reason must mention the FINISH_TO_START constraint.
+    assert "finish_to_start" in detail or "terminal" in detail or "closed" in detail, (
+        f"Expected FINISH_TO_START blocking message, got: {r_qc.json()['detail']!r}"
+    )
