@@ -37,6 +37,25 @@ from openpyxl import Workbook
 from openpyxl.cell.cell import Cell
 from openpyxl.styles import Alignment, Font
 
+# Characters that Excel / LibreOffice interpret as formula prefixes when
+# they appear as the first character of a text cell. OWASP CWE-1236.
+_FORMULA_TRIGGER_CHARS: frozenset[str] = frozenset("=+-@\t\r")
+
+
+def _sanitize_cell_text(text: str) -> str:
+    """Prefix ``text`` with a single quote if it starts with a formula trigger.
+
+    The leading apostrophe is the OWASP-recommended (CWE-1236) defence:
+    it causes spreadsheet applications to treat the cell as literal text
+    rather than as a formula, and it is also the idiom used by Google
+    Sheets and LibreOffice Calc for the same purpose. The apostrophe IS
+    visible in the cell — that is intentional so auditors can see it.
+    """
+    if text and text[0] in _FORMULA_TRIGGER_CHARS:
+        return "'" + text
+    return text
+
+
 # UTF-8 BOM — Excel-on-Windows uses the BOM as the magic number that
 # tells it the file is UTF-8 (not its legacy ANSI codepage). Without
 # the BOM the rupee glyph renders as mojibake (the byte sequence shows
@@ -86,7 +105,7 @@ def _cell_str(value: Any) -> str:
         return value.date().isoformat()
     if isinstance(value, dt.date):
         return value.isoformat()
-    return str(value)
+    return _sanitize_cell_text(str(value))
 
 
 def to_csv(rows: Iterable[Any], columns: Sequence[Column]) -> bytes:
@@ -147,17 +166,18 @@ def _write_cell(cell: Cell, value: Any, kind: str) -> None:
             return
         cell.value = str(value)
         return
-    # Plain text fallback.
+    # Plain text fallback — apply formula-injection neutralisation (OWASP
+    # CWE-1236) on every string written to this path.
     if isinstance(value, Decimal):
-        cell.value = str(value)
+        cell.value = _sanitize_cell_text(str(value))
         return
     if isinstance(value, dt.datetime):
-        cell.value = value.date().isoformat()
+        cell.value = _sanitize_cell_text(value.date().isoformat())
         return
     if isinstance(value, dt.date):
-        cell.value = value.isoformat()
+        cell.value = _sanitize_cell_text(value.isoformat())
         return
-    cell.value = str(value)
+    cell.value = _sanitize_cell_text(str(value))
 
 
 @dataclass(frozen=True, slots=True)

@@ -262,6 +262,156 @@ def test_d3_column_map_keys_lowercase_unique() -> None:
     assert len(_COLUMN_MAP) == len(set(_COLUMN_MAP.keys()))
 
 
+# ──────────────────────────────────────────────────────────────────────
+# MIG-5: formula-injection sanitisation in extract_parties
+# MIG-1: zip-bomb guard in _load_workbook
+# MIG-2: malformed-file → AppValidationError in _load_workbook
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _build_xlsx_with_formula_names() -> bytes:
+    """Build an in-memory xlsx whose name/code cells start with formula triggers.
+
+    Important: cells that start with ``=`` must be written with
+    ``set_explicit_value(..., data_type='s')`` so openpyxl stores them as
+    literal strings rather than treating them as formulas (which would make
+    the value ``None`` when read back with ``data_only=True``).
+    """
+    import io
+
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    ws = wb.create_sheet("Parties")
+    ws.append(["Party Name", "Code", "Type"])
+
+    # Row 2: name starts with '=' written as a literal string cell.
+    # openpyxl's value setter treats any string beginning with '=' as a formula;
+    # we bypass it by writing a placeholder first, then overriding _value and
+    # data_type so the cell is stored as type 's' (string) in the xlsx XML.
+    cell_eq = ws.cell(row=2, column=1)
+    cell_eq.value = "_placeholder_"
+    cell_eq._value = "=EVIL()"  # noqa: SLF001
+    cell_eq.data_type = "s"
+    ws.cell(row=2, column=2).value = "SAFE-CODE"
+    ws.cell(row=2, column=3).value = "Customer"
+
+    # Row 3: name and code start with '+'.
+    ws.cell(row=3, column=1).value = "+EVIL-NAME"
+    ws.cell(row=3, column=2).value = "+EVIL-CODE"
+    ws.cell(row=3, column=3).value = "Customer"
+
+    # Row 4: trigger '-'.
+    ws.cell(row=4, column=1).value = "-NEG"
+    ws.cell(row=4, column=2).value = "-NEGCODE"
+    ws.cell(row=4, column=3).value = "Customer"
+
+    # Row 5: trigger '@'.
+    ws.cell(row=5, column=1).value = "@SUM(A1)"
+    ws.cell(row=5, column=2).value = "NORM"
+    ws.cell(row=5, column=3).value = "Supplier"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_extract_parties_sanitizes_formula_injection_in_name() -> None:
+    """Party name values beginning with = + - @ \\t \\r must be prefixed with '."""
+    from app.service.migration import VyaparExcelAdapter
+
+    adapter = VyaparExcelAdapter()
+    parties = list(adapter.extract_parties(_build_xlsx_with_formula_names()))
+
+    assert len(parties) == 4
+    trigger_chars = set("=+-@\t\r")
+    for p in parties:
+        assert p.name.startswith("'"), (
+            f"Expected name {p.name!r} to be prefixed with ' but it wasn't"
+        )
+
+
+def test_extract_parties_sanitizes_formula_injection_in_code() -> None:
+    """Party code values beginning with formula triggers must be prefixed with '."""
+    from app.service.migration import VyaparExcelAdapter
+
+    adapter = VyaparExcelAdapter()
+    parties = {p.name: p for p in adapter.extract_parties(_build_xlsx_with_formula_names())}
+
+    # Second row: "+EVIL-CODE" → should be "'+EVIL-CODE"
+    evil_plus = parties.get("'+EVIL-NAME")
+    assert evil_plus is not None, f"Party with name '+EVIL-NAME' not found; names: {list(parties)}"
+    assert evil_plus.code.startswith("'"), (
+        f"Expected code {evil_plus.code!r} to be prefixed with '"
+    )
+
+
+def test_zip_bomb_raises_app_validation_error() -> None:
+    """A zip whose uncompressed total exceeds the 64 MB cap raises AppValidationError.
+
+    Uses unittest.mock to simulate the zip bomb without allocating 65 MB of
+    actual memory in the test process — the guard is a sum over ZipInfo.file_size
+    values, so mocking those values is the cleanest isolation.
+    """
+    import io
+    import zipfile
+    from unittest.mock import MagicMock, patch
+
+    import openpyxl
+
+    from app.exceptions import AppValidationError
+    from app.service.migration.vyapar_adapter import _load_workbook
+
+    # A valid (tiny) xlsx so we can reach the zipfile inspection step.
+    buf = io.BytesIO()
+    openpyxl.Workbook().save(buf)
+    xlsx_bytes = buf.getvalue()
+
+    # Fake ZipInfo that reports 65 MB uncompressed but a tiny compressed size.
+    fake_info = MagicMock(spec=zipfile.ZipInfo)
+    fake_info.file_size = 65 * 1024 * 1024  # just over the 64 MB cap
+    fake_info.compress_size = 1024  # tiny compressed size (realistic for zeros)
+    fake_info.filename = "bomb.txt"
+
+    with patch("app.service.migration.vyapar_adapter.zipfile.ZipFile") as mock_zip_cls:
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__ = MagicMock(return_value=mock_ctx)
+        mock_ctx.__exit__ = MagicMock(return_value=False)
+        mock_ctx.infolist.return_value = [fake_info]
+        mock_zip_cls.return_value = mock_ctx
+
+        with pytest.raises(AppValidationError):
+            _load_workbook(xlsx_bytes)
+
+
+def test_bad_zip_file_raises_app_validation_error() -> None:
+    """Bytes that are not a zip (BadZipFile) become AppValidationError, not 500."""
+    from app.exceptions import AppValidationError
+    from app.service.migration.vyapar_adapter import _load_workbook
+
+    with pytest.raises(AppValidationError, match="[Rr]eadable|[Ee]xcel|[Ww]orkbook"):
+        _load_workbook(b"this is definitely not a zip file")
+
+
+def test_invalid_xlsx_raises_app_validation_error() -> None:
+    """A zip file that isn't a valid OOXML workbook raises AppValidationError."""
+    import io
+    import zipfile
+
+    from app.exceptions import AppValidationError
+    from app.service.migration.vyapar_adapter import _load_workbook
+
+    # A valid zip that contains garbage — not an xlsx.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("garbage.txt", "not an ooxml workbook")
+    fake_zip_bytes = buf.getvalue()
+
+    with pytest.raises(AppValidationError, match="[Rr]eadable|[Ee]xcel|[Ww]orkbook"):
+        _load_workbook(fake_zip_bytes)
+
+
 def test_d3_party_type_map_values_are_party_kinds() -> None:
     """Every _PARTY_TYPE_MAP value must be a non-empty tuple of valid
     PartyKind literals.  Same regression guard as _COLUMN_MAP — keeps

@@ -545,6 +545,82 @@ def test_approve_unbalanced_obs_parks_to_suspense(
     assert detail["reconciliation"]["tb_reconciles"] is False
 
 
+# ──────────────────────────────────────────────────────────────────────
+# MIG-2: malformed uploads → 422 (not uncaught 500)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_upload_non_xlsx_returns_422(http_client: TestClient, sync_engine: Engine) -> None:
+    """Uploading a plain-text file returns 422, not 500.
+
+    MIG-2: zipfile.BadZipFile / InvalidFileException must be caught and
+    surfaced as AppValidationError → HTTP 422 at the upload endpoint.
+    """
+    body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    resp = http_client.post(
+        "/admin/migrations",
+        headers=_auth(body["access_token"]),
+        files={
+            "file": (
+                "evil.txt",
+                b"=cmd|' /C calc'!A0\nNot an Excel file at all",
+                "text/plain",
+            )
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json().get("detail", "")
+    assert detail, "expected a non-empty error detail"
+
+
+def test_approve_non_xlsx_returns_422(http_client: TestClient, sync_engine: Engine) -> None:
+    """Uploading a plain-text file on the approve step returns 422, not 500.
+
+    MIG-2 must be caught in both the upload AND approve flows.
+    """
+    body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    token = body["access_token"]
+
+    # First, upload a valid file so we have a migration_id to approve.
+    upload = http_client.post(
+        "/admin/migrations",
+        headers=_auth(token),
+        files={
+            "file": (
+                "vyapar-sample.xlsx",
+                _fixture_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert upload.status_code == 201, upload.text
+    migration_id = upload.json()["migration_id"]
+
+    # Now try to approve with a garbage (non-xlsx) file.
+    resp = http_client.post(
+        f"/admin/migrations/{migration_id}/approve",
+        headers=_auth(token),
+        files={
+            "file": (
+                "garbage.txt",
+                b"totally not an excel file",
+                "text/plain",
+            )
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
 def test_empty_file_rejected(http_client: TestClient, sync_engine: Engine) -> None:
     body = _signup(
         http_client,

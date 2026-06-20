@@ -138,3 +138,81 @@ def test_content_disposition_quotes_filename() -> None:
     assert content_disposition("invoices-2026-05-11.csv") == (
         'attachment; filename="invoices-2026-05-11.csv"'
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# INJ-01 / RPT-03: formula-injection neutralisation (OWASP CWE-1236)
+# ──────────────────────────────────────────────────────────────────────
+
+
+_FORMULA_TRIGGERS = ["=cmd", "+cmd", "-cmd", "@SUM(A1)", "\tcmd", "\rcmd"]
+
+
+def test_csv_sanitizes_formula_injection_triggers() -> None:
+    """Values starting with = + - @ TAB CR must be prefixed with ' in CSV output.
+
+    OWASP CWE-1236: without the prefix, a cell like ``=SYSTEM("cmd")`` is
+    executed as a formula when the CSV is opened in Excel/LibreOffice.
+    """
+    columns = [Column("name", "Name", "text")]
+    for trigger in _FORMULA_TRIGGERS:
+        out = to_csv([{"name": trigger}], columns).decode("utf-8")
+        expected = f"'{trigger}"
+        assert expected in out, (
+            f"Expected CSV cell to start with ' for trigger {trigger!r}; got:\n{out}"
+        )
+
+
+def test_csv_safe_values_unchanged() -> None:
+    """Normal strings that don't start with formula triggers are not modified."""
+    columns = [Column("name", "Name", "text")]
+    for safe in ("Anjali Saree Centre", "123", "Total ₹1050", ""):
+        out = to_csv([{"name": safe}], columns).decode("utf-8")
+        # The value should appear verbatim (no leading apostrophe added).
+        lines = out.splitlines()
+        assert len(lines) >= 2
+        # The data row should not start with a ' for safe values.
+        cell_val = lines[1]
+        if safe:
+            assert not cell_val.startswith("'"), (
+                f"Safe value {safe!r} should not be prefixed; got {cell_val!r}"
+            )
+
+
+def test_xlsx_sanitizes_formula_injection_triggers() -> None:
+    """Text cells starting with formula triggers must be prefixed with ' in XLSX.
+
+    After a round-trip through openpyxl, the cell value should start with
+    an apostrophe so Excel treats it as text.  Note: the xlsx format
+    normalises bare ``\\r`` to ``\\n`` internally, so we check
+    ``startswith("'")`` rather than exact equality to avoid false failures
+    on that platform-neutral normalisation.
+    """
+    for trigger in _FORMULA_TRIGGERS:
+        sheet = Sheet(
+            name="InjTest",
+            columns=[Column("val", "Val", "text")],
+            rows=[{"val": trigger}],
+        )
+        raw = to_xlsx([sheet])
+        wb = load_workbook(io.BytesIO(raw))
+        cell_val = wb["InjTest"]["A2"].value
+        assert isinstance(cell_val, str) and cell_val.startswith("'"), (
+            f"XLSX cell for trigger {trigger!r} should start with ', got {cell_val!r}"
+        )
+
+
+def test_xlsx_safe_text_values_unchanged() -> None:
+    """Normal text values are not prefixed with ' in XLSX cells."""
+    for safe in ("Anjali Saree Centre", "Total"):
+        sheet = Sheet(
+            name="Safe",
+            columns=[Column("val", "Val", "text")],
+            rows=[{"val": safe}],
+        )
+        raw = to_xlsx([sheet])
+        wb = load_workbook(io.BytesIO(raw))
+        cell_val = wb["Safe"]["A2"].value
+        assert cell_val == safe, (
+            f"Safe value {safe!r} should be unchanged, got {cell_val!r}"
+        )
