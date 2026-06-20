@@ -16,6 +16,16 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # In staging/prod we refuse to start without a real allowlist (see model validator).
 _DEV_DEFAULT_CORS_ORIGINS = ["http://localhost:5173"]
 
+# TS-01: known-placeholder substrings checked (case-insensitive) against
+# JWT_SECRET in non-dev environments.  Any match → boot refusal with remedy.
+_JWT_PLACEHOLDER_SUBSTRINGS: frozenset[str] = frozenset(
+    {
+        "change-me-in-prod",
+        "changeme",
+        "your-secret-here",
+    }
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -83,7 +93,28 @@ class Settings(BaseSettings):
 
         - dev: empty CORS_ORIGINS → safe localhost default.
         - staging/prod: empty CORS_ORIGINS → fail fast at startup.
+
+        Also enforces the TS-01 JWT secret guard for non-dev environments:
+        rejects known placeholder values and secrets shorter than 32 chars.
         """
+        if self.environment != "dev":
+            # TS-01: placeholder denylist check (case-insensitive substring)
+            secret_lower = self.jwt_secret.lower()
+            if any(p in secret_lower for p in _JWT_PLACEHOLDER_SUBSTRINGS):
+                raise ValueError(
+                    "JWT_SECRET contains a known placeholder and must not be used "
+                    f"in {self.environment!r}. "
+                    "Generate a real secret with `openssl rand -base64 48` "
+                    "and set it via your secret manager."
+                )
+            # TS-01: minimum entropy floor for non-dev
+            if len(self.jwt_secret) < 32:
+                raise ValueError(
+                    f"JWT_SECRET must be at least 32 characters in "
+                    f"{self.environment!r} (got {len(self.jwt_secret)}). "
+                    "Generate with `openssl rand -base64 48` and set via secret manager."
+                )
+
         if not self.cors_origins:
             if self.environment == "dev":
                 self.cors_origins = list(_DEV_DEFAULT_CORS_ORIGINS)
