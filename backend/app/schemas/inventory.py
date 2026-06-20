@@ -32,7 +32,11 @@ class StockAdjustmentRequest(BaseModel):
     # COUNT_RESET→increase paths; ignored for DECREASE.
     unit_cost: Annotated[
         Decimal | None,
-        Field(default=None, description="Unit cost for inbound moves (INR). Defaults to 0."),
+        Field(
+            default=None,
+            ge=Decimal("0"),
+            description="Unit cost for inbound moves (INR). Must be >= 0.",
+        ),
     ] = None
 
 

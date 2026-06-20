@@ -36,8 +36,9 @@ AdjustmentDirection = Literal["INCREASE", "DECREASE", "COUNT_RESET"]
 # Sentinel unit cost used for ADJUSTMENT ledger rows. We don't have an
 # external invoice price for adjustments; use the current weighted-average
 # cost from the position. For COUNT_RESET and DECREASE we always use the
-# existing position cost. For INCREASE we accept an optional unit_cost
-# parameter (default 0 — correction for "found" stock at unknown cost).
+# existing position cost. For INCREASE with unit_cost=None we inherit the
+# existing position cost (INV-P9 fix); fall back to 0 only if no prior
+# position exists (i.e. brand-new item with unknown cost).
 _ZERO_COST = Decimal("0")
 
 
@@ -74,8 +75,10 @@ def create_adjustment(
         DECREASE — remove `qty` units (raises if insufficient stock).
         COUNT_RESET — set on-hand to `qty`; computes delta automatically.
     unit_cost:
-        Only used for INCREASE and COUNT_RESET→increase paths. Defaults
-        to zero (cost unknown for "found" stock).
+        Only used for INCREASE and COUNT_RESET→increase paths. When
+        None the existing position's ``current_cost`` is inherited so
+        weighted-average cost is not diluted (INV-P9). Falls back to 0
+        only when there is no prior position for this item+location.
 
     Returns
     -------
@@ -85,13 +88,29 @@ def create_adjustment(
         raise AppValidationError(f"qty must be >= 0 (got {qty})")
 
     txn_date = txn_date or datetime.date.today()
-    effective_unit_cost = unit_cost if unit_cost is not None else _ZERO_COST
-
     adj_id = uuid.uuid4()
 
     if direction == "INCREASE":
         if qty == _ZERO_COST:
             raise AppValidationError("qty must be positive for INCREASE direction")
+        # INV-P9: when unit_cost is None, inherit the existing position cost
+        # instead of defaulting to 0 (which dilutes the weighted average).
+        if unit_cost is None:
+            existing_pos = inventory_service.get_position(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                item_id=item_id,
+                location_id=location_id,
+                lot_id=lot_id,
+            )
+            effective_unit_cost = (
+                Decimal(existing_pos.current_cost)
+                if existing_pos is not None and existing_pos.current_cost is not None
+                else _ZERO_COST
+            )
+        else:
+            effective_unit_cost = unit_cost
         ledger = inventory_service.add_stock(
             session,
             org_id=org_id,
@@ -127,8 +146,10 @@ def create_adjustment(
         qty_change = -qty  # signed negative in the header
 
     elif direction == "COUNT_RESET":
-        # qty is the target on-hand. Compute delta vs current position.
-        pos = inventory_service.get_position(
+        # INV-P7: use the locking path so the read-modify-write is serialized.
+        # _lock_or_create_position acquires FOR UPDATE, preventing a concurrent
+        # INSERT from landing between our read of on_hand_qty and the delta write.
+        pos = inventory_service._lock_or_create_position(
             session,
             org_id=org_id,
             firm_id=firm_id,
@@ -138,6 +159,15 @@ def create_adjustment(
         )
         current_qty = Decimal(pos.on_hand_qty) if pos is not None else Decimal("0")
         delta = qty - current_qty
+
+        # For COUNT_RESET→increase: use caller's unit_cost if provided; otherwise
+        # inherit the existing position cost (same INV-P9 logic as INCREASE).
+        if unit_cost is not None:
+            cr_unit_cost = unit_cost
+        elif pos is not None and pos.current_cost is not None:
+            cr_unit_cost = Decimal(pos.current_cost)
+        else:
+            cr_unit_cost = _ZERO_COST
 
         if delta == _ZERO_COST:
             # On-hand already equals target. Post a zero-movement ledger row
@@ -186,7 +216,7 @@ def create_adjustment(
                 item_id=item_id,
                 location_id=location_id,
                 qty=delta,
-                unit_cost=effective_unit_cost,
+                unit_cost=cr_unit_cost,
                 reference_type="ADJUSTMENT",
                 reference_id=adj_id,
                 lot_id=lot_id,

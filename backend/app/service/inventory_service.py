@@ -61,7 +61,11 @@ def _validate_qty(qty: Decimal, *, field: str = "qty") -> None:
 
 def _ensure_item_in_org(session: Session, *, org_id: uuid.UUID, item_id: uuid.UUID) -> None:
     item = session.execute(
-        select(Item).where(Item.item_id == item_id, Item.org_id == org_id)
+        select(Item).where(
+            Item.item_id == item_id,
+            Item.org_id == org_id,
+            Item.deleted_at.is_(None),  # INV-P5: reject soft-deleted items
+        )
     ).scalar_one_or_none()
     if item is None:
         raise AppValidationError(f"Item {item_id} not found in this org")
@@ -83,7 +87,11 @@ def _ensure_location_in_firm(
 
 def _ensure_lot_in_org(session: Session, *, org_id: uuid.UUID, lot_id: uuid.UUID) -> None:
     lot = session.execute(
-        select(Lot).where(Lot.lot_id == lot_id, Lot.org_id == org_id)
+        select(Lot).where(
+            Lot.lot_id == lot_id,
+            Lot.org_id == org_id,
+            Lot.deleted_at.is_(None),  # Lot has SoftDeleteMixin → filter soft-deleted
+        )
     ).scalar_one_or_none()
     if lot is None:
         raise AppValidationError(f"Lot {lot_id} not found in this org")
@@ -294,10 +302,12 @@ def add_stock(
     weighted-average cost.
 
     `unit_cost` is in INR per primary_uom of the item. Negative or zero
-    qty raises; negative cost is allowed (e.g. credit note returns,
-    where the cost basis can go down).
+    qty raises; negative cost raises (INV-P3 — negative cost corrupts
+    weighted-average position cost).
     """
     _validate_qty(qty)
+    if unit_cost < Decimal("0"):  # INV-P3: reject negative unit cost
+        raise AppValidationError(f"unit_cost must be >= 0 (got {unit_cost})")
     _ensure_item_in_org(session, org_id=org_id, item_id=item_id)
     _ensure_location_in_firm(session, org_id=org_id, firm_id=firm_id, location_id=location_id)
     if lot_id is not None:
