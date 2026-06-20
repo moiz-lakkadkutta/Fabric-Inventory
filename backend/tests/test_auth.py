@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any
 
 import fakeredis.aioredis
 import pytest
 from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.engine import Engine
 from starlette.middleware.cors import CORSMiddleware
 
 from app.config import reset_settings
@@ -58,7 +61,7 @@ async def fake_redis() -> AsyncIterator[fakeredis.aioredis.FakeRedis]:
         await client.aclose()
 
 
-def _build_app(fake_redis: fakeredis.aioredis.FakeRedis, routes: list) -> FastAPI:
+def _build_app(fake_redis: fakeredis.aioredis.FakeRedis, routes: list[Any]) -> FastAPI:
     """Build a minimal test app with the full middleware chain."""
     set_redis_client_for_testing(fake_redis)
     reset_settings()
@@ -78,7 +81,7 @@ def _build_app(fake_redis: fakeredis.aioredis.FakeRedis, routes: list) -> FastAP
         allow_headers=["*"],
     )
     for path, dep in routes:
-        app.post(path, dependencies=[Depends(dep)])(lambda: {"ok": True})  # type: ignore[misc]
+        app.post(path, dependencies=[Depends(dep)])(lambda: {"ok": True})
     return app
 
 
@@ -409,8 +412,8 @@ def test_successful_login_does_not_emit_login_failed_audit_row(http_client, sync
 
 
 def test_reset_with_invalid_token_still_returns_400_not_timing_shortcut(
-    http_client, sync_engine
-) -> None:  # type: ignore[no-untyped-def]
+    http_client: TestClient, sync_engine: Engine
+) -> None:
     """TS-06: the reset error path runs the same bcrypt work as the
     success path so timing alone cannot reveal token validity.
     Verifies the production code path (auth.py reset_password) doesn't

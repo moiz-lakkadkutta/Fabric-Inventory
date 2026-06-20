@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import uuid
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -129,14 +130,14 @@ def test_receipt_allocate_voucher_number_issues_firm_row_lock(
 
     org_id, firm_id, _ = _seed_org_with_coa_and_party(db_session, party_name="Test Party")
 
-    captured_stmts: list = []
+    captured_stmts: list[Any] = []
     real_execute = db_session.execute
 
     def _interceptor(stmt, *args, **kwargs):  # type: ignore[no-untyped-def]
         captured_stmts.append(stmt)
         return real_execute(stmt, *args, **kwargs)
 
-    db_session.execute = _interceptor  # type: ignore[method-assign]
+    db_session.execute = _interceptor  # type: ignore[assignment]
     try:
         receipt_service._allocate_voucher_number(
             db_session,
@@ -151,7 +152,7 @@ def test_receipt_allocate_voucher_number_issues_firm_row_lock(
     lock_found = False
     for stmt in captured_stmts:
         try:
-            sql_text = str(stmt.compile(dialect=pg_dialect()))
+            sql_text = str(stmt.compile(dialect=pg_dialect()))  # type: ignore[no-untyped-call]
             if "for update" in sql_text.lower() and "firm" in sql_text.lower():
                 lock_found = True
                 break
