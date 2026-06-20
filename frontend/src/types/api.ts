@@ -32,9 +32,16 @@ export interface paths {
         put?: never;
         /**
          * Invite a user by email to this organization
-         * @description Owner-initiated invite. Persists a single-use, 7-day token and
-         *     prints the FE URL to stdout (the dev console-log adapter). When
-         *     CUT-303's EmailAdapter ships, this swaps to a single
+         * @description Owner-initiated invite. Persists a single-use, 7-day token.
+         *
+         *     IDM-3: the raw invite token is NOT returned in the response body in
+         *     staging/production — it must travel exclusively via the email adapter
+         *     so it never appears in API logs or browser history. In dev mode
+         *     (ENVIRONMENT=dev) the invite link is included in the response as a
+         *     testing convenience (existing test_admin_invites.py relies on it).
+         *     The stdout print is likewise gated to dev.
+         *
+         *     When CUT-303's EmailAdapter ships, this swaps to a single
          *     `email_adapter.send_invite(...)` call.
          */
         post: operations["create_invite_admin_invites_post"];
@@ -441,6 +448,13 @@ export interface paths {
          *     modes (unknown / expired / consumed / malformed) collapse to a
          *     single 400 ``INVALID_RESET_TOKEN`` so the response never reveals
          *     WHICH branch tripped.
+         *
+         *     TS-06 — timing oracle: the happy path calls bcrypt (inside
+         *     ``password_reset_service.consume`` → ``hash_password``). The error
+         *     path previously returned fast without doing any crypto work, leaking
+         *     whether the token was valid via response latency. We now always call
+         *     ``verify_password`` against the module-level dummy hash on the error
+         *     path so timing is flat regardless of token validity.
          *
          *     The audit emit records the password rotation against the user;
          *     no PII (email / new password) is captured in the changes blob.
@@ -3121,6 +3135,8 @@ export interface components {
         };
         /** ConfirmedMatchRequest */
         ConfirmedMatchRequest: {
+            /** Statement Amount */
+            statement_amount: number | string;
             /** Statement Ref */
             statement_ref: string;
             /** Statement Row Idx */
@@ -3130,12 +3146,6 @@ export interface components {
              * Format: uuid
              */
             voucher_id: string;
-            /**
-             * Statement Amount
-             * Rupees (positive magnitude). Service validates
-             * |voucher_total − |statement_amount|| ≤ ₹1.00.
-             */
-            statement_amount: string;
         };
         /** CostCentreCreateRequest */
         CostCentreCreateRequest: {
@@ -4018,7 +4028,7 @@ export interface components {
              */
             invite_id: string;
             /** Invite Link */
-            invite_link: string;
+            invite_link?: string | null;
         };
         /**
          * InvoiceLifecycleStatus
@@ -7815,7 +7825,7 @@ export interface components {
             txn_date?: string | null;
             /**
              * Unit Cost
-             * @description Unit cost for inbound moves (INR). Defaults to 0.
+             * @description Unit cost for inbound moves (INR). Must be >= 0.
              */
             unit_cost?: number | string | null;
         };
