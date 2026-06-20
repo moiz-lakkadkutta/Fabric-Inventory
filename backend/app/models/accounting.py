@@ -69,6 +69,11 @@ class VoucherType(enum.StrEnum):
     # ``task_tr_a11_mo_completion`` migration; same forward-only caveat
     # as MATERIAL_ISSUE.
     MANUFACTURING_COMPLETION = "MANUFACTURING_COMPLETION"
+    # C3 (INV-P1/P2): stock adjustment GL voucher (DR 1300 Inventory /
+    # CR 5350 Inventory Adjustment P&L for write-ins; reversed for
+    # write-downs). Added via the ``c3_stock_adj_gl`` migration;
+    # same forward-only caveat as MATERIAL_ISSUE.
+    STOCK_ADJUSTMENT = "STOCK_ADJUSTMENT"
 
 
 class JournalLineType(enum.StrEnum):
