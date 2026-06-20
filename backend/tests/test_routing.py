@@ -1278,3 +1278,69 @@ def test_create_routing_rejects_threshold_qty_zero(http_client: TestClient) -> N
     )
     assert resp.status_code == 422, resp.text
     assert "threshold_qty" in resp.json()["detail"].lower()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# AUTHZ-2: firm-in-org guard on create_routing (Task Bmm)
+#
+# The routing router DOES have a partial-check on firm_id, but it is
+# guarded by ``if current_user.firm_id is not None``.  Signup tokens
+# carry firm_id=None (auth.py:302), so the router check is always
+# bypassed for Owner callers.  ``assert_firm_in_org`` in the service
+# is the only gate that catches a cross-org firm_id.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_routing_rejects_firm_from_foreign_org(http_client: TestClient) -> None:
+    """Owner JWT + firm_id from a different org → service-layer assert_firm_in_org → 422.
+
+    Without the guard, the design-composition check fires with "Design X
+    does not belong to firm Y", not "not found in this organization".
+    Asserting the specific message makes the RED signal unambiguous.
+    """
+    me_a, design_a, ops_a = _seed_routing_world(http_client)
+    me_b = _signup_owner(http_client)  # distinct org
+    a, b, *_ = ops_a
+    resp = http_client.post(
+        "/routings",
+        headers=_auth(me_a["access_token"]),
+        json=_payload(
+            firm_id=me_b["firm_id"],
+            design_id=design_a,
+            code=f"R-XORG-{uuid.uuid4().hex[:6]}",
+            edges=[
+                {"from_operation_id": a, "to_operation_id": b, "edge_type": "FINISH_TO_START"},
+            ],
+        ),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not found in this organization" in resp.json()["detail"]
+
+
+def test_create_routing_owner_null_jwt_proves_router_bypass(http_client: TestClient) -> None:
+    """Signup JWT carries firm_id=None → routing router partial-check is bypassed.
+
+    The routing router has:
+        if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+    With firm_id=None in the JWT that condition evaluates to False → skipped.
+    The service-layer ``assert_firm_in_org`` is the sole protection and
+    must reject the cross-org firm_id.
+    """
+    me_a, design_a, ops_a = _seed_routing_world(http_client)
+    me_b = _signup_owner(http_client)
+    a, b, *_ = ops_a
+    # me_a["access_token"] was issued with firm_id=None (auth.py:302).
+    resp = http_client.post(
+        "/routings",
+        headers=_auth(me_a["access_token"]),
+        json=_payload(
+            firm_id=me_b["firm_id"],
+            design_id=design_a,
+            code=f"R-BYPASS-{uuid.uuid4().hex[:6]}",
+            edges=[
+                {"from_operation_id": a, "to_operation_id": b, "edge_type": "FINISH_TO_START"},
+            ],
+        ),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not found in this organization" in resp.json()["detail"]

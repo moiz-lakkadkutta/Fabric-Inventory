@@ -28,6 +28,7 @@ from app.exceptions import AppValidationError
 from app.models.manufacturing import Design, OperationMaster, OperationType
 from app.models.masters import CostCentre, CostCentreType
 from app.service import audit_service
+from app.service.common_guards import assert_firm_in_org
 
 # ──────────────────────────────────────────────────────────────────────
 # Internal helpers
@@ -86,6 +87,8 @@ def create_design(
     DB-enforced via ``design_firm_id_code_key``; service catches early
     for a clean 422 instead of a raw IntegrityError.
     """
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
     if not code:
         raise AppValidationError("Design code is required")
     if not name:
@@ -247,6 +250,8 @@ def create_operation_master(
 ) -> OperationMaster:
     """``code`` unique per ``(firm_id, code)`` — DB constraint
     ``operation_master_firm_id_code_key``."""
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
     if not code:
         raise AppValidationError("Operation code is required")
     if not name:
@@ -426,6 +431,8 @@ def create_cost_centre(
 ) -> CostCentre:
     """``code`` unique per ``(firm_id, code)`` — DB constraint
     ``cost_centre_firm_id_code_key``."""
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
     if not code:
         raise AppValidationError("Cost centre code is required")
     if not name:

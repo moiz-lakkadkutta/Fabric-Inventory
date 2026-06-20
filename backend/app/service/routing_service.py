@@ -66,6 +66,7 @@ from app.models.manufacturing import (
     RoutingEdgeType,
 )
 from app.service import audit_service, manufacturing_masters_service
+from app.service.common_guards import assert_firm_in_org
 
 # ──────────────────────────────────────────────────────────────────────
 # Request DTOs (service-layer; not Pydantic so non-HTTP callers don't
@@ -322,6 +323,8 @@ def create_routing(
     payload. Drop the field at the boundary; ``code`` remains the
     firm-scoped identifier.
     """
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
     if not code:
         raise AppValidationError("Routing code is required")
 

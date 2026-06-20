@@ -59,6 +59,7 @@ from app.exceptions import AppValidationError
 from app.models.manufacturing import Bom, BomLine
 from app.models.masters import UomType
 from app.service import audit_service, items_service, manufacturing_masters_service
+from app.service.common_guards import assert_firm_in_org
 
 # ──────────────────────────────────────────────────────────────────────
 # Request DTO (kept service-layer, not a Pydantic model — avoids forcing
@@ -243,6 +244,8 @@ def create_bom(
       - Each line ``item_id`` likewise.
       - ``lines`` is non-empty.
     """
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
     if not lines:
         raise AppValidationError("BOM must have at least one line")
 

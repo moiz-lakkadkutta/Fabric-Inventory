@@ -959,3 +959,59 @@ def test_create_bom_rejects_qty_overflow(http_client: TestClient) -> None:
     )
     resp = http_client.post("/boms", headers=_auth(me["access_token"]), json=payload)
     assert resp.status_code == 422, f"Expected 422 but got {resp.status_code}: {resp.text}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# AUTHZ-2: firm-in-org guard on create_bom (Task Bmm)
+#
+# Without assert_firm_in_org, the existing design-composition check
+# returns 422 with "does not belong to firm".  With the guard, it
+# returns 422 with "not found in this organization" at the top of the
+# function, before design composition.  The tests assert the specific
+# message to make RED→GREEN unambiguous.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_bom_rejects_firm_from_foreign_org(http_client: TestClient) -> None:
+    """Owner JWT + firm_id from a different org → assert_firm_in_org → 422.
+
+    Without the guard, the design-composition check fires with a different
+    error ("does not belong to firm"), so the assertion on
+    "not found in this organization" is the RED signal.
+    """
+    me_a, design_a, fin_a, raw_a = _seed_bom_world(http_client)
+    me_b = _signup_owner(http_client)  # distinct org; its firm belongs to org_b
+    resp = http_client.post(
+        "/boms",
+        headers=_auth(me_a["access_token"]),
+        json=_bom_payload(
+            firm_id=me_b["firm_id"],
+            design_id=design_a,
+            finished_item_id=fin_a,
+            raw_item_id=raw_a,
+        ),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not found in this organization" in resp.json()["detail"]
+
+
+def test_create_bom_owner_null_jwt_proves_router_bypass(http_client: TestClient) -> None:
+    """Signup JWT has firm_id=None → bom router has no partial-check → only
+    service-layer assert_firm_in_org blocks the cross-org firm_id."""
+    me_a, design_a, fin_a, raw_a = _seed_bom_world(http_client)
+    me_b = _signup_owner(http_client)
+    # me_a["access_token"] was issued with firm_id=None (auth.py:302).
+    # The bom router has no ``if current_user.firm_id is not None`` guard
+    # at all — so the service-layer guard is the sole protection.
+    resp = http_client.post(
+        "/boms",
+        headers=_auth(me_a["access_token"]),
+        json=_bom_payload(
+            firm_id=me_b["firm_id"],
+            design_id=design_a,
+            finished_item_id=fin_a,
+            raw_item_id=raw_a,
+        ),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not found in this organization" in resp.json()["detail"]

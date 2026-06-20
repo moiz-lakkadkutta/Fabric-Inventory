@@ -802,3 +802,115 @@ def test_create_cost_centre_rejects_parent_from_different_firm(
     )
     assert resp.status_code == 422, resp.text
     assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# AUTHZ-2: firm-in-org guards on create (Task Bmm)
+#
+# These tests encode the invariant that the service MUST reject a
+# firm_id that does not belong to the caller's org at the service
+# layer, not just at the router layer.  The signup token has
+# ``firm_id=None`` in the JWT (see auth.py:302), so the existing
+# router-partial check ``if current_user.firm_id is not None`` is
+# *always* bypassed — this makes every Owner-token request an implicit
+# proof of the owner-bypass scenario.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_design_rejects_firm_from_foreign_org(http_client: TestClient) -> None:
+    """Owner JWT (firm_id=None) + firm_id from a different org → 422.
+
+    The signup token carries firm_id=None in the JWT payload (auth.py:302),
+    so the router partial-check ``if current_user.firm_id is not None`` is
+    bypassed.  Without the service-layer ``assert_firm_in_org`` guard the
+    DB INSERT would succeed, creating a Design in org_a that references
+    org_b's firm — a cross-tenant FK corruption.  With the guard, it must
+    return 422 with "not found in this organization".
+    """
+    me_a = _signup_owner(http_client)
+    me_b = _signup_owner(http_client)  # distinct org
+    resp = http_client.post(
+        "/designs",
+        headers=_auth(me_a["access_token"]),
+        json={
+            "code": f"D-XORG-{uuid.uuid4().hex[:4]}",
+            "name": "X",
+            "firm_id": me_b["firm_id"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not found in this organization" in resp.json()["detail"]
+
+
+def test_create_design_owner_null_jwt_proves_router_bypass(http_client: TestClient) -> None:
+    """Explicit Owner-bypass proof: the signup JWT carries firm_id=None.
+
+    This test shows that me_a["access_token"] was issued with
+    ``issue_tokens(db, user=user, firm_id=None)`` at auth.py:302.  The
+    router guard ``if current_user.firm_id is not None`` therefore
+    evaluates to False and is skipped.  The service-layer
+    ``assert_firm_in_org`` is the only protection that must fire here.
+    """
+    me_a = _signup_owner(http_client)
+    me_b = _signup_owner(http_client)
+    # me_a["access_token"] has firm_id=None in its JWT payload.
+    resp = http_client.post(
+        "/designs",
+        headers=_auth(me_a["access_token"]),
+        json={
+            "code": f"D-BYPASS-{uuid.uuid4().hex[:4]}",
+            "name": "bypass",
+            "firm_id": me_b["firm_id"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not found in this organization" in resp.json()["detail"]
+
+
+def test_create_operation_master_rejects_firm_from_foreign_org(http_client: TestClient) -> None:
+    """Owner JWT + firm_id from a different org → assert_firm_in_org fires → 422."""
+    me_a = _signup_owner(http_client)
+    me_b = _signup_owner(http_client)
+    resp = http_client.post(
+        "/operation-masters",
+        headers=_auth(me_a["access_token"]),
+        json={
+            "code": f"OP-XORG-{uuid.uuid4().hex[:4]}",
+            "name": "X",
+            "firm_id": me_b["firm_id"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not found in this organization" in resp.json()["detail"]
+
+
+def test_create_cost_centre_rejects_firm_from_foreign_org(http_client: TestClient) -> None:
+    """Owner JWT + firm_id from a different org → assert_firm_in_org fires → 422."""
+    me_a = _signup_owner(http_client)
+    me_b = _signup_owner(http_client)
+    resp = http_client.post(
+        "/cost-centres",
+        headers=_auth(me_a["access_token"]),
+        json={
+            "code": f"CC-XORG-{uuid.uuid4().hex[:4]}",
+            "name": "X",
+            "firm_id": me_b["firm_id"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not found in this organization" in resp.json()["detail"]
+
+
+def test_create_design_with_valid_firm_in_org_succeeds(http_client: TestClient) -> None:
+    """assert_firm_in_org must NOT block a valid firm that belongs to the same org."""
+    me = _signup_owner(http_client)
+    resp = http_client.post(
+        "/designs",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": f"D-VALID-{uuid.uuid4().hex[:4]}",
+            "name": "Valid",
+            "firm_id": me["firm_id"],
+        },
+    )
+    assert resp.status_code == 201, resp.text
