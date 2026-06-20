@@ -24,11 +24,13 @@ import uuid
 from decimal import Decimal
 from typing import Literal
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
-from app.models import StockAdjustment, StockLedger
+from app.models import Ledger, StockAdjustment, StockLedger, Voucher, VoucherLine
+from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.service import inventory_service
 from app.service.common_guards import assert_firm_in_org
 
@@ -41,6 +43,82 @@ AdjustmentDirection = Literal["INCREASE", "DECREASE", "COUNT_RESET"]
 # existing position cost (INV-P9 fix); fall back to 0 only if no prior
 # position exists (i.e. brand-new item with unknown cost).
 _ZERO_COST = Decimal("0")
+
+# Ledger codes for GL posting (C3 / INV-P1/P2). Must stay in sync with
+# seed_service._SYSTEM_LEDGERS. Changing either without updating the seed
+# in lockstep is a contract break.
+_INVENTORY_LEDGER_CODE = "1300"  # Inventory (balance sheet, ASSET)
+_STOCK_ADJ_LEDGER_CODE = "5350"  # Inventory Adjustment (P&L, EXPENSE)
+
+_SADJ_SERIES = "SADJ"
+_SADJ_NUMBER_PAD = 4
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GL helpers (inlined to avoid import cycle — same pattern as
+# material_issue_service.py which mirrors accounting_service internals)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _resolve_system_ledger(session: Session, *, org_id: uuid.UUID, code: str) -> Ledger:
+    """Look up a firm-agnostic system ledger by code.
+
+    Refuses inactive / control / soft-deleted rows per the C01 hardening
+    pattern. Inlined from material_issue_service to avoid a circular dep
+    with accounting_service.
+    """
+    ledger = session.execute(
+        select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == code,
+            Ledger.firm_id.is_(None),
+            Ledger.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if ledger is None:
+        raise AppValidationError(
+            f"System ledger {code!r} missing for org {org_id}; "
+            "run seed_coa to repopulate (C3 adds ledger 5350)."
+        )
+    if ledger.is_active is False:
+        raise AppValidationError(
+            f"Ledger {ledger.code} ({ledger.name}) is_active=False; "
+            "reactivate before posting a stock adjustment."
+        )
+    if ledger.is_control_account is True:
+        raise AppValidationError(
+            f"Ledger {ledger.code} ({ledger.name}) is a control account; "
+            "cannot post stock adjustments directly to it."
+        )
+    return ledger
+
+
+def _allocate_stock_adj_voucher_number(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+) -> str:
+    """Allocate the next SADJ voucher number for (org, firm).
+
+    Mirrors the shape of material_issue_service._allocate_voucher_number.
+    Uses max+1 over existing rows — correct because the caller already
+    holds the DB transaction (psycopg2 row-level isolation prevents
+    concurrent inserts from producing the same number within this txn).
+    """
+    last = session.execute(
+        select(func.coalesce(func.max(Voucher.number), "0")).where(
+            Voucher.org_id == org_id,
+            Voucher.firm_id == firm_id,
+            Voucher.voucher_type == VoucherType.STOCK_ADJUSTMENT,
+            Voucher.series == _SADJ_SERIES,
+        )
+    ).scalar_one()
+    try:
+        last_int = int(last)
+    except (ValueError, TypeError):
+        last_int = 0
+    return f"{last_int + 1:0{_SADJ_NUMBER_PAD}d}"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -261,6 +339,104 @@ def create_adjustment(
     )
     session.add(header)
     session.flush()
+
+    # ── C3 (INV-P1/P2): post a balanced GL voucher for the inventory value
+    #    delta.  Skip when value_delta == 0 (zero-cost stock) to avoid
+    #    zero-value vouchers that trip the post-flush balance invariant.
+    #
+    #    value_delta uses the ledger row written above — unit_cost is already
+    #    set by add_stock / remove_stock so this is a pure read.
+    value_delta = (
+        abs(Decimal(ledger.qty_in or 0) - Decimal(ledger.qty_out or 0))
+        * Decimal(ledger.unit_cost or 0)
+    ).quantize(Decimal("0.01"))
+
+    if value_delta > _ZERO_COST:
+        inv_ledger = _resolve_system_ledger(session, org_id=org_id, code=_INVENTORY_LEDGER_CODE)
+        sadj_ledger = _resolve_system_ledger(session, org_id=org_id, code=_STOCK_ADJ_LEDGER_CODE)
+        voucher_num = _allocate_stock_adj_voucher_number(session, org_id=org_id, firm_id=firm_id)
+
+        # Direction: qty_change > 0 = write-in (INCREASE or COUNT_RESET↑)
+        #            qty_change < 0 = write-down (DECREASE or COUNT_RESET↓)
+        if qty_change > _ZERO_COST:
+            # Write-in: DR Inventory (1300), CR Inventory Adjustment (5350)
+            dr_ledger_id, cr_ledger_id = inv_ledger.ledger_id, sadj_ledger.ledger_id
+            dir_label = "write-in"
+        else:
+            # Write-down: DR Inventory Adjustment (5350), CR Inventory (1300)
+            dr_ledger_id, cr_ledger_id = sadj_ledger.ledger_id, inv_ledger.ledger_id
+            dir_label = "write-down"
+
+        voucher = Voucher(
+            org_id=org_id,
+            firm_id=firm_id,
+            voucher_type=VoucherType.STOCK_ADJUSTMENT,
+            series=_SADJ_SERIES,
+            number=voucher_num,
+            voucher_date=txn_date,
+            reference_type="stock_adjustment",
+            reference_id=adj_id,
+            narration=reason or f"Stock adjustment {direction}",
+            status=VoucherStatus.POSTED,
+            total_debit=value_delta,
+            total_credit=value_delta,
+            created_by=adjusted_by,
+        )
+        session.add(voucher)
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            if "voucher_org_id_firm_id_voucher_type_series_number_key" in str(exc.orig):
+                raise AppValidationError(
+                    "Stock-adjustment voucher number race — retry the request."
+                ) from exc
+            raise
+
+        session.add(
+            VoucherLine(
+                org_id=org_id,
+                voucher_id=voucher.voucher_id,
+                ledger_id=dr_ledger_id,
+                line_type=JournalLineType.DR,
+                amount=value_delta,
+                description=f"Stock adj {dir_label}",
+                sequence=1,
+            )
+        )
+        session.add(
+            VoucherLine(
+                org_id=org_id,
+                voucher_id=voucher.voucher_id,
+                ledger_id=cr_ledger_id,
+                line_type=JournalLineType.CR,
+                amount=value_delta,
+                description=f"Stock adj {dir_label}",
+                sequence=2,
+            )
+        )
+        session.flush()
+
+        # Post-flush balance invariant — defence in depth (same pattern as
+        # material_issue_service and accounting_service posting sites).
+        persisted = list(
+            session.execute(
+                select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id)
+            ).scalars()
+        )
+        drs = sum(
+            (Decimal(ln.amount) for ln in persisted if ln.line_type == JournalLineType.DR),
+            Decimal(0),
+        )
+        crs = sum(
+            (Decimal(ln.amount) for ln in persisted if ln.line_type == JournalLineType.CR),
+            Decimal(0),
+        )
+        if drs != crs:
+            raise AppValidationError(
+                f"Stock-adjustment voucher {voucher.voucher_id} persisted unbalanced: "
+                f"DR={drs}, CR={crs}"
+            )
+
     return header, ledger
 
 
