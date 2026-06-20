@@ -121,7 +121,9 @@ def create_party(
         notes=body.notes,
         created_by=current_user.user_id,
     )
-    return _to_response(party, dek=get_org_dek(db, org_id=current_user.org_id))
+    reveal_pii = "masters.party.pii.read" in current_user.permissions
+    dek = get_org_dek(db, org_id=current_user.org_id) if reveal_pii else b""
+    return _to_response(party, dek=dek, reveal_pii=reveal_pii)
 
 
 @router.get(
@@ -202,7 +204,9 @@ def get_party(
     current_user: Annotated[TokenPayload, Depends(require_permission("masters.party.read"))],
 ) -> PartyResponse:
     party = masters_service.get_party(db, org_id=current_user.org_id, party_id=party_id)
-    return _to_response(party, dek=get_org_dek(db, org_id=current_user.org_id))
+    reveal_pii = "masters.party.pii.read" in current_user.permissions
+    dek = get_org_dek(db, org_id=current_user.org_id) if reveal_pii else b""
+    return _to_response(party, dek=dek, reveal_pii=reveal_pii)
 
 
 @router.patch(
@@ -239,7 +243,9 @@ def update_party(
         is_active=body.is_active,
         updated_by=current_user.user_id,
     )
-    return _to_response(party, dek=get_org_dek(db, org_id=current_user.org_id))
+    reveal_pii = "masters.party.pii.read" in current_user.permissions
+    dek = get_org_dek(db, org_id=current_user.org_id) if reveal_pii else b""
+    return _to_response(party, dek=dek, reveal_pii=reveal_pii)
 
 
 @router.delete(

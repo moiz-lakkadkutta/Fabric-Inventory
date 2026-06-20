@@ -40,6 +40,45 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _create_token_with_perms(client: TestClient, owner_token: str, permissions: list[str]) -> str:
+    """Create a custom role with the given permissions, invite a user, and return their token."""
+    role_resp = client.post(
+        "/admin/roles",
+        headers=_auth(owner_token),
+        json={
+            "code": f"role_{uuid.uuid4().hex[:6]}",
+            "name": "Restricted Role",
+            "permissions": permissions,
+        },
+    )
+    assert role_resp.status_code == 201, role_resp.text
+    role_id = role_resp.json()["role_id"]
+
+    invitee_email = _unique_email()
+    invite_resp = client.post(
+        "/admin/invites",
+        headers=_auth(owner_token),
+        json={"email": invitee_email, "role_id": role_id},
+    )
+    assert invite_resp.status_code == 201, invite_resp.text
+    invite_link = invite_resp.json()["invite_link"]
+    raw_token = invite_link.rsplit("/", 1)[-1]
+
+    accept = client.post(
+        "/admin/invites/accept",
+        json={"token": raw_token, "name": "Restricted User", "password": "strong-pass-2"},
+    )
+    assert accept.status_code == 201, accept.text
+    org_name = accept.json()["org_name"]
+
+    login = client.post(
+        "/auth/login",
+        json={"email": invitee_email, "password": "strong-pass-2", "org_name": org_name},
+    )
+    assert login.status_code == 200, login.text
+    return login.json()["access_token"]
+
+
 def _create_restricted_token(client: TestClient, owner_token: str) -> str:
     """Create a custom role with ONLY masters.party.read (no pii.read), invite
     a user into that role, accept, and return the new user's access token.
@@ -187,3 +226,135 @@ def test_party_csv_export_owner_with_pii_read_reveals_gstin(http_client: TestCli
     assert resp.status_code == 200, resp.text
     csv_body = resp.content.decode("utf-8")
     assert VALID_GSTIN in csv_body, "Owner CSV must contain plaintext GSTIN"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GET /parties/{party_id} — single-record leak (BLOCKER)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_get_party_without_pii_read_masks_gstin(http_client: TestClient) -> None:
+    """GET /parties/{id} with only masters.party.read must return masked GSTIN."""
+    owner = _signup_owner(http_client)
+    party = _create_party_with_gstin(http_client, owner["access_token"])
+    party_id = party["party_id"]
+    restricted_token = _create_restricted_token(http_client, owner["access_token"])
+
+    resp = http_client.get(f"/parties/{party_id}", headers=_auth(restricted_token))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["gstin"] == _PII_MASK, (
+        f"GSTIN plaintext leaked via GET /parties/{{id}}: got {data['gstin']!r}"
+    )
+
+
+def test_get_party_owner_reveals_gstin(http_client: TestClient) -> None:
+    """Owner (holds pii.read) must still see plaintext GSTIN via GET /parties/{id}."""
+    owner = _signup_owner(http_client)
+    party = _create_party_with_gstin(http_client, owner["access_token"])
+    party_id = party["party_id"]
+
+    resp = http_client.get(f"/parties/{party_id}", headers=_auth(owner["access_token"]))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["gstin"] == VALID_GSTIN, f"Owner should see plaintext GSTIN; got {data['gstin']!r}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# PATCH /parties/{party_id} — update response leak (BLOCKER)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_update_party_without_pii_read_masks_gstin(http_client: TestClient) -> None:
+    """PATCH /parties/{id} with only masters.party.update must return masked GSTIN."""
+    owner = _signup_owner(http_client)
+    party = _create_party_with_gstin(http_client, owner["access_token"])
+    party_id = party["party_id"]
+    restricted_token = _create_token_with_perms(
+        http_client, owner["access_token"], ["masters.party.update"]
+    )
+
+    resp = http_client.patch(
+        f"/parties/{party_id}",
+        headers=_auth(restricted_token),
+        json={"name": "Updated Name"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["gstin"] == _PII_MASK, (
+        f"GSTIN plaintext leaked via PATCH /parties/{{id}}: got {data['gstin']!r}"
+    )
+
+
+def test_update_party_owner_reveals_gstin(http_client: TestClient) -> None:
+    """Owner (holds pii.read) sees plaintext GSTIN in PATCH response."""
+    owner = _signup_owner(http_client)
+    party = _create_party_with_gstin(http_client, owner["access_token"])
+    party_id = party["party_id"]
+
+    resp = http_client.patch(
+        f"/parties/{party_id}",
+        headers=_auth(owner["access_token"]),
+        json={"name": "Updated by Owner"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["gstin"] == VALID_GSTIN, (
+        f"Owner should see plaintext GSTIN in PATCH response; got {data['gstin']!r}"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# POST /parties — create response leak (should-fix)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_party_without_pii_read_masks_gstin(http_client: TestClient) -> None:
+    """POST /parties with only masters.party.create must return masked GSTIN in response."""
+    owner = _signup_owner(http_client)
+    restricted_token = _create_token_with_perms(
+        http_client, owner["access_token"], ["masters.party.create"]
+    )
+
+    resp = http_client.post(
+        "/parties",
+        headers=_auth(restricted_token),
+        json={
+            "code": f"P-{uuid.uuid4().hex[:6].upper()}",
+            "name": "Created by Restricted",
+            "is_customer": True,
+            "gstin": VALID_GSTIN,
+            "pan": "ABCDE1234F",
+            "phone": "9876543210",
+            "state_code": "MH",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["gstin"] == _PII_MASK, (
+        f"GSTIN plaintext leaked via POST /parties: got {data['gstin']!r}"
+    )
+
+
+def test_create_party_owner_reveals_gstin(http_client: TestClient) -> None:
+    """Owner (holds pii.read) sees plaintext GSTIN in POST response."""
+    owner = _signup_owner(http_client)
+
+    resp = http_client.post(
+        "/parties",
+        headers=_auth(owner["access_token"]),
+        json={
+            "code": f"P-{uuid.uuid4().hex[:6].upper()}",
+            "name": "Created by Owner",
+            "is_customer": True,
+            "gstin": VALID_GSTIN,
+            "pan": "ABCDE1234F",
+            "phone": "9876543210",
+            "state_code": "MH",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["gstin"] == VALID_GSTIN, (
+        f"Owner should see plaintext GSTIN in POST response; got {data['gstin']!r}"
+    )

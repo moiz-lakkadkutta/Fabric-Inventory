@@ -430,6 +430,7 @@ def create_role(
         name=body.name,
         permission_codes=body.permissions,
         description=body.description,
+        actor_user_id=current_user.user_id,
     )
     return _load_role_with_permissions(db, org_id=current_user.org_id, role_id=role.role_id)
 
@@ -458,6 +459,7 @@ def update_role(
         name=body.name,
         description=body.description,
         permission_codes=body.permissions,
+        actor_user_id=current_user.user_id,
     )
     return _load_role_with_permissions(db, org_id=current_user.org_id, role_id=role_id)
 
@@ -480,6 +482,7 @@ def delete_role(
         db,
         org_id=current_user.org_id,
         role_id=role_id,
+        actor_user_id=current_user.user_id,
     )
     return None
 
