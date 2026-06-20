@@ -27,6 +27,7 @@ from app.exceptions import AppValidationError
 from app.models import Hsn, Item, Sku, Uom
 from app.models.masters import ItemType, TrackingType, UomType
 from app.service import audit_service
+from app.service.common_guards import assert_firm_in_org
 
 # HSN is 4 / 6 / 8 digits (4 for ≤ ₹5 Cr turnover, 6 / 8 for higher
 # turnover & exports). DDL caps to varchar(8). Format check only.
@@ -82,6 +83,9 @@ def create_item(
         raise AppValidationError("Item name is required")
     _validate_hsn(hsn_code)
     _validate_gst_rate(gst_rate)
+
+    if firm_id is not None:
+        assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
 
     existing = session.execute(
         select(Item).where(
@@ -302,6 +306,9 @@ def create_sku(
         raise AppValidationError(f"Invalid EAN-13 barcode {barcode_ean13!r}: must be 13 digits")
     if default_cost is not None and default_cost < 0:
         raise AppValidationError("default_cost cannot be negative")
+
+    if firm_id is not None:
+        assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
 
     parent = get_item(session, org_id=org_id, item_id=item_id)
 

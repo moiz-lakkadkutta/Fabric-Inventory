@@ -247,3 +247,104 @@ def test_update_system_ledger_raises(
             name="Trying to rename system",
             updated_by=real_user_id,
         )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# AUTHZ-2/SEC-1: firm-in-org guard on create_ledger
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_firm_in_org_coa(
+    session: OrmSession,
+    *,
+    org_id: uuid.UUID,
+    code: str = "FIRM-COA",
+) -> uuid.UUID:
+    """Create a Firm in *org_id* (GUC must already be set to org_id)."""
+    from app.models import Firm
+
+    firm = Firm(org_id=org_id, code=code, name=f"Firm {code}", has_gst=False)
+    session.add(firm)
+    session.flush()
+    return firm.firm_id  # type: ignore[return-value]
+
+
+def _make_foreign_firm_for_coa(
+    session: OrmSession,
+) -> uuid.UUID:
+    """Create a second org + firm; return that firm_id. GUC left at foreign org."""
+    from app.models import Firm, Organization
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_b_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_b_id}'"))
+    org_b = Organization(
+        org_id=org_b_id,
+        name=f"foreign-coa-org-{uuid.uuid4().hex[:8]}",
+        admin_email=f"fc-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_b_id),
+    )
+    session.add(org_b)
+    session.flush()
+    firm_b = Firm(org_id=org_b_id, code="F-EXT", name="External Firm", has_gst=False)
+    session.add(firm_b)
+    session.flush()
+    return firm_b.firm_id  # type: ignore[return-value]
+
+
+def test_create_ledger_rejects_foreign_firm_id(
+    db_session: OrmSession, seeded_org: uuid.UUID, real_user_id: uuid.UUID
+) -> None:
+    """AUTHZ-2: firm_id from a foreign org raises AppValidationError."""
+    asset_group = _get_asset_group(db_session, seeded_org)
+    foreign_firm_id = _make_foreign_firm_for_coa(db_session)
+    # Restore GUC to caller's org.
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{seeded_org}'"))
+    with pytest.raises(AppValidationError, match="not found in this organization"):
+        coa_service.create_ledger(
+            db_session,
+            org_id=seeded_org,
+            firm_id=foreign_firm_id,
+            code="GUARD-L1",
+            name="Guard Ledger Foreign",
+            ledger_type="ASSET",
+            coa_group_id=asset_group.coa_group_id,
+            created_by=real_user_id,
+        )
+
+
+def test_create_ledger_accepts_valid_firm_id(
+    db_session: OrmSession, seeded_org: uuid.UUID, real_user_id: uuid.UUID
+) -> None:
+    """AUTHZ-2 positive: firm_id in caller's org → create_ledger succeeds."""
+    asset_group = _get_asset_group(db_session, seeded_org)
+    firm_id = _make_firm_in_org_coa(db_session, org_id=seeded_org, code="VALID-FCOA")
+    ledger = coa_service.create_ledger(
+        db_session,
+        org_id=seeded_org,
+        firm_id=firm_id,
+        code="GUARD-L2",
+        name="Guard Ledger Valid",
+        ledger_type="ASSET",
+        coa_group_id=asset_group.coa_group_id,
+        created_by=real_user_id,
+    )
+    assert ledger.firm_id == firm_id
+
+
+def test_create_ledger_none_firm_id_skips_guard(
+    db_session: OrmSession, seeded_org: uuid.UUID, real_user_id: uuid.UUID
+) -> None:
+    """AUTHZ-2 positive: firm_id=None (org-level ledger) → guard skipped, succeeds."""
+    asset_group = _get_asset_group(db_session, seeded_org)
+    ledger = coa_service.create_ledger(
+        db_session,
+        org_id=seeded_org,
+        firm_id=None,
+        code="GUARD-L3",
+        name="Guard Ledger Org Level",
+        ledger_type="ASSET",
+        coa_group_id=asset_group.coa_group_id,
+        created_by=real_user_id,
+    )
+    assert ledger.firm_id is None
