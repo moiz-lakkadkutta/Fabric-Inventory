@@ -44,6 +44,7 @@ from app.exceptions import (
 )
 from app.models import AppUser, Role, UserInvite, UserRole
 from app.service import audit_service, identity_service, rbac_service
+from app.service.common_guards import assert_firm_in_org
 
 # 7-day TTL — long enough to forgive a weekend, short enough that a
 # stolen invite link goes stale before anyone notices.
@@ -124,6 +125,13 @@ def create_invite(
     ).scalar_one_or_none()
     if role is None:
         raise NotFoundError(f"Role {role_id} not found")
+
+    # IDM-2: verify firm_id (when supplied) belongs to this org.
+    # A cross-org firm_id would be silently persisted on the invite and
+    # later stamped on the accepted user — closing this at the service
+    # layer is cheaper than a DB-level FK that spans tenants.
+    if firm_id is not None:
+        assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
 
     # Already a live user with that email?
     existing_user = session.execute(

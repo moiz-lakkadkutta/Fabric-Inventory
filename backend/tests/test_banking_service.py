@@ -435,3 +435,112 @@ def test_create_cheque_post_dated_status_allowed(
         status=ChequeStatus.POST_DATED,
     )
     assert cheque.status == ChequeStatus.POST_DATED
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BANK-2: firm-in-org guard on create_bank_account + create_cheque
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_foreign_firm(db: OrmSession) -> uuid.UUID:
+    """Create a brand-new org + firm and return the firm_id.
+
+    The GUC is left on the new org after return; callers should restore it
+    to the original org before calling service functions under that org.
+    """
+    foreign_org_id = uuid.uuid4()
+    db.execute(text(f"SET LOCAL app.current_org_id = '{foreign_org_id}'"))
+    db.add(
+        Organization(
+            org_id=foreign_org_id,
+            name=f"foreign-org-{foreign_org_id.hex[:8]}",
+            admin_email=f"admin-{foreign_org_id.hex[:6]}@foreign.test",
+            encrypted_dek=wrap_dek(generate_dek(), org_id=foreign_org_id),
+        )
+    )
+    db.flush()
+    foreign_firm = Firm(
+        org_id=foreign_org_id,
+        code=f"FF-{foreign_org_id.hex[:6]}",
+        name="Foreign Firm",
+        has_gst=False,
+    )
+    db.add(foreign_firm)
+    db.flush()
+    return foreign_firm.firm_id
+
+
+def test_create_bank_account_foreign_firm_raises(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """BANK-2: firm_id from another org → AppValidationError before INSERT."""
+    # In-org ledger for the caller's org.
+    _firm_id, ledger_id = _make_firm_and_ledger(db_session, fresh_org_id)
+
+    # Build a foreign org+firm, then restore GUC to caller's org.
+    foreign_firm_id = _make_foreign_firm(db_session)
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{fresh_org_id}'"))
+
+    with pytest.raises(AppValidationError, match=r"[Ff]irm"):
+        banking_service.create_bank_account(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=foreign_firm_id,
+            ledger_id=ledger_id,
+        )
+
+
+def test_create_bank_account_valid_firm_passes(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """BANK-2 positive: in-org firm_id still succeeds after guard is added."""
+    firm_id, ledger_id = _make_firm_and_ledger(db_session, fresh_org_id)
+    account = banking_service.create_bank_account(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm_id,
+        ledger_id=ledger_id,
+        bank_name="Guard-ok Bank",
+    )
+    assert account.bank_account_id is not None
+    assert account.firm_id == firm_id
+
+
+def test_create_cheque_foreign_firm_raises(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """create_cheque: firm_id from another org → AppValidationError."""
+    firm_id, ledger_id = _make_firm_and_ledger(db_session, fresh_org_id)
+    account = _create_account(db_session, org_id=fresh_org_id, firm_id=firm_id, ledger_id=ledger_id)
+
+    foreign_firm_id = _make_foreign_firm(db_session)
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{fresh_org_id}'"))
+
+    with pytest.raises(AppValidationError, match=r"[Ff]irm"):
+        banking_service.create_cheque(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=foreign_firm_id,
+            bank_account_id=account.bank_account_id,
+            cheque_number="XFIRM-001",
+            cheque_date=datetime.date(2026, 4, 27),
+        )
+
+
+def test_create_cheque_valid_firm_passes(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """create_cheque: in-org firm_id still succeeds after guard is added."""
+    firm_id, ledger_id = _make_firm_and_ledger(db_session, fresh_org_id)
+    account = _create_account(db_session, org_id=fresh_org_id, firm_id=firm_id, ledger_id=ledger_id)
+
+    cheque = banking_service.create_cheque(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm_id,
+        bank_account_id=account.bank_account_id,
+        cheque_number="VALID-001",
+        cheque_date=datetime.date(2026, 4, 27),
+    )
+    assert cheque.cheque_id is not None
+    assert cheque.firm_id == firm_id
