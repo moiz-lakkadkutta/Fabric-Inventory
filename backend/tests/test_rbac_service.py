@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import AppValidationError, PermissionDeniedError
-from app.models import AppUser, Firm, Permission, Role, RolePermission, UserRole
+from app.models import AppUser, AuditLog, Firm, Permission, Role, RolePermission, UserRole
 from app.service import rbac_service
 
 # ──────────────────────────────────────────────────────────────────────
@@ -334,3 +334,109 @@ def test_user_with_no_roles_has_no_permissions(
     # Sanity: also no rows for them.
     rows = db_session.execute(select(UserRole).where(UserRole.user_id == user.user_id)).all()
     assert rows == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CRYPTO-05: masters.party.pii.read permission catalog + role grants
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_pii_permission_in_catalog() -> None:
+    """masters.party.pii.read must appear in the system permission catalog."""
+    codes = {f"{r}.{a}" for r, a, _ in rbac_service._SYSTEM_PERMISSIONS}
+    assert "masters.party.pii.read" in codes
+
+
+def test_all_party_read_roles_in_catalog_get_pii_read() -> None:
+    """Every role in _SYSTEM_ROLES that carries masters.party.read must also
+    carry masters.party.pii.read so existing operators don't lose PII access.
+    """
+    for code, _name, _desc, perm_codes in rbac_service._SYSTEM_ROLES:
+        if "masters.party.read" in perm_codes:
+            assert "masters.party.pii.read" in perm_codes, (
+                f"Role {code!r} has masters.party.read but NOT masters.party.pii.read — "
+                "existing operators would silently lose PII access"
+            )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CRYPTO-02: runtime RBAC mutations emit audit rows
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_assign_role_emits_audit_row(
+    db_session: OrmSession, seeded_org: tuple[uuid.UUID, dict[str, Role]]
+) -> None:
+    """assign_role with actor_user_id must write an AuditLog row with action='role_assign'."""
+    org_id, roles = seeded_org
+
+    actor = AppUser(org_id=org_id, email=f"actor-{uuid.uuid4().hex[:6]}@x.com")
+    target = AppUser(org_id=org_id, email=f"target-{uuid.uuid4().hex[:6]}@x.com")
+    db_session.add_all([actor, target])
+    db_session.flush()
+
+    rbac_service.assign_role(
+        db_session,
+        user_id=target.user_id,
+        role_id=roles["SALESPERSON"].role_id,
+        firm_id=None,
+        org_id=org_id,
+        actor_user_id=actor.user_id,
+    )
+    db_session.flush()
+
+    row = db_session.execute(
+        select(AuditLog).where(
+            AuditLog.org_id == org_id,
+            AuditLog.action == "role_assign",
+        )
+    ).scalar_one_or_none()
+    assert row is not None, "AuditLog row must exist after assign_role"
+    assert row.user_id == actor.user_id
+    assert row.entity_type == "UserRole"
+
+
+def test_assign_role_no_audit_on_idempotent_noop(
+    db_session: OrmSession, seeded_org: tuple[uuid.UUID, dict[str, Role]]
+) -> None:
+    """Second identical assign_role call (idempotent) must NOT emit a second audit row."""
+    org_id, roles = seeded_org
+    actor = AppUser(org_id=org_id, email=f"actor2-{uuid.uuid4().hex[:6]}@x.com")
+    target = AppUser(org_id=org_id, email=f"target2-{uuid.uuid4().hex[:6]}@x.com")
+    db_session.add_all([actor, target])
+    db_session.flush()
+
+    # First call — creates UserRole + audit row
+    rbac_service.assign_role(
+        db_session,
+        user_id=target.user_id,
+        role_id=roles["WAREHOUSE"].role_id,
+        firm_id=None,
+        org_id=org_id,
+        actor_user_id=actor.user_id,
+    )
+    db_session.flush()
+
+    # Second identical call — idempotent, must not add another audit row
+    rbac_service.assign_role(
+        db_session,
+        user_id=target.user_id,
+        role_id=roles["WAREHOUSE"].role_id,
+        firm_id=None,
+        org_id=org_id,
+        actor_user_id=actor.user_id,
+    )
+    db_session.flush()
+
+    rows = (
+        db_session.execute(
+            select(AuditLog).where(
+                AuditLog.org_id == org_id,
+                AuditLog.action == "role_assign",
+                AuditLog.user_id == actor.user_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1, f"Expected exactly 1 audit row, got {len(rows)}"

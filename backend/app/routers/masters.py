@@ -36,14 +36,30 @@ from app.utils.crypto import decrypt_pii, get_org_dek
 router = APIRouter(prefix="/parties", tags=["masters", "party"])
 
 
-def _to_response(party: Party, *, dek: bytes) -> PartyResponse:
+_PII_MASK = "*****"
+
+
+def _to_response(party: Party, *, dek: bytes, reveal_pii: bool = True) -> PartyResponse:
     """Decrypt PII columns + serialize. The model holds bytes; the API
     contract is plaintext. `decrypt_pii` handles None and memoryview safely.
 
     The caller resolves the org's DEK once and threads it through —
     `dek` is keyword-only so a no-op refactor that forgets it fails
     type-checks immediately rather than passing a bare positional arg.
+
+    When `reveal_pii=False` (caller lacks `masters.party.pii.read`), PII
+    fields (GSTIN, PAN, phone) are masked to `_PII_MASK` rather than
+    decrypted. The DEK is not used in that path — we don't even decrypt.
     """
+    if reveal_pii:
+        gstin = decrypt_pii(party.gstin, dek=dek, org_id=party.org_id)
+        pan = decrypt_pii(party.pan, dek=dek, org_id=party.org_id)
+        phone = decrypt_pii(party.phone, dek=dek, org_id=party.org_id)
+    else:
+        # Do not decrypt: just indicate presence of an encrypted value.
+        gstin = _PII_MASK if party.gstin is not None else None
+        pan = _PII_MASK if party.pan is not None else None
+        phone = _PII_MASK if party.phone is not None else None
     return PartyResponse(
         party_id=party.party_id,
         org_id=party.org_id,
@@ -56,9 +72,9 @@ def _to_response(party: Party, *, dek: bytes) -> PartyResponse:
         is_karigar=party.is_karigar,
         is_transporter=party.is_transporter,
         tax_status=party.tax_status,
-        gstin=decrypt_pii(party.gstin, dek=dek, org_id=party.org_id),
-        pan=decrypt_pii(party.pan, dek=dek, org_id=party.org_id),
-        phone=decrypt_pii(party.phone, dek=dek, org_id=party.org_id),
+        gstin=gstin,
+        pan=pan,
+        phone=phone,
         email=party.email,
         state_code=party.state_code,
         contact_person=party.contact_person,
@@ -131,7 +147,6 @@ def list_parties(
         ),
     ] = None,
 ) -> PartyListResponse | Response:
-    _ = current_user  # JWT auth + permission already enforced by the dep
     effective_limit = 10_000 if export_format else limit
     items = masters_service.list_parties(
         db,
@@ -143,11 +158,14 @@ def list_parties(
         limit=effective_limit,
         offset=offset,
     )
-    # _to_response decrypts the GSTIN / PAN / phone PII columns; the
-    # export must use the decrypted payload (anything else exfiltrates
-    # cipher-text into a user-visible spreadsheet).
-    dek = get_org_dek(db, org_id=current_user.org_id)
-    responses = [_to_response(p, dek=dek) for p in items]
+    # Gate PII decryption on the fine-grained permission.  Callers without
+    # `masters.party.pii.read` receive masked PII fields (GSTIN, PAN, phone)
+    # to prevent mass-exfiltration via the list or export endpoints.
+    # When `reveal_pii=False` the DEK is never fetched — the encrypted bytes
+    # stay encrypted and we short-circuit before any AES-GCM work.
+    reveal_pii = "masters.party.pii.read" in current_user.permissions
+    dek = get_org_dek(db, org_id=current_user.org_id) if reveal_pii else b""
+    responses = [_to_response(p, dek=dek, reveal_pii=reveal_pii) for p in items]
     if export_format is not None:
         rows = party_export_rows(responses)
         if export_format == "csv":
