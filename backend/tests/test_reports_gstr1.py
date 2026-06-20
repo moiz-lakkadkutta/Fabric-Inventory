@@ -857,15 +857,17 @@ def test_gstr1_gstin_revealed_for_user_with_pii_read_permission(
 def test_gstr1_gstin_masked_for_user_without_pii_read_permission(
     http_client: TestClient, sync_engine: Engine
 ) -> None:
-    """ACCOUNTANT (has accounting.report.view but NOT masters.party.pii.read)
-    must receive a masked GSTIN in the HTTP response.
+    """A report viewer WITHOUT masters.party.pii.read must receive a masked
+    GSTIN in the HTTP response.
 
-    This proves the router gate uses masters.party.pii.read (not the
-    broader masters.party.read that ACCOUNTANTs carry). Without this
-    test, reverting the gate to 'masters.party.read' would pass all
-    other tests (ACCOUNTANTs do have masters.party.read).
+    This proves the router gate uses masters.party.pii.read specifically.
+    The system ACCOUNTANT role is granted masters.party.pii.read (so real
+    accountants keep PII access), so to exercise the masked path we mint a
+    custom role that has accounting.report.view but NOT pii.read — without
+    this test, reverting the gate to 'masters.party.read' (or dropping the
+    pii.read grant) would slip through.
     """
-    from app.models import AppUser, Role
+    from app.models import AppUser
     from app.service import identity_service, rbac_service
 
     me = _signup_owner(http_client)
@@ -886,13 +888,17 @@ def test_gstr1_gstin_masked_for_user_without_pii_read_permission(
         gst_rate="5",
     )
 
-    # Create an ACCOUNTANT user (has accounting.report.view + masters.party.read
-    # but NOT masters.party.pii.read).
+    # Mint a custom role that can view reports + party names but explicitly
+    # lacks masters.party.pii.read, then assign a fresh user to it.
     with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
-        accountant_role = session.execute(
-            select(Role).where(Role.org_id == org_id, Role.code == "ACCOUNTANT")
-        ).scalar_one()
+        report_role = rbac_service.create_custom_role(
+            session,
+            org_id=org_id,
+            code="REPORT_VIEWER_NO_PII",
+            name="Report viewer without PII",
+            permission_codes=["accounting.report.view", "masters.party.read"],
+        )
         acct_user = identity_service.register_user(
             session,
             email=f"acct-pii-{uuid.uuid4().hex[:6]}@example.com",
@@ -902,7 +908,7 @@ def test_gstr1_gstin_masked_for_user_without_pii_read_permission(
         rbac_service.assign_role(
             session,
             user_id=acct_user.user_id,
-            role_id=accountant_role.role_id,
+            role_id=report_role.role_id,
             firm_id=uuid.UUID(me["firm_id"]),
             org_id=org_id,
         )
