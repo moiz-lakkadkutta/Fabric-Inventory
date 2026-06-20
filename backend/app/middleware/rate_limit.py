@@ -84,15 +84,28 @@ def set_redis_client_for_testing(client: aioredis.Redis | None) -> None:
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort client IP. Honours ``X-Forwarded-For`` (left-most
-    entry — the original client per RFC 7239 convention) since prod
-    sits behind Caddy. Falls back to the socket peer for local dev.
+    """Best-effort client IP for rate-limit keying.
+
+    DOS-06 hardening: use the RIGHTMOST ``X-Forwarded-For`` entry, not the
+    leftmost. When traffic flows through Caddy (our single trusted reverse
+    proxy), Caddy appends the actual client IP as the last XFF entry. An
+    attacker can freely forge earlier entries by sending
+    ``X-Forwarded-For: <fake-ip>`` before the request reaches Caddy, but
+    cannot forge the entry that Caddy itself appends.
+
+    Using the leftmost entry (the previous behaviour) let any client spoof a
+    victim IP and either evade their own rate-limit bucket or exhaust a
+    target's budget.
+
+    Falls back to the TCP socket peer address (``request.client.host``) when
+    no XFF header is present, which is the correct value in direct-connect
+    (dev / test) setups.
     """
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        # Left-most entry is the originating client per the convention
-        # the reverse proxy uses; strip whitespace and only keep one hop.
-        return forwarded.split(",")[0].strip() or "unknown"
+        # Rightmost entry is appended by our trusted proxy — cannot be
+        # spoofed by the connecting client.
+        return forwarded.split(",")[-1].strip() or "unknown"
     if request.client is not None and request.client.host:
         return request.client.host
     return "unknown"
@@ -103,6 +116,7 @@ def rate_limit(
     bucket: str,
     max_requests: int,
     window_seconds: int,
+    key_func: Callable[[Request], Awaitable[str]] | None = None,
 ) -> Callable[[Request], Awaitable[None]]:
     """Return a FastAPI dependency that enforces the sliding window.
 
@@ -112,6 +126,12 @@ def rate_limit(
             endpoints with the same threshold don't collide.
         max_requests: maximum requests allowed inside the window.
         window_seconds: window size in seconds.
+        key_func: optional async callable that returns the rate-limit
+            key string for this request. When ``None`` (default),
+            uses the client IP from ``_client_ip()``. Provide a custom
+            function to key on (IP + email) for credential endpoints so
+            an attacker cannot rotate IPs to bypass per-IP limits, nor
+            can a per-account limit starve another account on the same IP.
 
     Returns:
         An async callable suitable for ``Depends(...)``.
@@ -128,8 +148,11 @@ def rate_limit(
         if redis_client is None:
             return  # No Redis -> no rate limiting (dev fallback).
 
-        ip = _client_ip(request)
-        key = f"ratelimit:{bucket}:{ip}"
+        if key_func is not None:
+            bucket_key = await key_func(request)
+        else:
+            bucket_key = _client_ip(request)
+        key = f"ratelimit:{bucket}:{bucket_key}"
         now_ms = int(time.time() * 1000)
         window_ms = window_seconds * 1000
         cutoff_ms = now_ms - window_ms
@@ -161,4 +184,4 @@ def rate_limit(
     return _dep
 
 
-__all__ = ["rate_limit", "set_redis_client_for_testing"]
+__all__ = ["_client_ip", "rate_limit", "set_redis_client_for_testing"]

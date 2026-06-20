@@ -538,3 +538,47 @@ def test_refresh_token_ttl_is_14_days(
         <= delta
         <= datetime.timedelta(days=14, seconds=2)
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# DOS-02 / API-7-03 — Dummy bcrypt hash for timing-safe unknown-user path
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_dummy_bcrypt_hash_constant_exists() -> None:
+    """DOS-02: identity_service must expose DUMMY_BCRYPT_HASH as a module-level
+    constant so auth.py can always run verify_password even when the user
+    doesn't exist. Its absence means the unknown-user path skips bcrypt and
+    reveals user existence via timing.
+    """
+    assert hasattr(identity_service, "DUMMY_BCRYPT_HASH"), (
+        "identity_service.DUMMY_BCRYPT_HASH not found. "
+        "DOS-02 fix requires this constant for the unknown-user timing defence."
+    )
+
+
+def test_dummy_bcrypt_hash_is_a_valid_bcrypt_hash() -> None:
+    """The dummy hash must be a real bcrypt hash (starts with $2b$) so that
+    verify_password actually invokes bcrypt work and not a fast-path no-op.
+    """
+    dummy = identity_service.DUMMY_BCRYPT_HASH
+    assert isinstance(dummy, str), f"DUMMY_BCRYPT_HASH is {type(dummy)}, expected str"
+    assert dummy.startswith("$2b$"), (
+        f"DUMMY_BCRYPT_HASH {dummy[:20]!r}... does not look like a bcrypt hash. "
+        "It must start with '$2b$' so verify_password invokes the real Blowfish KDF."
+    )
+    # verify_password must return False (sentinel value doesn't match a real password).
+    assert not identity_service.verify_password("any-real-password", dummy), (
+        "verify_password returned True against DUMMY_BCRYPT_HASH — "
+        "the hash must never match any real credential."
+    )
+
+
+def test_dummy_bcrypt_hash_does_not_verify_against_itself() -> None:
+    """The dummy hash's plaintext must not accidentally be the hash itself
+    (that would be a trivially exploitable sentinel bypass)."""
+    dummy = identity_service.DUMMY_BCRYPT_HASH
+    # The plaintext of our dummy constant should NOT verify against the hash.
+    assert not identity_service.verify_password(dummy, dummy), (
+        "The hash verifies against itself — the sentinel is insecure."
+    )

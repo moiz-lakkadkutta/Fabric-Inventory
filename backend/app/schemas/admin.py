@@ -58,10 +58,17 @@ class InviteCreateResponse(BaseModel):
     invite_id: uuid.UUID
     email: EmailStr
     expires_at: datetime.datetime
-    invite_link: str
-    """Full FE URL the recipient opens — printed to the dev console too.
-    Kept in the response body so test code (and the FE toast) can verify
-    + display it without scraping logs."""
+    invite_link: str | None = None
+    """Full FE URL the recipient opens.
+
+    IDM-3: only populated in ``ENVIRONMENT=dev`` so the raw invite token
+    does not travel over the API wire in staging/production (where it must
+    arrive exclusively via the email adapter). Test code reads this field
+    directly when running in dev mode; CI uses it too since CI sets
+    ENVIRONMENT=dev.  In non-dev environments the field is absent from
+    the JSON response (excluded when None via ``response_model_exclude_none``
+    on the endpoint).
+    """
 
 
 class AcceptInviteRequest(BaseModel):

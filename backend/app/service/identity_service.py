@@ -63,6 +63,25 @@ _JWT_ALG: Final[str] = "HS256"  # RS256 + key rotation later.
 _TOTP_ISSUER: Final[str] = "Fabric ERP"
 _MIN_PASSWORD_LENGTH: Final[int] = 8
 
+# DOS-02 / API-7-03 — Timing oracle: unknown-user path must NOT skip bcrypt.
+#
+# When a login attempt fails because the user does not exist, the original code
+# short-circuited before calling bcrypt, making the response ~100ms faster than a
+# "user found, wrong password" response. An attacker can distinguish "email not
+# registered" from "wrong password" by measuring response latency.
+#
+# Fix: always call `verify_password()` — even when no user was found — against this
+# pre-computed dummy hash. The dummy hash is computed ONCE at module import (single
+# ~100ms cost) and reused for every unknown-user attempt, normalising timing.
+#
+# The hash is for an internal sentinel value that MUST NOT match any real password.
+# It is exposed as a module-level public constant so auth.py and the reset path can
+# both reference it without duplicating the sentinel logic.
+DUMMY_BCRYPT_HASH: Final[str] = bcrypt.hashpw(
+    b"_fabric_dummy_sentinel_for_timing_normalisation_",
+    bcrypt.gensalt(rounds=_BCRYPT_ROUNDS),
+).decode("utf-8")
+
 
 @dataclass(frozen=True)
 class TokenPayload:
