@@ -884,3 +884,78 @@ def test_list_boms_exposes_total_count(http_client: TestClient) -> None:
     assert body["total_count"] == 3  # across all pages
     assert body["limit"] == 2
     assert body["offset"] == 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# MFGC-5: self-reference guard (finished item as its own component)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_bom_rejects_self_referencing_line(http_client: TestClient) -> None:
+    """MFGC-5: A BOM line whose item_id == finished_item_id must be rejected (422).
+
+    The finished good cannot appear as one of its own components — that
+    would create a circular material loop and double-consume the item.
+    """
+    me, design_id, finished, raw = _seed_bom_world(http_client)
+    payload = _bom_payload(
+        firm_id=me["firm_id"],
+        design_id=design_id,
+        finished_item_id=finished,
+        raw_item_id=raw,
+    )
+    # Replace the component item_id with the finished item itself.
+    payload["lines"][0]["item_id"] = finished  # type: ignore[index]
+    resp = http_client.post("/boms", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# MFGC-6: duplicate component guard
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_bom_rejects_duplicate_component_lines(http_client: TestClient) -> None:
+    """MFGC-6: Two BOM lines with the same item_id must be rejected (422).
+
+    Silent duplicates would cause double material consumption on MOs.
+    The guard message instructs the caller to merge quantities.
+    """
+    me, design_id, finished, raw = _seed_bom_world(http_client)
+    payload = {
+        "firm_id": me["firm_id"],
+        "design_id": design_id,
+        "finished_item_id": finished,
+        "lines": [
+            {"item_id": raw, "qty_required": "1.0000", "uom": "METER"},
+            {"item_id": raw, "qty_required": "2.0000", "uom": "METER"},  # duplicate
+        ],
+    }
+    resp = http_client.post("/boms", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# MFGC-8: qty_required upper-bound guard (Numeric(15,4) overflow → 422)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_bom_rejects_qty_overflow(http_client: TestClient) -> None:
+    """MFGC-8: qty_required above the Numeric(15,4) ceiling must be rejected
+    at the Pydantic layer (422), not trip a DB overflow (500).
+
+    NUMERIC(15,4) holds at most 11 integer digits. 999999999999999
+    (fifteen nines) overflows that and must never reach the database.
+    """
+    me, design_id, finished, raw = _seed_bom_world(http_client)
+    payload = _bom_payload(
+        firm_id=me["firm_id"],
+        design_id=design_id,
+        finished_item_id=finished,
+        raw_item_id=raw,
+        qty="999999999999999",  # 1e15-1, well above NUMERIC(15,4) max
+    )
+    resp = http_client.post("/boms", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, f"Expected 422 but got {resp.status_code}: {resp.text}"
