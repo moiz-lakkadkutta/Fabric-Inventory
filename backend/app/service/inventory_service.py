@@ -48,6 +48,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.exceptions import AppValidationError
 from app.models import Item, Location, Lot, StockLedger, StockPosition
 from app.models.inventory import LocationType
+from app.service.common_guards import assert_firm_in_org
 
 # ──────────────────────────────────────────────────────────────────────
 # Validation helpers
@@ -154,6 +155,7 @@ def create_location(
     Raises `AppValidationError` (→ surfaces as 409 envelope) if a
     Location with the same `code` already exists for `(org_id, firm_id)`.
     """
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
     existing = session.execute(
         select(Location).where(
             Location.org_id == org_id,

@@ -20,12 +20,14 @@ import uuid
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import AppValidationError
-from app.models import Firm, Item, Location
+from app.models import Firm, Item, Location, Organization
 from app.models.masters import ItemType, UomType
 from app.service import inventory_service, stock_service
+from app.utils.crypto import generate_dek, wrap_dek
 
 # ──────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -584,3 +586,88 @@ def test_increase_null_unit_cost_inherits_current_position_cost(
         f"Expected current_cost=50 (inherited), got {pos.current_cost} "
         f"— null unit_cost still defaults to 0 (dilution bug)"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# INV-P8: create_adjustment — firm-in-org guard
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_org_and_firm_adj(
+    session: OrmSession, *, org_suffix: str = "", firm_code: str = "FX"
+) -> tuple[Organization, Firm]:
+    """Create a fresh org (setting GUC) and a firm in it."""
+    org_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+    org = Organization(
+        org_id=org_id,
+        name=f"adj-guard-org-{uuid.uuid4().hex[:8]}{org_suffix}",
+        admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
+    )
+    session.add(org)
+    session.flush()
+    firm = Firm(organization=org, code=firm_code, name=f"Firm {firm_code}", has_gst=False)
+    session.add(firm)
+    session.flush()
+    return org, firm
+
+
+def test_create_adjustment_rejects_foreign_firm(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    setup: tuple[Firm, Item, Location],
+) -> None:
+    """INV-P8: create_adjustment must reject a firm_id from a different org.
+
+    The COUNT_RESET no-op path (qty==current==0) is used deliberately:
+    it calls ``_lock_or_create_position`` directly and then returns early,
+    so none of the add_stock / remove_stock location/item validators fire.
+    Without the firm-in-org guard, the adjustment would succeed and stamp
+    a foreign firm_id onto stock_position and stock_adjustment rows.
+    With the guard, AppValidationError is raised before anything is written.
+    """
+    firm_a, item, location = setup
+
+    # Create org_b with its own firm. GUC flips to org_b during creation.
+    _org_b, firm_b = _make_org_and_firm_adj(db_session, org_suffix="-b", firm_code="FB")
+
+    # Restore GUC to org_a so subsequent writes go to the right org.
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{fresh_org_id}'"))
+
+    # COUNT_RESET no-op (qty=0, no prior position) bypasses add_stock /
+    # remove_stock entirely → only assert_firm_in_org can reject this.
+    with pytest.raises(AppValidationError, match=r"not found in this organization"):
+        stock_service.create_adjustment(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=firm_b.firm_id,  # foreign firm — must be rejected
+            item_id=item.item_id,
+            location_id=location.location_id,
+            qty=Decimal("0"),
+            direction="COUNT_RESET",
+            reason="Spoof attempt via COUNT_RESET no-op",
+        )
+
+
+def test_create_adjustment_succeeds_for_valid_firm_in_org(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    setup: tuple[Firm, Item, Location],
+) -> None:
+    """INV-P8 positive path: create_adjustment succeeds when firm_id is
+    in the caller's own org.
+    """
+    firm, item, location = setup
+    adj, ledger = stock_service.create_adjustment(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("20"),
+        direction="INCREASE",
+        reason="INV-P8 positive guard test",
+    )
+    assert adj.firm_id == firm.firm_id
+    assert adj.qty_change == Decimal("20")

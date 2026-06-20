@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.exceptions import AppValidationError
 from app.models import StockAdjustment, StockLedger
 from app.service import inventory_service
+from app.service.common_guards import assert_firm_in_org
 
 AdjustmentDirection = Literal["INCREASE", "DECREASE", "COUNT_RESET"]
 
@@ -84,6 +85,8 @@ def create_adjustment(
     -------
     (StockAdjustment header, StockLedger row)
     """
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
     if qty < _ZERO_COST:
         raise AppValidationError(f"qty must be >= 0 (got {qty})")
 
