@@ -98,20 +98,24 @@ def _check_date_span(
     Only fires when both endpoints are provided or derivable. When either
     is None the service itself resolves defaults (fiscal-year-start /
     today), which are always within the limit.
+
+    FIX-2 (Tfix6): raises AppValidationError so the global error handler
+    wraps it in the Q8a envelope ({code, title, detail, status, …}).
+    Previously this raised a bare fastapi.HTTPException, which bypassed
+    the envelope and returned {"detail": "…"} — unhandleable by the FE
+    error-switcher.
     """
+    from app.exceptions import AppValidationError
+
     if from_date is None or to_date is None:
         return
     span = (to_date - from_date).days
     if span > MAX_REPORT_DATE_SPAN_DAYS:
-        from fastapi import HTTPException
-
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Date range {from_date} → {to_date} spans {span} days "
-                f"(limit: {MAX_REPORT_DATE_SPAN_DAYS}). "
-                "Narrow the range and paginate if you need more history."
-            ),
+        raise AppValidationError(
+            f"Date range {from_date} → {to_date} spans {span} days "
+            f"(limit: {MAX_REPORT_DATE_SPAN_DAYS}). "
+            "Narrow the range and paginate if you need more history.",
+            title="Date range too wide",
         )
 
 
