@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError, PermissionDeniedError
 from app.models import CoaGroup, Ledger
+from app.service.common_guards import assert_firm_in_org
 
 # ──────────────────────────────────────────────────────────────────────
 # CoaGroup helpers
@@ -206,6 +207,9 @@ def create_ledger(
         raise AppValidationError("Ledger code is required")
     if not name:
         raise AppValidationError("Ledger name is required")
+
+    if firm_id is not None:
+        assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
 
     # Verify the group exists and belongs to this org.
     get_coa_group(session, org_id=org_id, coa_group_id=coa_group_id)

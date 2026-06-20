@@ -26,6 +26,7 @@ from app.exceptions import AppValidationError
 from app.models import Party
 from app.models.masters import TaxStatus
 from app.service import audit_service
+from app.service.common_guards import assert_firm_in_org
 from app.utils.crypto import encrypt_pii, get_org_dek
 
 # Format check only — full GSTIN validation (state-code lookup, checksum
@@ -87,6 +88,9 @@ def create_party(
             "At least one party type flag must be true "
             "(is_supplier / is_customer / is_karigar / is_transporter)"
         )
+
+    if firm_id is not None:
+        assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
 
     _validate_gstin(gstin)
     _validate_pan(pan)

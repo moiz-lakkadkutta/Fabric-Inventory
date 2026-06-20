@@ -947,3 +947,44 @@ def test_mo_response_exposes_cost_pool_after_issue(
     # Post-issue: cost_pool equals the voucher's DR 1310 total = Rs.2000.
     fresh = _get_mo(http_client, owner=me, mo_id=mo_id)
     assert Decimal(str(fresh["cost_pool"])) == Decimal("2000.00")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Bmo: firm-in-org guard on issue_materials (service layer)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_issue_materials_service_guard_rejects_firm_not_in_org(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Bmo: assert_firm_in_org must fire at the service layer so that
+    a firm_id outside this org is rejected before any MO / line / stock
+    checks run.
+
+    The signup token has firm_id=None (OWNER JWT), so the router-partial
+    check is bypassed — proving the guard lives in the *service*.
+
+    Positive case (valid in-org firm succeeds) is already covered by
+    ``test_happy_path_full_issue``.
+    """
+    me, mo_id, _bom, _routing, _finished = _seed_full_world(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    mo = _get_mo(http_client, owner=me, mo_id=mo_id)
+    line = _mo_lines(mo)[0]
+    # Random UUID — definitively not a firm in this org.
+    foreign_firm_id = str(uuid.uuid4())
+    resp = http_client.post(
+        f"/manufacturing/mo/{mo_id}/issue-materials",
+        headers=_auth(me["access_token"]),  # firm_id=None in JWT → router check skips
+        json={
+            "firm_id": foreign_firm_id,
+            "lines": [
+                {
+                    "mo_material_line_id": line["mo_material_line_id"],
+                    "qty_to_issue": line["qty_required"],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not found in this organization" in resp.json()["detail"].lower()

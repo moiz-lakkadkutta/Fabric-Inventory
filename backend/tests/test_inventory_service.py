@@ -16,14 +16,15 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import AppValidationError
-from app.models import Firm, Item, Location, StockLedger, StockPosition
+from app.models import Firm, Item, Location, Organization, StockLedger, StockPosition
 from app.models.inventory import LocationType
 from app.models.masters import ItemType, UomType
 from app.service import inventory_service
+from app.utils.crypto import generate_dek, wrap_dek
 
 
 @pytest.fixture
@@ -772,3 +773,80 @@ def test_add_stock_rejects_soft_deleted_item(
             reference_type="ADJUSTMENT",
             reference_id=uuid.uuid4(),
         )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# INV-P8: create_location — firm-in-org guard
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_org_and_firm(
+    session: OrmSession, *, org_suffix: str = "", firm_code: str = "FX"
+) -> tuple[Organization, Firm]:
+    """Helper: create a fresh org (setting GUC) and a firm inside it."""
+    org_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+    org = Organization(
+        org_id=org_id,
+        name=f"guard-test-org-{uuid.uuid4().hex[:8]}{org_suffix}",
+        admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
+    )
+    session.add(org)
+    session.flush()
+    firm = Firm(organization=org, code=firm_code, name=f"Firm {firm_code}", has_gst=False)
+    session.add(firm)
+    session.flush()
+    return org, firm
+
+
+def test_create_location_rejects_foreign_firm(db_session: OrmSession) -> None:
+    """INV-P8: create_location must reject a firm_id that belongs to a
+    different org, even when a valid org_id is supplied.
+
+    Without the guard a caller in org A could store a location stamped
+    with org B's firm_id, poisoning cross-firm queries.
+    """
+    org_a, _ = _make_org_and_firm(db_session, org_suffix="-a", firm_code="FA")
+
+    # Create org_b and its firm while GUC is org_b.
+    _org_b, firm_b = _make_org_and_firm(db_session, org_suffix="-b", firm_code="FB")
+
+    # Switch GUC back to org_a (caller's perspective).
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_a.org_id}'"))
+
+    with pytest.raises(AppValidationError, match=r"[Ff]irm"):
+        inventory_service.create_location(
+            db_session,
+            org_id=org_a.org_id,
+            firm_id=firm_b.firm_id,  # foreign firm — must be rejected
+            code="LOC-FOREIGN",
+            name="Should Never Be Created",
+        )
+
+
+def test_create_location_succeeds_for_valid_firm_in_org(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """INV-P8 positive path: create_location succeeds when firm_id is in
+    the caller's own org.
+    """
+    firm = Firm(
+        org_id=fresh_org_id,
+        code=f"F-{uuid.uuid4().hex[:6]}",
+        name="Valid Firm",
+        has_gst=False,
+    )
+    db_session.add(firm)
+    db_session.flush()
+
+    loc = inventory_service.create_location(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        code="CUSTOM-A",
+        name="Custom Warehouse A",
+    )
+    assert loc.code == "CUSTOM-A"
+    assert loc.firm_id == firm.firm_id
+    assert loc.org_id == fresh_org_id

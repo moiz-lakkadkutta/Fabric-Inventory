@@ -54,6 +54,7 @@ from app.models import Ledger, UserMigration, Voucher, VoucherLine
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.masters import TaxStatus
 from app.service import audit_service, masters_service
+from app.service.common_guards import assert_firm_in_org
 
 from .intermediate import (
     IntermediateOpeningBalance,
@@ -186,6 +187,8 @@ def upload_and_reconcile(
     approve step re-checks it (defense-in-depth) against the supplied
     bytes.
     """
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
     if not source_bytes:
         raise AppValidationError("Empty migration upload — file is required.")
     if not source_filename:

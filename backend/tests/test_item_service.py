@@ -632,3 +632,171 @@ def test_rls_blocks_cross_org_item_reads(admin_engine: Engine) -> None:
             cleanup_conn.commit()
         finally:
             cleanup_conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# AUTHZ-2/SEC-1: firm-in-org guard on create_item / create_sku
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_firm_in_org_item(
+    session: OrmSession,
+    *,
+    org_id: uuid.UUID,
+    code: str = "FIRM-A",
+) -> uuid.UUID:
+    """Create a Firm in *org_id* (GUC must already be set to org_id)."""
+    from app.models import Firm
+
+    firm = Firm(org_id=org_id, code=code, name=f"Firm {code}", has_gst=False)
+    session.add(firm)
+    session.flush()
+    return firm.firm_id
+
+
+def _make_foreign_firm_for_item(
+    session: OrmSession,
+) -> uuid.UUID:
+    """Create a second org + firm and return that firm's firm_id.
+
+    GUC is left pointing at the foreign org; caller must restore it.
+    """
+    from app.models import Firm, Organization
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_b_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_b_id}'"))
+    org_b = Organization(
+        org_id=org_b_id,
+        name=f"foreign-item-org-{uuid.uuid4().hex[:8]}",
+        admin_email=f"fi-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_b_id),
+    )
+    session.add(org_b)
+    session.flush()
+    firm_b = Firm(org_id=org_b_id, code="F-EXT", name="External Firm", has_gst=False)
+    session.add(firm_b)
+    session.flush()
+    return firm_b.firm_id
+
+
+def test_create_item_rejects_foreign_firm_id(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """AUTHZ-2: firm_id from a foreign org raises AppValidationError."""
+    foreign_firm_id = _make_foreign_firm_for_item(db_session)
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{fresh_org_id}'"))
+    with pytest.raises(AppValidationError, match="not found in this organization"):
+        items_service.create_item(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=foreign_firm_id,
+            code="GUARD-I1",
+            name="Guard Item",
+            item_type=ItemType.FINISHED,
+            primary_uom=UomType.METER,
+        )
+
+
+def test_create_item_accepts_valid_firm_id(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
+    """AUTHZ-2 positive: firm_id in caller's org → create_item succeeds."""
+    firm_id = _make_firm_in_org_item(db_session, org_id=fresh_org_id, code="VALID-FI")
+    item = items_service.create_item(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm_id,
+        code="GUARD-I2",
+        name="Guard Valid Item",
+        item_type=ItemType.FINISHED,
+        primary_uom=UomType.METER,
+    )
+    assert item.firm_id == firm_id
+
+
+def test_create_item_none_firm_id_skips_guard(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """AUTHZ-2 positive: firm_id=None → guard skipped, create succeeds."""
+    item = items_service.create_item(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=None,
+        code="GUARD-I3",
+        name="Org Level Item",
+        item_type=ItemType.FINISHED,
+        primary_uom=UomType.METER,
+    )
+    assert item.firm_id is None
+
+
+def test_create_sku_rejects_foreign_firm_id(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """AUTHZ-2: SKU create with foreign firm_id raises AppValidationError."""
+    # First create a parent item (org-level, no firm_id)
+    item = items_service.create_item(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=None,
+        code="GUARD-PARENT-I",
+        name="Parent Item for SKU guard test",
+        item_type=ItemType.FINISHED,
+        primary_uom=UomType.METER,
+    )
+    # Flush pending audit_log from create_item BEFORE switching GUC.
+    db_session.flush()
+    foreign_firm_id = _make_foreign_firm_for_item(db_session)
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{fresh_org_id}'"))
+    with pytest.raises(AppValidationError, match="not found in this organization"):
+        items_service.create_sku(
+            db_session,
+            org_id=fresh_org_id,
+            item_id=item.item_id,
+            code="GUARD-SKU1",
+            firm_id=foreign_firm_id,
+        )
+
+
+def test_create_sku_accepts_valid_firm_id(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
+    """AUTHZ-2 positive: SKU create with valid in-org firm_id succeeds."""
+    item = items_service.create_item(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=None,
+        code="GUARD-PARENT-I2",
+        name="Parent Item for SKU guard positive",
+        item_type=ItemType.FINISHED,
+        primary_uom=UomType.METER,
+    )
+    firm_id = _make_firm_in_org_item(db_session, org_id=fresh_org_id, code="VALID-FI2")
+    sku = items_service.create_sku(
+        db_session,
+        org_id=fresh_org_id,
+        item_id=item.item_id,
+        code="GUARD-SKU2",
+        firm_id=firm_id,
+    )
+    assert sku.firm_id == firm_id
+
+
+def test_create_sku_none_firm_id_skips_guard(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """AUTHZ-2 positive: SKU create with firm_id=None (default) succeeds."""
+    item = items_service.create_item(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=None,
+        code="GUARD-PARENT-I3",
+        name="Parent Item for SKU guard none",
+        item_type=ItemType.FINISHED,
+        primary_uom=UomType.METER,
+    )
+    sku = items_service.create_sku(
+        db_session,
+        org_id=fresh_org_id,
+        item_id=item.item_id,
+        code="GUARD-SKU3",
+        firm_id=None,
+    )
+    assert sku.firm_id is None
