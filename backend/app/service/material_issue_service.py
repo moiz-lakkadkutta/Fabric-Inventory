@@ -55,6 +55,7 @@ from app.models.manufacturing import (
     MoStatus,
 )
 from app.service import audit_service, inventory_service, mo_service
+from app.service.common_guards import assert_firm_in_org
 
 # Ledger codes — must match ``seed_service._SYSTEM_LEDGERS``. Changing
 # either without updating the seed in lockstep is a contract break.
@@ -233,6 +234,12 @@ def issue_materials(
       5. Balanced GL voucher (DR WIP / CR Inventory) posted.
       6. ``audit_log`` row emitted.
     """
+    # ── Phase -1: firm-in-org guard — reject a firm_id not live in this
+    #    org before any line / MO / stock checks run. Required
+    #    unconditionally: OWNER callers (firm_id=None in JWT) bypass the
+    #    router-partial check, so the guard must live here in the service.
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
     # ── Phase 0: surface input shape errors fast.
     if not lines:
         raise AppValidationError("issue_materials requires at least one line.")

@@ -1841,3 +1841,43 @@ def test_list_mos_exposes_planned_end_date(http_client: TestClient) -> None:
     assert resp.status_code == 200
     item = resp.json()["items"][0]
     assert item["planned_end_date"] == "2026-06-15"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Bmo: firm-in-org guard on create_mo (service layer)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_mo_service_guard_rejects_firm_not_in_org(
+    http_client: TestClient,
+) -> None:
+    """Bmo: assert_firm_in_org must fire at the service layer so that
+    a firm_id outside this org is rejected before any BOM / routing
+    cross-checks run.
+
+    The signup token has firm_id=None (OWNER JWT — see auth.py line 302:
+    ``issue_tokens(db, user=user, firm_id=None)``), so the router-partial
+    check (``if current_user.firm_id is not None ...``) is bypassed.
+    This confirms the guard lives in the *service*, not only the router.
+
+    Positive case (valid in-org firm succeeds) is already covered by
+    ``test_create_mo_materializes_material_lines_and_operations``.
+    """
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    # Random UUID — definitely not a firm that belongs to this org.
+    foreign_firm_id = str(uuid.uuid4())
+    resp = http_client.post(
+        "/manufacturing/mo",
+        headers=_auth(me["access_token"]),  # firm_id=None in JWT → router check skips
+        json={
+            "firm_id": foreign_firm_id,
+            "design_id": design_id,
+            "finished_item_id": finished,
+            "bom_id": str(bom["bom_id"]),
+            "routing_id": str(routing["routing_id"]),
+            "qty_to_produce": "10.0000",
+            "planned_start_date": "2026-06-01",
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "not found in this organization" in resp.json()["detail"].lower()

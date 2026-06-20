@@ -94,6 +94,7 @@ from app.models.manufacturing import (
     RoutingEdge,
 )
 from app.service import audit_service, bom_service, items_service, routing_service
+from app.service.common_guards import assert_firm_in_org
 
 # Default MO number series. Per-firm + per-series; future tasks can let
 # the user configure a fiscal-year-stamped series (``MO/2026-27``); the
@@ -308,6 +309,12 @@ def create_mo(
         Empty-routing case: zero operations (caller will surface a
         follow-up task to wire ops directly).
     """
+    # 0. Firm-in-org guard — reject a firm_id not live in this org before
+    #    any BOM / routing / item cross-checks run. Required unconditionally:
+    #    even OWNER callers (firm_id=None in JWT) can pass any firm_id body
+    #    value and the router-partial check is skipped for them.
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
     # 1. Numeric guards first — cheap & fail-fast.
     if qty_to_produce is None or Decimal(qty_to_produce) <= Decimal("0"):
         raise AppValidationError("qty_to_produce must be > 0")
