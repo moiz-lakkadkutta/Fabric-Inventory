@@ -62,7 +62,8 @@ def test_cors_origins_dev_explicit_wins_over_default() -> None:
 @pytest.mark.parametrize("env", ["staging", "prod"])
 def test_cors_origins_non_dev_empty_raises(env: str) -> None:
     os.environ["DATABASE_URL"] = "postgresql+asyncpg://x:y@h:5432/z"
-    os.environ["JWT_SECRET"] = "test-secret-must-be-long-enough-32chars"
+    # Strong, random-looking secret — no placeholder substrings, ≥32 chars.
+    os.environ["JWT_SECRET"] = "aB3kR9mXpQ2wLnT7vYdF5hCeGjZuNsOiA8bWqDlPfHy"
     os.environ["ENVIRONMENT"] = env
     os.environ.pop("CORS_ORIGINS", None)
 
@@ -73,7 +74,8 @@ def test_cors_origins_non_dev_empty_raises(env: str) -> None:
 @pytest.mark.parametrize("env", ["staging", "prod"])
 def test_cors_origins_non_dev_explicit_succeeds(env: str) -> None:
     os.environ["DATABASE_URL"] = "postgresql+asyncpg://x:y@h:5432/z"
-    os.environ["JWT_SECRET"] = "test-secret-must-be-long-enough-32chars"
+    # Strong, random-looking secret — no placeholder substrings, ≥32 chars.
+    os.environ["JWT_SECRET"] = "aB3kR9mXpQ2wLnT7vYdF5hCeGjZuNsOiA8bWqDlPfHy"
     os.environ["ENVIRONMENT"] = env
     os.environ["CORS_ORIGINS"] = "https://app.fabric.example"
 
@@ -129,3 +131,16 @@ def test_jwt_short_test_secret_accepted_in_dev() -> None:
 
     settings = _build_settings()
     assert settings.environment == "dev"  # type: ignore[attr-defined]
+
+
+def test_committed_test_secret_rejected_in_prod() -> None:
+    """The committed repo test secret must be refused in prod (TS-01 hole closed)."""
+    os.environ["DATABASE_URL"] = "postgresql+asyncpg://x:y@h:5432/z"
+    # This is the exact secret committed to the repo and used in conftest.py.
+    # After adding "test-secret" to the denylist it must be rejected in prod.
+    os.environ["JWT_SECRET"] = "test-secret-must-be-long-enough-32chars"
+    os.environ["ENVIRONMENT"] = "prod"
+    os.environ["CORS_ORIGINS"] = "https://prod.fabric.example"
+
+    with pytest.raises(Exception, match="known placeholder"):
+        _build_settings()

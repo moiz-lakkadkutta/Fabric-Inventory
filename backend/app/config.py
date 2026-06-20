@@ -23,6 +23,11 @@ _JWT_PLACEHOLDER_SUBSTRINGS: frozenset[str] = frozenset(
         "change-me-in-prod",
         "changeme",
         "your-secret-here",
+        # The committed repo test secret — long enough to pass the entropy
+        # floor but well-known to anyone who reads the source tree; must be
+        # rejected in non-dev so a staging/prod boot with the test value fails
+        # fast rather than silently accepting it.
+        "test-secret",
     }
 )
 
