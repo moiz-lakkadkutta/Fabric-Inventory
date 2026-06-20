@@ -266,7 +266,7 @@ def _make_firm_in_org_coa(
     firm = Firm(org_id=org_id, code=code, name=f"Firm {code}", has_gst=False)
     session.add(firm)
     session.flush()
-    return firm.firm_id  # type: ignore[return-value]
+    return firm.firm_id
 
 
 def _make_foreign_firm_for_coa(
@@ -289,7 +289,7 @@ def _make_foreign_firm_for_coa(
     firm_b = Firm(org_id=org_b_id, code="F-EXT", name="External Firm", has_gst=False)
     session.add(firm_b)
     session.flush()
-    return firm_b.firm_id  # type: ignore[return-value]
+    return firm_b.firm_id
 
 
 def test_create_ledger_rejects_foreign_firm_id(
