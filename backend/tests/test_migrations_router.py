@@ -834,3 +834,93 @@ def test_approve_uses_actually_posted_amount_for_parked_warn_row(
         f"expected no OB_DIFFERENCE_PARKED row (actually-posted parked = 0), "
         f"but found {parked_rows}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Bfix: firm-in-org guard on upload_and_reconcile (firm-spoof write class)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_upload_rejects_foreign_firm_id(http_client: TestClient, sync_engine: Engine) -> None:
+    """Uploading with a firm_id from a different org must be rejected (422).
+
+    Attack vector: an Owner whose JWT has firm_id=None passes an arbitrary
+    firm_id as a query param. Without the guard, upload_and_reconcile
+    persists a UserMigration row stamped with a foreign firm.
+    With the guard (assert_firm_in_org at the top of upload_and_reconcile),
+    the call is rejected with AppValidationError → 422 BEFORE any row is
+    written.
+    """
+    # Org A — the caller / attacker.
+    a = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    # Org B — whose firm_id will be spoofed.
+    b = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    b_firm_id = b["firm_id"]
+
+    # Org A uploads using Org B's firm_id as a query parameter.
+    resp = http_client.post(
+        f"/admin/migrations?firm_id={b_firm_id}",
+        headers=_auth(a["access_token"]),
+        files={
+            "file": (
+                "vyapar-sample.xlsx",
+                _fixture_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    # Must be rejected before any persistence.
+    assert resp.status_code == 422, resp.text
+
+    # Verify no UserMigration row was created for the foreign firm.
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{a['org_id']}'"))
+        count = s.execute(
+            text("SELECT COUNT(*) FROM user_migration WHERE org_id = :oid AND firm_id = :fid"),
+            {"oid": a["org_id"], "fid": b_firm_id},
+        ).scalar_one()
+    assert count == 0, f"expected no UserMigration for foreign firm, got {count}"
+
+
+def test_upload_with_own_firm_id_explicit_succeeds(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Explicitly passing one's own firm_id on the upload query param succeeds.
+
+    Positive counterpart to test_upload_rejects_foreign_firm_id — the guard
+    must not block legitimate callers who supply their own firm.
+    """
+    body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    own_firm_id = body["firm_id"]
+
+    resp = http_client.post(
+        f"/admin/migrations?firm_id={own_firm_id}",
+        headers=_auth(body["access_token"]),
+        files={
+            "file": (
+                "vyapar-sample.xlsx",
+                _fixture_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    out = resp.json()
+    assert out["firm_id"] == own_firm_id
+    assert out["status"] == "RECONCILED"
