@@ -126,11 +126,19 @@ class StatementRowWithCandidates:
 
 @dataclass(frozen=True)
 class ConfirmedMatch:
-    """One operator-confirmed match — voucher gets stamped reconciled."""
+    """One operator-confirmed match — voucher gets stamped reconciled.
+
+    BANK-4: ``statement_amount`` is required so the service can assert
+    that the voucher amount equals the statement row amount (±₹1
+    tolerance). This guards against accidentally confirming a voucher
+    for a completely different transaction that happened to share the
+    same bank ledger.
+    """
 
     statement_row_idx: int
     voucher_id: uuid.UUID
     statement_ref: str
+    statement_amount: Decimal
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -392,6 +400,24 @@ def confirm_matches(
                 "only RECEIPT and PAYMENT vouchers can be bank-reconciled.",
             )
 
+    # BANK-4: amount guard — the statement amount must match the voucher
+    # amount within ₹1. Guards against operator error where two different
+    # transactions coincidentally share the same bank ledger but differ in
+    # amount. We use |abs| because the bank's sign convention (inflow
+    # positive) differs from the voucher DR/CR perspective; both sides
+    # use positive magnitudes internally.
+    amount_tolerance = Decimal("1")
+    for m in matches:
+        v = by_id[m.voucher_id]
+        voucher_amt = _voucher_amount(v)
+        stmt_amt = abs(Decimal(m.statement_amount))
+        if abs(voucher_amt - stmt_amt) > amount_tolerance:
+            raise AppValidationError(
+                f"Voucher {v.voucher_id} amount {voucher_amt} does not match "
+                f"statement amount {stmt_amt} (tolerance ±₹1). "
+                "Confirm the correct voucher or correct the statement amount."
+            )
+
     now = datetime.datetime.now(tz=datetime.UTC)
     stamped: list[uuid.UUID] = []
     for m in matches:
@@ -492,6 +518,23 @@ def create_unmatched_as_voucher(
         session, org_id=org_id, firm_id=firm_id, bank_account_id=bank_account_id
     )
 
+    # BANK-1 (part 2): verify the bank account's linked ledger belongs to
+    # this org. Defense-in-depth: even if create_bank_account is called via
+    # a code path that pre-dates the BANK-1 ledger-org guard, we refuse to
+    # post GL lines against a foreign-org ledger here.
+    bank_ledger = session.execute(
+        select(Ledger).where(
+            Ledger.ledger_id == account.ledger_id,
+            Ledger.org_id == org_id,
+            Ledger.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if bank_ledger is None:
+        raise AppValidationError(
+            f"Bank sub-ledger {account.ledger_id} is not in this org; "
+            "cannot post GL lines to a foreign ledger."
+        )
+
     # Validate party belongs to this org (defense-in-depth on top of RLS).
     party = session.execute(
         select(Party).where(
@@ -520,6 +563,16 @@ def create_unmatched_as_voucher(
     if counter_ledger.firm_id is not None and counter_ledger.firm_id != firm_id:
         raise AppValidationError(
             f"Ledger {counter_ledger_id} belongs to a different firm.",
+        )
+
+    # BANK-5: reject control accounts as counter_ledger. Control accounts
+    # (AR 1200, AP 2000, Bank 1100) must be posted to via party/bank
+    # sub-ledgers so party-control reconciliation stays intact. Mirroring
+    # the same guard in accounting_service._resolve_journal_ledgers (C01).
+    if counter_ledger.is_control_account is True:
+        raise AppValidationError(
+            f"Ledger {counter_ledger.code} ({counter_ledger.name}) is a control account; "
+            "post via a party / bank sub-ledger, not directly.",
         )
 
     # Allocate voucher number per (org, firm, voucher_type, series).

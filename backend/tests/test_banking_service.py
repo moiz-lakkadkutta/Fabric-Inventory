@@ -2,6 +2,10 @@
 
 Service-layer behavior: create, get, list, update, soft-delete guard,
 PII encryption, cross-org defense-in-depth, and cheque uniqueness.
+
+T6 additions:
+  BANK-1: create_bank_account must reject ledger_id from another org.
+  BANK-3a: create_cheque must reject initial status outside {ISSUED, POST_DATED}.
 """
 
 from __future__ import annotations
@@ -11,14 +15,15 @@ import uuid
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import AppValidationError
-from app.models import Firm
+from app.models import Firm, Organization
 from app.models.banking import BankAccount, ChequeStatus
 from app.models.masters import CoaGroup, Ledger
 from app.service import banking_service
-from app.utils.crypto import decrypt_pii, get_org_dek
+from app.utils.crypto import decrypt_pii, generate_dek, get_org_dek, wrap_dek
 
 # ──────────────────────────────────────────────────────────────────────
 # Fixtures / helpers
@@ -308,3 +313,127 @@ def test_list_cheques_for_account(db_session: OrmSession, fresh_org_id: uuid.UUI
         bank_account_id=account.bank_account_id,
     )
     assert len(cheques) == 3
+
+
+# ──────────────────────────────────────────────────────────────────────
+# T6 guard tests
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_org_with_ledger(
+    db: OrmSession, org_id: uuid.UUID
+) -> uuid.UUID:
+    """Insert a minimal Organisation + CoaGroup + Ledger under `org_id`;
+    return the ledger_id. Uses whatever GUC the caller already set."""
+    db.add(
+        Organization(
+            org_id=org_id,
+            name=f"org-{org_id.hex[:8]}",
+            admin_email=f"admin-{org_id.hex[:6]}@test.local",
+            encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
+        )
+    )
+    db.flush()
+
+    firm = Firm(org_id=org_id, code=f"F-{org_id.hex[:6]}", name="Test", has_gst=False)
+    db.add(firm)
+    db.flush()
+
+    coa = CoaGroup(org_id=org_id, code="ASSET", name="Assets", group_type="ASSET")
+    db.add(coa)
+    db.flush()
+
+    ledger = Ledger(
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        code="BANK001",
+        name="Org Bank",
+        coa_group_id=coa.coa_group_id,
+    )
+    db.add(ledger)
+    db.flush()
+    return ledger.ledger_id
+
+
+def test_bank_account_create_with_foreign_org_ledger_raises(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+) -> None:
+    """BANK-1 (service): ledger_id that belongs to another org must be
+    rejected with AppValidationError before the INSERT reaches the DB."""
+    # Org B is the caller (fresh_org_id).
+    firm_b_id, _ = _make_firm_and_ledger(db_session, fresh_org_id)
+
+    # Build org A in the same transaction by switching the RLS GUC.
+    org_a_id = uuid.uuid4()
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_a_id}'"))
+    ledger_a_id = _make_org_with_ledger(db_session, org_a_id)
+
+    # Restore org B's RLS context.
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{fresh_org_id}'"))
+
+    # Org B tries to attach org A's ledger — must be rejected.
+    with pytest.raises(AppValidationError, match="[Ll]edger"):
+        banking_service.create_bank_account(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=firm_b_id,
+            ledger_id=ledger_a_id,
+        )
+
+
+def test_create_cheque_cleared_initial_status_raises(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """BANK-3a: initial cheque status CLEARED must be rejected."""
+    firm_id, ledger_id = _make_firm_and_ledger(db_session, fresh_org_id)
+    account = _create_account(db_session, org_id=fresh_org_id, firm_id=firm_id, ledger_id=ledger_id)
+
+    with pytest.raises(AppValidationError, match="ISSUED or POST_DATED"):
+        banking_service.create_cheque(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=firm_id,
+            bank_account_id=account.bank_account_id,
+            cheque_number="CHK-CLEARED",
+            cheque_date=datetime.date(2026, 4, 27),
+            status=ChequeStatus.CLEARED,
+        )
+
+
+def test_create_cheque_bounced_initial_status_raises(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """BANK-3a: initial cheque status BOUNCED must be rejected."""
+    firm_id, ledger_id = _make_firm_and_ledger(db_session, fresh_org_id)
+    account = _create_account(db_session, org_id=fresh_org_id, firm_id=firm_id, ledger_id=ledger_id)
+
+    with pytest.raises(AppValidationError, match="ISSUED or POST_DATED"):
+        banking_service.create_cheque(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=firm_id,
+            bank_account_id=account.bank_account_id,
+            cheque_number="CHK-BOUNCED",
+            cheque_date=datetime.date(2026, 4, 27),
+            status=ChequeStatus.BOUNCED,
+        )
+
+
+def test_create_cheque_post_dated_status_allowed(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """BANK-3a: POST_DATED is a valid initial status (whitelisted)."""
+    firm_id, ledger_id = _make_firm_and_ledger(db_session, fresh_org_id)
+    account = _create_account(db_session, org_id=fresh_org_id, firm_id=firm_id, ledger_id=ledger_id)
+
+    cheque = banking_service.create_cheque(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm_id,
+        bank_account_id=account.bank_account_id,
+        cheque_number="CHK-PD",
+        cheque_date=datetime.date(2026, 5, 1),
+        status=ChequeStatus.POST_DATED,
+    )
+    assert cheque.status == ChequeStatus.POST_DATED

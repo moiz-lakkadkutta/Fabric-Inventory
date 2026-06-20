@@ -206,6 +206,10 @@ class ConfirmedMatchRequest(BaseModel):
     statement_row_idx: int = Field(ge=0)
     voucher_id: uuid.UUID
     statement_ref: str = Field(min_length=1, max_length=200)
+    # BANK-4: required so the service can assert voucher ≈ statement amount.
+    # Use |abs| in the service; sign convention varies (inflow positive on
+    # bank statement, positive magnitude on voucher DR line).
+    statement_amount: Decimal
 
 
 class BankReconciliationConfirmRequest(BaseModel):

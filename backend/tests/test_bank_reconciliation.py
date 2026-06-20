@@ -319,6 +319,7 @@ def test_preview_excludes_already_reconciled_voucher(
                     "statement_row_idx": 0,
                     "voucher_id": seed["voucher_id"],
                     "statement_ref": "STMT-001-R0",
+                    "statement_amount": "1000.00",  # BANK-4 required field
                 }
             ],
         },
@@ -365,6 +366,7 @@ def test_confirm_stamps_bank_reconciled_at(http_client: TestClient, sync_engine:
                     "statement_row_idx": 0,
                     "voucher_id": seed["voucher_id"],
                     "statement_ref": "UTR-12345678",
+                    "statement_amount": "1000.00",  # BANK-4 required field
                 }
             ],
         },
@@ -400,6 +402,7 @@ def test_confirm_replay_does_not_double_stamp(http_client: TestClient, sync_engi
                     "statement_row_idx": 0,
                     "voucher_id": seed["voucher_id"],
                     "statement_ref": "FIRST-REF",
+                    "statement_amount": "1000.00",  # BANK-4 required field
                 }
             ],
         },
@@ -430,6 +433,7 @@ def test_confirm_replay_does_not_double_stamp(http_client: TestClient, sync_engi
                     "statement_row_idx": 0,
                     "voucher_id": seed["voucher_id"],
                     "statement_ref": "SECOND-REF",
+                    "statement_amount": "1000.00",  # BANK-4 required field
                 }
             ],
         },
@@ -477,6 +481,7 @@ def test_confirm_preserves_voucher_gl_totals(http_client: TestClient, sync_engin
                     "statement_row_idx": 0,
                     "voucher_id": seed["voucher_id"],
                     "statement_ref": "X",
+                    "statement_amount": "1000.00",  # BANK-4 required field
                 }
             ],
         },
@@ -506,6 +511,18 @@ def test_unmatched_as_voucher_creates_receipt(http_client: TestClient, sync_engi
     me = _signup_owner(http_client)
     seed = _seed_bank_with_receipt(http_client, sync_engine, me)
 
+    # BANK-5: use a non-control counter ledger (Sales Revenue, code 4000).
+    # AR (1200) is a control account and is now rejected by the service.
+    with sync_engine.connect() as conn:
+        conn.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        non_ctrl_ledger_id = conn.execute(
+            text(
+                "SELECT ledger_id FROM ledger "
+                "WHERE org_id = :oid AND code = '4000' AND firm_id IS NULL LIMIT 1"
+            ),
+            {"oid": me["org_id"]},
+        ).scalar_one()
+
     resp = http_client.post(
         "/bank-reconciliation/unmatched-as-voucher",
         headers=_auth(me["access_token"]),
@@ -514,7 +531,7 @@ def test_unmatched_as_voucher_creates_receipt(http_client: TestClient, sync_engi
             "bank_account_id": seed["bank_account_id"],
             "voucher_type": "RECEIPT",
             "party_id": seed["party_id"],
-            "counter_ledger_id": seed["ar_ledger_id"],
+            "counter_ledger_id": str(non_ctrl_ledger_id),
             "statement_date": "2026-05-20",
             "statement_description": "Unexpected NEFT inflow",
             "statement_ref": "NEFT-77777",
@@ -552,17 +569,28 @@ def test_unmatched_as_voucher_creates_receipt(http_client: TestClient, sync_engi
             {"v": new_voucher_id},
         ).all()
         assert len(lines) == 2
-        # DR bank / CR AR
+        # DR bank / CR non-control counter ledger
         assert lines[0].line_type == "DR"
         assert str(lines[0].ledger_id) == seed["ledger_id"]
         assert lines[1].line_type == "CR"
-        assert str(lines[1].ledger_id) == seed["ar_ledger_id"]
+        assert str(lines[1].ledger_id) == str(non_ctrl_ledger_id)
 
 
 def test_unmatched_as_voucher_balanced_dr_cr(http_client: TestClient, sync_engine: Engine) -> None:
     """DR == CR for every B3-created voucher (trial balance invariant)."""
     me = _signup_owner(http_client)
     seed = _seed_bank_with_receipt(http_client, sync_engine, me)
+
+    # BANK-5: use a non-control counter ledger (Sales Revenue, code 4000).
+    with sync_engine.connect() as conn:
+        conn.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        non_ctrl_ledger_id = conn.execute(
+            text(
+                "SELECT ledger_id FROM ledger "
+                "WHERE org_id = :oid AND code = '4000' AND firm_id IS NULL LIMIT 1"
+            ),
+            {"oid": me["org_id"]},
+        ).scalar_one()
 
     resp = http_client.post(
         "/bank-reconciliation/unmatched-as-voucher",
@@ -572,7 +600,7 @@ def test_unmatched_as_voucher_balanced_dr_cr(http_client: TestClient, sync_engin
             "bank_account_id": seed["bank_account_id"],
             "voucher_type": "PAYMENT",
             "party_id": seed["party_id"],
-            "counter_ledger_id": seed["ar_ledger_id"],
+            "counter_ledger_id": str(non_ctrl_ledger_id),
             "statement_date": "2026-05-20",
             "statement_description": "Refund",
             "statement_ref": "REF-001",
@@ -622,6 +650,7 @@ def test_cross_org_cannot_reconcile_other_orgs_voucher(
                     "statement_row_idx": 0,
                     "voucher_id": seed_a["voucher_id"],
                     "statement_ref": "X",
+                    "statement_amount": "1000.00",  # BANK-4 required field
                 }
             ],
         },
@@ -696,6 +725,7 @@ def test_salesperson_cannot_confirm_reconciliation(
                     "statement_row_idx": 0,
                     "voucher_id": seed["voucher_id"],
                     "statement_ref": "X",
+                    "statement_amount": "1000.00",  # BANK-4 required field
                 }
             ],
         },
@@ -724,7 +754,8 @@ def test_confirm_missing_statement_ref_returns_422(
                 {
                     "statement_row_idx": 0,
                     "voucher_id": seed["voucher_id"],
-                    # statement_ref missing entirely
+                    # statement_ref missing entirely (triggers 422)
+                    "statement_amount": "1000.00",  # BANK-4 required field (present)
                 }
             ],
         },
@@ -786,6 +817,7 @@ def test_cross_firm_body_returns_403(http_client: TestClient, sync_engine: Engin
                     "statement_row_idx": 0,
                     "voucher_id": seed["voucher_id"],
                     "statement_ref": "X",
+                    "statement_amount": "1000.00",  # BANK-4 required field
                 }
             ],
         },
@@ -839,3 +871,106 @@ def test_preview_date_skew_scoring_matrix(
     cands = resp.json()["statement_rows"][0]["candidates"]
     assert len(cands) == 1
     assert cands[0]["score"] == expected_score
+
+
+# ──────────────────────────────────────────────────────────────────────
+# T6 guard tests
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_bank_account_create_cross_org_ledger_returns_422(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """BANK-1 (router): ledger_id from another org must return 422.
+
+    Org A's ledger is fetched via admin SQL, then org B attempts to
+    link it in a bank-account create — the service should reject it.
+    """
+    me_a = _signup_owner(http_client)
+    me_b = _signup_owner(http_client)
+
+    # Fetch a ledger that belongs to org A (Cash on Hand, code 1000).
+    with sync_engine.connect() as conn:
+        conn.execute(text(f"SET LOCAL app.current_org_id = '{me_a['org_id']}'"))
+        ledger_id_from_a = conn.execute(
+            text(
+                "SELECT ledger_id FROM ledger "
+                "WHERE org_id = :oid AND code = '1000' LIMIT 1"
+            ),
+            {"oid": me_a["org_id"]},
+        ).scalar_one()
+
+    # Org B uses org A's ledger_id in their bank-account create.
+    resp = http_client.post(
+        "/bank-accounts",
+        headers=_auth(me_b["access_token"]),
+        json={
+            "firm_id": me_b["firm_id"],
+            "ledger_id": str(ledger_id_from_a),
+            "bank_name": "Cross-org attack",
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_confirm_amount_mismatch_returns_422(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """BANK-4: confirm with statement_amount that differs from voucher
+    by more than ₹1 must return 422.
+
+    Voucher is ₹1 000; statement claims ₹100 000 — a clear mismatch.
+    """
+    me = _signup_owner(http_client)
+    seed = _seed_bank_with_receipt(http_client, sync_engine, me, amount="1000.00")
+
+    resp = http_client.post(
+        "/bank-reconciliation/confirm",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "bank_account_id": seed["bank_account_id"],
+            "matches": [
+                {
+                    "statement_row_idx": 0,
+                    "voucher_id": seed["voucher_id"],
+                    "statement_ref": "UTR-MISMATCH",
+                    "statement_amount": "100000.00",  # ← ₹99 000 off the ₹1 000 voucher
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_unmatched_as_voucher_control_account_counter_ledger_returns_422(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """BANK-5: counter_ledger that is a control account must be rejected
+    with 422 — mirrors the _resolve_journal_ledgers guard in accounting_service.
+
+    AR ledger (code 1200) is seeded with is_control_account=True during signup.
+    """
+    me = _signup_owner(http_client)
+    seed = _seed_bank_with_receipt(http_client, sync_engine, me)
+
+    # seed["ar_ledger_id"] is the 1200 Sundry Debtors ledger which is a
+    # control account (is_control_account=True in seed_service._SYSTEM_LEDGERS).
+    resp = http_client.post(
+        "/bank-reconciliation/unmatched-as-voucher",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "bank_account_id": seed["bank_account_id"],
+            "voucher_type": "RECEIPT",
+            "party_id": seed["party_id"],
+            "counter_ledger_id": seed["ar_ledger_id"],  # 1200 = control account
+            "statement_date": "2026-05-20",
+            "statement_description": "Bank interest credit",
+            "statement_ref": "INT-001",
+            "amount": "500.00",
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json().get("detail", "")
+    assert "control account" in detail.lower(), detail
