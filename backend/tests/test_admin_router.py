@@ -22,6 +22,7 @@ is unreachable and fail loudly in CI.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,7 +41,7 @@ def _unique_org_name() -> str:
     return f"Org-{uuid.uuid4().hex[:8]}"
 
 
-def _signup(client: TestClient, *, email: str, password: str, org_name: str) -> dict:
+def _signup(client: TestClient, *, email: str, password: str, org_name: str) -> dict[str, Any]:
     resp = client.post(
         "/auth/signup",
         json={
@@ -52,7 +53,8 @@ def _signup(client: TestClient, *, email: str, password: str, org_name: str) -> 
         },
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()
+    body: dict[str, Any] = resp.json()
+    return body
 
 
 def _role_id_by_code(engine: Engine, *, org_id: str, role_code: str) -> str:
@@ -68,7 +70,7 @@ def _role_id_by_code(engine: Engine, *, org_id: str, role_code: str) -> str:
         return str(rid)
 
 
-def _auth(token: str) -> dict:
+def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -176,7 +178,7 @@ def test_invite_link_not_printed_to_stdout_in_non_dev(
     http_client: TestClient,
     sync_engine: Engine,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """IDM-3: in staging/prod the invite token must NOT be printed to stdout
     (which would end up in server logs, accessible to anyone with log access).

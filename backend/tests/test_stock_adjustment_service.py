@@ -580,7 +580,7 @@ def test_increase_null_unit_cost_inherits_current_position_cost(
     assert Decimal(pos.on_hand_qty) == Decimal("15")
     # Weighted average when all units at ₹50: (10*50 + 5*50) / 15 = 50.
     # With the bug: (10*50 + 5*0) / 15 = 33.33.
-    assert Decimal(pos.current_cost) == Decimal("50"), (
+    assert Decimal(pos.current_cost or 0) == Decimal("50"), (
         f"Expected current_cost=50 (inherited), got {pos.current_cost} "
         f"— null unit_cost still defaults to 0 (dilution bug)"
     )

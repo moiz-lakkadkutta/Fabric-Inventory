@@ -33,7 +33,8 @@ def _signup_owner(client: TestClient) -> dict[str, str]:
         },
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()
+    body: dict[str, str] = resp.json()
+    return body
 
 
 def _auth(token: str) -> dict[str, str]:
@@ -76,7 +77,8 @@ def _create_token_with_perms(client: TestClient, owner_token: str, permissions: 
         json={"email": invitee_email, "password": "strong-pass-2", "org_name": org_name},
     )
     assert login.status_code == 200, login.text
-    return login.json()["access_token"]
+    token: str = login.json()["access_token"]
+    return token
 
 
 def _create_restricted_token(client: TestClient, owner_token: str) -> str:
@@ -121,7 +123,8 @@ def _create_restricted_token(client: TestClient, owner_token: str) -> str:
         json={"email": invitee_email, "password": "strong-pass-2", "org_name": org_name},
     )
     assert login.status_code == 200, login.text
-    return login.json()["access_token"]
+    restricted_token: str = login.json()["access_token"]
+    return restricted_token
 
 
 def _create_party_with_gstin(client: TestClient, owner_token: str) -> dict[str, str]:
@@ -139,7 +142,8 @@ def _create_party_with_gstin(client: TestClient, owner_token: str) -> dict[str, 
         },
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()
+    party: dict[str, str] = resp.json()
+    return party
 
 
 # ──────────────────────────────────────────────────────────────────────
