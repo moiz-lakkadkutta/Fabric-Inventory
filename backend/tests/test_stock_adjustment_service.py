@@ -454,3 +454,65 @@ def test_get_adjustment_returns_none_for_wrong_org(
         db_session, org_id=uuid.uuid4(), adjustment_id=adj.stock_adjustment_id
     )
     assert result is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# INV-P9: null unit_cost on INCREASE inherits existing position cost
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_increase_null_unit_cost_inherits_current_position_cost(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    setup: tuple[Firm, Item, Location],
+) -> None:
+    """INCREASE with unit_cost=None must inherit current_cost from the
+    existing position, NOT default to 0.
+
+    Bug: create_adjustment used effective_unit_cost=0 when unit_cost=None,
+    causing weighted-average cost dilution. Example: 10 units @ ₹50 in
+    stock, INCREASE by 5 with no declared cost → should stay at ₹50,
+    not drop to (10*50 + 5*0) / 15 = ₹33.33.
+    """
+    firm, item, location = setup
+    # Seed 10 units at ₹50 each → current_cost = 50
+    inventory_service.add_stock(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("10"),
+        unit_cost=Decimal("50"),
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+    )
+
+    # INCREASE 5 units with no declared cost → should use existing cost (50).
+    stock_service.create_adjustment(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("5"),
+        direction="INCREASE",
+        unit_cost=None,  # null → must inherit ₹50, not default to ₹0
+        reason="Found stock — cost unknown, inherit existing",
+    )
+
+    pos = inventory_service.get_position(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+    )
+    assert pos is not None
+    assert Decimal(pos.on_hand_qty) == Decimal("15")
+    # Weighted average when all units at ₹50: (10*50 + 5*50) / 15 = 50.
+    # With the bug: (10*50 + 5*0) / 15 = 33.33.
+    assert Decimal(pos.current_cost) == Decimal("50"), (
+        f"Expected current_cost=50 (inherited), got {pos.current_cost} "
+        f"— null unit_cost still defaults to 0 (dilution bug)"
+    )

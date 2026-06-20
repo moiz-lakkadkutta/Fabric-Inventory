@@ -38,7 +38,6 @@ from app.models import (
     CoaGroup,
     Item,
     Ledger,
-    Lot,
     Party,
     PaymentAllocation,
     SalesInvoice,
@@ -561,10 +560,13 @@ def compute_stock_summary(
     # item_id, not sku_id, so we report at item granularity for v1 and
     # leave SKU expansion as a Wave-4 follow-up.
     sum_qty = func.coalesce(func.sum(StockPosition.on_hand_qty), 0)
-    # Weight: sum(qty * cost) where cost is from lot.primary_cost; if no lot
-    # link or NULL cost, treat as 0 (does NOT contribute to valuation).
-    lot_cost = func.coalesce(Lot.primary_cost, 0)
-    weighted_value = func.coalesce(func.sum(StockPosition.on_hand_qty * lot_cost), 0)
+    # INV-P4 / INV-1 fix: value from StockPosition.current_cost, not Lot.primary_cost.
+    # Lot.primary_cost is NULL for stock inserted via add_stock (adjustments, GRN
+    # without an explicit lot cost, etc.) → report showed ₹0 for all lot-less
+    # positions.  StockPosition.current_cost is the running weighted-average set
+    # by every add_stock call and is always in sync with the ledger.
+    pos_cost = func.coalesce(StockPosition.current_cost, 0)
+    weighted_value = func.coalesce(func.sum(StockPosition.on_hand_qty * pos_cost), 0)
 
     stmt = (
         select(
@@ -580,7 +582,6 @@ def compute_stock_summary(
             StockPosition,
             (StockPosition.item_id == Item.item_id) & (StockPosition.firm_id == firm_id),
         )
-        .outerjoin(Lot, Lot.lot_id == StockPosition.lot_id)
         .where(
             Item.org_id == org_id,
             Item.deleted_at.is_(None),
@@ -1287,18 +1288,35 @@ def _tax_type_for_invoice(*, raw_tax_type: str | None) -> TaxType:
         return TaxType.NIL
 
 
+def _mask_gstin(gstin: str) -> str:
+    """Mask a plaintext GSTIN to its last 3 characters.
+
+    Example: "27ABCDE1234F1Z5" → "************1Z5"
+    Used when the caller lacks ``masters.party.read`` (RPT-02).
+    """
+    if len(gstin) <= 3:
+        return gstin  # too short to mask meaningfully
+    return "*" * (len(gstin) - 3) + gstin[-3:]
+
+
 def compute_gstr1(
     session: Session,
     *,
     org_id: uuid.UUID,
     firm_id: uuid.UUID,
     period: str,
+    can_view_pii: bool = True,
 ) -> _Gstr1Result:
     """GSTR-1 buckets for a period (``YYYY-MM``).
 
     Returns five buckets (b2b / b2cl / b2cs / export / hsn). All money is
     Decimal end-to-end. Reuses `gst_service.split_tax` for the
     CGST/SGST/IGST split per invoice.
+
+    ``can_view_pii``: when False the party GSTIN in B2B / B2CL / export
+    rows is masked to the last-3 characters (RPT-02). Pass True (default)
+    only when the caller holds ``masters.party.read``; the router checks
+    this and passes the flag explicitly.
     """
     from app.models import Firm  # local import to avoid top-of-module cycle.
 
@@ -1413,11 +1431,15 @@ def compute_gstr1(
         # plaintext form. GSTR-1 filings + B2B aggregation both depend
         # on the real GSTIN; hex(ciphertext) was breaking both. The DEK
         # was resolved once above for the whole period.
-        gstin_str = (
-            crypto.decrypt_pii(r.party_gstin, dek=dek, org_id=org_id)
-            if r.party_gstin is not None
-            else None
-        )
+        # RPT-02: mask to last-3 chars when caller lacks masters.party.read.
+        if r.party_gstin is not None:
+            plaintext_gstin = crypto.decrypt_pii(r.party_gstin, dek=dek, org_id=org_id)
+            if plaintext_gstin is not None:
+                gstin_str = plaintext_gstin if can_view_pii else _mask_gstin(plaintext_gstin)
+            else:
+                gstin_str = None
+        else:
+            gstin_str = None
         derived_rate = (
             (gst_total / taxable_value * Decimal("100")).quantize(Decimal("0.01"))
             if taxable_value > 0

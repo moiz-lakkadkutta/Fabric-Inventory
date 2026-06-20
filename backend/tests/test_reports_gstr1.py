@@ -700,3 +700,109 @@ def test_gstr1_csv_b2b_contains_party_gstin_and_number(
     assert party_gstin in text_body, (
         f"Plaintext GSTIN {party_gstin!r} missing from CSV body — column-key mismatch is back."
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# RPT-02: GSTR-1 GSTIN masking without masters.party.read
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_gstr1_gstin_masked_when_can_view_pii_false(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """compute_gstr1(can_view_pii=False) must mask GSTIN to last-3 chars.
+
+    Without masters.party.read the caller should see "***1Z5", not the
+    full "27ABCDE1234F1Z5" — prevents PII leakage to lower-privilege
+    accounting-report-view-only callers.
+    """
+    from app.service import reports_service
+    from sqlalchemy.orm import Session as OrmSession
+
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    firm_id = uuid.UUID(me["firm_id"])
+    party_gstin = "27ABCDE1234F1Z5"
+    party_id = _seed_b2b_party_with_real_gstin(
+        sync_engine, org_id=org_id, gstin=party_gstin, state_code="MH"
+    )
+    item_id = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    _create_and_finalize_invoice(
+        http_client,
+        me,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date="2026-04-15",
+        qty="2",
+        price="500",
+        gst_rate="5",
+    )
+
+    # Invoke service directly with can_view_pii=False (lower-privilege caller).
+    sync_url = sync_engine.url
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        result = reports_service.compute_gstr1(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            period="2026-04",
+            can_view_pii=False,
+        )
+
+    assert len(result.b2b) == 1
+    masked_gstin = result.b2b[0].gstin
+    # Must be masked: last-3 chars visible, rest replaced with "*"
+    assert masked_gstin is not None
+    assert masked_gstin.endswith(party_gstin[-3:]), (
+        f"Expected masked GSTIN ending with {party_gstin[-3:]!r}, got {masked_gstin!r}"
+    )
+    assert masked_gstin != party_gstin, (
+        f"GSTIN was not masked: got full plaintext {masked_gstin!r}"
+    )
+    assert "*" in masked_gstin, (
+        f"Expected '*' in masked GSTIN, got {masked_gstin!r}"
+    )
+
+
+def test_gstr1_gstin_full_when_can_view_pii_true(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """compute_gstr1(can_view_pii=True) must return the full plaintext GSTIN."""
+    from app.service import reports_service
+    from sqlalchemy.orm import Session as OrmSession
+
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    firm_id = uuid.UUID(me["firm_id"])
+    party_gstin = "27ABCDE1234F1Z5"
+    party_id = _seed_b2b_party_with_real_gstin(
+        sync_engine, org_id=org_id, gstin=party_gstin, state_code="MH"
+    )
+    item_id = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    _create_and_finalize_invoice(
+        http_client,
+        me,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date="2026-04-15",
+        qty="2",
+        price="500",
+        gst_rate="5",
+    )
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        result = reports_service.compute_gstr1(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            period="2026-04",
+            can_view_pii=True,
+        )
+
+    assert len(result.b2b) == 1
+    assert result.b2b[0].gstin == party_gstin, (
+        f"Expected full GSTIN {party_gstin!r} with can_view_pii=True, "
+        f"got {result.b2b[0].gstin!r}"
+    )
