@@ -748,9 +748,7 @@ def gl_setup(db_session: OrmSession) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, u
     return _seed_adj_gl_org(db_session)
 
 
-def _fetch_sadj_vouchers(
-    session: OrmSession, *, org_id: uuid.UUID
-) -> list[Voucher]:
+def _fetch_sadj_vouchers(session: OrmSession, *, org_id: uuid.UUID) -> list[Voucher]:
     return list(
         session.execute(
             select(Voucher).where(
@@ -763,9 +761,7 @@ def _fetch_sadj_vouchers(
 
 def _fetch_voucher_lines(session: OrmSession, *, voucher_id: uuid.UUID) -> list[VoucherLine]:
     return list(
-        session.execute(
-            select(VoucherLine).where(VoucherLine.voucher_id == voucher_id)
-        ).scalars()
+        session.execute(select(VoucherLine).where(VoucherLine.voucher_id == voucher_id)).scalars()
     )
 
 
@@ -795,9 +791,7 @@ def test_increase_with_cost_posts_balanced_sadj_voucher(
     vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
     assert len(vouchers) == 1, f"Expected 1 STOCK_ADJUSTMENT voucher, got {len(vouchers)}"
     v = vouchers[0]
-    assert Decimal(v.total_debit) == Decimal("5000.00"), (
-        f"total_debit={v.total_debit}, want 5000"
-    )
+    assert Decimal(v.total_debit) == Decimal("5000.00"), f"total_debit={v.total_debit}, want 5000"
     assert Decimal(v.total_credit) == Decimal("5000.00"), (
         f"total_credit={v.total_credit}, want 5000"
     )
@@ -822,9 +816,7 @@ def test_increase_with_cost_posts_balanced_sadj_voucher(
         select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "5350")
     ).scalar_one()
 
-    assert dr_lines[0].ledger_id == inv_ledger.ledger_id, (
-        "INCREASE: DR must be Inventory (1300)"
-    )
+    assert dr_lines[0].ledger_id == inv_ledger.ledger_id, "INCREASE: DR must be Inventory (1300)"
     assert cr_lines[0].ledger_id == sadj_ledger.ledger_id, (
         "INCREASE: CR must be Inventory Adjustment (5350)"
     )
@@ -864,9 +856,7 @@ def test_decrease_with_cost_posts_reversed_sadj_voucher(
     vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
     assert len(vouchers) == 1
     v = vouchers[0]
-    assert Decimal(v.total_debit) == Decimal("600.00"), (
-        f"total_debit={v.total_debit}, want 600"
-    )
+    assert Decimal(v.total_debit) == Decimal("600.00"), f"total_debit={v.total_debit}, want 600"
     assert Decimal(v.total_credit) == Decimal("600.00")
 
     lines = _fetch_voucher_lines(db_session, voucher_id=v.voucher_id)
@@ -883,9 +873,7 @@ def test_decrease_with_cost_posts_reversed_sadj_voucher(
     assert dr_lines[0].ledger_id == sadj_ledger.ledger_id, (
         "DECREASE: DR must be Inventory Adjustment (5350)"
     )
-    assert cr_lines[0].ledger_id == inv_ledger.ledger_id, (
-        "DECREASE: CR must be Inventory (1300)"
-    )
+    assert cr_lines[0].ledger_id == inv_ledger.ledger_id, "DECREASE: CR must be Inventory (1300)"
     assert Decimal(dr_lines[0].amount) == Decimal("600.00")
     assert Decimal(cr_lines[0].amount) == Decimal("600.00")
 
@@ -960,6 +948,146 @@ def test_count_reset_no_op_skips_gl_voucher(
     assert len(vouchers) == 0, (
         f"Expected 0 STOCK_ADJUSTMENT vouchers for no-op COUNT_RESET, got {len(vouchers)}"
     )
+
+
+def test_count_reset_increase_posts_balanced_sadj_voucher(
+    db_session: OrmSession,
+    gl_setup: tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID],
+) -> None:
+    """COUNT_RESET to a HIGHER qty posts DR 1300 / CR 5350 for the signed delta value.
+
+    Setup: 10 units @ ₹130 (current_cost=130, value=1300).
+    Reset to 20 → delta=+10 → value_delta=10*130=1300.
+    Expected: one STOCK_ADJUSTMENT voucher, DR 1300=1300, CR 5350=1300, balanced.
+    """
+    org_id, firm_id, item_id, location_id = gl_setup
+
+    inventory_service.add_stock(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("10"),
+        unit_cost=Decimal("130"),
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+    )
+
+    _adj, _ledger = stock_service.create_adjustment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("20"),  # target; delta = +10
+        direction="COUNT_RESET",
+        reason="Physical count — more than expected",
+    )
+
+    vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
+    assert len(vouchers) == 1, f"Expected 1 SADJ voucher, got {len(vouchers)}"
+    v = vouchers[0]
+
+    # value_delta = 10 units * ₹130 = ₹1300
+    assert Decimal(v.total_debit) == Decimal("1300.00"), (
+        f"total_debit={v.total_debit}, want 1300.00"
+    )
+    assert Decimal(v.total_credit) == Decimal("1300.00"), (
+        f"total_credit={v.total_credit}, want 1300.00"
+    )
+
+    lines = _fetch_voucher_lines(db_session, voucher_id=v.voucher_id)
+    dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
+    cr_lines = [ln for ln in lines if ln.line_type == JournalLineType.CR]
+    assert len(dr_lines) == 1
+    assert len(cr_lines) == 1
+
+    inv_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "1300")
+    ).scalar_one()
+    sadj_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "5350")
+    ).scalar_one()
+
+    # COUNT_RESET↑ is a write-in: DR Inventory (1300), CR Inv Adj (5350)
+    assert dr_lines[0].ledger_id == inv_ledger.ledger_id, (
+        "COUNT_RESET↑: DR must be Inventory (1300)"
+    )
+    assert cr_lines[0].ledger_id == sadj_ledger.ledger_id, (
+        "COUNT_RESET↑: CR must be Inventory Adjustment (5350)"
+    )
+    assert Decimal(dr_lines[0].amount) == Decimal("1300.00")
+    assert Decimal(cr_lines[0].amount) == Decimal("1300.00")
+
+
+def test_count_reset_decrease_posts_balanced_sadj_voucher(
+    db_session: OrmSession,
+    gl_setup: tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID],
+) -> None:
+    """COUNT_RESET to a LOWER qty posts DR 5350 / CR 1300 for the signed delta value.
+
+    Setup: 20 units @ ₹30 (current_cost=30, value=600).
+    Reset to 10 → delta=-10 → value_delta=10*30=300.
+    Expected: one STOCK_ADJUSTMENT voucher, DR 5350=300, CR 1300=300, balanced.
+    """
+    org_id, firm_id, item_id, location_id = gl_setup
+
+    inventory_service.add_stock(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("20"),
+        unit_cost=Decimal("30"),
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+    )
+
+    _adj, _ledger = stock_service.create_adjustment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("10"),  # target; delta = -10
+        direction="COUNT_RESET",
+        reason="Physical count — fewer than expected",
+    )
+
+    vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
+    assert len(vouchers) == 1, f"Expected 1 SADJ voucher, got {len(vouchers)}"
+    v = vouchers[0]
+
+    # value_delta = 10 units * ₹30 = ₹300
+    assert Decimal(v.total_debit) == Decimal("300.00"), f"total_debit={v.total_debit}, want 300.00"
+    assert Decimal(v.total_credit) == Decimal("300.00"), (
+        f"total_credit={v.total_credit}, want 300.00"
+    )
+
+    lines = _fetch_voucher_lines(db_session, voucher_id=v.voucher_id)
+    dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
+    cr_lines = [ln for ln in lines if ln.line_type == JournalLineType.CR]
+    assert len(dr_lines) == 1
+    assert len(cr_lines) == 1
+
+    inv_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "1300")
+    ).scalar_one()
+    sadj_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "5350")
+    ).scalar_one()
+
+    # COUNT_RESET↓ is a write-down: DR Inv Adj (5350), CR Inventory (1300)
+    assert dr_lines[0].ledger_id == sadj_ledger.ledger_id, (
+        "COUNT_RESET↓: DR must be Inventory Adjustment (5350)"
+    )
+    assert cr_lines[0].ledger_id == inv_ledger.ledger_id, (
+        "COUNT_RESET↓: CR must be Inventory (1300)"
+    )
+    assert Decimal(dr_lines[0].amount) == Decimal("300.00")
+    assert Decimal(cr_lines[0].amount) == Decimal("300.00")
 
 
 def test_trial_balance_stays_balanced_after_stock_adjustment(

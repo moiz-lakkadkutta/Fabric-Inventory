@@ -24,7 +24,7 @@ import uuid
 from decimal import Decimal
 from typing import Literal
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -93,6 +93,31 @@ def _resolve_system_ledger(session: Session, *, org_id: uuid.UUID, code: str) ->
     return ledger
 
 
+def _advisory_lock_sadj_partition(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    series: str,
+) -> None:
+    """Transaction-scoped Postgres advisory lock keyed on
+    ``(org_id, firm_id, series)`` — matches the DB unique's column set
+    so concurrent first-creators serialise even with no rows yet.
+    Distinct namespace prefix (``sadj_number:``) to avoid collision with
+    sibling allocators (``mi_number:``, ``bom:``, ``routing:``,
+    ``mo_number:``).
+
+    Mirrors ``material_issue_service._advisory_lock_mi_partition`` exactly:
+    same ``pg_advisory_xact_lock(hashtext(:k)::bigint)`` call, same
+    lock-key derivation, released automatically at transaction end.
+    """
+    key = f"sadj_number:{org_id}:{firm_id}:{series}"
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:k)::bigint)"),
+        {"k": key},
+    )
+
+
 def _allocate_stock_adj_voucher_number(
     session: Session,
     *,
@@ -101,11 +126,15 @@ def _allocate_stock_adj_voucher_number(
 ) -> str:
     """Allocate the next SADJ voucher number for (org, firm).
 
-    Mirrors the shape of material_issue_service._allocate_voucher_number.
-    Uses max+1 over existing rows — correct because the caller already
-    holds the DB transaction (psycopg2 row-level isolation prevents
-    concurrent inserts from producing the same number within this txn).
+    Serialises concurrent allocators via a transaction-scoped Postgres
+    advisory lock on ``(org_id, firm_id, series)`` — acquired by
+    ``_advisory_lock_sadj_partition`` before the ``max()+1`` read so
+    two concurrent transactions cannot both read the same max and produce
+    the same number. The lock is automatically released at transaction end.
+    Falls back to the DB unique-constraint error (caught by the caller)
+    as a second safety net.
     """
+    _advisory_lock_sadj_partition(session, org_id=org_id, firm_id=firm_id, series=_SADJ_SERIES)
     last = session.execute(
         select(func.coalesce(func.max(Voucher.number), "0")).where(
             Voucher.org_id == org_id,
