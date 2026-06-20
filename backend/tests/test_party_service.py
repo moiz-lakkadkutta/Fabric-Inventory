@@ -553,3 +553,99 @@ def test_legacy_utf8_pii_still_readable_after_cutover(
         )
         == "27ABCDE1234F1Z5"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# AUTHZ-2/SEC-1: firm-in-org guard on create_party
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_firm_in_org_party(
+    session: OrmSession,
+    *,
+    org_id: uuid.UUID,
+    code: str = "FIRM-A",
+) -> uuid.UUID:
+    """Create a Firm in *org_id* (GUC must already be set to org_id) and return firm_id."""
+    from app.models import Firm
+
+    firm = Firm(org_id=org_id, code=code, name=f"Firm {code}", has_gst=False)
+    session.add(firm)
+    session.flush()
+    return firm.firm_id  # type: ignore[return-value]
+
+
+def _make_foreign_firm_for_party(
+    session: OrmSession,
+) -> uuid.UUID:
+    """Create a second org + firm; return that firm's firm_id.
+
+    GUC is left pointing at the foreign org after this call — the test
+    must restore it to the caller's org_id before calling the service.
+    """
+    from app.models import Firm, Organization
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_b_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_b_id}'"))
+    org_b = Organization(
+        org_id=org_b_id,
+        name=f"foreign-party-org-{uuid.uuid4().hex[:8]}",
+        admin_email=f"fp-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_b_id),
+    )
+    session.add(org_b)
+    session.flush()
+    firm_b = Firm(org_id=org_b_id, code="F-EXT", name="External Firm", has_gst=False)
+    session.add(firm_b)
+    session.flush()
+    return firm_b.firm_id  # type: ignore[return-value]
+
+
+def test_create_party_rejects_foreign_firm_id(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """AUTHZ-2: firm_id from a foreign org raises AppValidationError."""
+    foreign_firm_id = _make_foreign_firm_for_party(db_session)
+    # Restore GUC to caller's org before invoking the service.
+    db_session.execute(text(f"SET LOCAL app.current_org_id = '{fresh_org_id}'"))
+    with pytest.raises(AppValidationError, match="not found in this organization"):
+        masters_service.create_party(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=foreign_firm_id,
+            code="GUARD-P1",
+            name="Foreign Firm Party",
+            is_supplier=True,
+        )
+
+
+def test_create_party_accepts_valid_firm_id(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """AUTHZ-2 positive: firm_id belonging to caller's org → create succeeds."""
+    firm_id = _make_firm_in_org_party(db_session, org_id=fresh_org_id, code="VALID-FA")
+    party = masters_service.create_party(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm_id,
+        code="GUARD-P2",
+        name="Valid Firm Party",
+        is_supplier=True,
+    )
+    assert party.firm_id == firm_id
+
+
+def test_create_party_none_firm_id_skips_guard(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """AUTHZ-2 positive: firm_id=None (org-level) → guard not invoked, create succeeds."""
+    party = masters_service.create_party(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=None,
+        code="GUARD-P3",
+        name="Org Level Party",
+        is_supplier=True,
+    )
+    assert party.firm_id is None
