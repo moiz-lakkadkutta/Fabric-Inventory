@@ -810,7 +810,7 @@ def test_create_location_rejects_foreign_firm(db_session: OrmSession) -> None:
     org_a, _ = _make_org_and_firm(db_session, org_suffix="-a", firm_code="FA")
 
     # Create org_b and its firm while GUC is org_b.
-    org_b, firm_b = _make_org_and_firm(db_session, org_suffix="-b", firm_code="FB")
+    _org_b, firm_b = _make_org_and_firm(db_session, org_suffix="-b", firm_code="FB")
 
     # Switch GUC back to org_a (caller's perspective).
     db_session.execute(text(f"SET LOCAL app.current_org_id = '{org_a.org_id}'"))

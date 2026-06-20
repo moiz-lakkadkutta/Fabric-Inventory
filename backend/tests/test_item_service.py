@@ -651,7 +651,7 @@ def _make_firm_in_org_item(
     firm = Firm(org_id=org_id, code=code, name=f"Firm {code}", has_gst=False)
     session.add(firm)
     session.flush()
-    return firm.firm_id  # type: ignore[return-value]
+    return firm.firm_id
 
 
 def _make_foreign_firm_for_item(
@@ -677,7 +677,7 @@ def _make_foreign_firm_for_item(
     firm_b = Firm(org_id=org_b_id, code="F-EXT", name="External Firm", has_gst=False)
     session.add(firm_b)
     session.flush()
-    return firm_b.firm_id  # type: ignore[return-value]
+    return firm_b.firm_id
 
 
 def test_create_item_rejects_foreign_firm_id(
@@ -698,9 +698,7 @@ def test_create_item_rejects_foreign_firm_id(
         )
 
 
-def test_create_item_accepts_valid_firm_id(
-    db_session: OrmSession, fresh_org_id: uuid.UUID
-) -> None:
+def test_create_item_accepts_valid_firm_id(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
     """AUTHZ-2 positive: firm_id in caller's org → create_item succeeds."""
     firm_id = _make_firm_in_org_item(db_session, org_id=fresh_org_id, code="VALID-FI")
     item = items_service.create_item(
@@ -753,15 +751,13 @@ def test_create_sku_rejects_foreign_firm_id(
         items_service.create_sku(
             db_session,
             org_id=fresh_org_id,
-            item_id=item.item_id,  # type: ignore[attr-defined]
+            item_id=item.item_id,
             code="GUARD-SKU1",
             firm_id=foreign_firm_id,
         )
 
 
-def test_create_sku_accepts_valid_firm_id(
-    db_session: OrmSession, fresh_org_id: uuid.UUID
-) -> None:
+def test_create_sku_accepts_valid_firm_id(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
     """AUTHZ-2 positive: SKU create with valid in-org firm_id succeeds."""
     item = items_service.create_item(
         db_session,
@@ -776,7 +772,7 @@ def test_create_sku_accepts_valid_firm_id(
     sku = items_service.create_sku(
         db_session,
         org_id=fresh_org_id,
-        item_id=item.item_id,  # type: ignore[attr-defined]
+        item_id=item.item_id,
         code="GUARD-SKU2",
         firm_id=firm_id,
     )
@@ -799,7 +795,7 @@ def test_create_sku_none_firm_id_skips_guard(
     sku = items_service.create_sku(
         db_session,
         org_id=fresh_org_id,
-        item_id=item.item_id,  # type: ignore[attr-defined]
+        item_id=item.item_id,
         code="GUARD-SKU3",
         firm_id=None,
     )

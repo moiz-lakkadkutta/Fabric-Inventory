@@ -627,7 +627,7 @@ def test_create_adjustment_rejects_foreign_firm(
     a foreign firm_id onto stock_position and stock_adjustment rows.
     With the guard, AppValidationError is raised before anything is written.
     """
-    firm_a, item, location = setup
+    _firm_a, item, location = setup
 
     # Create org_b with its own firm. GUC flips to org_b during creation.
     _org_b, firm_b = _make_org_and_firm_adj(db_session, org_suffix="-b", firm_code="FB")
@@ -659,7 +659,7 @@ def test_create_adjustment_succeeds_for_valid_firm_in_org(
     in the caller's own org.
     """
     firm, item, location = setup
-    adj, ledger = stock_service.create_adjustment(
+    adj, _ledger = stock_service.create_adjustment(
         db_session,
         org_id=fresh_org_id,
         firm_id=firm.firm_id,

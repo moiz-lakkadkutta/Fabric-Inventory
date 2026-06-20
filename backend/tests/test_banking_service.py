@@ -506,9 +506,7 @@ def test_create_bank_account_valid_firm_passes(
     assert account.firm_id == firm_id
 
 
-def test_create_cheque_foreign_firm_raises(
-    db_session: OrmSession, fresh_org_id: uuid.UUID
-) -> None:
+def test_create_cheque_foreign_firm_raises(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
     """create_cheque: firm_id from another org → AppValidationError."""
     firm_id, ledger_id = _make_firm_and_ledger(db_session, fresh_org_id)
     account = _create_account(db_session, org_id=fresh_org_id, firm_id=firm_id, ledger_id=ledger_id)
@@ -527,9 +525,7 @@ def test_create_cheque_foreign_firm_raises(
         )
 
 
-def test_create_cheque_valid_firm_passes(
-    db_session: OrmSession, fresh_org_id: uuid.UUID
-) -> None:
+def test_create_cheque_valid_firm_passes(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
     """create_cheque: in-org firm_id still succeeds after guard is added."""
     firm_id, ledger_id = _make_firm_and_ledger(db_session, fresh_org_id)
     account = _create_account(db_session, org_id=fresh_org_id, firm_id=firm_id, ledger_id=ledger_id)

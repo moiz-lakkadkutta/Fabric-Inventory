@@ -66,7 +66,9 @@ def _make_in_org_firm(db: OrmSession, org_id: uuid.UUID) -> uuid.UUID:
 def _get_role_id(db: OrmSession, org_id: uuid.UUID) -> uuid.UUID:
     """Return any live role_id belonging to org_id."""
     role = db.execute(
-        __import__("sqlalchemy", fromlist=["select"]).select(Role).where(
+        __import__("sqlalchemy", fromlist=["select"])
+        .select(Role)
+        .where(
             Role.org_id == org_id,
             Role.deleted_at.is_(None),
         )
@@ -139,9 +141,7 @@ def test_create_invite_valid_in_org_firm_passes(
     assert result.raw_token
 
 
-def test_create_invite_none_firm_id_passes(
-    db_session: OrmSession, fresh_org_id: uuid.UUID
-) -> None:
+def test_create_invite_none_firm_id_passes(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
     """IDM-2: firm_id=None skips the guard entirely — invite is still created."""
     role_id = _get_role_id(db_session, fresh_org_id)
 
