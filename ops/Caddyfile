@@ -35,8 +35,21 @@
 	# 31536000 = 1 year. `preload` is the precondition for joining the
 	# Chromium HSTS preload list later; safe even if we don't apply.
 	header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+	# FE-01/FE-02: security headers for the SPA. The FastAPI middleware
+	# already sets these on API responses; Caddy sets them on the static
+	# SPA bundle served by nginx (web:80) so browsers see them on the
+	# initial page load as well.
 	header X-Content-Type-Options "nosniff"
-	header Referrer-Policy "strict-origin-when-cross-origin"
+	header X-Frame-Options "DENY"
+	header Referrer-Policy "no-referrer"
+	header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'"
+	header Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	# DOS-03: reject oversized request bodies at the edge before they
+	# reach FastAPI / bcrypt. 2MB ceiling at the proxy layer (FastAPI
+	# enforces the stricter 1 MB limit internally).
+	request_body {
+		max_size 2MB
+	}
 
 	# Backend — Caddy strips the /api prefix before proxying so the
 	# FastAPI app keeps its native /v1/... and /auth/... paths.

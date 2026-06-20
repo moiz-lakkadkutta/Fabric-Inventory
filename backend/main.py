@@ -12,10 +12,12 @@ from app.config import get_settings, init_sentry
 from app.db import check_db_health, dispose_engine
 from app.middleware import (
     AuthMiddleware,
+    ContentSizeLimitMiddleware,
     IdempotencyMiddleware,
     LoggingMiddleware,
     RequestContextMiddleware,
     RLSMiddleware,
+    SecurityHeadersMiddleware,
     configure_logging,
     register_error_handlers,
 )
@@ -115,7 +117,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="Fabric ERP", version="0.1.0", lifespan=lifespan)
+    # Disable the interactive API docs in all non-dev environments so they
+    # are not exposed to the public internet. In dev, `/docs`, `/redoc`,
+    # and `/openapi.json` remain available for local development.
+    if settings.environment == "dev":
+        app = FastAPI(title="Fabric ERP", version="0.1.0", lifespan=lifespan)
+    else:
+        app = FastAPI(
+            title="Fabric ERP",
+            version="0.1.0",
+            lifespan=lifespan,
+            docs_url=None,
+            redoc_url=None,
+            openapi_url=None,
+        )
 
     # Exception handlers run after middleware; register on the app instance.
     register_error_handlers(app)
@@ -141,6 +156,13 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # DOS-03: reject over-sized request bodies before auth/bcrypt runs.
+    # Registered after CORS so it is outer to CORS in execution order.
+    app.add_middleware(ContentSizeLimitMiddleware)
+    # API-7-01 / FE-01/FE-02: OWASP security headers + Cache-Control on /auth/*.
+    # Must be the absolute outermost middleware so every response (including
+    # 413s from ContentSizeLimitMiddleware) carries the security headers.
+    app.add_middleware(SecurityHeadersMiddleware)
 
     # Routers
     app.include_router(auth_router.router)

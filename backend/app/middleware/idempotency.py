@@ -145,57 +145,84 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                             "Idempotency-Key was reused with a different request body."
                         )
                     )
-                return Response(
-                    content=payload["body"].encode(),
-                    status_code=payload["status"],
-                    headers=payload["headers"],
-                    media_type=payload.get("media_type"),
-                )
+                if payload.get("is_marker"):
+                    # A non-2xx response was previously returned for this key.
+                    # Markers are not replayed — the handler must re-execute so
+                    # a transient 4xx (e.g. 422 from bad input) does not
+                    # permanently lock the idempotency key. Fall through to
+                    # call_next below. (DOS-07 fix)
+                    pass
+                else:
+                    # Full 2xx entry — replay body verbatim.
+                    return Response(
+                        content=payload["body"].encode(),
+                        status_code=payload["status"],
+                        headers=payload["headers"],
+                        media_type=payload.get("media_type"),
+                    )
 
         response = await call_next(request)
 
-        # Cache deterministic outcomes only. 4xx like 422 (validation) and
-        # 409 (conflict) are intent-deterministic — same payload, same
-        # outcome, replay is correct. 401/403 are TRANSIENT auth state — a
-        # token refresh + retry must hit the handler again, not the cache.
-        # 5xx is also skipped (transient infra). See T-INT-1 hard review
-        # CRIT-1 for the failure mode this protects against.
-        cacheable = response.status_code < 500 and response.status_code not in {401, 403}
-        if redis_client is not None and cacheable:
-            response_body = b""
-            # Starlette's BaseHTTPMiddleware delivers responses as
-            # _StreamingResponse instances, which expose `body_iterator`,
-            # but mypy sees the abstract Response type.
-            async for chunk in response.body_iterator:  # type: ignore[attr-defined]
-                response_body += chunk
+        # DOS-07 fix: cache ONLY 2xx responses with their full body.
+        # For non-2xx (except 401/403 which are auth-transient and 5xx which
+        # are infra-transient), store a compact marker containing only the
+        # payload hash and status so PAYLOAD_MISMATCH detection keeps working
+        # on subsequent retries while preventing the 4xx body from being
+        # replayed and permanently locking the idempotency key on failure.
+        if redis_client is not None:
+            if 200 <= response.status_code < 300:
+                # Full cache — body, headers, media type.
+                response_body = b""
+                # Starlette's BaseHTTPMiddleware delivers responses as
+                # _StreamingResponse instances, which expose `body_iterator`,
+                # but mypy sees the abstract Response type.
+                async for chunk in response.body_iterator:  # type: ignore[attr-defined]
+                    response_body += chunk
 
-            # Strip credential-carrying headers BEFORE persisting so a
-            # replay (or `redis-cli get idem:...`) cannot leak them. The
-            # response that goes back to the FIRST caller still carries
-            # them — only the cached copy is sanitized.
-            cached_headers = _strip_sensitive_headers(dict(response.headers))
+                # Strip credential-carrying headers BEFORE persisting so a
+                # replay (or `redis-cli get idem:...`) cannot leak them. The
+                # response that goes back to the FIRST caller still carries
+                # them — only the cached copy is sanitized.
+                cached_headers = _strip_sensitive_headers(dict(response.headers))
 
-            await redis_client.setex(
-                cache_key,
-                CACHE_TTL_SECONDS,
-                json.dumps(
-                    {
-                        "payload_hash": payload_hash,
-                        "status": response.status_code,
-                        "headers": cached_headers,
-                        "body": response_body.decode(errors="replace"),
-                        "media_type": response.media_type,
-                    }
-                ),
-            )
+                await redis_client.setex(
+                    cache_key,
+                    CACHE_TTL_SECONDS,
+                    json.dumps(
+                        {
+                            "payload_hash": payload_hash,
+                            "status": response.status_code,
+                            "headers": cached_headers,
+                            "body": response_body.decode(errors="replace"),
+                            "media_type": response.media_type,
+                        }
+                    ),
+                )
 
-            # body_iterator is consumed; rebuild a fresh response.
-            return Response(
-                content=response_body,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                media_type=response.media_type,
-            )
+                # body_iterator is consumed; rebuild a fresh response.
+                return Response(
+                    content=response_body,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    media_type=response.media_type,
+                )
+
+            elif response.status_code < 500 and response.status_code not in {401, 403}:
+                # Compact marker — hash + status only, NO body.
+                # The next retry with the same key+body will re-execute the
+                # handler; the next retry with the same key+different body
+                # will hit the PAYLOAD_MISMATCH branch above.
+                await redis_client.setex(
+                    cache_key,
+                    CACHE_TTL_SECONDS,
+                    json.dumps(
+                        {
+                            "payload_hash": payload_hash,
+                            "status": response.status_code,
+                            "is_marker": True,
+                        }
+                    ),
+                )
 
         return response
 
