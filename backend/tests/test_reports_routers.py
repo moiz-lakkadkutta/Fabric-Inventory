@@ -605,6 +605,11 @@ def test_date_span_pnl_too_wide_returns_422(http_client: TestClient, sync_engine
 
     Without the guard a single request can force multi-year full-table
     scans of voucher_line — a DoS vector.
+
+    FIX-2 (Tfix6): the response body must use the structured error envelope
+    (``{code, title, detail, status, field_errors, request_id}``) rather than
+    FastAPI's bare ``{"detail": "..."}`` so the FE's error-handler can switch
+    on the stable ``code`` key.
     """
     me = _signup_owner(http_client)
     resp = http_client.get(
@@ -614,12 +619,22 @@ def test_date_span_pnl_too_wide_returns_422(http_client: TestClient, sync_engine
     assert resp.status_code == 422, (
         f"Expected 422 for >366-day span, got {resp.status_code}: {resp.text}"
     )
+    body = resp.json()
+    assert "code" in body, (
+        f"Response must use the Q8a error envelope with a 'code' field, got: {body}"
+    )
+    assert body["code"] == "VALIDATION_ERROR", (
+        f"Expected code='VALIDATION_ERROR', got {body.get('code')!r}"
+    )
 
 
 def test_date_span_ledger_too_wide_returns_422(
     http_client: TestClient, sync_engine: Engine
 ) -> None:
-    """A date range > 366 days on /reports/ledger/{id} must return 422."""
+    """A date range > 366 days on /reports/ledger/{id} must return 422.
+
+    FIX-2 (Tfix6): envelope shape verified same as the PnL test.
+    """
     me = _signup_owner(http_client)
     # Use a random UUID; the guard fires before the ledger lookup.
     dummy_ledger_id = uuid.uuid4()
@@ -629,6 +644,13 @@ def test_date_span_ledger_too_wide_returns_422(
     )
     assert resp.status_code == 422, (
         f"Expected 422 for >366-day ledger span, got {resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    assert "code" in body, (
+        f"Response must use the Q8a error envelope with a 'code' field, got: {body}"
+    )
+    assert body["code"] == "VALIDATION_ERROR", (
+        f"Expected code='VALIDATION_ERROR', got {body.get('code')!r}"
     )
 
 
@@ -676,6 +698,8 @@ def test_date_span_exactly_367_days_is_rejected(
 
     2026-01-01 to 2027-01-03: (date(2027,1,3) - date(2026,1,1)).days == 367.
     This is the first span that should fail; the boundary is at 366.
+
+    FIX-2 (Tfix6): envelope ``code`` field verified.
     """
     me = _signup_owner(http_client)
     resp = http_client.get(
@@ -684,4 +708,11 @@ def test_date_span_exactly_367_days_is_rejected(
     )
     assert resp.status_code == 422, (
         f"A span of exactly 367 days must be REJECTED (422), got {resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    assert "code" in body, (
+        f"Response must use the Q8a error envelope with a 'code' field, got: {body}"
+    )
+    assert body["code"] == "VALIDATION_ERROR", (
+        f"Expected code='VALIDATION_ERROR', got {body.get('code')!r}"
     )

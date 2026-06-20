@@ -65,7 +65,7 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     (
         "masters.party.pii",
         "read",
-        "View raw (unmasked) PII on parties: GSTIN, PAN, phone, bank account numbers",
+        "View raw (unmasked) PII on parties: GSTIN, PAN, phone",
     ),
     ("masters.item", "create", "Create items / SKUs"),
     ("masters.item", "update", "Update items / SKUs"),
