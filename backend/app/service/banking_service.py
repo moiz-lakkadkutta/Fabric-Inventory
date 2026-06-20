@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.exceptions import AppValidationError
 from app.models.banking import BankAccount, Cheque, ChequeStatus
 from app.models.masters import Ledger
+from app.service.common_guards import assert_firm_in_org
 from app.utils.crypto import encrypt_pii, get_org_dek
 
 # Statuses that are valid at cheque creation. Others (CLEARED, BOUNCED,
@@ -58,6 +59,9 @@ def create_bank_account(
     this check a crafted request could attach a foreign-org ledger and
     later corrupt that org's GL via reconciliation postings.
     """
+    # BANK-2: verify firm belongs to this org before the INSERT.
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
     # BANK-1: verify ledger belongs to this org before the INSERT.
     ledger = session.execute(
         select(Ledger).where(
@@ -227,6 +231,9 @@ def create_cheque(
             f"Cheque initial status must be ISSUED or POST_DATED; got {status.value!r}. "
             "Use the clear/bounce endpoints to transition to other statuses."
         )
+
+    # BANK-2 (cheque): verify firm belongs to this org before the INSERT.
+    assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
 
     # Cross-org defense: verify bank_account is in the same org and not soft-deleted.
     account = session.execute(
