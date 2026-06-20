@@ -457,6 +457,74 @@ def test_get_adjustment_returns_none_for_wrong_org(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# INV-P7: COUNT_RESET lock guard — _lock_or_create_position regression
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_count_reset_on_fresh_item_creates_position_row(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    setup: tuple[Firm, Item, Location],
+) -> None:
+    """COUNT_RESET on a fresh item (no prior stock) must create a position row.
+
+    INV-P7 regression guard: the COUNT_RESET path calls
+    ``_lock_or_create_position`` (locking read + create-if-absent) rather
+    than the plain ``get_position`` (non-locking, returns None, creates
+    nothing). On the delta=0 (no-op) branch the ONLY observable difference
+    between the two paths is whether a ``StockPosition`` row exists
+    afterward — ``_lock_or_create_position`` materialises it; the old
+    ``get_position`` path would leave the table empty.
+
+    A silent revert of the locking path back to ``get_position`` would
+    make all other COUNT_RESET tests pass (they all pre-seed stock via
+    ``add_stock``, which creates the position row before COUNT_RESET runs)
+    but would fail here because there is no prior position to return.
+    """
+    firm, item, location = setup
+
+    # Verify precondition: fresh item has no stock position yet.
+    pos_before = inventory_service.get_position(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+    )
+    assert pos_before is None, "Fixture must start with no StockPosition row"
+
+    # COUNT_RESET to 0 on a fresh item → current=0, target=0, delta=0 → no-op.
+    stock_service.create_adjustment(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("0"),  # target qty = 0; delta = 0 - 0 = 0 → no-op branch
+        direction="COUNT_RESET",
+        reason="Physical count: empty shelf confirmed",
+    )
+
+    # _lock_or_create_position must have materialised the row even when delta=0.
+    # The old get_position path would leave pos_after == None (regression).
+    pos_after = inventory_service.get_position(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+    )
+    assert pos_after is not None, (
+        "COUNT_RESET on a fresh item must create a StockPosition row via "
+        "_lock_or_create_position. If this is None, the locking path has "
+        "been reverted to the non-locking get_position (INV-P7 regression)."
+    )
+    assert Decimal(pos_after.on_hand_qty) == Decimal("0"), (
+        f"Fresh COUNT_RESET to 0 must leave on_hand_qty=0, got {pos_after.on_hand_qty}"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # INV-P9: null unit_cost on INCREASE inherits existing position cost
 # ──────────────────────────────────────────────────────────────────────
 

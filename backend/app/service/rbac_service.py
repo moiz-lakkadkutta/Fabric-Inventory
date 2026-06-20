@@ -61,6 +61,12 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     ("masters.party", "create", "Create parties (customer/supplier/karigar/transporter)"),
     ("masters.party", "update", "Update parties"),
     ("masters.party", "read", "View parties"),
+    # PII sub-permission — controls GSTIN / PAN / bank-account reveal.
+    # Narrower than masters.party.read: users who can see party names/codes
+    # but should not see encrypted PII fields get read but not pii.read.
+    # T5 adds pii.read to the party-list endpoint; this entry ensures
+    # OWNER auto-inherits it and GSTR-1 uses a consistent gate.
+    ("masters.party", "pii.read", "View PII fields on parties (GSTIN, PAN, bank account)"),
     ("masters.item", "create", "Create items / SKUs"),
     ("masters.item", "update", "Update items / SKUs"),
     ("masters.item", "read", "View items / SKUs"),

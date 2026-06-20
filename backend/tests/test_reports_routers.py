@@ -648,3 +648,44 @@ def test_date_span_within_limit_is_allowed(
     assert resp.status_code == 200, (
         f"Expected 200 for ≤366-day span, got {resp.status_code}: {resp.text}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# RPT-DoS: exact off-by-one boundary pair (366 allowed, 367 rejected)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_date_span_exactly_366_days_is_allowed(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Span of exactly 366 days (= MAX_REPORT_DATE_SPAN_DAYS) must be ALLOWED.
+
+    2026-01-01 to 2027-01-02: (date(2027,1,2) - date(2026,1,1)).days == 366.
+    This is the last span that should pass; 367+ is rejected.
+    """
+    me = _signup_owner(http_client)
+    resp = http_client.get(
+        "/reports/pnl?from=2026-01-01&to=2027-01-02",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, (
+        f"A span of exactly 366 days must be ALLOWED, got {resp.status_code}: {resp.text}"
+    )
+
+
+def test_date_span_exactly_367_days_is_rejected(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Span of exactly 367 days (MAX + 1) must be REJECTED with 422.
+
+    2026-01-01 to 2027-01-03: (date(2027,1,3) - date(2026,1,1)).days == 367.
+    This is the first span that should fail; the boundary is at 366.
+    """
+    me = _signup_owner(http_client)
+    resp = http_client.get(
+        "/reports/pnl?from=2026-01-01&to=2027-01-03",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 422, (
+        f"A span of exactly 367 days must be REJECTED (422), got {resp.status_code}: {resp.text}"
+    )

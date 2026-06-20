@@ -573,8 +573,13 @@ def get_gstr1(
 ) -> Gstr1Response | Response:
     _require_active_firm(current_user)
     assert current_user.firm_id is not None
-    # RPT-02: only expose plaintext GSTIN to callers with masters.party.read.
-    can_view_pii = "masters.party.read" in current_user.permissions
+    # RPT-02: only expose plaintext GSTIN to callers with masters.party.pii.read.
+    # Using the dedicated pii.read sub-permission (not the broader party.read)
+    # ensures consistent GSTIN masking across the party list AND GSTR-1 —
+    # an ACCOUNTANT with party.read but not pii.read sees masked GSTINs
+    # in both places. T5 introduces pii.read on the party-list endpoint;
+    # this gate keeps GSTR-1 in sync.
+    can_view_pii = "masters.party.pii.read" in current_user.permissions
     result = reports_service.compute_gstr1(
         db,
         org_id=current_user.org_id,

@@ -806,3 +806,132 @@ def test_gstr1_gstin_full_when_can_view_pii_true(
         f"Expected full GSTIN {party_gstin!r} with can_view_pii=True, "
         f"got {result.b2b[0].gstin!r}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# RPT-02 (cycle-2): GSTR-1 GSTIN reveal gated on masters.party.pii.read
+# (not the broader masters.party.read) — HTTP-level router gate tests.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_gstr1_gstin_revealed_for_user_with_pii_read_permission(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Owner (has masters.party.pii.read) must receive the plaintext GSTIN
+    in the HTTP response — the router gate should resolve can_view_pii=True.
+
+    This is the HTTP-level companion to the service-level
+    test_gstr1_gstin_full_when_can_view_pii_true — it proves the *router*
+    checks the right permission string.
+    """
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_gstin = "27ABCDE1234F1Z5"
+    party_id = _seed_b2b_party_with_real_gstin(
+        sync_engine, org_id=org_id, gstin=party_gstin, state_code="MH"
+    )
+    item_id = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    _create_and_finalize_invoice(
+        http_client,
+        me,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date="2026-04-15",
+        qty="2",
+        price="500",
+        gst_rate="5",
+    )
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-04",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["b2b"]) == 1
+    assert body["b2b"][0]["gstin"] == party_gstin, (
+        f"Owner with masters.party.pii.read must see full GSTIN {party_gstin!r}, "
+        f"got {body['b2b'][0]['gstin']!r}"
+    )
+
+
+def test_gstr1_gstin_masked_for_user_without_pii_read_permission(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """ACCOUNTANT (has accounting.report.view but NOT masters.party.pii.read)
+    must receive a masked GSTIN in the HTTP response.
+
+    This proves the router gate uses masters.party.pii.read (not the
+    broader masters.party.read that ACCOUNTANTs carry). Without this
+    test, reverting the gate to 'masters.party.read' would pass all
+    other tests (ACCOUNTANTs do have masters.party.read).
+    """
+    from app.models import AppUser, Role
+    from app.service import identity_service, rbac_service
+
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_gstin = "27ABCDE1234F1Z5"
+    party_id = _seed_b2b_party_with_real_gstin(
+        sync_engine, org_id=org_id, gstin=party_gstin, state_code="MH"
+    )
+    item_id = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    _create_and_finalize_invoice(
+        http_client,
+        me,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date="2026-04-15",
+        qty="2",
+        price="500",
+        gst_rate="5",
+    )
+
+    # Create an ACCOUNTANT user (has accounting.report.view + masters.party.read
+    # but NOT masters.party.pii.read).
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        accountant_role = session.execute(
+            select(Role).where(Role.org_id == org_id, Role.code == "ACCOUNTANT")
+        ).scalar_one()
+        acct_user = identity_service.register_user(
+            session,
+            email=f"acct-pii-{uuid.uuid4().hex[:6]}@example.com",
+            password="strong-password-1",
+            org_id=org_id,
+        )
+        rbac_service.assign_role(
+            session,
+            user_id=acct_user.user_id,
+            role_id=accountant_role.role_id,
+            firm_id=uuid.UUID(me["firm_id"]),
+            org_id=org_id,
+        )
+        acct_user_id = acct_user.user_id
+        session.commit()
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        acct_user = session.execute(
+            select(AppUser).where(AppUser.user_id == acct_user_id)
+        ).scalar_one()
+        pair = identity_service.issue_tokens(
+            session, user=acct_user, firm_id=uuid.UUID(me["firm_id"])
+        )
+        session.commit()
+
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-04",
+        headers=_auth(pair.access_token),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["b2b"]) == 1
+    gstin_in_response = body["b2b"][0]["gstin"]
+    # Must be masked — ACCOUNTANT lacks masters.party.pii.read.
+    assert gstin_in_response != party_gstin, (
+        f"ACCOUNTANT must NOT see full GSTIN; got {gstin_in_response!r} "
+        f"which equals the plaintext — router gate not checking pii.read"
+    )
+    assert gstin_in_response is not None and "*" in gstin_in_response, (
+        f"Expected masked GSTIN (with '*'), got {gstin_in_response!r}"
+    )
