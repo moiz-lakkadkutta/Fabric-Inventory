@@ -3130,6 +3130,12 @@ export interface components {
              * Format: uuid
              */
             voucher_id: string;
+            /**
+             * Statement Amount
+             * Rupees (positive magnitude). Service validates
+             * |voucher_total − |statement_amount|| ≤ ₹1.00.
+             */
+            statement_amount: string;
         };
         /** CostCentreCreateRequest */
         CostCentreCreateRequest: {
