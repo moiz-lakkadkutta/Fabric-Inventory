@@ -614,12 +614,19 @@ def test_rls_blocks_cross_org_item_reads(admin_engine: Engine) -> None:
         # Cleanup — skus cascade from item (ON DELETE CASCADE), so
         # deleting items removes their skus automatically.
         # Then orgs. Finally revert FORCE RLS.
+        #
+        # CRYPTO-01 note: the audit_log_immutable trigger blocks DELETE on
+        # audit_log for all roles. Use session_replication_role=replica to
+        # bypass triggers for the test-DB cleanup (superuser-only op; the
+        # admin_engine uses the `fabric` migration role which is SUPERUSER).
         cleanup_conn = admin_engine.connect()
         try:
+            cleanup_conn.execute(text("SET session_replication_role = replica"))
             cleanup_conn.execute(
                 text("DELETE FROM audit_log WHERE org_id IN (:a, :b)"),
                 {"a": str(org_a_id), "b": str(org_b_id)},
             )
+            cleanup_conn.execute(text("SET session_replication_role = DEFAULT"))
             cleanup_conn.execute(
                 text("DELETE FROM item WHERE org_id IN (:a, :b)"),
                 {"a": str(org_a_id), "b": str(org_b_id)},

@@ -2769,6 +2769,25 @@
         "title": "DesignUpdateRequest",
         "type": "object"
       },
+      "FirstBreak": {
+        "properties": {
+          "audit_log_id": {
+            "format": "uuid",
+            "title": "Audit Log Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "audit_log_id",
+          "reason"
+        ],
+        "title": "FirstBreak",
+        "type": "object"
+      },
       "ForgotPasswordRequest": {
         "description": "CUT-303: /auth/forgot input.\n\n``org_name`` is required (same multi-tenancy model as /auth/login \u2014\nwe can't resolve a user from email alone). The router treats\n\"unknown org\" and \"unknown email under known org\" the same way: it\nreturns 200 ``{ok: True}`` and does NOT issue a token, so neither\ncase leaks.",
         "properties": {
@@ -14131,6 +14150,35 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VerifyResponse": {
+        "properties": {
+          "first_break": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FirstBreak"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rows_checked": {
+            "title": "Rows Checked",
+            "type": "integer"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "valid",
+          "rows_checked",
+          "first_break"
+        ],
+        "title": "VerifyResponse",
+        "type": "object"
+      },
       "VoucherListItem": {
         "description": "One row on the AccountingHub Vouchers tab.\n\nMoney is rupees (Decimal-as-string) on the wire per CLAUDE.md.",
         "properties": {
@@ -25172,6 +25220,28 @@
         "tags": [
           "masters",
           "uom"
+        ]
+      }
+    },
+    "/v1/audit/verify": {
+      "get": {
+        "description": "Recompute and verify the hash chain for the calling org.\n\nReads all chained rows (``this_hash IS NOT NULL``) for the org,\nordered by ``created_at ASC, audit_log_id ASC`` (the same order\nemit() uses to determine the chain tip), and checks each row:\n\n1. ``this_hash`` must equal ``SHA256(canonical_bytes(row))``.\n   Detects tampering with any content field.\n\n2. ``prev_hash`` must equal the predecessor row's ``this_hash``\n   (or GENESIS_HASH for the first chained row).\n   Detects insertion of rows that break the chain.\n\nReturns immediately on the first detected break to avoid O(n) full\nscans when the chain is obviously broken at the start.",
+        "operationId": "verify_audit_chain_v1_audit_verify_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Verify the org's audit-log hash chain integrity",
+        "tags": [
+          "audit"
         ]
       }
     },

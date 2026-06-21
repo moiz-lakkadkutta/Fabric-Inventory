@@ -23,6 +23,7 @@ from app.middleware import (
 )
 from app.routers import accounting as accounting_router
 from app.routers import admin as admin_router
+from app.routers import audit as audit_router
 from app.routers import auth as auth_router
 from app.routers import bank_reconciliation as bank_reconciliation_router
 from app.routers import banking as banking_router
@@ -190,6 +191,7 @@ def create_app() -> FastAPI:
     app.include_router(jobwork_router.router)
     app.include_router(jobwork_router.itc04_router)
     app.include_router(admin_router.router)
+    app.include_router(audit_router.router)
     app.include_router(migrations_router.router)
     app.include_router(manufacturing_router.designs_router)
     app.include_router(manufacturing_router.operation_masters_router)

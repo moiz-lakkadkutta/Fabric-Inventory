@@ -397,6 +397,20 @@ def login(
         # by comparing error text, confirming the target email is registered.
         # Timing: run dummy bcrypt so response latency is also indistinguishable.
         identity_service.verify_password(body.password, identity_service.DUMMY_BCRYPT_HASH)
+        # CRYPTO-02 residual: emit login_locked so security monitoring can
+        # detect repeated knock attempts against a locked account.
+        # Commit before raising — same pattern as login_failed below.
+        audit_service.emit(
+            db,
+            org_id=org.org_id,
+            firm_id=None,
+            user_id=user.user_id,
+            entity_type="auth.session",
+            entity_id=user.user_id,
+            action="login_locked",
+            changes={"after": {}},
+        )
+        db.commit()
         raise InvalidCredentialsError("Invalid email or password")
 
     # DOS-02 / API-7-03 — Timing oracle: always run bcrypt regardless of
@@ -433,6 +447,7 @@ def login(
         # write N+1, and the lockout threshold would only be reached after 2N-1
         # real attempts instead of N. Using UPDATE...RETURNING makes the increment
         # atomic — Postgres serialises it so every concurrent failure is counted.
+        newly_locked = False
         if user is not None:
             result = db.execute(
                 update(AppUser)
@@ -447,6 +462,7 @@ def login(
                     .where(AppUser.user_id == user.user_id)
                     .values(locked_until=_now + _LOCKOUT_WINDOW, failed_login_attempts=0)
                 )
+                newly_locked = True
 
         # We call db.commit() (not just flush()) BEFORE raising so the audit
         # row persists despite the exception. The dependency's session context
@@ -462,6 +478,20 @@ def login(
             action="login_failed",
             changes={"after": {}},
         )
+        # CRYPTO-02 residual: also emit login_locked when the threshold is
+        # crossed on this request so monitoring can distinguish the lockout
+        # event from ordinary bad-password events.
+        if newly_locked and user is not None:
+            audit_service.emit(
+                db,
+                org_id=org.org_id,
+                firm_id=None,
+                user_id=user.user_id,
+                entity_type="auth.session",
+                entity_id=user.user_id,
+                action="login_locked",
+                changes={"after": {}},
+            )
         db.commit()
         raise InvalidCredentialsError("Invalid email or password")
 

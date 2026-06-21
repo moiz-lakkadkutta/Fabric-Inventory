@@ -5101,6 +5101,49 @@ paths:
           $ref: '#/components/responses/Unauthorized'
       x-permission: platform.audit_log.read
 
+  /v1/audit/verify:
+    get:
+      summary: Verify the org's audit-log hash chain integrity
+      operationId: verifyAuditChain
+      tags:
+        - audit
+      responses:
+        '200':
+          description: Chain integrity result
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - valid
+                  - rows_checked
+                  - first_break
+                properties:
+                  valid:
+                    type: boolean
+                    description: true if the entire chain is intact
+                  rows_checked:
+                    type: integer
+                    description: Number of chained rows verified
+                  first_break:
+                    nullable: true
+                    description: null when valid=true; otherwise the first broken row
+                    type: object
+                    properties:
+                      audit_log_id:
+                        type: string
+                        format: uuid
+                      reason:
+                        type: string
+                        enum:
+                          - this_hash_mismatch
+                          - chain_break
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      x-permission: admin.audit.verify
+
   /feature-flags:
     get:
       summary: List feature flags

@@ -2410,6 +2410,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/audit/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Verify the org's audit-log hash chain integrity
+         * @description Recompute and verify the hash chain for the calling org.
+         *
+         *     Reads all chained rows (``this_hash IS NOT NULL``) for the org,
+         *     ordered by ``created_at ASC, audit_log_id ASC`` (the same order
+         *     emit() uses to determine the chain tip), and checks each row:
+         *
+         *     1. ``this_hash`` must equal ``SHA256(canonical_bytes(row))``.
+         *        Detects tampering with any content field.
+         *
+         *     2. ``prev_hash`` must equal the predecessor row's ``this_hash``
+         *        (or GENESIS_HASH for the first chained row).
+         *        Detects insertion of rows that break the chain.
+         *
+         *     Returns immediately on the first detected break to avoid O(n) full
+         *     scans when the chain is obviously broken at the start.
+         */
+        get: operations["verify_audit_chain_v1_audit_verify_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/vouchers": {
         parameters: {
             query?: never;
@@ -3564,6 +3598,16 @@ export interface components {
             description?: string | null;
             /** Name */
             name?: string | null;
+        };
+        /** FirstBreak */
+        FirstBreak: {
+            /**
+             * Audit Log Id
+             * Format: uuid
+             */
+            audit_log_id: string;
+            /** Reason */
+            reason: string;
         };
         /**
          * ForgotPasswordRequest
@@ -8171,6 +8215,14 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** VerifyResponse */
+        VerifyResponse: {
+            first_break: components["schemas"]["FirstBreak"] | null;
+            /** Rows Checked */
+            rows_checked: number;
+            /** Valid */
+            valid: boolean;
         };
         /**
          * VoucherListItem
@@ -13952,6 +14004,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UomListResponse"];
+                };
+            };
+        };
+    };
+    verify_audit_chain_v1_audit_verify_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyResponse"];
                 };
             };
         };
