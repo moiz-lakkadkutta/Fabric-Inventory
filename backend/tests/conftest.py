@@ -35,6 +35,11 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:
 os.environ.setdefault("JWT_SECRET", "kY7mWq2pR9nB4vX8tL6cJ3hF5dG1sZ0aUeImOoPlQwErTyU")
 os.environ.setdefault("ENVIRONMENT", "dev")
 os.environ.setdefault("LOG_LEVEL", "INFO")
+# Wave D (Drev/TS-04): the config guard now requires REDIS_URL when
+# ENVIRONMENT != "dev". Tests that boot the app in staging/prod mode
+# (docs-disabled, KEK, security headers, …) must have it set or they'd
+# trip that guard. The dedicated guard tests in test_config.py override it.
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
 # CUT-205: WeasyPrint dlopen()s pango/cairo/gobject. On macOS-arm64 those
 # libraries live in /opt/homebrew/lib. Set the fallback path for tests so

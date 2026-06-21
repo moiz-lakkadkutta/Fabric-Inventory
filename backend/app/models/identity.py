@@ -45,6 +45,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     LargeBinary,
     SmallInteger,
     String,
@@ -187,6 +188,16 @@ class AppUser(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     )
     is_suspended: Mapped[bool | None] = mapped_column(
         Boolean, server_default=text("false"), nullable=True
+    )
+    # Wave D-auth columns (migration: d1_auth_lockout)
+    permissions_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    failed_login_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    locked_until: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     prev_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     this_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)

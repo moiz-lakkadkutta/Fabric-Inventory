@@ -172,6 +172,31 @@ class LogoutResponse(BaseModel):
     revoked: bool
 
 
+class MfaSetupResponse(BaseModel):
+    """Response from POST /auth/mfa/setup — provisioning data for the authenticator app.
+
+    Does NOT indicate mfa_enabled=True yet; the caller must follow up with
+    POST /auth/mfa/confirm (valid TOTP code) to activate MFA.
+    """
+
+    secret: str
+    provisioning_uri: str
+
+
+class MfaConfirmRequest(BaseModel):
+    """Body for POST /auth/mfa/confirm — the 6-digit TOTP code the user read
+    from their authenticator after scanning the QR code from /auth/mfa/setup.
+    """
+
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class MfaConfirmResponse(BaseModel):
+    """POST /auth/mfa/confirm response — ok=True means MFA is now active."""
+
+    ok: bool = True
+
+
 class MeResponse(BaseModel):
     """Current user info, derived from the access-token JWT payload + DB lookup.
 

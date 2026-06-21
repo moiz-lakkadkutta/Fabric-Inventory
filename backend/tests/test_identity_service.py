@@ -582,3 +582,167 @@ def test_dummy_bcrypt_hash_does_not_verify_against_itself() -> None:
     assert not identity_service.verify_password(dummy, dummy), (
         "The hash verifies against itself — the sentinel is insecure."
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TS-05 / IDM-5 — permissions_version claim in JWT
+# ──────────────────────────────────────────────────────────────────────
+
+
+# ──────────────────────────────────────────────────────────────────────
+# IDM-4 — TOTP replay guard
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_IDM4_totp_replay_guard_rejects_second_use(  # noqa: N802
+    db_session: OrmSession, signed_up_user: tuple[AppUser, uuid.UUID, str]
+) -> None:
+    """IDM-4 (RED): using the same valid TOTP code twice must reject the second use.
+
+    pyotp.TOTP.verify with valid_window=1 accepts the same code twice within
+    one 30s window — an attacker who intercepts the code can replay it.
+    The fix is a Redis key per (user, code) with 90s TTL so the second
+    call returns False even though pyotp would return True.
+    """
+    user, _, _ = signed_up_user
+    enrollment = identity_service.enable_mfa(db_session, user_id=user.user_id)
+    code = pyotp.TOTP(enrollment.secret).now()
+
+    # First use must succeed
+    first = identity_service.verify_totp(db_session, user_id=user.user_id, code=code)
+    assert first is True, (
+        "TOTP replay test precondition failed: first verify_totp returned False "
+        "(expected True for a fresh valid code)."
+    )
+
+    # Second use of the SAME code within the same window must fail (replay guard)
+    second = identity_service.verify_totp(db_session, user_id=user.user_id, code=code)
+    assert second is False, (
+        "IDM-4 FAIL: TOTP replay guard did not trigger — the same code was accepted twice. "
+        "verify_totp must reject codes already used within the 90s window."
+    )
+
+
+def test_jwt_carries_pv_claim_matching_user_permissions_version(
+    db_session: OrmSession, signed_up_user: tuple[AppUser, uuid.UUID, str]
+) -> None:
+    """TS-05/IDM-5 (RED): the access token must carry a `pv` claim equal
+    to the user's current `permissions_version`. If this claim is absent
+    or wrong, subsequent role changes will produce stale tokens that don't
+    self-invalidate.
+    """
+    user, org_id, password = signed_up_user
+    pair = identity_service.login(
+        db_session, email="owner@example.com", password=password, org_id=org_id
+    )
+    payload = identity_service.verify_jwt(pair.access_token)
+    # TokenPayload must expose `pv` and it must match the DB user's version.
+    assert hasattr(payload, "pv"), (
+        "TokenPayload missing `pv` attribute — TS-05 requires permissions_version in JWT"
+    )
+    assert payload.pv == user.permissions_version, (
+        f"payload.pv={payload.pv} != user.permissions_version={user.permissions_version}"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cycle-2: Fix 1 — prepare_mfa_enrollment must block re-enroll
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_cycle2_prepare_mfa_enrollment_blocks_when_already_enabled(
+    db_session: OrmSession, signed_up_user: tuple[AppUser, uuid.UUID, str]
+) -> None:
+    """Cycle-2 Fix 1: prepare_mfa_enrollment must raise when user.mfa_enabled is True.
+
+    After MFA is active, a stolen access token calling the setup endpoint must
+    NOT overwrite mfa_secret — that would break the victim's working authenticator
+    and allow attacker-controlled re-binding.
+    """
+    from app.exceptions import MfaAlreadyEnabledError
+
+    user, _, _ = signed_up_user
+    # enable_mfa sets mfa_enabled=True directly (one-shot path used in tests)
+    identity_service.enable_mfa(db_session, user_id=user.user_id)
+    db_session.refresh(user)
+    assert user.mfa_enabled is True
+
+    assert user.mfa_secret is not None
+    original_secret_bytes = bytes(user.mfa_secret)
+
+    # Calling prepare_mfa_enrollment on an already-enabled user must raise
+    with pytest.raises(MfaAlreadyEnabledError):
+        identity_service.prepare_mfa_enrollment(db_session, user_id=user.user_id)
+
+    # mfa_secret must be unchanged
+    db_session.refresh(user)
+    assert user.mfa_secret is not None
+    assert bytes(user.mfa_secret) == original_secret_bytes, (
+        "Cycle-2 Fix 1: prepare_mfa_enrollment modified mfa_secret even though it raised. "
+        "The secret must remain untouched when MFA is already enabled."
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cycle-2: Fix 3 — _run_totp_replay_check must close locally-built clients
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_cycle2_run_totp_replay_check_closes_client_when_close_after_true() -> None:
+    """Cycle-2 Fix 3: _run_totp_replay_check must call aclose() on the redis
+    client when close_after=True. Without this, every production verify_totp
+    call leaks a connection-pool object when the asyncio.run() loop is torn down.
+
+    Tests inject a shared fakeredis client (close_after=False) so the injected
+    client is NOT closed between tests. Production builds a fresh client per call
+    (close_after=True) so connections are released promptly.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.service.identity_service import _run_totp_replay_check
+
+    # Build a mock redis client whose aclose() we can track
+    mock_client = MagicMock()
+    mock_client.exists = AsyncMock(return_value=0)
+    mock_client.setex = AsyncMock(return_value=True)
+    mock_client.aclose = AsyncMock()
+
+    key = "totp:used:test-user-id:123456"
+
+    # call with close_after=True — the client MUST be closed
+    _run_totp_replay_check(mock_client, key, close_after=True)
+
+    (
+        mock_client.aclose.assert_awaited_once(),
+        (
+            "Cycle-2 Fix 3 FAIL: _run_totp_replay_check did not call aclose() when "
+            "close_after=True. Production-built clients are leaked without this call."
+        ),
+    )
+
+
+def test_cycle2_run_totp_replay_check_does_not_close_injected_client() -> None:
+    """Cycle-2 Fix 3 (negative): close_after=False (test-injected path) must NOT
+    call aclose() — closing the shared test client would break other tests.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.service.identity_service import _run_totp_replay_check
+
+    mock_client = MagicMock()
+    mock_client.exists = AsyncMock(return_value=0)
+    mock_client.setex = AsyncMock(return_value=True)
+    mock_client.aclose = AsyncMock()
+
+    key = "totp:used:test-user-id:999999"
+
+    # default close_after=False — must NOT close
+    _run_totp_replay_check(mock_client, key)
+
+    (
+        mock_client.aclose.assert_not_awaited(),
+        (
+            "Cycle-2 Fix 3 FAIL: _run_totp_replay_check closed the client even with "
+            "close_after=False. The injected test-fakeredis must not be closed."
+        ),
+    )

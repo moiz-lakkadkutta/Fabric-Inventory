@@ -37,6 +37,7 @@ class ErrorCode(StrEnum):
     INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
     MFA_REQUIRED = "MFA_REQUIRED"
     MFA_INVALID = "MFA_INVALID"
+    MFA_ALREADY_ENABLED = "MFA_ALREADY_ENABLED"
     TOKEN_INVALID = "TOKEN_INVALID"  # noqa: S105 — error code, not a password
     USER_EMAIL_TAKEN = "USER_EMAIL_TAKEN"
     # CUT-303: a single code covers all reset-token failure modes
@@ -179,6 +180,19 @@ class MfaError(AppError):
     code = ErrorCode.MFA_INVALID
     title = "MFA verification failed"
     http_status = 401
+
+
+class MfaAlreadyEnabledError(AppError):
+    """MFA is already active on this account.
+
+    Callers must not overwrite the existing TOTP secret — that would let a
+    stolen access token rebind the victim's authenticator. An admin must
+    explicitly reset MFA before re-enrollment is permitted.
+    """
+
+    code = ErrorCode.MFA_ALREADY_ENABLED
+    title = "MFA already enabled"
+    http_status = 409
 
 
 class LocationCodeTakenError(AppError):

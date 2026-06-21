@@ -601,3 +601,117 @@ def test_priv1_vector_a_owner_can_update_role_with_any_perm(
         actor_firm_id=None,
     )
     assert updated.role_id == target_role.role_id
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TS-05 / IDM-5 — permissions_version bump on role mutations
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_assign_role_bumps_target_user_permissions_version(
+    db_session: OrmSession, seeded_org: tuple[uuid.UUID, dict[str, Role]]
+) -> None:
+    """TS-05/IDM-5 (RED): assigning a role to a user must increment
+    that user's `permissions_version` so outstanding JWTs carrying the
+    old `pv` are rejected on the next request.
+    """
+
+    org_id, roles = seeded_org
+    user = _make_user(db_session, org_id)
+    initial_pv = user.permissions_version
+
+    rbac_service.assign_role(
+        db_session,
+        user_id=user.user_id,
+        role_id=roles["ACCOUNTANT"].role_id,
+        firm_id=None,
+        org_id=org_id,
+    )
+    db_session.refresh(user)
+    assert user.permissions_version == initial_pv + 1, (
+        f"assign_role must bump permissions_version: got {user.permissions_version}, "
+        f"expected {initial_pv + 1}"
+    )
+
+
+def test_assign_role_idempotent_does_not_double_bump(
+    db_session: OrmSession, seeded_org: tuple[uuid.UUID, dict[str, Role]]
+) -> None:
+    """assign_role is idempotent when the (user, role, firm) assignment
+    already exists; the second call must NOT bump permissions_version again.
+    """
+    org_id, roles = seeded_org
+    user = _make_user(db_session, org_id)
+
+    rbac_service.assign_role(
+        db_session,
+        user_id=user.user_id,
+        role_id=roles["ACCOUNTANT"].role_id,
+        firm_id=None,
+        org_id=org_id,
+    )
+    db_session.refresh(user)
+    pv_after_first = user.permissions_version
+
+    # Second call — same (user, role, firm) → idempotent no-op, no extra bump.
+    rbac_service.assign_role(
+        db_session,
+        user_id=user.user_id,
+        role_id=roles["ACCOUNTANT"].role_id,
+        firm_id=None,
+        org_id=org_id,
+    )
+    db_session.refresh(user)
+    assert user.permissions_version == pv_after_first, (
+        "Idempotent assign_role must not bump permissions_version a second time"
+    )
+
+
+def test_update_custom_role_bumps_assigned_users_permissions_version(
+    db_session: OrmSession, seeded_org: tuple[uuid.UUID, dict[str, Role]]
+) -> None:
+    """TS-05/IDM-5 (RED): updating a custom role's permissions must bump
+    permissions_version on every user currently holding that role.
+    """
+    org_id, roles = seeded_org
+    owner_user = _make_user(db_session, org_id)
+    rbac_service.assign_role(
+        db_session,
+        user_id=owner_user.user_id,
+        role_id=roles["OWNER"].role_id,
+        firm_id=None,
+        org_id=org_id,
+    )
+
+    # Create a custom role and assign it to a test user.
+    custom_role = rbac_service.create_custom_role(
+        db_session,
+        org_id=org_id,
+        code="CUSTOM_VIEWER",
+        name="Custom Viewer",
+        permission_codes=["masters.party.read"],
+        actor_user_id=owner_user.user_id,
+    )
+    viewer_user = _make_user(db_session, org_id)
+    rbac_service.assign_role(
+        db_session,
+        user_id=viewer_user.user_id,
+        role_id=custom_role.role_id,
+        firm_id=None,
+        org_id=org_id,
+    )
+    db_session.refresh(viewer_user)
+    pv_before_update = viewer_user.permissions_version
+
+    # Update the custom role's permissions.
+    rbac_service.update_custom_role(
+        db_session,
+        org_id=org_id,
+        role_id=custom_role.role_id,
+        permission_codes=["masters.party.read", "masters.item.read"],
+        actor_user_id=owner_user.user_id,
+    )
+    db_session.refresh(viewer_user)
+    assert viewer_user.permissions_version == pv_before_update + 1, (
+        "update_custom_role must bump permissions_version for all users holding the role"
+    )
