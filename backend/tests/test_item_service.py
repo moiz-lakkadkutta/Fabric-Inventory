@@ -622,11 +622,16 @@ def test_rls_blocks_cross_org_item_reads(admin_engine: Engine) -> None:
         cleanup_conn = admin_engine.connect()
         try:
             cleanup_conn.execute(text("SET session_replication_role = replica"))
-            cleanup_conn.execute(
-                text("DELETE FROM audit_log WHERE org_id IN (:a, :b)"),
-                {"a": str(org_a_id), "b": str(org_b_id)},
-            )
-            cleanup_conn.execute(text("SET session_replication_role = DEFAULT"))
+            try:
+                cleanup_conn.execute(
+                    text("DELETE FROM audit_log WHERE org_id IN (:a, :b)"),
+                    {"a": str(org_a_id), "b": str(org_b_id)},
+                )
+            finally:
+                # Always reset replication role so the pooled connection
+                # does not return stuck in replica mode (which would
+                # disable triggers and FK checks for subsequent tests).
+                cleanup_conn.execute(text("SET session_replication_role = DEFAULT"))
             cleanup_conn.execute(
                 text("DELETE FROM item WHERE org_id IN (:a, :b)"),
                 {"a": str(org_a_id), "b": str(org_b_id)},

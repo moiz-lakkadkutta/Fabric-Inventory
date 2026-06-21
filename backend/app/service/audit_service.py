@@ -18,12 +18,29 @@ CRYPTO-01 (tamper-evidence hash chain):
   - ``created_at`` is set in Python (UTC now) before the hash is
     computed, so it is deterministic and known pre-INSERT.
   - ``audit_log_id`` is generated in Python (uuid4) for the same reason.
+  - Chain ordering is determined by **hash linkage** (prev_hash →
+    this_hash pointers), NOT by ``created_at``.  This makes the chain
+    clock-independent: backward wall-clock steps or two rows sharing
+    the same ``created_at`` microsecond do not break verification.
 
 No existing caller contract is broken: emit() still takes the same
 keyword arguments and returns the ``AuditLog`` row.  The only
 observable change is that the returned row now has
 ``prev_hash``/``this_hash`` populated and ``created_at`` set to a
 Python-minted timestamp instead of the DB server default.
+
+Tamper-evidence scope:
+  Detects modification, deletion, or gap of existing chained rows.
+  Does NOT prevent append-forgery by a role with INSERT privilege
+  (no external anchor); external checkpointing/signing is future work.
+
+``changes`` field constraint:
+  The ``changes`` dict passed to ``emit()`` MUST contain only
+  JSON-native scalars: str, int, bool, None, list, dict.  Serialize
+  Decimal/datetime values to str at the call site BEFORE passing to
+  emit().  canonical_bytes() raises TypeError for non-native values
+  (no silent coercion via default=str) to make hash-stability failures
+  loud rather than silent.
 """
 
 from __future__ import annotations
@@ -35,7 +52,7 @@ import uuid
 from typing import Any
 
 from sqlalchemy import select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models import AuditLog
 
@@ -51,6 +68,39 @@ GENESIS_HASH: bytes = bytes(32)
 # Canonical serialisation
 # ──────────────────────────────────────────────────────────────────────────────
 
+_JSON_NATIVE_SCALARS = (str, int, float, bool, type(None))
+
+
+def _assert_json_native(value: Any, path: str = "changes") -> None:
+    """Raise ValueError if *value* contains non-JSON-native types.
+
+    JSON-native: str, int, float, bool, None, list, dict (with str keys).
+    Non-native (must be serialised at the call site): Decimal, datetime,
+    UUID, bytes, etc.
+
+    Raises:
+        ValueError: with a message indicating the offending path and type.
+    """
+    if isinstance(value, _JSON_NATIVE_SCALARS):
+        return
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if not isinstance(k, str):
+                raise ValueError(
+                    f"audit emit: changes key at '{path}' must be str, got {type(k).__name__!r}"
+                )
+            _assert_json_native(v, path=f"{path}.{k}")
+        return
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            _assert_json_native(item, path=f"{path}[{i}]")
+        return
+    raise ValueError(
+        f"audit emit: changes value at '{path}' is type {type(value).__name__!r} "
+        f"which is not JSON-native. Convert to str at the call site before "
+        f"passing to emit()."
+    )
+
 
 def canonical_bytes(row: AuditLog) -> bytes:
     """Return the stable byte-string whose SHA-256 is ``this_hash``.
@@ -63,6 +113,13 @@ def canonical_bytes(row: AuditLog) -> bytes:
     it is a printable, unambiguous ASCII string inside the JSON.
     ``created_at`` is ISO-8601 UTC with timezone so the format is stable
     regardless of the local clock timezone.
+
+    The ``changes`` field MUST contain only JSON-native types (str, int,
+    float, bool, None, list, dict).  Non-native types (Decimal, datetime,
+    UUID) must be serialised to str at the call site.  ``json.dumps`` is
+    called WITHOUT ``default=str`` so any violation raises ``TypeError``
+    immediately rather than silently coercing and producing a hash that
+    would not match a later verify recomputation from JSONB storage.
     """
     assert row.audit_log_id is not None, "audit_log_id must be set before hashing"
     assert row.created_at is not None, "created_at must be set before hashing"
@@ -76,18 +133,19 @@ def canonical_bytes(row: AuditLog) -> bytes:
         "entity_type": row.entity_type,
         "entity_id": str(row.entity_id),
         "action": row.action,
-        "changes": row.changes,  # dict | None; sort_keys=True handles nested dicts
+        "changes": row.changes,  # dict | None; must contain only JSON-native types
         "reason": row.reason,
         "ip_address": row.ip_address,
         "user_agent": row.user_agent,
         "created_at": row.created_at.astimezone(datetime.UTC).isoformat(),
         "prev_hash": row.prev_hash.hex(),
     }
+    # No default=str: non-JSON-native values raise TypeError immediately.
+    # This ensures the hash is stable across emit() and verify() recomputation.
     return json.dumps(
         payload,
         sort_keys=True,
         separators=(",", ":"),
-        default=str,
     ).encode("utf-8")
 
 
@@ -118,21 +176,35 @@ def emit(
     the same transaction.
 
     Hash-chain steps:
-    1. Flush pending ORM writes so the chain-tip query sees them.
-    2. Acquire per-org ``pg_advisory_xact_lock`` to serialise concurrent
+    1. Validate that ``changes`` contains only JSON-native types.
+    2. Flush pending ORM writes so the chain-tip query sees them.
+    3. Acquire per-org ``pg_advisory_xact_lock`` to serialise concurrent
        appends (lock is released automatically at transaction end).
-    3. Look up the most-recent chained row for this org.
-    4. Set ``prev_hash`` = that row's ``this_hash``, or GENESIS_HASH if
-       no chained row exists yet.
-    5. Mint ``audit_log_id`` and ``created_at`` in Python (needed to
+    4. Locate the current chain tip using hash linkage (NOT created_at):
+       the tip is the unique chained row whose ``this_hash`` is not
+       referenced by any other chained row's ``prev_hash`` in this org.
+       Belt-and-suspenders ``ORDER BY created_at DESC, audit_log_id DESC
+       LIMIT 1`` breaks any theoretical tie (should not occur under the
+       advisory lock, but makes the query deterministic).
+    5. Set ``prev_hash`` = tip's ``this_hash``, or GENESIS_HASH for genesis.
+    6. Mint ``audit_log_id`` and ``created_at`` in Python (needed to
        compute the hash before the INSERT).
-    6. Compute ``this_hash = SHA256(canonical_bytes(row))``.
-    7. ``session.add(row)`` — the caller commits when appropriate.
+    7. Compute ``this_hash = SHA256(canonical_bytes(row))``.
+    8. ``session.add(row)`` — the caller commits when appropriate.
+
+    Raises:
+        ValueError: if ``changes`` contains a non-JSON-native value
+            (e.g. Decimal, datetime).  Serialize such values to str at
+            the call site before passing to emit().
     """
-    # ── 1. Flush so the chain-tip SELECT sees this session's pending rows ──
+    # ── 1. Validate changes contains only JSON-native types ─────────────────
+    if changes is not None:
+        _assert_json_native(changes)
+
+    # ── 2. Flush so the chain-tip SELECT sees this session's pending rows ──
     session.flush()
 
-    # ── 2. Per-org advisory lock: serialises concurrent chain appends ──────
+    # ── 3. Per-org advisory lock: serialises concurrent chain appends ──────
     # Uses the same ``pg_advisory_xact_lock(hashtext(…)::bigint)`` idiom as
     # ``stock_service._advisory_lock_sadj_partition``.
     lock_key = f"audit_chain:{org_id}"
@@ -141,19 +213,34 @@ def emit(
         {"k": lock_key},
     )
 
-    # ── 3. Look up the most-recent chained row for this org ─────────────────
-    # "Chained" means ``this_hash IS NOT NULL``.  Rows inserted before the
-    # CRYPTO-01 migration have NULL hashes and are excluded from the chain.
-    # Tie-break by ``audit_log_id`` for determinism when two rows share the
-    # same ``created_at`` microsecond (unlikely but possible in test fixtures).
+    # ── 4. Locate the chain tip via hash linkage (clock-independent) ────────
+    # The tip is the chained row whose this_hash is NOT referenced as
+    # prev_hash by any other chained row in the same org.  Under the
+    # advisory lock acquired above, exactly one such row exists (or none →
+    # genesis).  The ORDER BY / LIMIT 1 is a belt-and-suspenders tie-break
+    # for the theoretical (impossible-under-lock) case of two such rows.
+    audit_log_successor = aliased(AuditLog, name="b")
+    successor_exists = (
+        select(audit_log_successor.audit_log_id)
+        .where(
+            audit_log_successor.org_id == org_id,
+            audit_log_successor.this_hash.is_not(None),
+            audit_log_successor.prev_hash == AuditLog.this_hash,
+        )
+        .exists()
+    )
     prev_row: AuditLog | None = session.execute(
         select(AuditLog)
-        .where(AuditLog.org_id == org_id, AuditLog.this_hash.is_not(None))
+        .where(
+            AuditLog.org_id == org_id,
+            AuditLog.this_hash.is_not(None),
+            ~successor_exists,
+        )
         .order_by(AuditLog.created_at.desc(), AuditLog.audit_log_id.desc())
         .limit(1)
     ).scalar_one_or_none()
 
-    # ── 4. Determine prev_hash ───────────────────────────────────────────────
+    # ── 5. Determine prev_hash ───────────────────────────────────────────────
     # prev_row.this_hash is bytes (we filtered IS NOT NULL), but mypy sees
     # the column type as bytes | None; the cast is safe here.
     prev_hash: bytes = (
@@ -162,11 +249,11 @@ def emit(
         else GENESIS_HASH
     )
 
-    # ── 5. Mint audit_log_id and created_at in Python ───────────────────────
+    # ── 6. Mint audit_log_id and created_at in Python ───────────────────────
     new_id = uuid.uuid4()
     created_at = datetime.datetime.now(tz=datetime.UTC)
 
-    # ── 6 & 7. Construct row, compute hash, add to session ──────────────────
+    # ── 7 & 8. Construct row, compute hash, add to session ──────────────────
     row = AuditLog(
         audit_log_id=new_id,
         org_id=org_id,
@@ -191,4 +278,4 @@ def emit(
     return row
 
 
-__all__ = ["GENESIS_HASH", "canonical_bytes", "emit"]
+__all__ = ["GENESIS_HASH", "_assert_json_native", "canonical_bytes", "emit"]
