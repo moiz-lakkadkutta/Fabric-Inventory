@@ -87,4 +87,4 @@ def test_baseline_migration_smoke(sync_postgres_engine: Engine) -> None:
 
     assert table_count >= _MIN_TABLES, f"expected >= {_MIN_TABLES} tables, got {table_count}"
     # Latest forward-only migration head; bump on each new migration.
-    assert version == "tfix6_backfill_pii_read", f"unexpected revision: {version!r}"
+    assert version == "c3_stock_adj_gl", f"unexpected revision: {version!r}"

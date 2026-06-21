@@ -27,11 +27,12 @@
  *
  * Inline assertions (woven into the steps):
  *   - After step 10 (material issue): 1310 WIP net DR == ₹500 (raw
- *     cost) and 1300 Inventory net CR == ₹500 (the matching credit).
+ *     cost). 1300 Inventory net DR == ₹4500 — the pre-stock adjustment
+ *     posts DR ₹5000 (C3/INV-P1) and the issue credits ₹500.
  *     Trial-balance stays balanced.
- *   - After step 15 (completion): 1310 WIP and 1300 Inventory both
- *     drain back to net zero — the completion voucher CR 1310 / DR
- *     1300 ₹500 settles the cost pool. TB stays balanced
+ *   - After step 15 (completion): 1310 WIP drains to net zero (issue DR
+ *     ₹500 + completion CR ₹500). 1300 Inventory net DR == ₹5000
+ *     (₹4500 remaining raw + ₹500 finished goods). TB stays balanced
  *     (total_debits == total_credits). MO.status == COMPLETED,
  *     scrap_qty == 0, qty_byproduct on every op == 0.
  *   - After step 15: stock-summary shows the finished item at MAIN
@@ -100,6 +101,10 @@ const PLANNED_QTY = '10.0000';
 // Expected derived values
 const EXPECTED_WIP_DEBIT = 500; // ₹50 × 1 × 10
 const EXPECTED_UNIT_COST = 50; // ₹500 / 10 units
+// C3 / INV-P1: the pre-stock step is a stock adjustment, which now posts a
+// balanced GL voucher (DR 1300 Inventory / CR 5350 Inventory Adjustment).
+// 100 m × ₹50 = ₹5000 lands as a DEBIT on 1300 before any MO posting.
+const EXPECTED_PRESTOCK_INV_DEBIT = 5000; // 100 × ₹50
 const WIP_LEDGER = '1310';
 const INVENTORY_LEDGER = '1300';
 
@@ -258,10 +263,10 @@ test.describe('TASK-TR-A13: manufacturing pipeline E2E', () => {
       // Invariant: after issue, 1310 WIP shows the raw cost (₹500)
       // as a net debit; the matching credit lands on 1300 Inventory.
       // TB stays balanced. Compare by ledger code so we don't depend
-      // on display-name strings. NOTE: stock-adjustment (the pre-stock
-      // step) is NOT money-touching — it only writes to stock_ledger /
-      // stock_position, no GL voucher — so the issue is the FIRST
-      // transaction that hits these ledgers.
+      // on display-name strings. NOTE (C3 / INV-P1): the pre-stock step
+      // is a stock adjustment that NOW posts a GL voucher (DR 1300 ₹5000 /
+      // CR 5350), so 1300 already carries a ₹5000 debit before the issue's
+      // ₹500 credit — net 1300 = 5000 − 500 = 4500.
       const tb = await getTrialBalance(request, owner);
       expect(tb.balanced).toBe(true);
       expect(Number(tb.total_debits)).toBeCloseTo(Number(tb.total_credits), 2);
@@ -272,7 +277,7 @@ test.describe('TASK-TR-A13: manufacturing pipeline E2E', () => {
       const inv = findLedgerRow(tb, INVENTORY_LEDGER);
       expect(inv, '1300 Inventory row must exist after material issue (CR side)').not.toBeNull();
       const invNet = Number(inv!.debit) - Number(inv!.credit);
-      expect(invNet).toBeCloseTo(-EXPECTED_WIP_DEBIT, 2);
+      expect(invNet).toBeCloseTo(EXPECTED_PRESTOCK_INV_DEBIT - EXPECTED_WIP_DEBIT, 2);
     });
 
     // ──────────────────────────────────────────────────────────────
@@ -365,17 +370,16 @@ test.describe('TASK-TR-A13: manufacturing pipeline E2E', () => {
       }
     });
 
-    await test.step('post: WIP drained, 1300 Inventory back to zero, TB balanced', async () => {
-      // Both ledgers should be FULLY drained:
+    await test.step('post: WIP drained, 1300 Inventory holds pre-stock + FG value, TB balanced', async () => {
+      // 1310 WIP fully drains; 1300 Inventory holds the pre-stocked value:
       //   - 1310 WIP: DR ₹500 (issue) + CR ₹500 (completion) = net 0
-      //   - 1300 Inventory: CR ₹500 (issue) + DR ₹500 (completion) = net 0
-      // The completion voucher (DR 1300 / CR 1310) settles the cost
-      // pool exactly. Both rows are excluded from the TB result list
-      // when their net hits zero (compute_tb's zero-balance filter) —
-      // we tolerate the row being absent, but a present row MUST be
-      // zero. The trial-balance invariant (total_debits ==
-      // total_credits) is the load-bearing assertion: it proves every
-      // voucher in the chain (issue + completion) posted balanced.
+      //   - 1300 Inventory (C3/INV-P1): DR ₹5000 (pre-stock adj) + CR ₹500
+      //     (issue) + DR ₹500 (completion FG receipt) = net DR ₹5000
+      //     (₹4500 remaining raw + ₹500 finished goods — economically
+      //     correct: nothing left the firm, value just moved within stock).
+      // The trial-balance invariant (total_debits == total_credits) is the
+      // load-bearing assertion: it proves every voucher in the chain
+      // (pre-stock adj + issue + completion) posted balanced.
       const tb = await getTrialBalance(request, owner);
       expect(tb.balanced).toBe(true);
       expect(Number(tb.total_debits)).toBeCloseTo(Number(tb.total_credits), 2);
@@ -384,7 +388,7 @@ test.describe('TASK-TR-A13: manufacturing pipeline E2E', () => {
       expect(wipNet).toBeCloseTo(0, 2);
       const inv = findLedgerRow(tb, INVENTORY_LEDGER);
       const invNet = inv ? Number(inv.debit) - Number(inv.credit) : 0;
-      expect(invNet).toBeCloseTo(0, 2);
+      expect(invNet).toBeCloseTo(EXPECTED_PRESTOCK_INV_DEBIT, 2);
     });
 
     await test.step('post: stock-summary shows finished item on hand at MAIN', async () => {

@@ -156,6 +156,11 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     ("5300", "Utilities", "EXPENSE", "EXPENSE", False),
     ("5400", "Bank Charges", "EXPENSE", "EXPENSE", False),
     ("5500", "Office Expenses", "EXPENSE", "EXPENSE", False),
+    # C3 (INV-P1/P2): contra ledger for stock-adjustment GL vouchers.
+    # Code 5300 is already "Utilities"; use the next gap in the 5xxx band.
+    # DR when adjusting stock UP (write-in / found stock);
+    # CR when adjusting stock DOWN (write-down / shrinkage).
+    ("5350", "Inventory Adjustment", "EXPENSE", "EXPENSE", False),
 ]
 
 

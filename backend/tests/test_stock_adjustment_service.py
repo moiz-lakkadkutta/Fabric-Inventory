@@ -20,13 +20,14 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import AppValidationError
-from app.models import Firm, Item, Location, Organization
+from app.models import Firm, Item, Ledger, Location, Organization, Voucher, VoucherLine
+from app.models.accounting import JournalLineType, VoucherType
 from app.models.masters import ItemType, UomType
-from app.service import inventory_service, stock_service
+from app.service import inventory_service, rbac_service, seed_service, stock_service
 from app.utils.crypto import generate_dek, wrap_dek
 
 # ──────────────────────────────────────────────────────────────────────
@@ -36,7 +37,18 @@ from app.utils.crypto import generate_dek, wrap_dek
 
 @pytest.fixture
 def setup(db_session: OrmSession, fresh_org_id: uuid.UUID) -> tuple[Firm, Item, Location]:
-    """One firm, one item, one default MAIN location."""
+    """One firm, one item, one default MAIN location.
+
+    Also seeds the COA (system ledgers) so that GL posting triggered by
+    non-zero unit_cost adjustments can resolve ledger 1300 / 5350 (C3).
+    Tests that create stock with a known cost will now correctly post a
+    STOCK_ADJUSTMENT voucher; tests that don't supply a cost continue
+    to skip GL posting (value_delta == 0).
+    """
+    # Seed COA + RBAC so _resolve_system_ledger("1300") and ("5350") work.
+    rbac_service.seed_system_roles(db_session, org_id=fresh_org_id)
+    seed_service.seed_system_catalog(db_session, org_id=fresh_org_id)
+
     firm = Firm(
         org_id=fresh_org_id, code=f"F-{uuid.uuid4().hex[:6]}", name="Test Firm", has_gst=False
     )
@@ -671,3 +683,462 @@ def test_create_adjustment_succeeds_for_valid_firm_in_org(
     )
     assert adj.firm_id == firm.firm_id
     assert adj.qty_change == Decimal("20")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# C3 (INV-P1/P2): GL voucher posting on stock adjustments
+# ──────────────────────────────────────────────────────────────────────
+#
+# These tests use a COA-seeded org so that _resolve_system_ledger("1300")
+# and _resolve_system_ledger("5350") succeed.  The bare `fresh_org_id`
+# fixture does NOT seed the COA — the GL tests need their own fixture.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_adj_gl_org(
+    session: OrmSession,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Seed an org with COA + firm + item + location for GL posting tests.
+
+    Returns ``(org_id, firm_id, item_id, location_id)``.
+    """
+    org_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+    org = Organization(
+        org_id=org_id,
+        name=f"sadj-gl-org-{uuid.uuid4().hex[:8]}",
+        admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
+    )
+    session.add(org)
+    session.flush()
+
+    rbac_service.seed_system_roles(session, org_id=org_id)
+    seed_service.seed_system_catalog(session, org_id=org_id)
+
+    firm = Firm(
+        org_id=org_id,
+        code=f"F{uuid.uuid4().hex[:6].upper()}",
+        name="GL Test Firm",
+        has_gst=False,
+    )
+    session.add(firm)
+    session.flush()
+
+    item = Item(
+        org_id=org_id,
+        firm_id=None,
+        code=f"I{uuid.uuid4().hex[:6].upper()}",
+        name="Test Fabric GL",
+        item_type=ItemType.RAW,
+        primary_uom=UomType.METER,
+    )
+    session.add(item)
+    session.flush()
+
+    location = inventory_service.get_or_create_default_location(
+        session, org_id=org_id, firm_id=firm.firm_id
+    )
+    return org_id, firm.firm_id, item.item_id, location.location_id
+
+
+@pytest.fixture
+def gl_setup(db_session: OrmSession) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Org + COA + firm + item + location seeded for GL tests."""
+    return _seed_adj_gl_org(db_session)
+
+
+def _fetch_sadj_vouchers(session: OrmSession, *, org_id: uuid.UUID) -> list[Voucher]:
+    return list(
+        session.execute(
+            select(Voucher).where(
+                Voucher.org_id == org_id,
+                Voucher.voucher_type == VoucherType.STOCK_ADJUSTMENT,
+            )
+        ).scalars()
+    )
+
+
+def _fetch_voucher_lines(session: OrmSession, *, voucher_id: uuid.UUID) -> list[VoucherLine]:
+    return list(
+        session.execute(select(VoucherLine).where(VoucherLine.voucher_id == voucher_id)).scalars()
+    )
+
+
+def test_increase_with_cost_posts_balanced_sadj_voucher(
+    db_session: OrmSession,
+    gl_setup: tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID],
+) -> None:
+    """INCREASE 100 units @ ₹50 → exactly one STOCK_ADJUSTMENT voucher
+    with DR 1300 = 5000 and CR 5350 = 5000; voucher is balanced.
+
+    This is the primary INV-P1/P2 acceptance criterion.
+    """
+    org_id, firm_id, item_id, location_id = gl_setup
+
+    _adj, _ledger = stock_service.create_adjustment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("100"),
+        direction="INCREASE",
+        unit_cost=Decimal("50"),
+        reason="Found in warehouse",
+    )
+
+    vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
+    assert len(vouchers) == 1, f"Expected 1 STOCK_ADJUSTMENT voucher, got {len(vouchers)}"
+    v = vouchers[0]
+    assert v.total_debit == Decimal("5000.00"), f"total_debit={v.total_debit}, want 5000"
+    assert v.total_credit == Decimal("5000.00"), f"total_credit={v.total_credit}, want 5000"
+    assert v.reference_type == "stock_adjustment"
+    assert v.reference_id == _adj.stock_adjustment_id
+
+    lines = _fetch_voucher_lines(db_session, voucher_id=v.voucher_id)
+    assert len(lines) == 2
+
+    dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
+    cr_lines = [ln for ln in lines if ln.line_type == JournalLineType.CR]
+    assert len(dr_lines) == 1
+    assert len(cr_lines) == 1
+    assert Decimal(dr_lines[0].amount) == Decimal("5000.00")
+    assert Decimal(cr_lines[0].amount) == Decimal("5000.00")
+
+    # DR must hit Inventory (1300), CR must hit Inventory Adjustment (5350).
+    inv_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "1300")
+    ).scalar_one()
+    sadj_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "5350")
+    ).scalar_one()
+
+    assert dr_lines[0].ledger_id == inv_ledger.ledger_id, "INCREASE: DR must be Inventory (1300)"
+    assert cr_lines[0].ledger_id == sadj_ledger.ledger_id, (
+        "INCREASE: CR must be Inventory Adjustment (5350)"
+    )
+
+
+def test_decrease_with_cost_posts_reversed_sadj_voucher(
+    db_session: OrmSession,
+    gl_setup: tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID],
+) -> None:
+    """DECREASE 30 units @ cost ₹20 (pre-seeded) → DR 5350 = 600, CR 1300 = 600."""
+    org_id, firm_id, item_id, location_id = gl_setup
+
+    # Pre-seed 50 units at ₹20 so the DECREASE has a known cost.
+    inventory_service.add_stock(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("50"),
+        unit_cost=Decimal("20"),
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+    )
+
+    _adj, _ledger = stock_service.create_adjustment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("30"),
+        direction="DECREASE",
+        reason="Damaged goods write-down",
+    )
+
+    vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
+    assert len(vouchers) == 1
+    v = vouchers[0]
+    assert v.total_debit == Decimal("600.00"), f"total_debit={v.total_debit}, want 600"
+    assert v.total_credit == Decimal("600.00")
+
+    lines = _fetch_voucher_lines(db_session, voucher_id=v.voucher_id)
+    dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
+    cr_lines = [ln for ln in lines if ln.line_type == JournalLineType.CR]
+
+    inv_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "1300")
+    ).scalar_one()
+    sadj_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "5350")
+    ).scalar_one()
+
+    assert dr_lines[0].ledger_id == sadj_ledger.ledger_id, (
+        "DECREASE: DR must be Inventory Adjustment (5350)"
+    )
+    assert cr_lines[0].ledger_id == inv_ledger.ledger_id, "DECREASE: CR must be Inventory (1300)"
+    assert Decimal(dr_lines[0].amount) == Decimal("600.00")
+    assert Decimal(cr_lines[0].amount) == Decimal("600.00")
+
+
+def test_zero_cost_increase_skips_gl_voucher(
+    db_session: OrmSession,
+    gl_setup: tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID],
+) -> None:
+    """INCREASE with unit_cost=0 → value_delta=0 → NO GL voucher posted.
+
+    A zero-value voucher would trip the balance invariant and pollute the
+    trial balance with ghost entries. Skip it entirely.
+    """
+    org_id, firm_id, item_id, location_id = gl_setup
+
+    stock_service.create_adjustment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("50"),
+        direction="INCREASE",
+        unit_cost=Decimal("0"),
+        reason="Zero-cost sample stock",
+    )
+
+    vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
+    assert len(vouchers) == 0, (
+        f"Expected 0 STOCK_ADJUSTMENT vouchers for zero-cost adjustment, got {len(vouchers)}"
+    )
+
+
+def test_count_reset_no_op_skips_gl_voucher(
+    db_session: OrmSession,
+    gl_setup: tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID],
+) -> None:
+    """COUNT_RESET where target == current (delta=0) → NO GL voucher.
+
+    The service already returns early before the shared tail when delta=0
+    (the audit stub path). This test guards that the early return persists
+    and that no phantom voucher leaks through.
+    """
+    org_id, firm_id, item_id, location_id = gl_setup
+
+    # Seed 25 units at ₹10.
+    inventory_service.add_stock(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("25"),
+        unit_cost=Decimal("10"),
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+    )
+
+    # COUNT_RESET to same qty → delta=0 → early return before GL posting.
+    stock_service.create_adjustment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("25"),
+        direction="COUNT_RESET",
+        reason="Verified — no change",
+    )
+
+    vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
+    assert len(vouchers) == 0, (
+        f"Expected 0 STOCK_ADJUSTMENT vouchers for no-op COUNT_RESET, got {len(vouchers)}"
+    )
+
+
+def test_count_reset_increase_posts_balanced_sadj_voucher(
+    db_session: OrmSession,
+    gl_setup: tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID],
+) -> None:
+    """COUNT_RESET to a HIGHER qty posts DR 1300 / CR 5350 for the signed delta value.
+
+    Setup: 10 units @ ₹130 (current_cost=130, value=1300).
+    Reset to 20 → delta=+10 → value_delta=10*130=1300.
+    Expected: one STOCK_ADJUSTMENT voucher, DR 1300=1300, CR 5350=1300, balanced.
+    """
+    org_id, firm_id, item_id, location_id = gl_setup
+
+    inventory_service.add_stock(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("10"),
+        unit_cost=Decimal("130"),
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+    )
+
+    _adj, _ledger = stock_service.create_adjustment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("20"),  # target; delta = +10
+        direction="COUNT_RESET",
+        reason="Physical count — more than expected",
+    )
+
+    vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
+    assert len(vouchers) == 1, f"Expected 1 SADJ voucher, got {len(vouchers)}"
+    v = vouchers[0]
+
+    # value_delta = 10 units * ₹130 = ₹1300
+    assert v.total_debit == Decimal("1300.00"), f"total_debit={v.total_debit}, want 1300.00"
+    assert v.total_credit == Decimal("1300.00"), f"total_credit={v.total_credit}, want 1300.00"
+
+    lines = _fetch_voucher_lines(db_session, voucher_id=v.voucher_id)
+    dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
+    cr_lines = [ln for ln in lines if ln.line_type == JournalLineType.CR]
+    assert len(dr_lines) == 1
+    assert len(cr_lines) == 1
+
+    inv_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "1300")
+    ).scalar_one()
+    sadj_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "5350")
+    ).scalar_one()
+
+    # COUNT_RESET↑ is a write-in: DR Inventory (1300), CR Inv Adj (5350)
+    assert dr_lines[0].ledger_id == inv_ledger.ledger_id, (
+        "COUNT_RESET↑: DR must be Inventory (1300)"
+    )
+    assert cr_lines[0].ledger_id == sadj_ledger.ledger_id, (
+        "COUNT_RESET↑: CR must be Inventory Adjustment (5350)"
+    )
+    assert Decimal(dr_lines[0].amount) == Decimal("1300.00")
+    assert Decimal(cr_lines[0].amount) == Decimal("1300.00")
+
+
+def test_count_reset_decrease_posts_balanced_sadj_voucher(
+    db_session: OrmSession,
+    gl_setup: tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID],
+) -> None:
+    """COUNT_RESET to a LOWER qty posts DR 5350 / CR 1300 for the signed delta value.
+
+    Setup: 20 units @ ₹30 (current_cost=30, value=600).
+    Reset to 10 → delta=-10 → value_delta=10*30=300.
+    Expected: one STOCK_ADJUSTMENT voucher, DR 5350=300, CR 1300=300, balanced.
+    """
+    org_id, firm_id, item_id, location_id = gl_setup
+
+    inventory_service.add_stock(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("20"),
+        unit_cost=Decimal("30"),
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+    )
+
+    _adj, _ledger = stock_service.create_adjustment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("10"),  # target; delta = -10
+        direction="COUNT_RESET",
+        reason="Physical count — fewer than expected",
+    )
+
+    vouchers = _fetch_sadj_vouchers(db_session, org_id=org_id)
+    assert len(vouchers) == 1, f"Expected 1 SADJ voucher, got {len(vouchers)}"
+    v = vouchers[0]
+
+    # value_delta = 10 units * ₹30 = ₹300
+    assert v.total_debit == Decimal("300.00"), f"total_debit={v.total_debit}, want 300.00"
+    assert v.total_credit == Decimal("300.00"), f"total_credit={v.total_credit}, want 300.00"
+
+    lines = _fetch_voucher_lines(db_session, voucher_id=v.voucher_id)
+    dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
+    cr_lines = [ln for ln in lines if ln.line_type == JournalLineType.CR]
+    assert len(dr_lines) == 1
+    assert len(cr_lines) == 1
+
+    inv_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "1300")
+    ).scalar_one()
+    sadj_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "5350")
+    ).scalar_one()
+
+    # COUNT_RESET↓ is a write-down: DR Inv Adj (5350), CR Inventory (1300)
+    assert dr_lines[0].ledger_id == sadj_ledger.ledger_id, (
+        "COUNT_RESET↓: DR must be Inventory Adjustment (5350)"
+    )
+    assert cr_lines[0].ledger_id == inv_ledger.ledger_id, (
+        "COUNT_RESET↓: CR must be Inventory (1300)"
+    )
+    assert Decimal(dr_lines[0].amount) == Decimal("300.00")
+    assert Decimal(cr_lines[0].amount) == Decimal("300.00")
+
+
+def test_trial_balance_stays_balanced_after_stock_adjustment(
+    db_session: OrmSession,
+    gl_setup: tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID],
+) -> None:
+    """After a stock adjustment the sum of all DR voucher lines must equal
+    the sum of all CR voucher lines for the org (TB balanced).
+
+    This guards the fundamental accounting invariant: every GL posting
+    must be self-balancing.
+    """
+    org_id, firm_id, item_id, location_id = gl_setup
+
+    # Post an INCREASE then a DECREASE to exercise both legs.
+    stock_service.create_adjustment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("200"),
+        direction="INCREASE",
+        unit_cost=Decimal("25"),
+        reason="TB test — increase",
+    )
+    # Decrease half the stock.
+    stock_service.create_adjustment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        item_id=item_id,
+        location_id=location_id,
+        qty=Decimal("100"),
+        direction="DECREASE",
+        reason="TB test — decrease (cost inherited from position)",
+    )
+
+    # Sum all voucher DR and CR amounts scoped to this org.
+    dr_total = db_session.execute(
+        select(func.sum(VoucherLine.amount))
+        .join(Voucher, VoucherLine.voucher_id == Voucher.voucher_id)
+        .where(
+            Voucher.org_id == org_id,
+            VoucherLine.line_type == JournalLineType.DR,
+        )
+    ).scalar_one()
+    cr_total = db_session.execute(
+        select(func.sum(VoucherLine.amount))
+        .join(Voucher, VoucherLine.voucher_id == Voucher.voucher_id)
+        .where(
+            Voucher.org_id == org_id,
+            VoucherLine.line_type == JournalLineType.CR,
+        )
+    ).scalar_one()
+
+    dr_dec = Decimal(dr_total or 0)
+    cr_dec = Decimal(cr_total or 0)
+    assert dr_dec > Decimal("0"), "Expected non-zero DR total after adjustments"
+    assert dr_dec == cr_dec, (
+        f"Trial balance unbalanced: DR={dr_dec}, CR={cr_dec} (diff={dr_dec - cr_dec})"
+    )
