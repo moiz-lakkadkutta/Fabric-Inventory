@@ -120,6 +120,10 @@ _SYSTEM_PERMISSIONS: Final[tuple[tuple[str, str, str], ...]] = (
     # Admin
     ("admin.firm", "manage", "Manage firm settings"),
     ("admin.audit", "read", "View audit log"),
+    # CRYPTO-01: verify the org's audit-log hash chain integrity.
+    # Granted to OWNER via _ALL_PERMS; also added to ACCOUNTANT so
+    # the accountant can run chain-integrity checks during period close.
+    ("admin.audit", "verify", "Verify the integrity of the org's audit log hash chain"),
     ("admin.user", "manage", "Assign roles to users"),
     # Sales order — read + approve added in TASK-032
     ("sales.order", "read", "View sales orders"),
@@ -290,6 +294,9 @@ _SYSTEM_ROLES: Final[tuple[tuple[str, str, str, frozenset[str]], ...]] = (
                 # TR-B3: Accountants reconcile bank statements monthly.
                 "accounting.bank_recon.confirm",
                 "admin.audit.read",
+                # CRYPTO-01: Accountant needs verify to run chain-integrity
+                # checks during period close audit procedures.
+                "admin.audit.verify",
                 "sales.order.read",
                 "dashboard.read",
                 "jobwork.order.read",

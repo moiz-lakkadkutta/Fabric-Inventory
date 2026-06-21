@@ -426,12 +426,24 @@ def test_rls_blocks_cross_org_party_reads(admin_engine: Engine) -> None:
     finally:
         # Cleanup — parties first, then orgs, then revert FORCE RLS. The
         # role is reusable across runs; we don't drop it.
+        #
+        # CRYPTO-01 note: the audit_log_immutable trigger blocks DELETE on
+        # audit_log for all roles. Use session_replication_role=replica to
+        # bypass triggers for the test-DB cleanup (superuser-only op; the
+        # admin_engine uses the `fabric` migration role which is SUPERUSER).
         cleanup_conn = admin_engine.connect()
         try:
-            cleanup_conn.execute(
-                text("DELETE FROM audit_log WHERE org_id IN (:a, :b)"),
-                {"a": str(org_a_id), "b": str(org_b_id)},
-            )
+            cleanup_conn.execute(text("SET session_replication_role = replica"))
+            try:
+                cleanup_conn.execute(
+                    text("DELETE FROM audit_log WHERE org_id IN (:a, :b)"),
+                    {"a": str(org_a_id), "b": str(org_b_id)},
+                )
+            finally:
+                # Always reset replication role so the pooled connection
+                # does not return stuck in replica mode (which would
+                # disable triggers and FK checks for subsequent tests).
+                cleanup_conn.execute(text("SET session_replication_role = DEFAULT"))
             cleanup_conn.execute(
                 text("DELETE FROM party WHERE org_id IN (:a, :b)"),
                 {"a": str(org_a_id), "b": str(org_b_id)},

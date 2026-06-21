@@ -2410,6 +2410,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/audit/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Verify the org's audit-log hash chain integrity
+         * @description Recompute and verify the hash chain for the calling org.
+         *
+         *     Loads all chained rows (``this_hash IS NOT NULL``) for the org, then
+         *     walks the chain by following **hash links** (prev_hash → this_hash)
+         *     starting from the genesis row (``prev_hash == GENESIS_HASH``).
+         *
+         *     This walk is clock-independent: ``created_at`` ordering is NOT used.
+         *     Backward wall-clock steps or colliding ``created_at`` values do not
+         *     produce false chain-break reports.
+         *
+         *     Checks performed:
+         *     1. Exactly one genesis row exists (``prev_hash == GENESIS_HASH``).
+         *        If none: ``missing_genesis``.
+         *     2. No two rows share the same ``prev_hash`` (fork): ``chain_fork``.
+         *     3. For each row in the walk: ``this_hash == SHA256(canonical_bytes(row))``.
+         *        If not: ``this_hash_mismatch``.
+         *     4. After the walk, every chained row was visited.
+         *        Unvisited rows are orphans: ``orphan_rows``.
+         */
+        get: operations["verify_audit_chain_v1_audit_verify_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/vouchers": {
         parameters: {
             query?: never;
@@ -3564,6 +3601,16 @@ export interface components {
             description?: string | null;
             /** Name */
             name?: string | null;
+        };
+        /** FirstBreak */
+        FirstBreak: {
+            /**
+             * Audit Log Id
+             * Format: uuid
+             */
+            audit_log_id: string;
+            /** Reason */
+            reason: string;
         };
         /**
          * ForgotPasswordRequest
@@ -8171,6 +8218,14 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** VerifyResponse */
+        VerifyResponse: {
+            first_break: components["schemas"]["FirstBreak"] | null;
+            /** Rows Checked */
+            rows_checked: number;
+            /** Valid */
+            valid: boolean;
         };
         /**
          * VoucherListItem
@@ -13952,6 +14007,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UomListResponse"];
+                };
+            };
+        };
+    };
+    verify_audit_chain_v1_audit_verify_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyResponse"];
                 };
             };
         };
