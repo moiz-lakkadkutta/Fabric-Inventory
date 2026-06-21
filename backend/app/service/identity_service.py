@@ -93,6 +93,11 @@ class TokenPayload:
     iat: int
     exp: int
     token_type: Literal["access", "refresh"]
+    # TS-05/IDM-5: permissions_version claim — must match the user's live
+    # `permissions_version` column on every authenticated request. Tokens
+    # issued before this field existed default to 0 so the check is a
+    # no-op against users whose DB value is also 1 (initial default).
+    pv: int = 0
 
 
 @dataclass(frozen=True)
@@ -207,6 +212,9 @@ def _issue_jwt(
         "iat": int(now.timestamp()),
         "exp": int(exp.timestamp()),
         "token_type": token_type,
+        # TS-05/IDM-5: embed the user's current permissions_version so
+        # per-request middleware can reject tokens issued before a role change.
+        "pv": user.permissions_version,
     }
     encoded = jwt.encode(payload, settings.jwt_secret, algorithm=_JWT_ALG)
     return encoded, exp, jti
@@ -278,6 +286,10 @@ def verify_jwt(token: str) -> TokenPayload:
             iat=int(payload["iat"]),
             exp=int(payload["exp"]),
             token_type=payload.get("token_type", "access"),
+            # TS-05/IDM-5: default to 0 for tokens issued before this claim
+            # existed so old tokens don't crash but ARE caught by the per-request
+            # check (user.permissions_version starts at 1 by DB default).
+            pv=int(payload.get("pv", 0)),
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise TokenInvalidError(f"Token payload malformed: {exc}") from exc

@@ -7,12 +7,14 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, Request
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from .db import get_sessionmaker, get_sync_sessionmaker
 from .exceptions import PermissionDeniedError, TokenInvalidError
+from .middleware.rate_limit import _get_redis
+from .models import AppUser
 from .service.identity_service import TokenPayload, verify_jwt
 
 
@@ -75,22 +77,30 @@ def get_db_sync(request: Request) -> Iterator[Session]:
 SyncDBSession = Annotated[Session, Depends(get_db_sync)]
 
 
-def get_current_user(request: Request) -> TokenPayload:
-    """Decode the Bearer JWT from `Authorization` and return the access-token payload.
+async def get_current_user(
+    request: Request,
+    db: SyncDBSession,
+) -> TokenPayload:
+    """Decode the Bearer JWT and verify it hasn't been revoked or invalidated.
 
-    Raises `TokenInvalidError` (401) on missing header, wrong scheme,
-    invalid signature, expired token, or refresh tokens (only access
-    tokens authenticate a request).
+    Security checks performed in order:
+    1. Signature + expiry — via `verify_jwt` (HS256, standard JWT validation).
+    2. Token type — only access tokens are accepted here.
+    3. TS-04 / jti denylist — if Redis is configured, reject the token when
+       its `jti` has been pushed to the denylist (happens on logout).
+    4. TS-05 / IDM-5 — permissions_version check: load the live AppUser row
+       and reject if the token's `pv` claim doesn't match `user.permissions_version`.
+       Any role/permission mutation bumps the DB value, causing outstanding
+       tokens to self-invalidate on their very next request.
+
+    Raises `TokenInvalidError` (401) on any failure.
 
     Note on architecture: we decode the JWT *here* rather than in a
     middleware because Starlette's `BaseHTTPMiddleware` has known issues
-    propagating `request.state` mutations to the handler. Decoding twice
-    (here + in `RLSMiddleware` for the org-scoping GUC) is cheap relative
-    to bcrypt + DB latency, and avoids the propagation footgun.
-
-    Routes that need authentication declare `current_user: CurrentUser`;
-    public routes (signup, login, refresh, live, ready) don't depend on
-    this so the JWT decode never runs for them.
+    propagating `request.state` mutations to the handler. `db` is resolved
+    via the same `get_db_sync` dependency that route handlers use; FastAPI
+    deduplicates dependencies by callable so authenticated routes share one
+    DB session rather than opening two.
     """
     auth_header = request.headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -99,6 +109,25 @@ def get_current_user(request: Request) -> TokenPayload:
     payload = verify_jwt(token)
     if payload.token_type != "access":  # noqa: S105 — JWT type discriminator
         raise TokenInvalidError("Expected access token")
+
+    # TS-04: jti denylist — async Redis check.
+    # Logout pushes SETEX jti:<jti> <remaining_ttl> "1"; we reject here.
+    # When Redis is unconfigured (_get_redis() returns None) the check is a
+    # no-op — same behaviour as the rate-limit module's dev fallback.
+    redis_client = _get_redis()
+    if redis_client is not None and await redis_client.exists(f"jti:{payload.jti}"):
+        raise TokenInvalidError("Token has been revoked")
+
+    # TS-05 / IDM-5: permissions_version check — sync DB load.
+    # The `db` session has the RLS GUC already set to the correct org_id by
+    # `get_db_sync` (which reads `request.state.org_id` populated by
+    # `RLSMiddleware`). The SELECT is therefore scoped to the right tenant.
+    user = db.execute(
+        select(AppUser).where(AppUser.user_id == payload.user_id)
+    ).scalar_one_or_none()
+    if user is not None and payload.pv != user.permissions_version:
+        raise TokenInvalidError("Token permissions are stale — please re-authenticate")
+
     return payload
 
 

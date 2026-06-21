@@ -468,3 +468,107 @@ def test_logout_with_access_token_returns_400(http_client: TestClient) -> None:
     assert resp.status_code == 400
     # Suppress unused-arg lint by referencing os.environ check
     _ = os.environ.get("CI")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TS-04 — jti denylist: access token is revoked on logout
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_TS04_logout_denylists_access_token_so_reuse_returns_401(
+    http_client: TestClient,
+) -> None:
+    """TS-04 (RED): after a logout that sends the access token in the
+    Authorization header, any subsequent request using that same access
+    token must return 401 (jti denylisted in Redis).
+
+    Before implementation: the access token remains valid for up to 15 min
+    after logout because no denylist exists.
+    """
+    email = _unique_email()
+    org_name = _unique_org_name()
+    body = _signup(http_client, email=email, password="strong-password-1", org_name=org_name)
+    access_token = body["access_token"]
+    refresh_token = body["refresh_token"]
+
+    # Sanity: token works before logout.
+    pre = http_client.get("/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert pre.status_code == 200, f"Expected 200 before logout, got {pre.status_code}"
+
+    # Logout — send access token in Authorization header so the handler
+    # can extract its jti and push it to the denylist.
+    logout_resp = http_client.post(
+        "/auth/logout",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"refresh_token": refresh_token},
+    )
+    assert logout_resp.status_code == 200
+    assert logout_resp.json()["revoked"] is True
+
+    # After logout, the same access token must be 401 (jti is denylisted).
+    post = http_client.get("/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert post.status_code == 401, (
+        f"TS-04 FAIL: access token still valid after logout (got {post.status_code}). "
+        "Logout must denylist the access token's jti in Redis."
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TS-05 / IDM-5 — permissions_version: stale token rejected after role change
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_TS05_valid_token_works_when_pv_unchanged(http_client: TestClient) -> None:
+    """TS-05 positive: a fresh token with matching pv is accepted normally."""
+    body = _signup(
+        http_client,
+        email=_unique_email(),
+        password="strong-password-1",
+        org_name=_unique_org_name(),
+    )
+    resp = http_client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"}
+    )
+    assert resp.status_code == 200
+
+
+def test_TS05_stale_access_token_returns_401_after_pv_bump(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """TS-05/IDM-5 (RED): after a role change increments permissions_version,
+    any outstanding access token carrying the old pv must return 401.
+
+    Before implementation: the stale token continues to be accepted because
+    there is no per-request pv comparison in get_current_user.
+    """
+    from sqlalchemy.orm import Session as OrmSession
+
+    email = _unique_email()
+    org_name = _unique_org_name()
+    body = _signup(http_client, email=email, password="strong-password-1", org_name=org_name)
+    access_token = body["access_token"]
+    org_id = body["org_id"]
+    user_id = body["user_id"]
+
+    # Sanity: token works before pv bump.
+    pre = http_client.get("/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert pre.status_code == 200, f"Expected 200 before pv bump, got {pre.status_code}"
+
+    # Simulate a role change by manually bumping permissions_version in the DB.
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        s.execute(
+            text(
+                "UPDATE app_user SET permissions_version = permissions_version + 1 "
+                "WHERE user_id = :uid"
+            ),
+            {"uid": user_id},
+        )
+        s.commit()
+
+    # Old access token must now 401 (pv in token < user's current pv).
+    post = http_client.get("/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert post.status_code == 401, (
+        f"TS-05 FAIL: stale token still valid after pv bump (got {post.status_code}). "
+        "get_current_user must reject tokens whose pv != user.permissions_version."
+    )

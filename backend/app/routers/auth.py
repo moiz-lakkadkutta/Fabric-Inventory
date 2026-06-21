@@ -29,7 +29,7 @@ from app.exceptions import (
     PermissionDeniedError,
     TokenInvalidError,
 )
-from app.middleware.rate_limit import _client_ip, rate_limit
+from app.middleware.rate_limit import _client_ip, _get_redis, rate_limit
 from app.models import AppUser, Firm, Organization, Role
 from app.models import Session as DbSession
 from app.schemas.auth import (
@@ -718,12 +718,13 @@ def refresh(
     response_model=LogoutResponse,
     summary="Revoke the refresh token's session row",
 )
-def logout(
+async def logout(
     db: SyncDBSession,
     response: Response,
     body: LogoutRequest | None = None,
     fabric_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> LogoutResponse:
 
     # Always clear the cookie even if revocation no-ops — local state
@@ -771,6 +772,28 @@ def logout(
 
     db_session_row.revoked_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
+
+    # TS-04: jti denylist — push the access token's jti to Redis so
+    # subsequent requests using the same access token return 401 immediately,
+    # rather than waiting for the 15-minute TTL to expire.
+    # The access token is expected in the Authorization header (the client
+    # sends it alongside the refresh token at logout). If absent or
+    # already-expired, we skip silently — idempotent and safe.
+    if authorization and authorization.startswith("Bearer "):
+        _access_raw = authorization.removeprefix("Bearer ").strip()
+        try:
+            _access_payload = identity_service.verify_jwt(_access_raw)
+            if _access_payload.token_type == "access":  # noqa: S105 — discriminator
+                _remaining = int(
+                    _access_payload.exp - datetime.datetime.now(tz=datetime.UTC).timestamp()
+                )
+                if _remaining > 0:
+                    _redis = _get_redis()
+                    if _redis is not None:
+                        await _redis.setex(f"jti:{_access_payload.jti}", _remaining, "1")
+        except TokenInvalidError:
+            # Already expired or invalid — no need to denylist; skip silently.
+            pass
 
     audit_service.emit(
         db,
