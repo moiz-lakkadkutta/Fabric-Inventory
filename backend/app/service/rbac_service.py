@@ -31,11 +31,11 @@ import uuid
 from collections.abc import Iterable
 from typing import Final, TypedDict
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError, PermissionDeniedError
-from app.models import Permission, Role, RolePermission, UserRole
+from app.models import AppUser, Permission, Role, RolePermission, UserRole
 from app.service import audit_service
 
 # ──────────────────────────────────────────────────────────────────────
@@ -597,6 +597,14 @@ def assign_role(
     user_role = UserRole(org_id=org_id, user_id=user_id, role_id=role_id, firm_id=firm_id)
     session.add(user_role)
     session.flush()
+    # TS-05/IDM-5: bump the user's permissions_version so any outstanding
+    # JWT carrying the old pv is rejected on the very next request.
+    session.execute(
+        update(AppUser)
+        .where(AppUser.user_id == user_id)
+        .values(permissions_version=AppUser.permissions_version + 1)
+    )
+    session.flush()
     audit_service.emit(
         session,
         org_id=org_id,
@@ -850,6 +858,21 @@ def update_custom_role(
         ]
         if new_grants:
             session.add_all(new_grants)
+            session.flush()
+
+        # TS-05/IDM-5: bump permissions_version on every user who holds
+        # this role so their outstanding JWTs become stale immediately.
+        affected_user_ids = list(
+            session.execute(
+                select(UserRole.user_id).where(UserRole.role_id == role.role_id)
+            ).scalars()
+        )
+        if affected_user_ids:
+            session.execute(
+                update(AppUser)
+                .where(AppUser.user_id.in_(affected_user_ids))
+                .values(permissions_version=AppUser.permissions_version + 1)
+            )
             session.flush()
 
     audit_service.emit(

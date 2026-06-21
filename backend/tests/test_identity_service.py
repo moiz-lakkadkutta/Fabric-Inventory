@@ -582,3 +582,30 @@ def test_dummy_bcrypt_hash_does_not_verify_against_itself() -> None:
     assert not identity_service.verify_password(dummy, dummy), (
         "The hash verifies against itself — the sentinel is insecure."
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TS-05 / IDM-5 — permissions_version claim in JWT
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_jwt_carries_pv_claim_matching_user_permissions_version(
+    db_session: OrmSession, signed_up_user: tuple[AppUser, uuid.UUID, str]
+) -> None:
+    """TS-05/IDM-5 (RED): the access token must carry a `pv` claim equal
+    to the user's current `permissions_version`. If this claim is absent
+    or wrong, subsequent role changes will produce stale tokens that don't
+    self-invalidate.
+    """
+    user, org_id, password = signed_up_user
+    pair = identity_service.login(
+        db_session, email="owner@example.com", password=password, org_id=org_id
+    )
+    payload = identity_service.verify_jwt(pair.access_token)
+    # TokenPayload must expose `pv` and it must match the DB user's version.
+    assert hasattr(payload, "pv"), (
+        "TokenPayload missing `pv` attribute — TS-05 requires permissions_version in JWT"
+    )
+    assert payload.pv == user.permissions_version, (
+        f"payload.pv={payload.pv} != user.permissions_version={user.permissions_version}"
+    )

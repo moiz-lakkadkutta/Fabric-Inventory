@@ -128,6 +128,20 @@ class Settings(BaseSettings):
                     f"CORS_ORIGINS must be set when ENVIRONMENT={self.environment!r}; "
                     "wildcard '*' with allow_credentials=True is rejected by browsers."
                 )
+
+        # TS-04 guard: jti logout denylist is a Redis SETEX. Without Redis the
+        # denylist silently no-ops and logout revocation is completely bypassed.
+        # Reject startup in non-dev environments where this would be a silent
+        # security regression. dev / test omit Redis legitimately (fakeredis
+        # covers those paths).
+        if self.environment != "dev" and not self.redis_url:
+            raise ValueError(
+                f"REDIS_URL must be set when ENVIRONMENT={self.environment!r}; "
+                "the jti logout denylist (TS-04) is silently disabled without it, "
+                "meaning logout does not revoke outstanding access tokens. "
+                "Set REDIS_URL to a reachable Redis instance."
+            )
+
         return self
 
 

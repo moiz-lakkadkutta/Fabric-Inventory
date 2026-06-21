@@ -496,6 +496,9 @@ def change_user_role(
 
     target_firm_id: uuid.UUID | None = None if new_role.code == OWNER_ROLE_CODE else prior_firm_id
 
+    # TS-05/IDM-5: `assign_role` bumps the target user's permissions_version
+    # inside the same transaction, so any outstanding JWTs carrying the old
+    # pv are rejected on the very next request. No extra bump needed here.
     rbac_service.assign_role(
         session,
         user_id=target_user_id,
