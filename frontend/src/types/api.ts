@@ -2421,19 +2421,22 @@ export interface paths {
          * Verify the org's audit-log hash chain integrity
          * @description Recompute and verify the hash chain for the calling org.
          *
-         *     Reads all chained rows (``this_hash IS NOT NULL``) for the org,
-         *     ordered by ``created_at ASC, audit_log_id ASC`` (the same order
-         *     emit() uses to determine the chain tip), and checks each row:
+         *     Loads all chained rows (``this_hash IS NOT NULL``) for the org, then
+         *     walks the chain by following **hash links** (prev_hash → this_hash)
+         *     starting from the genesis row (``prev_hash == GENESIS_HASH``).
          *
-         *     1. ``this_hash`` must equal ``SHA256(canonical_bytes(row))``.
-         *        Detects tampering with any content field.
+         *     This walk is clock-independent: ``created_at`` ordering is NOT used.
+         *     Backward wall-clock steps or colliding ``created_at`` values do not
+         *     produce false chain-break reports.
          *
-         *     2. ``prev_hash`` must equal the predecessor row's ``this_hash``
-         *        (or GENESIS_HASH for the first chained row).
-         *        Detects insertion of rows that break the chain.
-         *
-         *     Returns immediately on the first detected break to avoid O(n) full
-         *     scans when the chain is obviously broken at the start.
+         *     Checks performed:
+         *     1. Exactly one genesis row exists (``prev_hash == GENESIS_HASH``).
+         *        If none: ``missing_genesis``.
+         *     2. No two rows share the same ``prev_hash`` (fork): ``chain_fork``.
+         *     3. For each row in the walk: ``this_hash == SHA256(canonical_bytes(row))``.
+         *        If not: ``this_hash_mismatch``.
+         *     4. After the walk, every chained row was visited.
+         *        Unvisited rows are orphans: ``orphan_rows``.
          */
         get: operations["verify_audit_chain_v1_audit_verify_get"];
         put?: never;

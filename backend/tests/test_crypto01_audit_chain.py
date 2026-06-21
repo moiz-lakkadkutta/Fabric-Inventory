@@ -258,56 +258,81 @@ def test_emit_different_org_starts_independent_chain(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def test_trigger_blocks_update_on_audit_log(
-    db_session: OrmSession, org_user: tuple[uuid.UUID, uuid.UUID, uuid.UUID]
-) -> None:
-    """The audit_log_immutable trigger must raise on UPDATE."""
-    org_id, firm_id, user_id = org_user
-    entity_id = uuid.uuid4()
+# The two trigger tests below MUST run as a role that still holds UPDATE/DELETE
+# on audit_log — i.e. the `fabric` SUPERUSER via `admin_engine`. The runtime
+# role `fabric_app` is stopped one layer earlier by the e1_audit_chain REVOKE
+# (covered by test_fabric_app_has_no_update_delete_on_audit_log), so running
+# these as fabric_app would only ever assert "permission denied" and never
+# reach the trigger. Two further subtleties this design guards against:
+#   1. A `FOR EACH ROW` trigger never fires on a statement that matches 0 rows,
+#      so the row must exist AND match the WHERE clause.
+#   2. We match the trigger error on the word "immutable" ONLY (not "tamper"),
+#      because SQLAlchemy echoes the failing SQL into the exception string and a
+#      payload like `SET action = 'tampered'` would FALSE-match a "tamper" regex
+#      regardless of which error actually fired. The UPDATE/DELETE statements
+#      below contain no "immutable" substring, so the match is unambiguous.
 
-    audit_service.emit(
-        db_session,
-        org_id=org_id,
-        firm_id=firm_id,
-        user_id=user_id,
-        entity_type="test",
-        entity_id=entity_id,
-        action="orig",
-    )
-    db_session.flush()
 
-    with pytest.raises(Exception, match=r"(?i)immutable|cannot|tamper"):
-        db_session.execute(
-            text("UPDATE audit_log SET action = 'tampered' WHERE entity_id = :eid"),
-            {"eid": entity_id},
+def test_trigger_blocks_update_on_audit_log(admin_engine: Engine) -> None:
+    """The audit_log_immutable trigger raises on UPDATE even for a privileged
+    (superuser) role — defence-in-depth on top of the fabric_app REVOKE."""
+    eid = uuid.uuid4()
+    with OrmSession(admin_engine, expire_on_commit=False) as s:
+        org = Organization(
+            name=f"trig-upd-{uuid.uuid4().hex[:8]}",
+            admin_email=f"trig-upd-{uuid.uuid4().hex[:6]}@example.com",
         )
-        db_session.flush()
-
-
-def test_trigger_blocks_delete_on_audit_log(
-    db_session: OrmSession, org_user: tuple[uuid.UUID, uuid.UUID, uuid.UUID]
-) -> None:
-    """The audit_log_immutable trigger must raise on DELETE."""
-    org_id, firm_id, user_id = org_user
-    entity_id = uuid.uuid4()
-
-    audit_service.emit(
-        db_session,
-        org_id=org_id,
-        firm_id=firm_id,
-        user_id=user_id,
-        entity_type="test",
-        entity_id=entity_id,
-        action="orig",
-    )
-    db_session.flush()
-
-    with pytest.raises(Exception, match=r"(?i)immutable|cannot|tamper"):
-        db_session.execute(
-            text("DELETE FROM audit_log WHERE entity_id = :eid"),
-            {"eid": entity_id},
+        s.add(org)
+        s.flush()
+        row = audit_service.emit(
+            s,
+            org_id=org.org_id,
+            firm_id=None,
+            user_id=None,
+            entity_type="test",
+            entity_id=eid,
+            action="orig",
         )
-        db_session.flush()
+        s.flush()
+
+        with pytest.raises(Exception, match=r"(?i)immutable"):
+            s.execute(
+                text("UPDATE audit_log SET action = 'changed' WHERE audit_log_id = :id"),
+                {"id": row.audit_log_id},
+            )
+            s.flush()
+        s.rollback()
+
+
+def test_trigger_blocks_delete_on_audit_log(admin_engine: Engine) -> None:
+    """The audit_log_immutable trigger raises on DELETE even for a privileged
+    (superuser) role — defence-in-depth on top of the fabric_app REVOKE."""
+    eid = uuid.uuid4()
+    with OrmSession(admin_engine, expire_on_commit=False) as s:
+        org = Organization(
+            name=f"trig-del-{uuid.uuid4().hex[:8]}",
+            admin_email=f"trig-del-{uuid.uuid4().hex[:6]}@example.com",
+        )
+        s.add(org)
+        s.flush()
+        row = audit_service.emit(
+            s,
+            org_id=org.org_id,
+            firm_id=None,
+            user_id=None,
+            entity_type="test",
+            entity_id=eid,
+            action="orig",
+        )
+        s.flush()
+
+        with pytest.raises(Exception, match=r"(?i)immutable"):
+            s.execute(
+                text("DELETE FROM audit_log WHERE audit_log_id = :id"),
+                {"id": row.audit_log_id},
+            )
+            s.flush()
+        s.rollback()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

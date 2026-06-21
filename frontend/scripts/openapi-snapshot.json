@@ -25225,7 +25225,7 @@
     },
     "/v1/audit/verify": {
       "get": {
-        "description": "Recompute and verify the hash chain for the calling org.\n\nReads all chained rows (``this_hash IS NOT NULL``) for the org,\nordered by ``created_at ASC, audit_log_id ASC`` (the same order\nemit() uses to determine the chain tip), and checks each row:\n\n1. ``this_hash`` must equal ``SHA256(canonical_bytes(row))``.\n   Detects tampering with any content field.\n\n2. ``prev_hash`` must equal the predecessor row's ``this_hash``\n   (or GENESIS_HASH for the first chained row).\n   Detects insertion of rows that break the chain.\n\nReturns immediately on the first detected break to avoid O(n) full\nscans when the chain is obviously broken at the start.",
+        "description": "Recompute and verify the hash chain for the calling org.\n\nLoads all chained rows (``this_hash IS NOT NULL``) for the org, then\nwalks the chain by following **hash links** (prev_hash \u2192 this_hash)\nstarting from the genesis row (``prev_hash == GENESIS_HASH``).\n\nThis walk is clock-independent: ``created_at`` ordering is NOT used.\nBackward wall-clock steps or colliding ``created_at`` values do not\nproduce false chain-break reports.\n\nChecks performed:\n1. Exactly one genesis row exists (``prev_hash == GENESIS_HASH``).\n   If none: ``missing_genesis``.\n2. No two rows share the same ``prev_hash`` (fork): ``chain_fork``.\n3. For each row in the walk: ``this_hash == SHA256(canonical_bytes(row))``.\n   If not: ``this_hash_mismatch``.\n4. After the walk, every chained row was visited.\n   Unvisited rows are orphans: ``orphan_rows``.",
         "operationId": "verify_audit_chain_v1_audit_verify_get",
         "responses": {
           "200": {
