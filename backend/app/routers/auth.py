@@ -17,7 +17,7 @@ import json as _json
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
 from app.config import get_settings
 from app.dependencies import CurrentUser, SyncDBSession
@@ -391,12 +391,13 @@ def login(
     # (which could reveal that the account exists AND is locked).
     _now = datetime.datetime.now(tz=datetime.UTC)
     if user is not None and user.locked_until is not None and user.locked_until > _now:
-        # Timing: run dummy bcrypt so a locked-account response takes the
-        # same ~100ms as a wrong-password response.
+        # Cycle-2 Fix 2: use the SAME generic message as a wrong-password response.
+        # A distinct "Account temporarily locked" message is an enumeration oracle —
+        # an attacker can distinguish "account exists + locked" from "bad password"
+        # by comparing error text, confirming the target email is registered.
+        # Timing: run dummy bcrypt so response latency is also indistinguishable.
         identity_service.verify_password(body.password, identity_service.DUMMY_BCRYPT_HASH)
-        raise InvalidCredentialsError(
-            "Account temporarily locked due to too many failed attempts, please try again later"
-        )
+        raise InvalidCredentialsError("Invalid email or password")
 
     # DOS-02 / API-7-03 — Timing oracle: always run bcrypt regardless of
     # whether the user was found. When the user doesn't exist we verify the
@@ -426,15 +427,26 @@ def login(
         # supplied plaintext that would accumulate victim emails in the audit
         # table. The reset path already omits email for the same reason.
         #
-        # IDM-4: increment failed_login_attempts. If threshold reached,
-        # set locked_until and reset the counter. commit() persists both
-        # the audit row and the counter/lockout before the exception rolls
-        # back the outer transaction.
+        # Cycle-2 Fix 5: atomic failed-attempt increment.
+        # The previous ORM read-modify-write had a lost-update race: two concurrent
+        # bad-password requests could both read `failed_login_attempts = N`, both
+        # write N+1, and the lockout threshold would only be reached after 2N-1
+        # real attempts instead of N. Using UPDATE...RETURNING makes the increment
+        # atomic — Postgres serialises it so every concurrent failure is counted.
         if user is not None:
-            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
-            if user.failed_login_attempts >= _MAX_FAILED:
-                user.locked_until = _now + _LOCKOUT_WINDOW
-                user.failed_login_attempts = 0
+            result = db.execute(
+                update(AppUser)
+                .where(AppUser.user_id == user.user_id)
+                .values(failed_login_attempts=AppUser.failed_login_attempts + 1)
+                .returning(AppUser.failed_login_attempts)
+            )
+            new_count = result.scalar_one()
+            if new_count >= _MAX_FAILED:
+                db.execute(
+                    update(AppUser)
+                    .where(AppUser.user_id == user.user_id)
+                    .values(locked_until=_now + _LOCKOUT_WINDOW, failed_login_attempts=0)
+                )
 
         # We call db.commit() (not just flush()) BEFORE raising so the audit
         # row persists despite the exception. The dependency's session context

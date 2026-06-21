@@ -859,9 +859,19 @@ def test_IDM4_lockout_blocks_correct_password_after_10_failures(  # noqa: N802
         f"IDM-4 FAIL: after {_LOCKOUT_MAX_FAILED} failed attempts, correct password was accepted "
         f"(got {locked_resp.status_code}). Account must be locked."
     )
-    detail = locked_resp.json().get("detail", "").lower()
-    assert "lock" in detail or "temporar" in detail, (
-        f"IDM-4: lockout error must mention 'locked' or 'temporarily', got: {detail!r}"
+    # Security property: locked-account response MUST NOT distinguish itself from a
+    # wrong-password response via message content — that would be an enumeration oracle
+    # (attacker learns the account exists AND is locked by comparing messages).
+    # Both paths must return the same generic "Invalid email or password" body.
+    body = locked_resp.json()
+    detail = body.get("detail", "").lower()
+    assert "lock" not in detail, (
+        f"IDM-4 SECURITY: locked-account detail reveals lock status ({detail!r}). "
+        "Must use same generic 'Invalid email or password' as a wrong-password response."
+    )
+    assert "temporar" not in detail, (
+        f"IDM-4 SECURITY: locked-account detail reveals temporary lock ({detail!r}). "
+        "Must use same generic 'Invalid email or password' as a wrong-password response."
     )
 
 
@@ -905,4 +915,74 @@ def test_IDM4_successful_login_resets_failed_counter(http_client: TestClient) ->
     assert ok_again.status_code == 200, (
         f"IDM-4 FAIL: successful login did not reset the failed-attempts counter — "
         f"account locked after only {half} post-reset failures (got {ok_again.status_code})."
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cycle-2: MFA re-enroll block (Fix 1)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_cycle2_mfa_setup_on_already_enabled_user_returns_409(
+    http_client: TestClient,
+) -> None:
+    """Cycle-2 Fix 1: POST /auth/mfa/setup when MFA is already enabled must return 409.
+
+    A stolen access token must not be able to rebind the victim's authenticator
+    by calling mfa/setup. If mfa_enabled is True the endpoint must reject with
+    409 MFA_ALREADY_ENABLED and leave the existing secret untouched.
+    """
+    email = _unique_email()
+    org_name = _unique_org_name()
+    password = "strong-password-1"
+    body = _signup(http_client, email=email, password=password, org_name=org_name)
+    access_token = body["access_token"]
+
+    # Step 1: setup + confirm to fully enable MFA
+    setup_resp = http_client.post(
+        "/auth/mfa/setup",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert setup_resp.status_code == 200, setup_resp.text
+    secret_first = setup_resp.json()["secret"]
+    code = pyotp.TOTP(secret_first).now()
+    confirm = http_client.post(
+        "/auth/mfa/confirm",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"code": code},
+    )
+    assert confirm.status_code == 200, confirm.text
+
+    # Verify MFA is now active — login must require TOTP
+    login_resp = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": password, "org_name": org_name},
+    )
+    assert login_resp.status_code == 200
+    assert login_resp.json()["requires_mfa"] is True, "MFA must be active after confirm"
+
+    # Step 2: call mfa/setup AGAIN with MFA already enabled — must 409
+    second_setup = http_client.post(
+        "/auth/mfa/setup",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert second_setup.status_code == 409, (
+        f"Cycle-2 Fix 1 FAIL: mfa/setup on already-enabled user returned "
+        f"{second_setup.status_code} (expected 409). "
+        "A stolen token must not be able to rebind MFA."
+    )
+    assert second_setup.json().get("code") == "MFA_ALREADY_ENABLED", (
+        f"Cycle-2 Fix 1: 409 must carry code=MFA_ALREADY_ENABLED, got: {second_setup.json()}"
+    )
+
+    # Security property: MFA is still active after the rejected re-setup
+    # (mfa_enabled must not have been flipped, mfa_secret must be unchanged)
+    login_after = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": password, "org_name": org_name},
+    )
+    assert login_after.status_code == 200
+    assert login_after.json()["requires_mfa"] is True, (
+        "Cycle-2 Fix 1 FAIL: MFA was disabled after the rejected re-setup. "
+        "The 409 path must leave mfa_enabled=True and mfa_secret unchanged."
     )

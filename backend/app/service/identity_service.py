@@ -45,6 +45,7 @@ from app.config import get_settings
 from app.exceptions import (
     AppValidationError,
     InvalidCredentialsError,
+    MfaAlreadyEnabledError,
     TokenInvalidError,
 )
 from app.models import AppUser
@@ -434,6 +435,15 @@ def prepare_mfa_enrollment(session: Session, *, user_id: uuid.UUID) -> MfaEnroll
     if user is None:
         raise AppValidationError(f"User {user_id} not found")
 
+    # Cycle-2 Fix 1: block re-enrollment when MFA is already active.
+    # A stolen access token must not be able to overwrite the live mfa_secret
+    # and rebind the victim's authenticator. The admin must explicitly reset MFA
+    # (e.g. via a future admin endpoint) before re-enrollment is permitted.
+    if user.mfa_enabled:
+        raise MfaAlreadyEnabledError(
+            "MFA already enabled; contact an admin to reset before re-enrolling"
+        )
+
     secret = pyotp.random_base32()
     dek = crypto.get_org_dek(session, org_id=user.org_id)
     user.mfa_secret = crypto.encrypt_pii(secret, dek=dek, org_id=user.org_id)
@@ -447,7 +457,9 @@ def prepare_mfa_enrollment(session: Session, *, user_id: uuid.UUID) -> MfaEnroll
     return MfaEnrollment(secret=secret, provisioning_uri=provisioning_uri)
 
 
-def _run_totp_replay_check(redis_client: Any, replay_key: str) -> bool:
+def _run_totp_replay_check(
+    redis_client: Any, replay_key: str, *, close_after: bool = False
+) -> bool:
     """Sync wrapper: check Redis for TOTP replay and mark the code as used.
 
     Returns True if the code has already been used (replay detected).
@@ -457,14 +469,23 @@ def _run_totp_replay_check(redis_client: Any, replay_key: str) -> bool:
     Uses asyncio.run() because the Redis client is async and this service
     function is sync (called from sync FastAPI handlers in a threadpool).
     In a threadpool there is no running event loop, so asyncio.run() is safe.
+
+    close_after=True: call `await redis_client.aclose()` in a finally block
+    after the operation. Set this when the caller built a fresh client from
+    URL (production path). Do NOT set it for the test-injected client (shared
+    across tests) — closing it would break other tests.
     """
 
     async def _do() -> bool:
-        already = await redis_client.exists(replay_key)
-        if already:
-            return True
-        await redis_client.setex(replay_key, _TOTP_REPLAY_TTL, "1")
-        return False
+        try:
+            already = await redis_client.exists(replay_key)
+            if already:
+                return True
+            await redis_client.setex(replay_key, _TOTP_REPLAY_TTL, "1")
+            return False
+        finally:
+            if close_after:
+                await redis_client.aclose()
 
     # Check for a running event loop (async context — shouldn't happen for sync
     # handlers but guard against it). Fail-open: no replay protection in async ctx.
@@ -513,12 +534,25 @@ def verify_totp(session: Session, *, user_id: uuid.UUID, code: str) -> bool:
     # IDM-4: TOTP replay guard.
     # Key the used-code by (user_id, code string) with _TOTP_REPLAY_TTL (90s).
     # This rejects any replay within the 3-slot window (prev/current/next x 30s).
-    from app.middleware.rate_limit import _get_redis  # lazy import to avoid circular
+    #
+    # Cycle-2 Fix 3: close fresh clients after use to prevent FD leaks.
+    # _get_redis() returns either the test-injected client (_test_redis_client, shared
+    # across tests — must NOT be closed) or a freshly-built aioredis client from URL
+    # (production — must be closed so asyncio.run()'s loop teardown doesn't orphan
+    # the connection pool). We detect this by checking whether _test_redis_client is set.
+    # Lazy imports to avoid circular dependency (rate_limit imports config which imports settings)
+    from app.middleware.rate_limit import (
+        _get_redis,
+        _is_test_redis_injected,
+    )
 
     redis = _get_redis()
     if redis is not None:
         replay_key = f"totp:used:{user_id}:{code}"
-        is_replay = _run_totp_replay_check(redis, replay_key)
+        # close_after=True only when freshly built from URL (no injected test client).
+        # The injected fakeredis is shared; closing it between calls breaks other tests.
+        _close_after = not _is_test_redis_injected()
+        is_replay = _run_totp_replay_check(redis, replay_key, close_after=_close_after)
         if is_replay:
             return False
 
