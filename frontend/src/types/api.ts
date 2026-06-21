@@ -416,6 +416,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/mfa/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm MFA enrollment by verifying the first TOTP code
+         * @description Verify the TOTP code the user generated after scanning the QR from /mfa/setup.
+         *
+         *     On success, sets `mfa_enabled=True` on the user row — subsequent logins
+         *     will require TOTP. On failure, `mfa_enabled` is not changed.
+         *
+         *     Returns 400 if the code is invalid (wrong or already used via replay guard).
+         */
+        post: operations["mfa_confirm_auth_mfa_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate a TOTP secret for MFA enrollment; returns QR provisioning data
+         * @description Generate and persist a TOTP secret for the authenticated user.
+         *
+         *     Returns the base32 secret and otpauth:// URI for the user to scan into
+         *     their authenticator. Does NOT set `mfa_enabled=True` yet — the caller
+         *     must follow up with POST /auth/mfa/confirm with the 6-digit code to
+         *     activate MFA. This prevents lockout from a bad QR scan.
+         *
+         *     Calling this endpoint again overwrites any previous pending secret
+         *     (re-enrollment flow for e.g. device change). If MFA is already active
+         *     and the user wants a new device, this resets the secret; the confirm
+         *     step then re-activates it.
+         */
+        post: operations["mfa_setup_auth_mfa_setup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/refresh": {
         parameters: {
             query?: never;
@@ -5332,6 +5387,39 @@ export interface components {
             user_id: string;
         };
         /**
+         * MfaConfirmRequest
+         * @description Body for POST /auth/mfa/confirm — the 6-digit TOTP code the user read
+         *     from their authenticator after scanning the QR code from /auth/mfa/setup.
+         */
+        MfaConfirmRequest: {
+            /** Code */
+            code: string;
+        };
+        /**
+         * MfaConfirmResponse
+         * @description POST /auth/mfa/confirm response — ok=True means MFA is now active.
+         */
+        MfaConfirmResponse: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+        };
+        /**
+         * MfaSetupResponse
+         * @description Response from POST /auth/mfa/setup — provisioning data for the authenticator app.
+         *
+         *     Does NOT indicate mfa_enabled=True yet; the caller must follow up with
+         *     POST /auth/mfa/confirm (valid TOTP code) to activate MFA.
+         */
+        MfaSetupResponse: {
+            /** Provisioning Uri */
+            provisioning_uri: string;
+            /** Secret */
+            secret: string;
+        };
+        /**
          * MfaVerifyRequest
          * @description Re-presents email+password alongside the TOTP code. See module docstring.
          */
@@ -8742,6 +8830,7 @@ export interface operations {
             query?: never;
             header?: {
                 "Idempotency-Key"?: string | null;
+                Authorization?: string | null;
             };
             path?: never;
             cookie?: {
@@ -8816,6 +8905,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TokenPairResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mfa_confirm_auth_mfa_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaConfirmResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mfa_setup_auth_mfa_setup_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaSetupResponse"];
                 };
             };
             /** @description Validation Error */

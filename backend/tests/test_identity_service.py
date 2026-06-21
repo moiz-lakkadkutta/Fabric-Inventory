@@ -667,6 +667,7 @@ def test_cycle2_prepare_mfa_enrollment_blocks_when_already_enabled(
     db_session.refresh(user)
     assert user.mfa_enabled is True
 
+    assert user.mfa_secret is not None
     original_secret_bytes = bytes(user.mfa_secret)
 
     # Calling prepare_mfa_enrollment on an already-enabled user must raise
@@ -675,6 +676,7 @@ def test_cycle2_prepare_mfa_enrollment_blocks_when_already_enabled(
 
     # mfa_secret must be unchanged
     db_session.refresh(user)
+    assert user.mfa_secret is not None
     assert bytes(user.mfa_secret) == original_secret_bytes, (
         "Cycle-2 Fix 1: prepare_mfa_enrollment modified mfa_secret even though it raised. "
         "The secret must remain untouched when MFA is already enabled."

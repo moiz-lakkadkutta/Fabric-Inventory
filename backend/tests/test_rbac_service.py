@@ -615,7 +615,6 @@ def test_assign_role_bumps_target_user_permissions_version(
     that user's `permissions_version` so outstanding JWTs carrying the
     old `pv` are rejected on the next request.
     """
-    from app.service import identity_service as _identity_service
 
     org_id, roles = seeded_org
     user = _make_user(db_session, org_id)

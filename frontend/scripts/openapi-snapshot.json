@@ -7083,6 +7083,54 @@
         "title": "MeResponse",
         "type": "object"
       },
+      "MfaConfirmRequest": {
+        "description": "Body for POST /auth/mfa/confirm \u2014 the 6-digit TOTP code the user read\nfrom their authenticator after scanning the QR code from /auth/mfa/setup.",
+        "properties": {
+          "code": {
+            "maxLength": 6,
+            "minLength": 6,
+            "pattern": "^\\d{6}$",
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "MfaConfirmRequest",
+        "type": "object"
+      },
+      "MfaConfirmResponse": {
+        "description": "POST /auth/mfa/confirm response \u2014 ok=True means MFA is now active.",
+        "properties": {
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "title": "MfaConfirmResponse",
+        "type": "object"
+      },
+      "MfaSetupResponse": {
+        "description": "Response from POST /auth/mfa/setup \u2014 provisioning data for the authenticator app.\n\nDoes NOT indicate mfa_enabled=True yet; the caller must follow up with\nPOST /auth/mfa/confirm (valid TOTP code) to activate MFA.",
+        "properties": {
+          "provisioning_uri": {
+            "title": "Provisioning Uri",
+            "type": "string"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          }
+        },
+        "required": [
+          "secret",
+          "provisioning_uri"
+        ],
+        "title": "MfaSetupResponse",
+        "type": "object"
+      },
       "MfaVerifyRequest": {
         "description": "Re-presents email+password alongside the TOTP code. See module docstring.",
         "properties": {
@@ -15189,6 +15237,22 @@
             }
           },
           {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
             "in": "cookie",
             "name": "fabric_refresh",
             "required": false,
@@ -15326,6 +15390,116 @@
           }
         },
         "summary": "Complete login with TOTP; returns tokens",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/mfa/confirm": {
+      "post": {
+        "description": "Verify the TOTP code the user generated after scanning the QR from /mfa/setup.\n\nOn success, sets `mfa_enabled=True` on the user row \u2014 subsequent logins\nwill require TOTP. On failure, `mfa_enabled` is not changed.\n\nReturns 400 if the code is invalid (wrong or already used via replay guard).",
+        "operationId": "mfa_confirm_auth_mfa_confirm_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaConfirmResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm MFA enrollment by verifying the first TOTP code",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/mfa/setup": {
+      "post": {
+        "description": "Generate and persist a TOTP secret for the authenticated user.\n\nReturns the base32 secret and otpauth:// URI for the user to scan into\ntheir authenticator. Does NOT set `mfa_enabled=True` yet \u2014 the caller\nmust follow up with POST /auth/mfa/confirm with the 6-digit code to\nactivate MFA. This prevents lockout from a bad QR scan.\n\nCalling this endpoint again overwrites any previous pending secret\n(re-enrollment flow for e.g. device change). If MFA is already active\nand the user wants a new device, this resets the secret; the confirm\nstep then re-activates it.",
+        "operationId": "mfa_setup_auth_mfa_setup_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaSetupResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate a TOTP secret for MFA enrollment; returns QR provisioning data",
         "tags": [
           "auth"
         ]

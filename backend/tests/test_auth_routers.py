@@ -587,7 +587,7 @@ def _forge_access_token(org_id: str, *, user_id: str | None = None) -> str:
     """
     jwt_secret = os.environ.get("JWT_SECRET", "kY7mWq2pR9nB4vX8tL6cJ3hF5dG1sZ0aUeImOoPlQwErTyU")
     now = datetime.datetime.now(tz=datetime.UTC)
-    payload = {
+    payload: dict[str, object] = {
         "sub": user_id or str(uuid.uuid4()),
         "org_id": org_id,
         "firm_id": None,
