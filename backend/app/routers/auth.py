@@ -41,6 +41,9 @@ from app.schemas.auth import (
     LogoutResponse,
     MeFirmRef,
     MeResponse,
+    MfaConfirmRequest,
+    MfaConfirmResponse,
+    MfaSetupResponse,
     MfaVerifyRequest,
     RefreshRequest,
     ResetPasswordRequest,
@@ -129,6 +132,19 @@ _RESET_RATE_LIMIT = rate_limit(
     window_seconds=60,
 )
 
+
+# ──────────────────────────────────────────────────────────────────────
+# IDM-4 — Account lockout constants
+#
+# After _MAX_FAILED consecutive bad-password attempts the account is locked
+# for _LOCKOUT_WINDOW. The counter resets on a successful login.
+# Per-IP rate-limiting (Wave A) is the outer layer; lockout is the per-
+# account backstop so a distributed attack from many IPs can't brute-force
+# a single account indefinitely.
+# ──────────────────────────────────────────────────────────────────────
+
+_MAX_FAILED: int = 5  # Lock after 5 consecutive bad passwords (below the 10/60s rate-limit)
+_LOCKOUT_WINDOW: datetime.timedelta = datetime.timedelta(minutes=15)
 
 # Per Q2 (hybrid token storage): refresh token in httpOnly Secure
 # SameSite=Lax cookie; access token in memory on the frontend.
@@ -369,6 +385,19 @@ def login(
         )
     ).scalar_one_or_none()
 
+    # IDM-4: account lockout gate — checked BEFORE bcrypt to short-circuit
+    # early, but we still run dummy bcrypt for timing normalisation so a
+    # locked account's response is not faster than a wrong-password response
+    # (which could reveal that the account exists AND is locked).
+    _now = datetime.datetime.now(tz=datetime.UTC)
+    if user is not None and user.locked_until is not None and user.locked_until > _now:
+        # Timing: run dummy bcrypt so a locked-account response takes the
+        # same ~100ms as a wrong-password response.
+        identity_service.verify_password(body.password, identity_service.DUMMY_BCRYPT_HASH)
+        raise InvalidCredentialsError(
+            "Account temporarily locked due to too many failed attempts, please try again later"
+        )
+
     # DOS-02 / API-7-03 — Timing oracle: always run bcrypt regardless of
     # whether the user was found. When the user doesn't exist we verify the
     # supplied password against a pre-computed dummy hash so response latency
@@ -397,6 +426,16 @@ def login(
         # supplied plaintext that would accumulate victim emails in the audit
         # table. The reset path already omits email for the same reason.
         #
+        # IDM-4: increment failed_login_attempts. If threshold reached,
+        # set locked_until and reset the counter. commit() persists both
+        # the audit row and the counter/lockout before the exception rolls
+        # back the outer transaction.
+        if user is not None:
+            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+            if user.failed_login_attempts >= _MAX_FAILED:
+                user.locked_until = _now + _LOCKOUT_WINDOW
+                user.failed_login_attempts = 0
+
         # We call db.commit() (not just flush()) BEFORE raising so the audit
         # row persists despite the exception. The dependency's session context
         # manager calls session.rollback() on exception — which is a safe
@@ -416,6 +455,10 @@ def login(
 
     # Narrow type: credentials_ok is True iff user is not None.
     assert user is not None  # type narrowing for mypy
+
+    # IDM-4: reset lockout counter on successful credential verification.
+    user.failed_login_attempts = 0
+    user.locked_until = None
 
     if user.mfa_enabled:
         # Caller must follow up with POST /auth/mfa-verify (which re-presents
@@ -572,6 +615,112 @@ def mfa_verify(
         access_expires_at=pair.access_expires_at,
         refresh_expires_at=pair.refresh_expires_at,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# MFA enrollment — protected (authenticated user only)
+#
+# Two-step enrollment flow (IDM-4):
+#   POST /auth/mfa/setup   — generate + persist TOTP secret, return QR data.
+#                            Does NOT yet flip mfa_enabled=True.
+#   POST /auth/mfa/confirm — verify the TOTP code from the authenticator;
+#                            on success set mfa_enabled=True.
+#
+# Gated on CurrentUser so we use the authenticated principal's user_id
+# directly (BOLA-safe — no user_id in the request body).
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/mfa/setup",
+    response_model=MfaSetupResponse,
+    summary="Generate a TOTP secret for MFA enrollment; returns QR provisioning data",
+)
+def mfa_setup(
+    db: SyncDBSession,
+    current_user: CurrentUser,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> MfaSetupResponse:
+    """Generate and persist a TOTP secret for the authenticated user.
+
+    Returns the base32 secret and otpauth:// URI for the user to scan into
+    their authenticator. Does NOT set `mfa_enabled=True` yet — the caller
+    must follow up with POST /auth/mfa/confirm with the 6-digit code to
+    activate MFA. This prevents lockout from a bad QR scan.
+
+    Calling this endpoint again overwrites any previous pending secret
+    (re-enrollment flow for e.g. device change). If MFA is already active
+    and the user wants a new device, this resets the secret; the confirm
+    step then re-activates it.
+    """
+    enrollment = identity_service.prepare_mfa_enrollment(db, user_id=current_user.user_id)
+    audit_service.emit(
+        db,
+        org_id=current_user.org_id,
+        firm_id=current_user.firm_id,
+        user_id=current_user.user_id,
+        entity_type="auth.mfa",
+        entity_id=current_user.user_id,
+        action="mfa_enroll",
+        changes={"after": {"step": "setup"}},
+    )
+    db.flush()
+    return MfaSetupResponse(
+        secret=enrollment.secret,
+        provisioning_uri=enrollment.provisioning_uri,
+    )
+
+
+@router.post(
+    "/mfa/confirm",
+    response_model=MfaConfirmResponse,
+    summary="Confirm MFA enrollment by verifying the first TOTP code",
+)
+def mfa_confirm(
+    body: MfaConfirmRequest,
+    db: SyncDBSession,
+    current_user: CurrentUser,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> MfaConfirmResponse:
+    """Verify the TOTP code the user generated after scanning the QR from /mfa/setup.
+
+    On success, sets `mfa_enabled=True` on the user row — subsequent logins
+    will require TOTP. On failure, `mfa_enabled` is not changed.
+
+    Returns 400 if the code is invalid (wrong or already used via replay guard).
+    """
+    from sqlalchemy import select as _select
+
+    from app.models import AppUser as _AppUser
+
+    ok = identity_service.verify_totp(db, user_id=current_user.user_id, code=body.code)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error_code": "INVALID_MFA_CODE",
+                "detail": "Invalid or already-used TOTP code — please generate a fresh code",
+            },
+        )
+
+    # Flip mfa_enabled=True now that the user has confirmed they hold the secret.
+    user = db.execute(
+        _select(_AppUser).where(_AppUser.user_id == current_user.user_id)
+    ).scalar_one()
+    user.mfa_enabled = True
+
+    audit_service.emit(
+        db,
+        org_id=current_user.org_id,
+        firm_id=current_user.firm_id,
+        user_id=current_user.user_id,
+        entity_type="auth.mfa",
+        entity_id=current_user.user_id,
+        action="mfa_confirm",
+        changes={"after": {"mfa_enabled": True}},
+    )
+    db.flush()
+    return MfaConfirmResponse(ok=True)
 
 
 # ──────────────────────────────────────────────────────────────────────

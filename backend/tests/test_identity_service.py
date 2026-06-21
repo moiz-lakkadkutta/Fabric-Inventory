@@ -589,6 +589,40 @@ def test_dummy_bcrypt_hash_does_not_verify_against_itself() -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
+# ──────────────────────────────────────────────────────────────────────
+# IDM-4 — TOTP replay guard
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_IDM4_totp_replay_guard_rejects_second_use(  # noqa: N802
+    db_session: OrmSession, signed_up_user: tuple[AppUser, uuid.UUID, str]
+) -> None:
+    """IDM-4 (RED): using the same valid TOTP code twice must reject the second use.
+
+    pyotp.TOTP.verify with valid_window=1 accepts the same code twice within
+    one 30s window — an attacker who intercepts the code can replay it.
+    The fix is a Redis key per (user, code) with 90s TTL so the second
+    call returns False even though pyotp would return True.
+    """
+    user, _, _ = signed_up_user
+    enrollment = identity_service.enable_mfa(db_session, user_id=user.user_id)
+    code = pyotp.TOTP(enrollment.secret).now()
+
+    # First use must succeed
+    first = identity_service.verify_totp(db_session, user_id=user.user_id, code=code)
+    assert first is True, (
+        "TOTP replay test precondition failed: first verify_totp returned False "
+        "(expected True for a fresh valid code)."
+    )
+
+    # Second use of the SAME code within the same window must fail (replay guard)
+    second = identity_service.verify_totp(db_session, user_id=user.user_id, code=code)
+    assert second is False, (
+        "IDM-4 FAIL: TOTP replay guard did not trigger — the same code was accepted twice. "
+        "verify_totp must reject codes already used within the 90s window."
+    )
+
+
 def test_jwt_carries_pv_claim_matching_user_permissions_version(
     db_session: OrmSession, signed_up_user: tuple[AppUser, uuid.UUID, str]
 ) -> None:
