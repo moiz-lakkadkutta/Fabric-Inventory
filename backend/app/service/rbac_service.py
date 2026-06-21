@@ -648,6 +648,24 @@ def has_permission(
     return permission_code in get_user_permissions(session, user_id=user_id, firm_id=firm_id)
 
 
+def get_role_permission_codes(
+    session: Session,
+    *,
+    role_id: uuid.UUID,
+) -> set[str]:
+    """Return the set of permission codes granted to `role_id`.
+
+    Used by the privilege-ceiling check in invite_service to compare
+    an invited role's permission set against the actor's effective perms.
+    """
+    rows = session.execute(
+        select(Permission.resource, Permission.action)
+        .join(RolePermission, RolePermission.permission_id == Permission.permission_id)
+        .where(RolePermission.role_id == role_id)
+    ).all()
+    return {f"{r}.{a}" for r, a in rows}
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Custom roles
 # ──────────────────────────────────────────────────────────────────────
@@ -662,6 +680,7 @@ def create_custom_role(
     permission_codes: Iterable[str],
     description: str | None = None,
     actor_user_id: uuid.UUID | None = None,
+    actor_firm_id: uuid.UUID | None = None,
 ) -> Role:
     """Create a non-system role with the given permission grants.
 
@@ -669,10 +688,13 @@ def create_custom_role(
       - `code` and `name` are non-empty.
       - `code` doesn't collide with a system role code.
       - Every entry in `permission_codes` exists for this org.
+      - (PRIV-1) If `actor_user_id` is set, `permission_codes ⊆ actor's
+        effective permissions` — a caller cannot grant perms they don't hold.
+        When `actor_user_id is None` (system/seed path) the check is skipped.
 
-    The Owner-only gate lives in the router that calls this — services
-    don't enforce permissions on themselves (that would be circular).
-    `actor_user_id` is used for audit; None is accepted for system paths.
+    `actor_user_id` is used for audit and for the ceiling check.
+    `actor_firm_id` scopes the actor's permission lookup (pass the firm the
+    caller authenticated against; None = org-level only).
     """
     if not code or not name:
         raise AppValidationError("Custom role requires both `code` and `name`")
@@ -687,6 +709,18 @@ def create_custom_role(
     unknown = sorted({c for c in requested if c not in perms})
     if unknown:
         raise AppValidationError(f"Unknown permission codes: {unknown}")
+
+    # PRIV-1: permission ceiling — a caller cannot grant permissions they don't
+    # themselves hold. Derive the actor's effective perms SERVER-SIDE (not from
+    # the JWT which can be stale). Skip only for the trusted seed/system path
+    # where actor_user_id is None (no human actor to check against).
+    if actor_user_id is not None:
+        actor_effective = get_user_permissions(
+            session, user_id=actor_user_id, firm_id=actor_firm_id
+        )
+        offending = sorted(set(requested) - actor_effective)
+        if offending:
+            raise PermissionDeniedError(f"Cannot grant permissions you don't hold: {offending}")
 
     role = Role(
         org_id=org_id,
@@ -736,6 +770,7 @@ def update_custom_role(
     description: str | None = None,
     permission_codes: Iterable[str] | None = None,
     actor_user_id: uuid.UUID | None = None,
+    actor_firm_id: uuid.UUID | None = None,
 ) -> Role:
     """Update name/description/permission grants on a non-system role.
 
@@ -748,6 +783,8 @@ def update_custom_role(
       - Role is not a system role (system roles are immutable).
       - `name`, when provided, is non-empty.
       - Every entry in `permission_codes` exists for this org.
+      - (PRIV-1) If `actor_user_id` is set and `permission_codes` is
+        provided, `permission_codes ⊆ actor's effective permissions`.
     """
     role = session.execute(
         select(Role).where(
@@ -780,6 +817,17 @@ def update_custom_role(
         unknown = sorted({c for c in requested if c not in perms})
         if unknown:
             raise AppValidationError(f"Unknown permission codes: {unknown}")
+
+        # PRIV-1: ceiling check — actor cannot update a role to include
+        # permissions they don't themselves hold. Skip for system/seed path
+        # (actor_user_id is None).
+        if actor_user_id is not None:
+            actor_effective = get_user_permissions(
+                session, user_id=actor_user_id, firm_id=actor_firm_id
+            )
+            offending = sorted(set(requested) - actor_effective)
+            if offending:
+                raise PermissionDeniedError(f"Cannot grant permissions you don't hold: {offending}")
 
         # Replace grants — delete-then-insert. Cleaner than diffing, and
         # `role_permission` is exempt from audit so the churn doesn't

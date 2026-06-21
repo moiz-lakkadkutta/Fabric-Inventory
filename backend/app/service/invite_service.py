@@ -40,6 +40,7 @@ from app.exceptions import (
     AppValidationError,
     EmailTakenError,
     NotFoundError,
+    PermissionDeniedError,
     TokenInvalidError,
 )
 from app.models import AppUser, Role, UserInvite, UserRole
@@ -100,6 +101,7 @@ def create_invite(
     email: str,
     role_id: uuid.UUID,
     firm_id: uuid.UUID | None,
+    actor_firm_id: uuid.UUID | None = None,
 ) -> InviteResult:
     """Mint an invite for `email` under `org_id`.
 
@@ -109,6 +111,11 @@ def create_invite(
       - email doesn't already have an unconsumed, unexpired invite
         (returns the existing one — idempotent at the email level so
         clicking "Invite" twice doesn't spawn dupes)
+      - (PRIV-1) invited role's permission set ⊆ `invited_by`'s effective
+        permissions derived SERVER-SIDE from the DB (not from the JWT).
+
+    `actor_firm_id` scopes the actor's permission lookup; pass the firm
+    the caller authenticated against (None = org-level only).
 
     Audit: emits `user_invite.create` with `{after: {email, role_id,
     firm_id, expires_at}}`.
@@ -132,6 +139,21 @@ def create_invite(
     # layer is cheaper than a DB-level FK that spans tenants.
     if firm_id is not None:
         assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
+
+    # PRIV-1 / IDM-1 Vector B: permission ceiling.
+    # The invited role's permission set must be ⊆ the actor's effective
+    # permissions (derived SERVER-SIDE — not from the JWT which can be stale).
+    # This prevents a low-priv caller from conferring permissions they don't
+    # themselves hold to the invitee via role selection.
+    invited_role_perms = rbac_service.get_role_permission_codes(session, role_id=role_id)
+    actor_effective = rbac_service.get_user_permissions(
+        session, user_id=invited_by, firm_id=actor_firm_id
+    )
+    offending = sorted(invited_role_perms - actor_effective)
+    if offending:
+        raise PermissionDeniedError(
+            f"Cannot invite into a role with permissions you don't hold: {offending}"
+        )
 
     # Already a live user with that email?
     existing_user = session.execute(
@@ -351,9 +373,21 @@ def change_user_role(
     actor_user_id: uuid.UUID,
     target_user_id: uuid.UUID,
     new_role_id: uuid.UUID,
+    actor_firm_id: uuid.UUID | None = None,
 ) -> None:
     """Replace `target_user_id`'s ROLE assignment(s) in this org with
     `new_role_id`.
+
+    Guards (PRIV-1 / IDM-1):
+      (a) new role's permission set ⊆ actor's effective permissions (derived
+          SERVER-SIDE from the DB, not from the JWT). Prevents a low-priv
+          caller from assigning a role whose perms exceed their own — this
+          alone closes self-promotion (a low-priv actor's target Owner role
+          has perms ⊄ theirs).
+      (b) actor == target AND the change would escalate (new role grants perms
+          the actor lacks) → PermissionDeniedError with a self-specific message.
+          Self-DEMOTION (new role's perms ⊆ yours) is allowed, so an Owner can
+          step down once a second Owner exists.
 
     Last-Owner-demotion protection: if the target currently carries the
     Owner role AND the new role is NOT Owner AND they are the only Owner
@@ -363,6 +397,9 @@ def change_user_role(
     For MVP we use a one-role-per-user model: the change is a wholesale
     replacement of all UserRole rows for this user/org. Custom roles +
     multi-role-per-user is Wave-5+.
+
+    `actor_firm_id` scopes the actor's permission lookup (pass the firm
+    the caller authenticated against; None = org-level only).
 
     Audit emits `identity.user.change_role` with before/after role codes.
     """
@@ -381,6 +418,27 @@ def change_user_role(
     ).scalar_one_or_none()
     if new_role is None:
         raise NotFoundError(f"Role {new_role_id} not found")
+
+    # PRIV-1 / IDM-1 Vector C-b: permission ceiling on the new role.
+    # A caller cannot assign a role whose permission set exceeds their own.
+    new_role_perms = rbac_service.get_role_permission_codes(session, role_id=new_role_id)
+    actor_effective = rbac_service.get_user_permissions(
+        session, user_id=actor_user_id, firm_id=actor_firm_id
+    )
+    offending = sorted(new_role_perms - actor_effective)
+    if offending:
+        # PRIV-1 / IDM-1 Vector C: self-PROMOTION (escalating your own role)
+        # gets a clearer message. Self-DEMOTION (new role's perms ⊆ yours →
+        # no offending perms) is legitimate and falls through to the
+        # last-Owner guard below — so an Owner can still step down when a
+        # second Owner exists.
+        if actor_user_id == target_user_id:
+            raise PermissionDeniedError(
+                "Cannot change your own role to one with permissions you do not already hold"
+            )
+        raise PermissionDeniedError(
+            f"Cannot assign a role with permissions you don't hold: {offending}"
+        )
 
     current_user_roles = list(
         session.execute(

@@ -26,7 +26,13 @@ from sqlalchemy.orm import Session as OrmSession
 
 # Set required env BEFORE the app imports — pydantic-settings validates at import.
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test")
-os.environ.setdefault("JWT_SECRET", "test-secret-must-be-long-enough-32chars")
+# TS-01 (C2): the boot-time guard rejects placeholder / "test-secret" / <32-char
+# JWT secrets when ENVIRONMENT != "dev". Tests that boot the app in staging/prod
+# mode (docs-disabled, KEK checks, security headers, …) must use a strong,
+# non-placeholder secret or they'd trip that guard. Use a strong default here;
+# the dedicated TS-01 tests in test_config.py set their own secret to exercise
+# the rejection paths.
+os.environ.setdefault("JWT_SECRET", "kY7mWq2pR9nB4vX8tL6cJ3hF5dG1sZ0aUeImOoPlQwErTyU")
 os.environ.setdefault("ENVIRONMENT", "dev")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 

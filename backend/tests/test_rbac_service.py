@@ -440,3 +440,164 @@ def test_assign_role_no_audit_on_idempotent_noop(
         .all()
     )
     assert len(rows) == 1, f"Expected exactly 1 audit row, got {len(rows)}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# PRIV-1 / IDM-1: Vector A — permission ceiling on create/update custom role
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_low_priv_actor_with_role_perms(
+    db_session: OrmSession,
+    org_id: uuid.UUID,
+    permission_codes: list[str],
+    code_suffix: str = "",
+) -> uuid.UUID:
+    """Create a custom role with the given permission_codes, create a user,
+    assign them that role (org-level, firm_id=None), return user_id.
+    Uses actor_user_id=None (system/seed path) to create the role itself.
+    """
+    role = rbac_service.create_custom_role(
+        db_session,
+        org_id=org_id,
+        code=f"LP_TEST_ROLE{code_suffix}",
+        name=f"LP Test Role{code_suffix}",
+        permission_codes=permission_codes,
+        actor_user_id=None,  # seed path — no ceiling check
+    )
+    user = _make_user(db_session, org_id)
+    rbac_service.assign_role(
+        db_session,
+        user_id=user.user_id,
+        role_id=role.role_id,
+        firm_id=None,
+        org_id=org_id,
+    )
+    return user.user_id
+
+
+def test_priv1_vector_a_create_role_ceiling_blocks_low_priv(
+    db_session: OrmSession, seeded_org: tuple[uuid.UUID, dict[str, Role]]
+) -> None:
+    """PRIV-1 Vector A: actor cannot mint a role containing perms they don't hold."""
+    org_id, _ = seeded_org
+    actor_id = _make_low_priv_actor_with_role_perms(
+        db_session, org_id, ["identity.role.create", "admin.user.manage"]
+    )
+
+    with pytest.raises(PermissionDeniedError):
+        rbac_service.create_custom_role(
+            db_session,
+            org_id=org_id,
+            code="ESCALATION_ROLE",
+            name="Escalation Role",
+            # admin.firm.manage is NOT in actor's {identity.role.create, admin.user.manage}
+            permission_codes=["identity.role.create", "admin.firm.manage"],
+            actor_user_id=actor_id,
+            actor_firm_id=None,
+        )
+
+
+def test_priv1_vector_a_update_role_ceiling_blocks_low_priv(
+    db_session: OrmSession, seeded_org: tuple[uuid.UUID, dict[str, Role]]
+) -> None:
+    """PRIV-1 Vector A: actor cannot update a role to include perms they lack."""
+    org_id, _ = seeded_org
+    actor_id = _make_low_priv_actor_with_role_perms(
+        db_session, org_id, ["identity.role.create", "admin.user.manage"], "_UPD"
+    )
+
+    target_role = rbac_service.create_custom_role(
+        db_session,
+        org_id=org_id,
+        code="TARGET_ESCALATION",
+        name="Target Escalation",
+        permission_codes=["masters.party.read"],
+        actor_user_id=None,
+    )
+
+    with pytest.raises(PermissionDeniedError):
+        rbac_service.update_custom_role(
+            db_session,
+            org_id=org_id,
+            role_id=target_role.role_id,
+            permission_codes=["identity.role.create", "admin.firm.manage"],
+            actor_user_id=actor_id,
+            actor_firm_id=None,
+        )
+
+
+def test_priv1_vector_a_owner_can_create_role_with_any_perm(
+    db_session: OrmSession, seeded_org: tuple[uuid.UUID, dict[str, Role]]
+) -> None:
+    """PRIV-1 positive: Owner (all perms) can create a role with any permissions."""
+    org_id, roles = seeded_org
+    owner_user = _make_user(db_session, org_id)
+    rbac_service.assign_role(
+        db_session,
+        user_id=owner_user.user_id,
+        role_id=roles["OWNER"].role_id,
+        firm_id=None,
+        org_id=org_id,
+    )
+
+    role = rbac_service.create_custom_role(
+        db_session,
+        org_id=org_id,
+        code="OWNER_FULL_ROLE",
+        name="Owner Full Role",
+        permission_codes=["admin.firm.manage", "accounting.period.close"],
+        actor_user_id=owner_user.user_id,
+        actor_firm_id=None,
+    )
+    assert role.code == "OWNER_FULL_ROLE"
+
+
+def test_priv1_vector_a_system_path_skips_ceiling(
+    db_session: OrmSession, seeded_org: tuple[uuid.UUID, dict[str, Role]]
+) -> None:
+    """System bootstrap path (actor_user_id=None) bypasses the ceiling — seed must work."""
+    org_id, _ = seeded_org
+    role = rbac_service.create_custom_role(
+        db_session,
+        org_id=org_id,
+        code="SYSTEM_SEED_ROLE",
+        name="System Seed",
+        permission_codes=["admin.firm.manage"],
+        actor_user_id=None,
+    )
+    assert role.code == "SYSTEM_SEED_ROLE"
+
+
+def test_priv1_vector_a_owner_can_update_role_with_any_perm(
+    db_session: OrmSession, seeded_org: tuple[uuid.UUID, dict[str, Role]]
+) -> None:
+    """PRIV-1 positive: Owner can update a role to include any perm."""
+    org_id, roles = seeded_org
+    owner_user = _make_user(db_session, org_id)
+    rbac_service.assign_role(
+        db_session,
+        user_id=owner_user.user_id,
+        role_id=roles["OWNER"].role_id,
+        firm_id=None,
+        org_id=org_id,
+    )
+
+    target_role = rbac_service.create_custom_role(
+        db_session,
+        org_id=org_id,
+        code="TARGET_FOR_OWNER_UPDATE",
+        name="Target For Owner Update",
+        permission_codes=["masters.party.read"],
+        actor_user_id=None,
+    )
+
+    updated = rbac_service.update_custom_role(
+        db_session,
+        org_id=org_id,
+        role_id=target_role.role_id,
+        permission_codes=["admin.firm.manage", "accounting.period.close"],
+        actor_user_id=owner_user.user_id,
+        actor_firm_id=None,
+    )
+    assert updated.role_id == target_role.role_id
