@@ -14238,7 +14238,8 @@
           "CREDIT_NOTE",
           "OPENING_BAL",
           "MATERIAL_ISSUE",
-          "MANUFACTURING_COMPLETION"
+          "MANUFACTURING_COMPLETION",
+          "STOCK_ADJUSTMENT"
         ],
         "title": "VoucherType",
         "type": "string"
