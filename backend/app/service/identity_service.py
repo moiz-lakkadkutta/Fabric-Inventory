@@ -95,8 +95,9 @@ class TokenPayload:
     token_type: Literal["access", "refresh"]
     # TS-05/IDM-5: permissions_version claim — must match the user's live
     # `permissions_version` column on every authenticated request. Tokens
-    # issued before this field existed default to 0 so the check is a
-    # no-op against users whose DB value is also 1 (initial default).
+    # issued before this field existed carry pv=0; since the DB default for
+    # new users is 1, those legacy tokens are REJECTED as stale (not silently
+    # accepted). Re-authenticate to receive a fresh token with the correct pv.
     pv: int = 0
 
 

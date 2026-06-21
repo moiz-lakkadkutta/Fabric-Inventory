@@ -125,7 +125,21 @@ async def get_current_user(
     user = db.execute(
         select(AppUser).where(AppUser.user_id == payload.user_id)
     ).scalar_one_or_none()
-    if user is not None and payload.pv != user.permissions_version:
+
+    # Fail-CLOSED: if the principal cannot be loaded (row deleted, wrong tenant,
+    # or RLS filtered it out) the token is invalid — never accept it silently.
+    if user is None:
+        raise TokenInvalidError("Token principal not found — please re-authenticate")
+
+    # Revoke outstanding tokens immediately when the account is suspended or
+    # deactivated. These fields are checked on every request so an admin action
+    # takes effect on the very next API call, without waiting for token expiry.
+    if not user.is_active:
+        raise TokenInvalidError("Account is inactive")
+    if user.is_suspended:
+        raise TokenInvalidError("Account is suspended")
+
+    if payload.pv != user.permissions_version:
         raise TokenInvalidError("Token permissions are stale — please re-authenticate")
 
     return payload

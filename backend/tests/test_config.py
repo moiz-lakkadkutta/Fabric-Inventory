@@ -78,6 +78,8 @@ def test_cors_origins_non_dev_explicit_succeeds(env: str) -> None:
     os.environ["JWT_SECRET"] = "aB3kR9mXpQ2wLnT7vYdF5hCeGjZuNsOiA8bWqDlPfHy"
     os.environ["ENVIRONMENT"] = env
     os.environ["CORS_ORIGINS"] = "https://app.fabric.example"
+    # TS-04 guard: REDIS_URL is required in non-dev since cycle-2.
+    os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 
     settings = _build_settings()
     assert settings.cors_origins == ["https://app.fabric.example"]  # type: ignore[attr-defined]
@@ -117,6 +119,8 @@ def test_jwt_strong_secret_accepted_in_prod() -> None:
     os.environ["JWT_SECRET"] = "aB3kR9mXpQ2wLnT7vYdF5hCeGjZuNsOiA8bWqDlPfHy"
     os.environ["ENVIRONMENT"] = "prod"
     os.environ["CORS_ORIGINS"] = "https://prod.fabric.example"
+    # TS-04 guard: REDIS_URL is required in non-dev since cycle-2.
+    os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 
     settings = _build_settings()
     assert settings.environment == "prod"  # type: ignore[attr-defined]
@@ -144,3 +148,45 @@ def test_committed_test_secret_rejected_in_prod() -> None:
 
     with pytest.raises(Exception, match="known placeholder"):
         _build_settings()
+
+
+# ---------------------------------------------------------------------------
+# TS-04 Redis guard: REDIS_URL required in non-dev environments
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_redis_url_required_in_non_dev(env: str) -> None:
+    """Redis absent in non-dev must raise at startup — no silent jti denylist bypass."""
+    os.environ["DATABASE_URL"] = "postgresql+asyncpg://x:y@h:5432/z"
+    os.environ["JWT_SECRET"] = "aB3kR9mXpQ2wLnT7vYdF5hCeGjZuNsOiA8bWqDlPfHy"
+    os.environ["ENVIRONMENT"] = env
+    os.environ["CORS_ORIGINS"] = "https://app.fabric.example"
+    os.environ.pop("REDIS_URL", None)
+
+    with pytest.raises(Exception, match="REDIS_URL"):
+        _build_settings()
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_redis_url_set_in_non_dev_ok(env: str) -> None:
+    """REDIS_URL present in non-dev → settings boot fine."""
+    os.environ["DATABASE_URL"] = "postgresql+asyncpg://x:y@h:5432/z"
+    os.environ["JWT_SECRET"] = "aB3kR9mXpQ2wLnT7vYdF5hCeGjZuNsOiA8bWqDlPfHy"
+    os.environ["ENVIRONMENT"] = env
+    os.environ["CORS_ORIGINS"] = "https://app.fabric.example"
+    os.environ["REDIS_URL"] = "redis://localhost:6379/0"
+
+    settings = _build_settings()
+    assert settings.redis_url == "redis://localhost:6379/0"  # type: ignore[attr-defined]
+
+
+def test_redis_url_optional_in_dev() -> None:
+    """Dev mode must not require REDIS_URL — no change to existing behavior."""
+    os.environ["DATABASE_URL"] = "postgresql+asyncpg://x:y@h:5432/z"
+    os.environ["JWT_SECRET"] = "test-secret-must-be-long-enough-32chars"
+    os.environ["ENVIRONMENT"] = "dev"
+    os.environ.pop("REDIS_URL", None)
+
+    settings = _build_settings()
+    assert settings.redis_url is None  # type: ignore[attr-defined]
