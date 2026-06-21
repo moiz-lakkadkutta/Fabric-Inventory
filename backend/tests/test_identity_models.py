@@ -424,6 +424,40 @@ def test_round_trip_user_firm_scope_device_session(db_session: OrmSession) -> No
     assert reloaded.device.device_name == "Moiz iPhone"
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Wave D-auth: permissions_version, failed_login_attempts, locked_until
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_app_user_auth_columns_present() -> None:
+    """AppUser must declare all three Wave-D auth columns."""
+    col_names = {c.name for c in AppUser.__table__.columns}
+    assert "permissions_version" in col_names, "permissions_version missing from AppUser"
+    assert "failed_login_attempts" in col_names, "failed_login_attempts missing from AppUser"
+    assert "locked_until" in col_names, "locked_until missing from AppUser"
+
+
+def test_app_user_auth_columns_defaults(db_session: OrmSession) -> None:
+    """New AppUser rows get server-side defaults: permissions_version=1,
+    failed_login_attempts=0, locked_until=NULL."""
+    org = _make_org(db_session)
+    user = AppUser(organization=org, email=f"dmig-{uuid.uuid4().hex[:8]}@example.com")
+    db_session.add(user)
+    db_session.flush()
+    db_session.expire(user)
+
+    reloaded = db_session.execute(
+        select(AppUser).where(AppUser.user_id == user.user_id)
+    ).scalar_one()
+    assert reloaded.permissions_version == 1, (
+        f"Expected permissions_version=1, got {reloaded.permissions_version}"
+    )
+    assert reloaded.failed_login_attempts == 0, (
+        f"Expected failed_login_attempts=0, got {reloaded.failed_login_attempts}"
+    )
+    assert reloaded.locked_until is None, f"Expected locked_until=None, got {reloaded.locked_until}"
+
+
 def test_round_trip_audit_log_appends(db_session: OrmSession) -> None:
     """AuditLog inserts succeed; relationships to firm + user resolve."""
     org = _make_org(db_session)
