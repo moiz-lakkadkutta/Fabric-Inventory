@@ -693,3 +693,296 @@ def test_fail_closed_inactive_user_returns_401(
         f"Fail-closed FAIL: inactive user token was accepted (got {post.status_code}). "
         "get_current_user must reject tokens for inactive users."
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# IDM-4 — MFA enrollment endpoints: setup + confirm
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_IDM4_mfa_setup_unauthenticated_returns_401(http_client: TestClient) -> None:  # noqa: N802
+    """POST /auth/mfa/setup without a valid Bearer token must return 401."""
+    resp = http_client.post("/auth/mfa/setup")
+    assert resp.status_code == 401, (
+        f"IDM-4 FAIL: unauthenticated mfa/setup returned {resp.status_code} (expected 401). "
+        "The endpoint must require a valid access token."
+    )
+
+
+def test_IDM4_mfa_setup_returns_provisioning_data(http_client: TestClient) -> None:  # noqa: N802
+    """POST /auth/mfa/setup returns secret + provisioning_uri; does NOT yet enable MFA."""
+    email = _unique_email()
+    org_name = _unique_org_name()
+    password = "strong-password-1"
+    body = _signup(http_client, email=email, password=password, org_name=org_name)
+    access_token = body["access_token"]
+
+    resp = http_client.post(
+        "/auth/mfa/setup",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert resp.status_code == 200, (
+        f"IDM-4 FAIL: mfa/setup returned {resp.status_code}. Expected 200 with provisioning data."
+    )
+    out = resp.json()
+    assert "secret" in out, "mfa/setup response must include 'secret'"
+    assert "provisioning_uri" in out, "mfa/setup response must include 'provisioning_uri'"
+    assert out["provisioning_uri"].startswith("otpauth://totp/"), (
+        f"provisioning_uri must be an otpauth URI, got: {out['provisioning_uri'][:40]!r}"
+    )
+
+    # MFA must NOT be enabled yet (login should NOT return requires_mfa=True)
+    login_resp = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": password, "org_name": org_name},
+    )
+    assert login_resp.status_code == 200
+    assert login_resp.json()["requires_mfa"] is False, (
+        "IDM-4 FAIL: mfa/setup must not flip mfa_enabled — login still returned requires_mfa=True. "
+        "mfa_enabled must stay False until mfa/confirm succeeds."
+    )
+
+
+def test_IDM4_mfa_confirm_valid_code_enables_mfa(http_client: TestClient) -> None:  # noqa: N802
+    """mfa/confirm with a valid TOTP code flips mfa_enabled=True."""
+    email = _unique_email()
+    org_name = _unique_org_name()
+    password = "strong-password-1"
+    body = _signup(http_client, email=email, password=password, org_name=org_name)
+    access_token = body["access_token"]
+
+    # Step 1: setup
+    setup_resp = http_client.post(
+        "/auth/mfa/setup",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert setup_resp.status_code == 200, setup_resp.text
+    secret = setup_resp.json()["secret"]
+
+    # Step 2: confirm with a valid TOTP code derived from the returned secret
+    code = pyotp.TOTP(secret).now()
+    confirm_resp = http_client.post(
+        "/auth/mfa/confirm",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"code": code},
+    )
+    assert confirm_resp.status_code == 200, (
+        f"IDM-4 FAIL: mfa/confirm returned {confirm_resp.status_code} for a valid code. "
+        f"Response: {confirm_resp.text}"
+    )
+    assert confirm_resp.json().get("ok") is True, (
+        f"mfa/confirm should return {{ok: true}} on success, got: {confirm_resp.json()}"
+    )
+
+    # MFA should now be active — login returns requires_mfa=True
+    login_resp = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": password, "org_name": org_name},
+    )
+    assert login_resp.status_code == 200
+    assert login_resp.json()["requires_mfa"] is True, (
+        "IDM-4 FAIL: after mfa/confirm with valid code, login must return requires_mfa=True. "
+        "mfa_enabled was not set to True on the user."
+    )
+
+
+def test_IDM4_mfa_confirm_wrong_code_rejected_and_mfa_not_enabled(  # noqa: N802
+    http_client: TestClient,
+) -> None:
+    """mfa/confirm with a wrong code must be rejected; mfa_enabled stays False."""
+    email = _unique_email()
+    org_name = _unique_org_name()
+    password = "strong-password-1"
+    body = _signup(http_client, email=email, password=password, org_name=org_name)
+    access_token = body["access_token"]
+
+    setup_resp = http_client.post(
+        "/auth/mfa/setup",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert setup_resp.status_code == 200, setup_resp.text
+
+    # Confirm with a wrong code
+    confirm_resp = http_client.post(
+        "/auth/mfa/confirm",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"code": "000000"},
+    )
+    assert confirm_resp.status_code in (400, 422), (
+        f"IDM-4 FAIL: wrong-code confirm should be 400/422, got {confirm_resp.status_code}. "
+        "The endpoint must reject invalid TOTP codes."
+    )
+
+    # MFA must still be disabled
+    login_resp = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": password, "org_name": org_name},
+    )
+    assert login_resp.status_code == 200
+    assert login_resp.json()["requires_mfa"] is False, (
+        "IDM-4 FAIL: after a rejected mfa/confirm, mfa_enabled must remain False."
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# IDM-4 — Account lockout
+# ──────────────────────────────────────────────────────────────────────
+
+from app.routers.auth import _MAX_FAILED as _LOCKOUT_MAX_FAILED  # noqa: E402
+
+
+def test_IDM4_lockout_blocks_correct_password_after_10_failures(  # noqa: N802
+    http_client: TestClient,
+) -> None:
+    """After _MAX_FAILED wrong-password attempts, even the correct password is rejected
+    until the lockout window expires.
+    """
+    email = _unique_email()
+    org_name = _unique_org_name()
+    password = "strong-password-1"
+    _signup(http_client, email=email, password=password, org_name=org_name)
+
+    # Exhaust the bad-password budget
+    for i in range(_LOCKOUT_MAX_FAILED):
+        resp = http_client.post(
+            "/auth/login",
+            json={"email": email, "password": "wrong-password-xyz", "org_name": org_name},
+        )
+        assert resp.status_code == 401, f"expected 401 on attempt {i + 1}, got {resp.status_code}"
+
+    # Next attempt — even with correct password — must be rejected (locked)
+    locked_resp = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": password, "org_name": org_name},
+    )
+    assert locked_resp.status_code == 401, (
+        f"IDM-4 FAIL: after {_LOCKOUT_MAX_FAILED} failed attempts, correct password was accepted "
+        f"(got {locked_resp.status_code}). Account must be locked."
+    )
+    # Security property: locked-account response MUST NOT distinguish itself from a
+    # wrong-password response via message content — that would be an enumeration oracle
+    # (attacker learns the account exists AND is locked by comparing messages).
+    # Both paths must return the same generic "Invalid email or password" body.
+    body = locked_resp.json()
+    detail = body.get("detail", "").lower()
+    assert "lock" not in detail, (
+        f"IDM-4 SECURITY: locked-account detail reveals lock status ({detail!r}). "
+        "Must use same generic 'Invalid email or password' as a wrong-password response."
+    )
+    assert "temporar" not in detail, (
+        f"IDM-4 SECURITY: locked-account detail reveals temporary lock ({detail!r}). "
+        "Must use same generic 'Invalid email or password' as a wrong-password response."
+    )
+
+
+def test_IDM4_successful_login_resets_failed_counter(http_client: TestClient) -> None:  # noqa: N802
+    """A successful login resets failed_login_attempts so the counter doesn't
+    accumulate across sessions.
+    """
+    email = _unique_email()
+    org_name = _unique_org_name()
+    password = "strong-password-1"
+    _signup(http_client, email=email, password=password, org_name=org_name)
+
+    half = _LOCKOUT_MAX_FAILED // 2  # 5 — below threshold
+
+    # 5 wrong attempts
+    for _ in range(half):
+        http_client.post(
+            "/auth/login",
+            json={"email": email, "password": "wrong-password", "org_name": org_name},
+        )
+
+    # Successful login resets the counter
+    ok_resp = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": password, "org_name": org_name},
+    )
+    assert ok_resp.status_code == 200, f"Expected 200 on good login, got {ok_resp.status_code}"
+
+    # Another 5 wrong attempts — should NOT lock (counter was reset)
+    for _ in range(half):
+        http_client.post(
+            "/auth/login",
+            json={"email": email, "password": "wrong-password", "org_name": org_name},
+        )
+
+    # Good login should still work (counter was reset, total bad = 5, below threshold)
+    ok_again = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": password, "org_name": org_name},
+    )
+    assert ok_again.status_code == 200, (
+        f"IDM-4 FAIL: successful login did not reset the failed-attempts counter — "
+        f"account locked after only {half} post-reset failures (got {ok_again.status_code})."
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cycle-2: MFA re-enroll block (Fix 1)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_cycle2_mfa_setup_on_already_enabled_user_returns_409(
+    http_client: TestClient,
+) -> None:
+    """Cycle-2 Fix 1: POST /auth/mfa/setup when MFA is already enabled must return 409.
+
+    A stolen access token must not be able to rebind the victim's authenticator
+    by calling mfa/setup. If mfa_enabled is True the endpoint must reject with
+    409 MFA_ALREADY_ENABLED and leave the existing secret untouched.
+    """
+    email = _unique_email()
+    org_name = _unique_org_name()
+    password = "strong-password-1"
+    body = _signup(http_client, email=email, password=password, org_name=org_name)
+    access_token = body["access_token"]
+
+    # Step 1: setup + confirm to fully enable MFA
+    setup_resp = http_client.post(
+        "/auth/mfa/setup",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert setup_resp.status_code == 200, setup_resp.text
+    secret_first = setup_resp.json()["secret"]
+    code = pyotp.TOTP(secret_first).now()
+    confirm = http_client.post(
+        "/auth/mfa/confirm",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"code": code},
+    )
+    assert confirm.status_code == 200, confirm.text
+
+    # Verify MFA is now active — login must require TOTP
+    login_resp = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": password, "org_name": org_name},
+    )
+    assert login_resp.status_code == 200
+    assert login_resp.json()["requires_mfa"] is True, "MFA must be active after confirm"
+
+    # Step 2: call mfa/setup AGAIN with MFA already enabled — must 409
+    second_setup = http_client.post(
+        "/auth/mfa/setup",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert second_setup.status_code == 409, (
+        f"Cycle-2 Fix 1 FAIL: mfa/setup on already-enabled user returned "
+        f"{second_setup.status_code} (expected 409). "
+        "A stolen token must not be able to rebind MFA."
+    )
+    assert second_setup.json().get("code") == "MFA_ALREADY_ENABLED", (
+        f"Cycle-2 Fix 1: 409 must carry code=MFA_ALREADY_ENABLED, got: {second_setup.json()}"
+    )
+
+    # Security property: MFA is still active after the rejected re-setup
+    # (mfa_enabled must not have been flipped, mfa_secret must be unchanged)
+    login_after = http_client.post(
+        "/auth/login",
+        json={"email": email, "password": password, "org_name": org_name},
+    )
+    assert login_after.status_code == 200
+    assert login_after.json()["requires_mfa"] is True, (
+        "Cycle-2 Fix 1 FAIL: MFA was disabled after the rejected re-setup. "
+        "The 409 path must leave mfa_enabled=True and mfa_secret unchanged."
+    )

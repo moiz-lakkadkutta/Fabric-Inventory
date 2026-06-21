@@ -83,6 +83,16 @@ def set_redis_client_for_testing(client: aioredis.Redis | None) -> None:
     _test_redis_client = client
 
 
+def _is_test_redis_injected() -> bool:
+    """Return True when a test client has been injected.
+
+    Used by identity_service.verify_totp to determine whether the Redis client
+    returned by _get_redis() was freshly built from URL (→ must be closed after use)
+    or is the shared test-injected client (→ must NOT be closed between tests).
+    """
+    return _test_redis_client is not None
+
+
 def _client_ip(request: Request) -> str:
     """Best-effort client IP for rate-limit keying.
 
