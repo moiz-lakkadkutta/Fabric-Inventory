@@ -24,15 +24,14 @@ What we want from this module:
    ciphertext can't be replayed across tenants even if RLS were ever
    bypassed.
 
-4. **Legacy compatibility** — data already in the database was
-   written by the previous stub as bare UTF-8 bytes (e.g.
-   ``b"27ABCDE1234F1Z5"``). The decrypt path checks the first byte:
-   if it is the version marker (0x01) we run the AES-GCM path; if
-   not, we fall back to `bytes.decode("utf-8")`. GSTIN / PAN /
-   phone / account-numbers are ASCII (0x20-0x7E), which never
-   collides with 0x01, so the version-byte discriminator is safe.
-   Writes always go through the new AES-GCM path; rows get upgraded
-   transparently on the next write.
+4. **Fail-closed decrypt** (CRYPTO-04) — ``decrypt_field`` requires the
+   leading byte to be the version marker (0x01). Any blob whose first
+   byte is not 0x01 raises ``PIIDecryptionError`` immediately; there is
+   no silent UTF-8 fallback. The ``f1_reencrypt_pii`` migration must be
+   applied to any database that was written by the old UTF-8 stub before
+   this version of the code is deployed. Writes always go through the
+   AES-GCM path; the migration brings all legacy rows in line so the
+   application never sees a non-0x01 blob in steady state.
 
 5. **Per-process DEK cache** — DEKs are immutable for the life of a
    given KEK, so we cache `org_id -> dek` in a module-level dict. The
@@ -357,16 +356,15 @@ def decrypt_field(
 ) -> str | None:
     """Decrypt a PII column. Returns the plaintext string, or None.
 
-    Legacy path: if the leading byte is NOT ``VERSION_AESGCM_V1``, the
-    value was written by the previous UTF-8 stub. We decode it as
-    UTF-8 and return — the legacy bytes carry no integrity, but they
-    are exactly what the stub produced. The next write goes through
-    the AES-GCM path and upgrades the row transparently.
+    Expects a v1 AES-GCM envelope: ``0x01 || iv(12) || ciphertext+tag``.
 
-    Raises ``PIIDecryptionError`` only when the version byte says v1
-    but the AES-GCM verification fails. A legacy row that happens to
-    have invalid UTF-8 raises ``PIIDecryptionError`` so we don't
-    silently swallow a corrupted DB read.
+    Raises ``PIIDecryptionError`` in two cases:
+    - The leading byte is not ``VERSION_AESGCM_V1`` (0x01) — this means
+      the row contains a legacy plaintext blob that was not re-encrypted by
+      the ``f1_reencrypt_pii`` migration.  Silently decoding such blobs is
+      an integrity downgrade (CRYPTO-04) and is no longer permitted.
+    - The leading byte IS 0x01 but AES-GCM authentication fails (wrong DEK,
+      wrong org_id AAD, or tampered ciphertext).
     """
     if ciphertext is None:
         return None
@@ -375,17 +373,27 @@ def decrypt_field(
     if not ciphertext:
         return None
 
-    # Legacy stub: the very first byte of UTF-8 PII (ASCII GSTIN/PAN
-    # /phone/account#) is never 0x01. So a leading non-version byte
-    # means "this was written by the stub" — decode and return.
+    # CRYPTO-04: fail-closed on any non-0x01 leading byte.
+    #
+    # Previously this branch decoded the raw bytes as UTF-8 and returned them
+    # (the "legacy stub compatibility" fallback). That is an integrity
+    # downgrade: unencrypted PII would silently escape the AEAD protection
+    # layer with no key, no IV, and no authenticity guarantee.
+    #
+    # The re-encrypt migration ``f1_reencrypt_pii`` brings every row to the
+    # v1 AES-GCM envelope format before this code is deployed, so the legacy
+    # branch can never be reached on a correctly-migrated database. If it IS
+    # reached, that means either (a) the migration has not been run, or (b)
+    # plaintext PII was written directly to the DB — both are operator errors
+    # that must be surfaced loudly, not silently papered over.
     if ciphertext[0:1] != VERSION_AESGCM_V1:
-        try:
-            return ciphertext.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise PIIDecryptionError(
-                "legacy PII column is not valid UTF-8 and is not a v1 ciphertext — "
-                "data corruption or unknown format"
-            ) from exc
+        raise PIIDecryptionError(
+            "legacy/plaintext PII blob encountered — leading byte is not the v1 "
+            "version marker (0x01). The re-encrypt migration f1_reencrypt_pii "
+            "must be applied to bring this row to the AES-GCM envelope format "
+            "before the application can serve it. Do NOT revert this error to a "
+            "silent UTF-8 decode; that would bypass AEAD integrity entirely."
+        )
 
     if len(ciphertext) < 1 + _IV_BYTES + 16:
         raise PIIDecryptionError("v1 PII ciphertext is too short to contain IV + tag")

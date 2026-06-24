@@ -166,25 +166,29 @@ def test_decrypt_memoryview_supported() -> None:
 
 
 def test_decrypt_legacy_utf8_value() -> None:
-    """Data written by the previous stub is bare UTF-8 bytes — no
-    version byte, no IV, no tag. After the cut-over, reads must still
-    return the original plaintext so we don't strand existing rows.
+    """CRYPTO-04: after the fail-closed cutover, a non-0x01 blob (e.g.
+    a legacy bare-UTF-8 GSTIN written by the old stub) must raise
+    ``PIIDecryptionError`` instead of silently returning the plaintext.
 
-    GSTIN / PAN / phone / account-number are ASCII (0x20-0x7E), which
-    never collides with the 0x01 version byte, so first-byte check is
-    a safe discriminator.
+    The re-encrypt migration ``f1_reencrypt_pii`` must run first to
+    bring all existing rows to the v1 AES-GCM envelope format.
+    Previously this test asserted the raw string was returned; that
+    behaviour is the bug we're fixing (CRYPTO-04 integrity downgrade).
     """
     org_id = uuid.uuid4()
     dek = os.urandom(32)
-    legacy_blob = b"27ABCDE1234F1Z5"  # exactly what the stub wrote
-    assert crypto.decrypt_field(legacy_blob, dek=dek, org_id=org_id) == "27ABCDE1234F1Z5"
+    legacy_blob = b"27ABCDE1234F1Z5"  # starts with 0x32, not 0x01
+    with pytest.raises(crypto.PIIDecryptionError, match="legacy"):
+        crypto.decrypt_field(legacy_blob, dek=dek, org_id=org_id)
 
 
 def test_decrypt_legacy_pan() -> None:
+    """CRYPTO-04: same fail-closed contract for a PAN-shaped legacy blob."""
     org_id = uuid.uuid4()
     dek = os.urandom(32)
-    legacy_blob = b"ABCDE1234F"
-    assert crypto.decrypt_field(legacy_blob, dek=dek, org_id=org_id) == "ABCDE1234F"
+    legacy_blob = b"ABCDE1234F"  # starts with 0x41, not 0x01
+    with pytest.raises(crypto.PIIDecryptionError, match="legacy"):
+        crypto.decrypt_field(legacy_blob, dek=dek, org_id=org_id)
 
 
 def test_encrypt_decrypt_unicode_round_trip() -> None:

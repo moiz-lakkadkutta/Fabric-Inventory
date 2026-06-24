@@ -237,8 +237,15 @@ def test_render_invoice_html_contains_all_mandatory_gst_fields(
 
     with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        # GSTINs go through the production encrypt path so the rows hold real
+        # v1 AES-GCM envelopes. Pre-CRYPTO-04 these assigned bare plaintext
+        # bytes, which the old raw-UTF-8 fallback decoded; the now fail-closed
+        # decrypt_field rejects any non-0x01 blob.
+        from app.utils.crypto import encrypt_pii, get_org_dek
+
+        dek = get_org_dek(session, org_id=org_id)
         firm = session.execute(select(Firm).where(Firm.firm_id == firm_id)).scalar_one()
-        firm.gstin = b"24AAACR5055K1Z5"
+        firm.gstin = encrypt_pii("24AAACR5055K1Z5", dek=dek, org_id=org_id)
         firm.legal_name = "Rajesh Textiles Pvt Ltd"
         firm.address = "142, Resham Bhavan, Ring Road, Surat 395002"
         firm.state_code = "GJ"
@@ -248,7 +255,7 @@ def test_render_invoice_html_contains_all_mandatory_gst_fields(
         # assert the IGST split column shows.
         party = session.execute(select(Party).where(Party.party_id == party_id)).scalar_one()
         party.state_code = "MH"
-        party.gstin = b"27AABCA1234C1Z9"
+        party.gstin = encrypt_pii("27AABCA1234C1Z9", dek=dek, org_id=org_id)
         session.commit()
 
     create = http_client.post(

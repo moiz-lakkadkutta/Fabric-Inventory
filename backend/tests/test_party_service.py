@@ -535,15 +535,22 @@ def test_pii_ciphertext_does_not_decrypt_under_other_org_dek(
         decrypt_pii(party_a.gstin, dek=dek_a_plain, org_id=org_b_id)
 
 
-def test_legacy_utf8_pii_still_readable_after_cutover(
+def test_legacy_utf8_pii_raises_pii_decryption_error_after_fail_closed_cutover(
     db_session: OrmSession, fresh_org_id: uuid.UUID
 ) -> None:
-    """TASK-TR-SEC1: a row written by the previous stub must still
-    decrypt to its plaintext after the cut-over. The stub stored bare
-    UTF-8 bytes; the new ``decrypt_pii`` falls back to ``.decode()``
-    when the leading version byte is missing.
+    """CRYPTO-04: after the fail-closed cutover, a row containing a
+    legacy bare-UTF-8 blob (written by the old stub, no version byte)
+    must raise ``PIIDecryptionError`` when ``decrypt_pii`` is called.
+
+    Previously this test asserted that the raw plaintext was returned;
+    that behaviour was the CRYPTO-04 integrity downgrade.  The fix
+    makes ``decrypt_field`` raise on any non-0x01 leading byte so that
+    unencrypted PII can never slip through silently.  The
+    re-encrypt migration ``f1_reencrypt_pii`` must be applied to any
+    database that still contains such rows before the application can
+    serve them correctly.
     """
-    from app.utils.crypto import decrypt_pii, get_org_dek
+    from app.utils.crypto import PIIDecryptionError, decrypt_pii, get_org_dek
 
     # Insert a party then forcibly rewrite its gstin column to the
     # legacy stub format (bare UTF-8 bytes, no version byte).
@@ -557,14 +564,13 @@ def test_legacy_utf8_pii_still_readable_after_cutover(
     db_session.refresh(party)
 
     dek = get_org_dek(db_session, org_id=fresh_org_id)
-    assert (
+    # After CRYPTO-04 the legacy path raises instead of returning raw bytes.
+    with pytest.raises(PIIDecryptionError, match="legacy"):
         decrypt_pii(
             party.gstin,  # type: ignore[attr-defined]
             dek=dek,
             org_id=fresh_org_id,
         )
-        == "27ABCDE1234F1Z5"
-    )
 
 
 # ──────────────────────────────────────────────────────────────────────

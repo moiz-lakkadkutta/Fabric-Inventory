@@ -65,18 +65,26 @@ def _create_invoice_with_ship_to(
 
 def _seed_b2b_party(sync_engine: Engine, *, org_id: uuid.UUID, state_code: str = "MH") -> uuid.UUID:
     """Seed a customer party with a GSTIN set so the PoS engine
-    classifies the buyer as REGISTERED."""
+    classifies the buyer as REGISTERED.
+
+    The GSTIN is run through the production encryption path so the DB row
+    holds a real v1 AES-GCM envelope. (Pre-CRYPTO-04 this seeded a dummy
+    ``b"\\x27" * 15`` plaintext blob, which the old raw-UTF-8 fallback
+    tolerated; the now fail-closed ``decrypt_field`` rejects any non-0x01
+    blob, so test fixtures must encrypt exactly like production.)"""
     from app.models import Party
+    from app.utils.crypto import encrypt_pii, get_org_dek
 
     with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        dek = get_org_dek(session, org_id=org_id)
         party = Party(
             org_id=org_id,
             code=f"B2B{uuid.uuid4().hex[:6].upper()}",
             name=f"B2B {uuid.uuid4().hex[:4]}",
             is_customer=True,
             state_code=state_code,
-            gstin=b"\x27" * 15,  # 15 bytes of dummy ciphertext (GSTIN is encrypted in DB)
+            gstin=encrypt_pii("27ABCDE1234F1Z5", dek=dek, org_id=org_id),
         )
         session.add(party)
         session.commit()
