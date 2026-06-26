@@ -29,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
-from app.models import Firm, Ledger, Party, SalesInvoice, Voucher, VoucherLine
+from app.models import Firm, Ledger, Party, PurchaseInvoice, SalesInvoice, Voucher, VoucherLine
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.service import audit_service
 
@@ -38,6 +38,11 @@ from app.service import audit_service
 _AR_LEDGER_CODE = "1200"  # Sundry Debtors (AR)
 _SALES_LEDGER_CODE = "4000"  # Sales Revenue
 _GST_PAYABLE_LEDGER_CODE = "2100"  # GST Payable
+
+# E1 (GL-1): Purchase invoice GL ledger codes.
+_INVENTORY_LEDGER_CODE = "1300"  # Inventory (net taxable value debit)
+_ITC_RECEIVABLE_LEDGER_CODE = "1400"  # ITC Receivable (Input GST debit)
+_AP_LEDGER_CODE = "2000"  # Sundry Creditors (AP credit — gross payable)
 
 
 def _resolve_ledger(session: Session, *, org_id: uuid.UUID, code: str) -> Ledger:
@@ -217,6 +222,277 @@ def post_invoice_to_gl(
         )
 
     return voucher
+
+
+# ──────────────────────────────────────────────────────────────────────
+# E1 (GL-1): Purchase Invoice GL posting.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def post_purchase_invoice_to_gl(
+    session: Session,
+    *,
+    pi: PurchaseInvoice,
+    posted_by: uuid.UUID | None = None,
+) -> Voucher | None:
+    """Create a balanced GL voucher for a Purchase Invoice.
+
+    Forward charge (rcm_applicable=False):
+      DR  1300 Inventory            pi.invoice_amount  (net taxable value)
+      DR  1400 ITC Receivable       pi.gst_amount      (skip if zero/None)
+      CR  2000 Sundry Creditors (AP) invoice_amount + gst_amount  (gross payable)
+
+    RCM (rcm_applicable=True):
+      The supplier charges no GST; buyer owes only the net. The ITC self-
+      invoice leg for RCM is out-of-scope here — deferred to finding F7.
+      DR  1300 Inventory            pi.invoice_amount
+      CR  2000 Sundry Creditors (AP) pi.invoice_amount
+
+    S2: Zero-amount PI (e.g. free samples, rate=0): returns None — no voucher
+    is created. `post_pi` still advances the PI to POSTED; there is simply
+    nothing to record in the GL for a ₹0 transaction.
+
+    Idempotency guard: if a non-deleted PURCHASE_INVOICE voucher already
+    references this pi_id (e.g. a retry of post_pi after a flush error),
+    return it rather than creating a duplicate.
+    """
+    net = Decimal(pi.invoice_amount or 0)
+    if net <= 0:
+        # S2: zero-amount PI (free samples, zero-rate lines). No GL entry needed.
+        return None
+
+    # Defense-in-depth: idempotency guard.
+    existing = session.execute(
+        select(Voucher).where(
+            Voucher.org_id == pi.org_id,
+            Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+            Voucher.reference_id == pi.purchase_invoice_id,
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    gst_total = Decimal(pi.gst_amount or 0)
+    rcm = bool(pi.rcm_applicable)
+
+    # For forward charge: AP = net + GST; for RCM: AP = net only.
+    if rcm:
+        ap_amount = net
+        include_itc = False
+        # S1: If the user entered a gst_rate, gst_amount is computed on the
+        # PI but the ITC leg is deferred to F7 (RCM self-invoice).  Stash a
+        # warning on match_result so the discrepancy is loud, not silent.
+        if gst_total > 0:
+            existing_mr: dict[str, object] = dict(pi.match_result or {})
+            existing_mr["rcm_gst_deferred"] = f"{gst_total:.2f}"
+            existing_mr["note"] = (
+                "RCM input GST not GL-posted at PI posting; "
+                "self-invoice + ITC/RCM-payable legs deferred to F7"
+            )
+            pi.match_result = existing_mr
+    else:
+        ap_amount = net + gst_total
+        include_itc = gst_total > 0
+
+    inventory_ledger = _resolve_ledger(session, org_id=pi.org_id, code=_INVENTORY_LEDGER_CODE)
+    itc_ledger = (
+        _resolve_ledger(session, org_id=pi.org_id, code=_ITC_RECEIVABLE_LEDGER_CODE)
+        if include_itc
+        else None
+    )
+    ap_ledger = _resolve_ledger(session, org_id=pi.org_id, code=_AP_LEDGER_CODE)
+
+    voucher_number = _allocate_voucher_number(
+        session,
+        org_id=pi.org_id,
+        firm_id=pi.firm_id,
+        voucher_type=VoucherType.PURCHASE_INVOICE,
+        series=pi.series,
+    )
+
+    party = session.execute(
+        select(Party).where(
+            Party.party_id == pi.party_id,
+            Party.org_id == pi.org_id,
+            Party.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    party_display = party.name if party is not None else str(pi.party_id)
+
+    voucher = Voucher(
+        org_id=pi.org_id,
+        firm_id=pi.firm_id,
+        voucher_type=VoucherType.PURCHASE_INVOICE,
+        series=pi.series,
+        number=voucher_number,
+        voucher_date=pi.invoice_date or datetime.datetime.now(tz=datetime.UTC).date(),
+        reference_type="purchase_invoice",
+        reference_id=pi.purchase_invoice_id,
+        narration=f"Purchase from {party_display}",
+        status=VoucherStatus.POSTED,
+        total_debit=ap_amount,
+        total_credit=ap_amount,
+        created_by=posted_by,
+    )
+    session.add(voucher)
+    session.flush()
+
+    seq = 1
+    session.add(
+        VoucherLine(
+            org_id=pi.org_id,
+            voucher_id=voucher.voucher_id,
+            ledger_id=inventory_ledger.ledger_id,
+            line_type=JournalLineType.DR,
+            amount=net,
+            description=f"Inventory · PI {pi.series}/{pi.number}",
+            sequence=seq,
+        )
+    )
+    if itc_ledger is not None:
+        seq += 1
+        session.add(
+            VoucherLine(
+                org_id=pi.org_id,
+                voucher_id=voucher.voucher_id,
+                ledger_id=itc_ledger.ledger_id,
+                line_type=JournalLineType.DR,
+                amount=gst_total,
+                description=f"Input GST · PI {pi.series}/{pi.number}",
+                sequence=seq,
+            )
+        )
+    seq += 1
+    session.add(
+        VoucherLine(
+            org_id=pi.org_id,
+            voucher_id=voucher.voucher_id,
+            ledger_id=ap_ledger.ledger_id,
+            line_type=JournalLineType.CR,
+            amount=ap_amount,
+            description=f"AP · PI {pi.series}/{pi.number}",
+            sequence=seq,
+        )
+    )
+    session.flush()
+
+    # Defense-in-depth: balanced bundle invariant.
+    debits = sum(
+        (Decimal(line.amount) for line in voucher.lines if line.line_type == JournalLineType.DR),
+        Decimal(0),
+    )
+    credits = sum(
+        (Decimal(line.amount) for line in voucher.lines if line.line_type == JournalLineType.CR),
+        Decimal(0),
+    )
+    if debits != credits:
+        raise AppValidationError(
+            f"Purchase voucher {voucher.voucher_id} unbalanced: DR={debits}, CR={credits}"
+        )
+
+    return voucher
+
+
+def reverse_purchase_invoice_gl(
+    session: Session,
+    *,
+    pi: PurchaseInvoice,
+    posted_by: uuid.UUID | None = None,
+) -> Voucher | None:
+    """Create a reversing GL voucher when a POSTED PI is voided (B1 fix).
+
+    Finds the original non-deleted PURCHASE_INVOICE voucher for this PI
+    and posts a new voucher with every leg's DR/CR swapped:
+      original DR 1300 Inventory  → reversal CR 1300 Inventory
+      original DR 1400 ITC        → reversal CR 1400 ITC
+      original CR 2000 AP         → reversal DR 2000 AP
+
+    Returns None if no original voucher exists (e.g. zero-amount PI that
+    never had a GL entry — S2 case), because there is nothing to reverse.
+
+    The reversing voucher uses the same series, a new number, and
+    narration = "Reversal of purchase from {party}".
+    """
+    original = session.execute(
+        select(Voucher).where(
+            Voucher.org_id == pi.org_id,
+            Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+            Voucher.reference_id == pi.purchase_invoice_id,
+            Voucher.deleted_at.is_(None),
+            Voucher.narration.not_like("Reversal of%"),  # don't re-reverse
+        )
+    ).scalar_one_or_none()
+    if original is None:
+        return None  # Zero-amount PI or already reversed — nothing to do.
+
+    party = session.execute(
+        select(Party).where(
+            Party.party_id == pi.party_id,
+            Party.org_id == pi.org_id,
+            Party.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    party_display = party.name if party is not None else str(pi.party_id)
+
+    voucher_number = _allocate_voucher_number(
+        session,
+        org_id=pi.org_id,
+        firm_id=pi.firm_id,
+        voucher_type=VoucherType.PURCHASE_INVOICE,
+        series=pi.series,
+    )
+
+    reversal = Voucher(
+        org_id=pi.org_id,
+        firm_id=pi.firm_id,
+        voucher_type=VoucherType.PURCHASE_INVOICE,
+        series=pi.series,
+        number=voucher_number,
+        voucher_date=datetime.datetime.now(tz=datetime.UTC).date(),
+        reference_type="purchase_invoice",
+        reference_id=pi.purchase_invoice_id,
+        narration=f"Reversal of purchase from {party_display}",
+        status=VoucherStatus.POSTED,
+        total_debit=Decimal(original.total_debit or 0),
+        total_credit=Decimal(original.total_credit or 0),
+        created_by=posted_by,
+    )
+    session.add(reversal)
+    session.flush()
+
+    swap = {JournalLineType.DR: JournalLineType.CR, JournalLineType.CR: JournalLineType.DR}
+    for seq, orig_line in enumerate(
+        sorted(original.lines, key=lambda ln: ln.sequence or 0), start=1
+    ):
+        session.add(
+            VoucherLine(
+                org_id=pi.org_id,
+                voucher_id=reversal.voucher_id,
+                ledger_id=orig_line.ledger_id,
+                line_type=swap[orig_line.line_type],
+                amount=Decimal(orig_line.amount),
+                description=f"Reversal · {orig_line.description or ''}",
+                sequence=seq,
+            )
+        )
+    session.flush()
+
+    # Defense-in-depth: balanced bundle invariant on reversal.
+    debits = sum(
+        (Decimal(line.amount) for line in reversal.lines if line.line_type == JournalLineType.DR),
+        Decimal(0),
+    )
+    credits = sum(
+        (Decimal(line.amount) for line in reversal.lines if line.line_type == JournalLineType.CR),
+        Decimal(0),
+    )
+    if debits != credits:
+        raise AppValidationError(
+            f"Reversal voucher {reversal.voucher_id} unbalanced: DR={debits}, CR={credits}"
+        )
+
+    return reversal
 
 
 # ──────────────────────────────────────────────────────────────────────

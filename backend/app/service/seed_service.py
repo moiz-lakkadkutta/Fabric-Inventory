@@ -138,6 +138,13 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     # finished-goods Inventory debits up. Non-control: postings hit this
     # ledger directly, no party / bank sub-ledger.
     ("1310", "Work-in-Process", "INVENTORY", "ASSET", False),
+    # E1 (GL-1): Input Tax Credit receivable — debited when a forward-charge
+    # Purchase Invoice is posted (DR ITC / CR AP). The ITC balance represents
+    # GST already paid to suppliers that can offset our output GST liability.
+    # RCM self-invoice ITC (finding F7) will also post here when that task ships.
+    # ledger_type "TAX" under group "ASSET" mirrors how 2100 GST Payable uses
+    # "TAX","LIABILITY". is_control=False; postings hit this ledger directly.
+    ("1400", "ITC Receivable (Input GST)", "TAX", "ASSET", False),
     ("2000", "Sundry Creditors (AP)", "PAYABLE", "LIABILITY", True),
     ("2100", "GST Payable", "TAX", "LIABILITY", False),
     ("2200", "TDS Payable", "TAX", "LIABILITY", False),

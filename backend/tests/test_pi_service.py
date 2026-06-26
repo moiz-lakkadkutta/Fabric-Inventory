@@ -13,10 +13,12 @@ import uuid
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import AppValidationError, InvoiceStateError
-from app.models import Firm, Item, Party
+from app.models import Firm, Item, Ledger, Party, Voucher, VoucherLine
+from app.models.accounting import JournalLineType, VoucherType
 from app.models.masters import ItemType, UomType
 from app.models.procurement import (
     GRN,
@@ -26,7 +28,7 @@ from app.models.procurement import (
     PurchaseOrder,
     VoucherStatus,
 )
-from app.service import procurement_service
+from app.service import procurement_service, seed_service
 
 # ──────────────────────────────────────────────────────────────────────
 # Shared fixture
@@ -35,7 +37,14 @@ from app.service import procurement_service
 
 @pytest.fixture
 def pi_setup(db_session: OrmSession, fresh_org_id: uuid.UUID) -> tuple[Firm, Party, Item]:
-    """One Firm, one supplier Party, one Item — re-used across all PI tests."""
+    """One Firm, one supplier Party, one Item — re-used across all PI tests.
+
+    Also seeds the COA so that post_pi can create GL vouchers.  In production
+    every org has the COA seeded at signup time; this fixture mirrors that.
+    """
+    # Seed the COA so _resolve_ledger(1300/1400/2000) works in post_pi (E1/GL-1).
+    seed_service.seed_coa(db_session, org_id=fresh_org_id)
+
     firm = Firm(
         org_id=fresh_org_id,
         code=f"F-{uuid.uuid4().hex[:6]}",
@@ -790,3 +799,364 @@ def test_soft_delete_posted_pi_raises(
         procurement_service.soft_delete_pi(
             db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id
         )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# E1 (GL-1): post_pi must create a balanced PURCHASE_INVOICE GL voucher
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_coa_for_pi_gl_tests(db_session: OrmSession, *, org_id: uuid.UUID) -> None:
+    """Seed the COA so _resolve_ledger(1300/1400/2000) works in post_pi."""
+    seed_service.seed_coa(db_session, org_id=org_id)
+
+
+def _ledger_code_map(
+    db_session: OrmSession, org_id: uuid.UUID, voucher: Voucher
+) -> dict[tuple[str, JournalLineType], Decimal]:
+    """Build {(ledger_code, line_type): amount} for all lines on a voucher.
+
+    Used by S3 ledger-code-pinning assertions.
+    """
+    ledger_ids = [line.ledger_id for line in voucher.lines]
+    ledgers = {
+        row.ledger_id: row.code
+        for row in db_session.execute(
+            select(Ledger).where(
+                Ledger.org_id == org_id,
+                Ledger.ledger_id.in_(ledger_ids),
+            )
+        ).scalars()
+    }
+    result: dict[tuple[str, JournalLineType], Decimal] = {}
+    for line in voucher.lines:
+        key = (ledgers[line.ledger_id], line.line_type)
+        result[key] = result.get(key, Decimal(0)) + Decimal(line.amount)
+    return result
+
+
+def test_post_pi_posts_balanced_purchase_voucher_to_gl(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Forward charge PI with GST creates a 3-leg balanced PURCHASE_INVOICE voucher.
+
+    DR 1300 Inventory     = net (invoice_amount = sum of line_amounts)
+    DR 1400 ITC Receivable = gst_amount
+    CR 2000 Sundry Creditors (AP) = invoice_amount + gst_amount (gross payable)
+    """
+    firm, party, item = pi_setup
+    _seed_coa_for_pi_gl_tests(db_session, org_id=fresh_org_id)
+
+    # 10 units @ 100 = 1000 net; GST 18% = 180; gross AP = 1180
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="18",
+    )
+
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+
+    voucher = db_session.execute(
+        select(Voucher).where(
+            Voucher.org_id == fresh_org_id,
+            Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+            Voucher.reference_id == pi.purchase_invoice_id,
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one()
+
+    net = Decimal("1000.00")
+    gst = Decimal("180.00")
+    gross = Decimal("1180.00")
+
+    assert voucher.status is not None and voucher.status.value == "POSTED"
+    assert Decimal(voucher.total_debit or 0) == gross
+    assert Decimal(voucher.total_credit or 0) == gross
+
+    drs = [line for line in voucher.lines if line.line_type == JournalLineType.DR]
+    crs = [line for line in voucher.lines if line.line_type == JournalLineType.CR]
+    assert len(drs) == 2, f"expected 2 DR legs, got {len(drs)}"
+    assert len(crs) == 1, f"expected 1 CR leg, got {len(crs)}"
+
+    # S3: pin exact ledger-code → amount mapping (not just amounts in a set).
+    code_map = _ledger_code_map(db_session, fresh_org_id, voucher)
+    assert code_map[("1300", JournalLineType.DR)] == net, "DR 1300 must equal net"
+    assert code_map[("1400", JournalLineType.DR)] == gst, "DR 1400 must equal GST"
+    assert code_map[("2000", JournalLineType.CR)] == gross, "CR 2000 must equal gross"
+
+
+def test_post_pi_rcm_skips_itc_leg(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """RCM PI: supplier charges no GST; only 2 legs (Inventory DR / AP CR).
+
+    DR 1300 Inventory     = invoice_amount (net only)
+    CR 2000 Sundry Creditors (AP) = invoice_amount (no GST leg — F7 handles RCM self-invoice)
+    """
+    firm, party, item = pi_setup
+    _seed_coa_for_pi_gl_tests(db_session, org_id=fresh_org_id)
+
+    # RCM: no GST charged on invoice; net only
+    pi = procurement_service.create_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        invoice_date=datetime.date(2026, 4, 27),
+        series="PI/2025-26",
+        lines=[{"item_id": item.item_id, "qty": "10", "rate": "100"}],
+        rcm_applicable=True,
+    )
+    net = Decimal("1000.00")
+
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+
+    voucher = db_session.execute(
+        select(Voucher).where(
+            Voucher.org_id == fresh_org_id,
+            Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+            Voucher.reference_id == pi.purchase_invoice_id,
+        )
+    ).scalar_one()
+
+    drs = [line for line in voucher.lines if line.line_type == JournalLineType.DR]
+    crs = [line for line in voucher.lines if line.line_type == JournalLineType.CR]
+    assert len(drs) == 1, "RCM: only 1 DR leg (no ITC)"
+    assert len(crs) == 1, "RCM: only 1 CR leg"
+    assert Decimal(voucher.total_debit or 0) == net
+    assert Decimal(voucher.total_credit or 0) == net
+
+    # S3: pin ledger codes.
+    code_map = _ledger_code_map(db_session, fresh_org_id, voucher)
+    assert code_map[("1300", JournalLineType.DR)] == net, "DR 1300 must equal net"
+    assert ("1400", JournalLineType.DR) not in code_map, "no ITC leg for RCM"
+    assert code_map[("2000", JournalLineType.CR)] == net, "CR 2000 must equal net"
+
+
+def test_post_pi_no_gst_omits_itc_leg(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Forward charge PI with no GST (gst_amount is None): 2 legs, no ITC.
+
+    DR 1300 Inventory     = invoice_amount
+    CR 2000 Sundry Creditors (AP) = invoice_amount
+    """
+    firm, party, item = pi_setup
+    _seed_coa_for_pi_gl_tests(db_session, org_id=fresh_org_id)
+
+    # No gst_rate → gst_amount stays None
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="50",
+        gst_rate=None,
+    )
+    net = Decimal("500.00")
+    assert pi.gst_amount is None
+
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+
+    voucher = db_session.execute(
+        select(Voucher).where(
+            Voucher.org_id == fresh_org_id,
+            Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+            Voucher.reference_id == pi.purchase_invoice_id,
+        )
+    ).scalar_one()
+
+    drs = [line for line in voucher.lines if line.line_type == JournalLineType.DR]
+    crs = [line for line in voucher.lines if line.line_type == JournalLineType.CR]
+    assert len(drs) == 1, "no-GST PI: only 1 DR leg"
+    assert len(crs) == 1, "no-GST PI: only 1 CR leg"
+
+    # S3: pin ledger codes.
+    code_map = _ledger_code_map(db_session, fresh_org_id, voucher)
+    assert code_map[("1300", JournalLineType.DR)] == net, "DR 1300 must equal net"
+    assert ("1400", JournalLineType.DR) not in code_map, "no ITC leg when no GST"
+    assert code_map[("2000", JournalLineType.CR)] == net, "CR 2000 must equal net"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# B1: void_pi on a POSTED PI must reverse the GL voucher
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_void_pi_posted_reverses_gl_voucher(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Voiding a POSTED PI creates a second (reversing) PURCHASE_INVOICE
+    voucher whose legs are the DR/CR swap of the original. Net across both
+    vouchers: Inventory=0, ITC=0, Creditors=0 (fully reversed).
+    """
+    firm, party, item = pi_setup
+    _seed_coa_for_pi_gl_tests(db_session, org_id=fresh_org_id)
+
+    # 10 units @ 200, GST 5% => net=2000, gst=100, gross=2100
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="200",
+        gst_rate="5",
+    )
+    net = Decimal("2000.00")
+    gst = Decimal("100.00")
+    gross = Decimal("2100.00")
+
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+    procurement_service.void_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+
+    # Two PURCHASE_INVOICE vouchers should now exist for this PI.
+    vouchers = list(
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+                Voucher.reference_id == pi.purchase_invoice_id,
+                Voucher.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    assert len(vouchers) == 2, f"expected 2 vouchers (original + reversal), got {len(vouchers)}"
+
+    # Reversal voucher: balanced bundle.
+    rev = next(v for v in vouchers if "Reversal" in (v.narration or ""))
+    assert Decimal(rev.total_debit or 0) == gross
+    assert Decimal(rev.total_credit or 0) == gross
+
+    # Reversal legs: DR 2000 AP / CR 1300 Inventory / CR 1400 ITC.
+    rev_map = _ledger_code_map(db_session, fresh_org_id, rev)
+    assert rev_map[("2000", JournalLineType.DR)] == gross, "reversal DR 2000 = gross"
+    assert rev_map[("1300", JournalLineType.CR)] == net, "reversal CR 1300 = net"
+    assert rev_map[("1400", JournalLineType.CR)] == gst, "reversal CR 1400 = gst"
+
+    # Net across both vouchers = 0 for every ledger.
+    all_lines = list(
+        db_session.execute(
+            select(VoucherLine).where(
+                VoucherLine.org_id == fresh_org_id,
+                VoucherLine.voucher_id.in_([v.voucher_id for v in vouchers]),
+            )
+        ).scalars()
+    )
+    ledgers = {
+        row.ledger_id: row.code
+        for row in db_session.execute(
+            select(Ledger).where(
+                Ledger.org_id == fresh_org_id,
+                Ledger.ledger_id.in_([ln.ledger_id for ln in all_lines]),
+            )
+        ).scalars()
+    }
+    net_by_code: dict[str, Decimal] = {}
+    for line in all_lines:
+        code = ledgers[line.ledger_id]
+        sign = Decimal(1) if line.line_type == JournalLineType.DR else Decimal(-1)
+        net_by_code[code] = net_by_code.get(code, Decimal(0)) + sign * Decimal(line.amount)
+    assert net_by_code.get("1300", Decimal(0)) == Decimal(0), "Inventory nets to 0"
+    assert net_by_code.get("1400", Decimal(0)) == Decimal(0), "ITC nets to 0"
+    assert net_by_code.get("2000", Decimal(0)) == Decimal(0), "Creditors nets to 0"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# S1: RCM PI with non-zero gst_amount sets a deferred warning
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_post_pi_rcm_with_gst_sets_deferred_warning(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """RCM PI where user entered a gst_rate: gst_amount is computed but the
+    ITC leg is deferred (F7). match_result must carry the deferred-gst warning.
+    """
+    firm, party, item = pi_setup
+    _seed_coa_for_pi_gl_tests(db_session, org_id=fresh_org_id)
+
+    pi = procurement_service.create_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        invoice_date=datetime.date(2026, 4, 27),
+        series="PI/2025-26",
+        lines=[{"item_id": item.item_id, "qty": "10", "rate": "100", "gst_rate": "18"}],
+        rcm_applicable=True,
+    )
+    # gst_amount = 180 from line computation
+    assert pi.gst_amount is not None
+    assert Decimal(str(pi.gst_amount)) == Decimal("180.00")
+
+    posted = procurement_service.post_pi(
+        db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id
+    )
+
+    assert posted.match_result is not None
+    assert "rcm_gst_deferred" in posted.match_result
+    assert posted.match_result["rcm_gst_deferred"] == "180.00"
+    assert "F7" in posted.match_result.get("note", "")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# S2: zero-amount PI posts to POSTED without creating a GL voucher
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_post_pi_zero_amount_posts_no_voucher(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """A zero-rate PI (e.g. free samples) is valid. post_pi advances it to
+    POSTED but skips GL voucher creation (nothing to post).
+    """
+    firm, party, item = pi_setup
+    _seed_coa_for_pi_gl_tests(db_session, org_id=fresh_org_id)
+
+    # rate=0 is allowed by create_pi (only negative rate is rejected).
+    pi = procurement_service.create_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        invoice_date=datetime.date(2026, 4, 27),
+        series="PI/2025-26",
+        lines=[{"item_id": item.item_id, "qty": "10", "rate": "0"}],
+    )
+    assert Decimal(str(pi.invoice_amount)) == Decimal("0")
+
+    posted = procurement_service.post_pi(
+        db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id
+    )
+    assert posted.status == VoucherStatus.POSTED
+
+    # No GL voucher must exist.
+    voucher_count = db_session.execute(
+        select(Voucher).where(
+            Voucher.org_id == fresh_org_id,
+            Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+            Voucher.reference_id == pi.purchase_invoice_id,
+        )
+    ).scalar_one_or_none()
+    assert voucher_count is None, "zero-amount PI must not create a GL voucher"

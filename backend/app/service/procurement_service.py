@@ -46,7 +46,7 @@ from app.models.procurement import (
     PurchaseOrderStatus,
     VoucherStatus,
 )
-from app.service import inventory_service
+from app.service import accounting_service, inventory_service
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -833,6 +833,10 @@ def post_pi(
     if updated_by is not None:
         pi.updated_by = updated_by
     session.flush()
+    # E1 (GL-1): Post a balanced PURCHASE_INVOICE GL voucher.
+    # forward-charge: DR Inventory + DR ITC / CR AP (gross).
+    # RCM: DR Inventory / CR AP (net only); ITC self-invoice is F7.
+    accounting_service.post_purchase_invoice_to_gl(session, pi=pi, posted_by=updated_by)
     return pi
 
 
@@ -854,6 +858,11 @@ def void_pi(
             f"Cannot void PI {pi_id}: status is RECONCILED (payment-allocated); "
             f"use a debit-note workflow instead"
         )
+    # B1: if the PI is POSTED it already has a GL voucher (DR Inventory + DR
+    # ITC / CR AP). Reverse it before flipping status so the trial balance
+    # stays clean. DRAFT PIs never posted, so nothing to reverse.
+    if pi.status == VoucherStatus.POSTED:
+        accounting_service.reverse_purchase_invoice_gl(session, pi=pi, posted_by=updated_by)
     pi.status = VoucherStatus.VOIDED
     pi.lifecycle_status = PurchaseInvoiceLifecycleStatus.CANCELLED
     pi.updated_at = datetime.datetime.now(tz=datetime.UTC)
