@@ -34,7 +34,8 @@ class BankAccountCreateRequest(BaseModel):
     account_number: str | None = Field(default=None, max_length=34)
     ifsc_code: str | None = Field(default=None, max_length=11)
     account_type: str | None = Field(default=None, max_length=50)
-    balance: Decimal | None = None
+    # BANK-6 (Fix 5a): non-negative only; ≤2dp to match NUMERIC(15,2).
+    balance: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     last_reconciled_date: datetime.date | None = None
 
 
@@ -45,7 +46,8 @@ class BankAccountUpdateRequest(BaseModel):
     account_number: str | None = Field(default=None, max_length=34)
     ifsc_code: str | None = Field(default=None, max_length=11)
     account_type: str | None = Field(default=None, max_length=50)
-    balance: Decimal | None = None
+    # BANK-6 (Fix 5a): non-negative only; ≤2dp to match NUMERIC(15,2).
+    balance: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     last_reconciled_date: datetime.date | None = None
 
 

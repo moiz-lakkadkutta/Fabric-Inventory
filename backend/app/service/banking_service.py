@@ -19,10 +19,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
+from app.models.accounting import JournalLineType
 from app.models.banking import BankAccount, Cheque, ChequeStatus
 from app.models.masters import Ledger
 from app.service.common_guards import assert_firm_in_org
 from app.utils.crypto import encrypt_pii, get_org_dek
+
+# BANK-6 (Fix 5): Opening-balance difference ledger used as the contra
+# when the denormalized `bank_account.balance` is updated via PATCH.
+_OB_DIFF_LEDGER_CODE = "3200"
 
 # Statuses that are valid at cheque creation. Others (CLEARED, BOUNCED,
 # STOPPED, CANCELLED) are terminal states reached via state-machine
@@ -48,6 +53,7 @@ def create_bank_account(
     account_type: str | None = None,
     balance: Decimal | None = None,
     last_reconciled_date: dt.date | None = None,
+    created_by: uuid.UUID | None = None,
 ) -> BankAccount:
     """Create a new BankAccount for the given org/firm.
 
@@ -58,6 +64,15 @@ def create_bank_account(
     BANK-1: the ledger must belong to the same org as the caller. Without
     this check a crafted request could attach a foreign-org ledger and
     later corrupt that org's GL via reconciliation postings.
+
+    NIT-4: the ledger must not be a control account (is_control_account=True).
+    Bank sub-ledgers are individual accounts; control accounts (e.g. 1100
+    Accounts Receivable) aggregate multiple sub-ledgers and must never be
+    directly linked to a bank account.
+
+    S1: when a non-zero initial `balance` is supplied, a balanced GL JV is
+    posted to keep the denormalized column in lockstep with the GL from day
+    one (same invariant enforced on every subsequent update).
     """
     # BANK-2: verify firm belongs to this org before the INSERT.
     assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
@@ -76,6 +91,13 @@ def create_bank_account(
             "cannot create a bank account linked to a foreign ledger."
         )
 
+    # NIT-4: reject control accounts — bank accounts must link to sub-ledgers.
+    if ledger.is_control_account:
+        raise AppValidationError(
+            f"Ledger {ledger_id} is a control account and cannot be linked to a bank account; "
+            "create or use a non-control sub-ledger instead."
+        )
+
     dek = get_org_dek(session, org_id=org_id)
     account = BankAccount(
         org_id=org_id,
@@ -90,6 +112,19 @@ def create_bank_account(
     )
     session.add(account)
     session.flush()
+
+    # S1: post an opening GL JV when a non-zero initial balance is supplied.
+    # This keeps the denormalized `balance` column in lockstep with the GL
+    # from day one — symmetric with the update path (Fix 5b / BANK-6).
+    if balance is not None and Decimal(balance) != Decimal("0"):
+        _post_bank_balance_adjustment_jv(
+            session,
+            org_id=org_id,
+            account=account,
+            delta=Decimal(balance),
+            created_by=created_by,
+        )
+
     return account
 
 
@@ -145,10 +180,14 @@ def update_bank_account(
     account_type: str | None = None,
     balance: Decimal | None = None,
     last_reconciled_date: dt.date | None = None,
+    updated_by: uuid.UUID | None = None,
 ) -> BankAccount:
     """Apply PATCH-style updates to a BankAccount.
 
     Only non-None kwargs are applied. Raises `AppValidationError` on missing row.
+
+    NIT-3: `updated_by` is threaded through to any GL JV posted for a
+    balance change so the audit trail carries the real user, not NULL.
     """
     account = get_bank_account(session, org_id=org_id, bank_account_id=bank_account_id)
 
@@ -162,12 +201,116 @@ def update_bank_account(
     if account_type is not None:
         account.account_type = account_type
     if balance is not None:
+        # BANK-6 (Fix 5b): keep the denormalized balance in lockstep with the GL
+        # by posting a balanced adjustment JV for the delta.
+        old_balance = Decimal(account.balance or 0)
+        new_balance = Decimal(balance)
+        delta = new_balance - old_balance
+        if delta != Decimal("0"):
+            _post_bank_balance_adjustment_jv(
+                session,
+                org_id=org_id,
+                account=account,
+                delta=delta,
+                created_by=updated_by,
+            )
         account.balance = balance
     if last_reconciled_date is not None:
         account.last_reconciled_date = last_reconciled_date
     account.updated_at = datetime.now(tz=UTC)
     session.flush()
     return account
+
+
+def _post_bank_balance_adjustment_jv(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    account: BankAccount,
+    delta: Decimal,
+    created_by: uuid.UUID | None = None,
+) -> None:
+    """Post a balanced JOURNAL voucher for a bank-balance adjustment.
+
+    Positive delta (balance increased): DR bank_ledger / CR 3200
+    Negative delta (balance decreased): CR bank_ledger / DR 3200
+
+    This keeps the GL bank sub-ledger in lockstep with the denormalized
+    `bank_account.balance` column so reconciliation reports stay accurate.
+
+    If ledger 3200 is not yet seeded for this org (e.g., bare test org
+    created without seed_coa), raises AppValidationError rather than
+    silently skipping — a missing 3200 indicates a seed problem, not a
+    caller error, and we want that to be loud.
+
+    NIT-3: `created_by` is threaded through to the GL JV so the audit
+    trail carries the real user (from `create_bank_account` / `update_bank_account`).
+    """
+    # Lazy import to avoid circular dependency at module load time.
+    from app.service.accounting_service import JournalLineInput, post_journal_voucher
+
+    ob_diff_ledger = session.execute(
+        select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == _OB_DIFF_LEDGER_CODE,
+            Ledger.firm_id.is_(None),
+            Ledger.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if ob_diff_ledger is None:
+        raise AppValidationError(
+            f"System ledger {_OB_DIFF_LEDGER_CODE} (Opening Balance Difference) not found "
+            "for this org. Run seed_coa before updating bank account balances."
+        )
+
+    abs_delta = abs(delta)
+    bank_ledger_id = account.ledger_id
+    firm_id = account.firm_id
+
+    if delta > Decimal("0"):
+        # Balance increased → DR bank / CR 3200
+        lines = [
+            JournalLineInput(
+                ledger_id=bank_ledger_id,
+                line_type=JournalLineType.DR,
+                amount=abs_delta,
+                description="Bank balance adjustment",
+            ),
+            JournalLineInput(
+                ledger_id=ob_diff_ledger.ledger_id,
+                line_type=JournalLineType.CR,
+                amount=abs_delta,
+                description="Bank balance adjustment",
+            ),
+        ]
+    else:
+        # Balance decreased → DR 3200 / CR bank
+        lines = [
+            JournalLineInput(
+                ledger_id=ob_diff_ledger.ledger_id,
+                line_type=JournalLineType.DR,
+                amount=abs_delta,
+                description="Bank balance adjustment",
+            ),
+            JournalLineInput(
+                ledger_id=bank_ledger_id,
+                line_type=JournalLineType.CR,
+                amount=abs_delta,
+                description="Bank balance adjustment",
+            ),
+        ]
+
+    post_journal_voucher(
+        session=session,
+        org_id=org_id,
+        firm_id=firm_id,
+        voucher_date=dt.date.today(),
+        narration=(
+            f"Bank balance adjustment for {account.bank_name or str(account.bank_account_id)}"
+        ),
+        lines=lines,
+        created_by=created_by,
+    )
 
 
 def soft_delete_bank_account(

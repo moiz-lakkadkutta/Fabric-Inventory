@@ -109,6 +109,28 @@ class CostCentreType(enum.StrEnum):
     DEPARTMENT = "DEPARTMENT"
 
 
+class LedgerType(enum.StrEnum):
+    """Allow-list for ``ledger.ledger_type``.
+
+    Matches every value used in ``seed_service._SYSTEM_LEDGERS`` (E1 TAX +
+    E2 ADVANCE included).  The column stays ``String(50)`` in the DB (no
+    Postgres ENUM migration) — validation is enforced at the service layer.
+    """
+
+    CASH = "CASH"
+    BANK = "BANK"
+    RECEIVABLE = "RECEIVABLE"
+    INVENTORY = "INVENTORY"
+    PAYABLE = "PAYABLE"
+    TAX = "TAX"
+    ADVANCE = "ADVANCE"
+    CAPITAL = "CAPITAL"
+    EQUITY = "EQUITY"
+    REVENUE = "REVENUE"
+    COGS = "COGS"
+    EXPENSE = "EXPENSE"
+
+
 _TAX_STATUS_PG = PG_ENUM(TaxStatus, name="tax_status", create_type=False, native_enum=True)
 _ITEM_TYPE_PG = PG_ENUM(ItemType, name="item_type", create_type=False, native_enum=True)
 _TRACKING_TYPE_PG = PG_ENUM(TrackingType, name="tracking_type", create_type=False, native_enum=True)

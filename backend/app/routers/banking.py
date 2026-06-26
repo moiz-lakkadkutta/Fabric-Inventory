@@ -141,6 +141,7 @@ def create_bank_account(
         account_type=body.account_type,
         balance=body.balance,
         last_reconciled_date=body.last_reconciled_date,
+        created_by=current_user.user_id,
     )
     return _to_bank_response(account, dek=get_org_dek(db, org_id=current_user.org_id))
 
@@ -249,6 +250,7 @@ def update_bank_account(
         account_type=body.account_type,
         balance=body.balance,
         last_reconciled_date=body.last_reconciled_date,
+        updated_by=current_user.user_id,
     )
     return _to_bank_response(account, dek=get_org_dek(db, org_id=current_user.org_id))
 
