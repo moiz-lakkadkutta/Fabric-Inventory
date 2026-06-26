@@ -947,6 +947,102 @@ def compute_ageing(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# AR Reconciliation (RPT-01 / E2)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ArReconciliationResult:
+    """Result of the AR control-account vs subledger reconciliation.
+
+    ageing_total:       Σ (invoice_amount - paid_amount) over open invoices
+                        (same basis as compute_ageing so they cannot drift).
+    ar_control_balance: net DR balance of ledger 1200 from POSTED vouchers
+                        = Σ DR - Σ CR on the AR control account.
+    difference:         ageing_total - ar_control_balance (0 = clean).
+    reconciled:         True when difference == 0.
+
+    This function never raises — a reconciliation report should not 500.
+    Divergence is surfaced through reconciled=False and difference != 0
+    so the caller / operator can investigate.
+    """
+
+    ageing_total: Decimal
+    ar_control_balance: Decimal
+    difference: Decimal
+    reconciled: bool
+
+
+def compute_ar_reconciliation(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+) -> ArReconciliationResult:
+    """Reconcile the AR subledger (invoice ageing) against the GL control (1200).
+
+    RPT-01 deliverable: once BL-01 is fixed (over-receipts posting to
+    2500 Customer Advances instead of 1200 AR), ageing_total must always
+    equal ar_control_balance for a consistent set of vouchers.
+
+    Both sides reflect the current snapshot (live paid_amount vs all POSTED
+    vouchers on 1200).  No ``as_of`` parameter: a half-scoped historical
+    reconciliation (GL date-filtered but subledger using live paid_amount)
+    would be silently wrong for any past date with receipts after it.
+    Historical point-in-time AR recon is deferred until the receipt ledger
+    supports a paid-as-of query.
+    """
+    # --- Subledger side: ageing_total (same logic as compute_ageing) ---
+    ageing_stmt = select(
+        func.coalesce(
+            func.sum(
+                func.coalesce(SalesInvoice.invoice_amount, 0)
+                - func.coalesce(SalesInvoice.paid_amount, 0)
+            ),
+            0,
+        )
+    ).where(
+        SalesInvoice.org_id == org_id,
+        SalesInvoice.firm_id == firm_id,
+        SalesInvoice.deleted_at.is_(None),
+        SalesInvoice.lifecycle_status.in_(_AGEING_OPEN_LIFECYCLE),
+        (func.coalesce(SalesInvoice.invoice_amount, 0) - func.coalesce(SalesInvoice.paid_amount, 0))
+        > 0,
+    )
+    ageing_total = Decimal(session.execute(ageing_stmt).scalar_one() or 0)
+
+    # --- GL control side: net DR balance of ledger 1200 from all POSTED vouchers ---
+    # Mirrors the TB query pattern (reports_service.compute_tb).
+    ar_control_stmt = (
+        select(func.coalesce(func.sum(_net_voucher_amount()), 0).label("net"))
+        .select_from(VoucherLine)
+        .join(Voucher, Voucher.voucher_id == VoucherLine.voucher_id)
+        .join(Ledger, Ledger.ledger_id == VoucherLine.ledger_id)
+        .where(
+            Voucher.org_id == org_id,
+            Voucher.firm_id == firm_id,
+            Voucher.deleted_at.is_(None),
+            Voucher.status == VoucherStatus.POSTED,
+            Ledger.code == "1200",
+            Ledger.org_id == org_id,
+            Ledger.firm_id.is_(None),  # system ledger (not firm-scoped)
+            Ledger.deleted_at.is_(None),
+        )
+    )
+    # _net_voucher_amount() is DR-positive, so a positive result means
+    # AR control has a net debit (customers owe us money — normal AR balance).
+    ar_control_balance = Decimal(session.execute(ar_control_stmt).scalar_one() or 0)
+
+    difference = ageing_total - ar_control_balance
+    return ArReconciliationResult(
+        ageing_total=ageing_total,
+        ar_control_balance=ar_control_balance,
+        difference=difference,
+        reconciled=(difference == Decimal("0")),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Party Statement (CUT-302)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1577,7 +1673,9 @@ def compute_gstr1(
 
 
 __all__ = [
+    "ArReconciliationResult",
     "compute_ageing",
+    "compute_ar_reconciliation",
     "compute_daybook",
     "compute_gstr1",
     "compute_ledger_statement",
