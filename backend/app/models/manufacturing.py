@@ -526,7 +526,7 @@ class ManufacturingOrder(Base, TimestampMixin, SoftDeleteMixin):
         String(50), server_default=text("'ALL_OR_NONE'"), nullable=True
     )
     cost_pool: Mapped[Any | None] = mapped_column(
-        Numeric(15, 2), server_default=text("0"), nullable=True
+        Numeric(18, 2), server_default=text("0"), nullable=True
     )
     cost_centre_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),

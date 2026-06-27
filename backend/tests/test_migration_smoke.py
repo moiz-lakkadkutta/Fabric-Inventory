@@ -87,4 +87,4 @@ def test_baseline_migration_smoke(sync_postgres_engine: Engine) -> None:
 
     assert table_count >= _MIN_TABLES, f"expected >= {_MIN_TABLES} tables, got {table_count}"
     # Latest forward-only migration head; bump on each new migration.
-    assert version == "e2_customer_advances", f"unexpected revision: {version!r}"
+    assert version == "e5_widen_money_numeric", f"unexpected revision: {version!r}"
