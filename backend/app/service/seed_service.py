@@ -148,6 +148,12 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     ("2000", "Sundry Creditors (AP)", "PAYABLE", "LIABILITY", True),
     ("2100", "GST Payable", "TAX", "LIABILITY", False),
     ("2200", "TDS Payable", "TAX", "LIABILITY", False),
+    # E2 (BL-01): Customer Advances — liability for money received from customers
+    # before an invoice is raised or in excess of a specific invoice balance.
+    # is_control=False: a single advances ledger for now; per-party advance
+    # sub-ledgering (one liability row per customer) is a future refinement
+    # once the advance-application-to-future-invoice workflow ships.
+    ("2500", "Customer Advances", "ADVANCE", "LIABILITY", False),
     ("3000", "Capital Account", "CAPITAL", "EQUITY", False),
     ("3100", "Retained Earnings", "EQUITY", "EQUITY", False),
     # Suspense ledger for the migration cutover. A parties-only Vyapar

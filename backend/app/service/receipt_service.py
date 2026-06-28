@@ -57,6 +57,7 @@ DEFAULT_RECEIPT_SERIES = "RCT/2526"
 _AR_LEDGER_CODE = "1200"
 _CASH_LEDGER_CODE = "1000"
 _BANK_LEDGER_CODE = "1100"
+_ADVANCES_LEDGER_CODE = "2500"
 
 _OPEN_AR_LIFECYCLES = (
     InvoiceLifecycleStatus.FINALIZED,
@@ -152,16 +153,31 @@ def post_receipt(
     posted_by: uuid.UUID | None = None,
 ) -> Voucher:
     """Record a customer cash/bank receipt; allocate FIFO across the
-    party's open invoices.
+    party's open invoices; book any excess to Customer Advances (2500).
 
     Returns the GL voucher (status POSTED). Allocation rows are linked
     via `voucher_id`.
 
-    Raises `AppValidationError` if amount <= 0 or no open invoices.
-    Over-allocation (amount > total outstanding) is allowed — the
-    excess sits as an "advance" that the next finalize will draw down,
-    but for T-INT-5 we just credit AR fully and leave the unallocated
-    amount visible in the audit_log entry.
+    Raises `AppValidationError` if amount <= 0.
+
+    GL structure (BL-01 fix):
+      DR Cash/Bank (1000/1100)          = amount         (always)
+      CR Sundry Debtors / AR (1200)     = allocated      (only when > 0)
+      CR Customer Advances (2500)        = remaining      (only when > 0)
+
+    allocated + remaining = amount  →  voucher is always balanced.
+
+    Zero open invoices ⟹ full advance: the entire amount goes to CR 2500;
+    no AR leg is posted (the customer hasn't been billed yet).
+
+    Over-receipt (amount > total outstanding):
+      allocated = total outstanding across all open invoices (all become PAID);
+      remaining = amount - allocated  →  booked to CR 2500.
+
+    The per-receipt FIFO cap (`applied = min(remaining, outstanding)`)
+    prevents over-applying any single invoice. A DB-level cross-row
+    trigger for Σ paid_amount ≤ invoice_amount is deferred hardening —
+    the FIFO logic makes it cumulative-safe without it.
     """
     if amount <= 0:
         raise AppValidationError(f"Receipt amount must be positive; got {amount}")
@@ -253,11 +269,24 @@ def post_receipt(
             inv.updated_by = posted_by
         allocations.append((inv.sales_invoice_id, applied))
 
-    # GL postings: DR Cash/Bank, CR Sundry Debtors.
+    # BL-01 fix: split the credit side between AR and Customer Advances.
+    # allocated = amount actually applied to open invoices (may be < amount).
+    # remaining = excess / on-account advance (may be 0 for normal receipts).
+    allocated = amount - remaining  # Decimal; >= 0 always.
+
+    # Defensive assertion: the FIFO loop must not over-apply.
+    assert allocated >= Decimal("0") and remaining >= Decimal("0"), (
+        f"FIFO allocation bug: allocated={allocated}, remaining={remaining}, amount={amount}"
+    )
+    assert allocated + remaining == amount, (
+        f"FIFO split does not sum to amount: {allocated} + {remaining} != {amount}"
+    )
+
+    # GL postings: DR Cash/Bank, CR Sundry Debtors (allocated), CR Customer Advances (remaining).
     cash_or_bank_code = _CASH_LEDGER_CODE if mode == "CASH" else _BANK_LEDGER_CODE
     cash_ledger = _resolve_ledger(session, org_id=org_id, code=cash_or_bank_code)
-    ar_ledger = _resolve_ledger(session, org_id=org_id, code=_AR_LEDGER_CODE)
 
+    seq = 1
     session.add(
         VoucherLine(
             org_id=org_id,
@@ -266,21 +295,64 @@ def post_receipt(
             line_type=JournalLineType.DR,
             amount=amount,
             description=f"Receipt {series}/{voucher_number} ({mode})",
-            sequence=1,
+            sequence=seq,
         )
     )
-    session.add(
-        VoucherLine(
-            org_id=org_id,
-            voucher_id=voucher.voucher_id,
-            ledger_id=ar_ledger.ledger_id,
-            line_type=JournalLineType.CR,
-            amount=amount,
-            description=f"Receipt {series}/{voucher_number} · AR clearance",
-            sequence=2,
+    seq += 1
+
+    # CR AR (1200) only when something was actually allocated to an invoice.
+    if allocated > Decimal("0"):
+        ar_ledger = _resolve_ledger(session, org_id=org_id, code=_AR_LEDGER_CODE)
+        session.add(
+            VoucherLine(
+                org_id=org_id,
+                voucher_id=voucher.voucher_id,
+                ledger_id=ar_ledger.ledger_id,
+                line_type=JournalLineType.CR,
+                amount=allocated,
+                description=f"Receipt {series}/{voucher_number} · AR clearance",
+                sequence=seq,
+            )
         )
-    )
+        seq += 1
+
+    # CR Customer Advances (2500) only when there is an unallocated excess.
+    if remaining > Decimal("0"):
+        advances_ledger = _resolve_ledger(session, org_id=org_id, code=_ADVANCES_LEDGER_CODE)
+        session.add(
+            VoucherLine(
+                org_id=org_id,
+                voucher_id=voucher.voucher_id,
+                ledger_id=advances_ledger.ledger_id,
+                line_type=JournalLineType.CR,
+                amount=remaining,
+                description=f"Receipt {series}/{voucher_number} · customer advance booked",
+                sequence=seq,
+            )
+        )
+        seq += 1
+
     session.flush()
+
+    # Defense-in-depth: assert balanced bundle (mirrors accounting_service pattern).
+    all_lines = (
+        session.execute(select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id))
+        .scalars()
+        .all()
+    )
+    _dr_total = sum(
+        (Decimal(line.amount) for line in all_lines if line.line_type == JournalLineType.DR),
+        Decimal("0"),
+    )
+    _cr_total = sum(
+        (Decimal(line.amount) for line in all_lines if line.line_type == JournalLineType.CR),
+        Decimal("0"),
+    )
+    if _dr_total != _cr_total:
+        raise AppValidationError(
+            f"Receipt voucher {voucher.voucher_id} is unbalanced: "
+            f"DR={_dr_total}, CR={_cr_total}. This is a bug in post_receipt."
+        )
 
     audit_service.emit(
         session,
@@ -300,7 +372,8 @@ def post_receipt(
                 "allocations": [
                     {"sales_invoice_id": str(sid), "amount": str(amt)} for sid, amt in allocations
                 ],
-                "unallocated": str(remaining),
+                # BL-01: excess is now a real liability posting, not a floating "unallocated".
+                "advance_booked": str(remaining),
             }
         },
     )
