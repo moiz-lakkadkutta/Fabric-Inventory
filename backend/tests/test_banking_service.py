@@ -15,6 +15,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select as sa_select
 from sqlalchemy import text
 from sqlalchemy.orm import Session as OrmSession
 
@@ -89,6 +90,8 @@ def _create_account(
 
 
 def test_create_bank_account_happy_path(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
+    """Basic create without initial balance (no COA seeded for fresh_org).
+    Balance GL coupling is tested separately in seeded-org tests."""
     firm_id, ledger_id = _make_firm_and_ledger(db_session, fresh_org_id)
     account = banking_service.create_bank_account(
         db_session,
@@ -99,7 +102,8 @@ def test_create_bank_account_happy_path(db_session: OrmSession, fresh_org_id: uu
         account_number="00123456789012",
         ifsc_code="HDFC0001234",
         account_type="CURRENT",
-        balance=Decimal("50000.00"),
+        # No balance here — fresh_org has no seeded COA (no ledger 3200).
+        # Use seeded-org tests to verify GL coupling.
     )
     assert account.bank_account_id is not None
     assert account.org_id == fresh_org_id
@@ -110,7 +114,6 @@ def test_create_bank_account_happy_path(db_session: OrmSession, fresh_org_id: uu
     assert decrypt_pii(account.account_number, dek=dek, org_id=fresh_org_id) == "00123456789012"
     assert account.ifsc_code == "HDFC0001234"
     assert account.account_type == "CURRENT"
-    assert account.balance == Decimal("50000.00")
 
 
 def test_create_bank_account_without_optional_fields(
@@ -540,3 +543,487 @@ def test_create_cheque_valid_firm_passes(db_session: OrmSession, fresh_org_id: u
     )
     assert cheque.cheque_id is not None
     assert cheque.firm_id == firm_id
+
+
+# ──────────────────────────────────────────────────────────────────────
+# E3 — Fix 5 (BANK-6): bank balance schema guard + GL coupling
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_seeded_org_firm_ledger(
+    db: OrmSession,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Create a fully-seeded org (COA with 3200), a firm, and a bank sub-ledger.
+
+    Returns (org_id, firm_id, bank_ledger_id).
+    """
+    from sqlalchemy import text
+
+    from app.models import Firm, Organization
+    from app.service.seed_service import seed_coa
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_id = uuid.uuid4()
+    db.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+    org = Organization(
+        org_id=org_id,
+        name=f"seeded-org-{org_id.hex[:8]}",
+        admin_email=f"admin-{org_id.hex[:6]}@banking.test",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
+    )
+    db.add(org)
+    db.flush()
+
+    # Seed COA (creates the 3200 ledger).
+    seed_coa(db, org_id=org_id)
+
+    firm = Firm(org_id=org_id, code="BFIRM", name="Banking Firm", has_gst=False)
+    db.add(firm)
+    db.flush()
+
+    # Create a bank sub-ledger (NOT the control account 1100).
+    from app.models.masters import CoaGroup, Ledger
+
+    coa_grp = db.execute(
+        sa_select(CoaGroup).where(CoaGroup.org_id == org_id, CoaGroup.code == "ASSET")
+    ).scalar_one()
+
+    bank_ledger = Ledger(
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        code="BANK-GL",
+        name="HDFC Sub-Ledger",
+        ledger_type="BANK",
+        coa_group_id=coa_grp.coa_group_id,
+        is_control_account=False,
+        is_active=True,
+    )
+    db.add(bank_ledger)
+    db.flush()
+
+    return org_id, firm.firm_id, bank_ledger.ledger_id
+
+
+def test_bank_account_create_negative_balance_schema_rejected() -> None:
+    """BankAccountCreateRequest with negative balance must raise pydantic ValidationError."""
+    from pydantic import ValidationError
+
+    from app.schemas.banking import BankAccountCreateRequest
+
+    with pytest.raises(ValidationError):
+        BankAccountCreateRequest(
+            firm_id=uuid.uuid4(),
+            ledger_id=uuid.uuid4(),
+            balance=Decimal("-100.00"),
+        )
+
+
+def test_bank_account_update_negative_balance_schema_rejected() -> None:
+    """BankAccountUpdateRequest with negative balance must raise pydantic ValidationError."""
+    from pydantic import ValidationError
+
+    from app.schemas.banking import BankAccountUpdateRequest
+
+    with pytest.raises(ValidationError):
+        BankAccountUpdateRequest(balance=Decimal("-0.01"))
+
+
+def test_bank_account_update_balance_posts_gl_adjustment(
+    db_session: OrmSession,
+) -> None:
+    """BANK-6: updating bank balance must post a balanced GL adjustment JV for the delta."""
+    from sqlalchemy import select
+
+    from app.models import Voucher, VoucherLine
+    from app.models.accounting import JournalLineType, VoucherType
+    from app.models.masters import Ledger
+
+    org_id, firm_id, bank_ledger_id = _make_seeded_org_firm_ledger(db_session)
+
+    # Resolve 3200 for NIT-5 contra assertion.
+    ledger_3200 = db_session.execute(
+        sa_select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == "3200",
+            Ledger.firm_id.is_(None),
+        )
+    ).scalar_one()
+
+    # Create the bank account with an initial balance (S1: will post JV #1).
+    account = banking_service.create_bank_account(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        ledger_id=bank_ledger_id,
+        bank_name="HDFC Bank",
+        balance=Decimal("1000.00"),
+    )
+
+    # Update balance: 1000 → 2000 (delta = +1000) → JV #2.
+    updated = banking_service.update_bank_account(
+        db_session,
+        org_id=org_id,
+        bank_account_id=account.bank_account_id,
+        balance=Decimal("2000.00"),
+    )
+    assert updated.balance == Decimal("2000.00")
+
+    # After S1 fix: create(1000) posts JV #1, update(2000) posts JV #2 → 2 total.
+    vouchers = list(
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == org_id,
+                Voucher.firm_id == firm_id,
+                Voucher.voucher_type == VoucherType.JOURNAL,
+            )
+        ).scalars()
+    )
+    assert len(vouchers) == 2, (
+        f"Expected 2 JVs (one for create, one for update delta); got {len(vouchers)}"
+    )
+
+    all_lines: list[VoucherLine] = []
+    for v in vouchers:
+        all_lines.extend(
+            db_session.execute(
+                select(VoucherLine).where(VoucherLine.voucher_id == v.voucher_id)
+            ).scalars()
+        )
+
+    # Find the delta JV (amount = 1000, not the create JV also at 1000).
+    # Both JVs have amount=1000, so assert aggregate GL invariant instead.
+    # NIT-5: bank ledger net GL movement must equal final account.balance=2000.
+    bank_dr = sum(
+        Decimal(ln.amount)
+        for ln in all_lines
+        if ln.ledger_id == bank_ledger_id and ln.line_type == JournalLineType.DR
+    )
+    bank_cr = sum(
+        Decimal(ln.amount)
+        for ln in all_lines
+        if ln.ledger_id == bank_ledger_id and ln.line_type == JournalLineType.CR
+    )
+    gl_net = bank_dr - bank_cr
+    assert gl_net == Decimal("2000.00"), (
+        f"GL net for bank ledger must equal final account.balance=2000; got {gl_net}"
+    )
+
+    # All JVs must be balanced (DR total == CR total each).
+    for v in vouchers:
+        jv_lines = [ln for ln in all_lines if ln.voucher_id == v.voucher_id]
+        jv_dr = sum(Decimal(ln.amount) for ln in jv_lines if ln.line_type == JournalLineType.DR)
+        jv_cr = sum(Decimal(ln.amount) for ln in jv_lines if ln.line_type == JournalLineType.CR)
+        assert jv_dr == jv_cr, f"JV {v.voucher_id} is unbalanced: DR={jv_dr}, CR={jv_cr}"
+
+    # NIT-5: 3200 is always the contra leg across both JVs.
+    ledger_3200_ids = {ln.ledger_id for ln in all_lines if ln.ledger_id == ledger_3200.ledger_id}
+    assert ledger_3200.ledger_id in ledger_3200_ids, (
+        "Contra leg of every bank-balance JV must be ledger 3200"
+    )
+
+    # Bank ledger must be on the DR side in both JVs (both are positive deltas).
+    dr_ledger_ids = {ln.ledger_id for ln in all_lines if ln.line_type == JournalLineType.DR}
+    assert bank_ledger_id in dr_ledger_ids, "Bank ledger must be debited for positive delta"
+
+
+def test_bank_account_update_balance_decrease_posts_gl_adjustment(
+    db_session: OrmSession,
+) -> None:
+    """BANK-6: balance decrease posts CR bank-ledger / DR 3200 for the abs(delta)."""
+    from sqlalchemy import select
+
+    from app.models import Voucher, VoucherLine
+    from app.models.accounting import JournalLineType, VoucherType
+    from app.models.masters import Ledger
+
+    org_id, firm_id, bank_ledger_id = _make_seeded_org_firm_ledger(db_session)
+
+    # Resolve 3200 ledger for NIT-5 assertion.
+    ledger_3200 = db_session.execute(
+        sa_select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == "3200",
+            Ledger.firm_id.is_(None),
+        )
+    ).scalar_one()
+
+    account = banking_service.create_bank_account(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        ledger_id=bank_ledger_id,
+        bank_name="SBI Bank",
+        balance=Decimal("5000.00"),
+    )
+
+    banking_service.update_bank_account(
+        db_session,
+        org_id=org_id,
+        bank_account_id=account.bank_account_id,
+        balance=Decimal("3000.00"),  # delta = -2000
+    )
+
+    vouchers = list(
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == org_id,
+                Voucher.firm_id == firm_id,
+                Voucher.voucher_type == VoucherType.JOURNAL,
+            )
+        ).scalars()
+    )
+    # After S1 fix: create(5000) posts JV #1, update(3000) posts JV #2 → 2 total.
+    assert len(vouchers) == 2, (
+        f"Expected 2 JVs (one for create, one for update); got {len(vouchers)}"
+    )
+
+    # Find the update JV (the one whose lines net to 2000, not 5000).
+    all_lines: list[VoucherLine] = []
+    for v in vouchers:
+        all_lines.extend(
+            db_session.execute(
+                select(VoucherLine).where(VoucherLine.voucher_id == v.voucher_id)
+            ).scalars()
+        )
+
+    update_jv_lines = [
+        ln
+        for ln in all_lines
+        if ln.voucher_id
+        in {
+            v.voucher_id
+            for v in vouchers
+            if sum(
+                Decimal(line.amount)
+                for line in all_lines
+                if line.voucher_id == v.voucher_id and line.line_type == JournalLineType.DR
+            )
+            == Decimal("2000.00")
+        }
+    ]
+
+    # Bank ledger must be on the CR side (balance decreased).
+    cr_ledger_ids = {ln.ledger_id for ln in update_jv_lines if ln.line_type == JournalLineType.CR}
+    assert bank_ledger_id in cr_ledger_ids, "Bank ledger must be credited for negative delta"
+
+    drs = sum(Decimal(ln.amount) for ln in update_jv_lines if ln.line_type == JournalLineType.DR)
+    crs = sum(Decimal(ln.amount) for ln in update_jv_lines if ln.line_type == JournalLineType.CR)
+    assert drs == crs == Decimal("2000.00"), "JV must balance at abs(delta)=2000"
+
+    # NIT-5: contra leg of the delta JV must be 3200.
+    dr_ledger_ids_update = {
+        ln.ledger_id for ln in update_jv_lines if ln.line_type == JournalLineType.DR
+    }
+    assert ledger_3200.ledger_id in dr_ledger_ids_update, (
+        "Contra leg of the balance-decrease JV must be ledger 3200"
+    )
+
+    # NIT-5: GL net movement for bank ledger across all JVs must equal account.balance=3000.
+    bank_dr = sum(
+        Decimal(ln.amount)
+        for ln in all_lines
+        if ln.ledger_id == bank_ledger_id and ln.line_type == JournalLineType.DR
+    )
+    bank_cr = sum(
+        Decimal(ln.amount)
+        for ln in all_lines
+        if ln.ledger_id == bank_ledger_id and ln.line_type == JournalLineType.CR
+    )
+    gl_net = bank_dr - bank_cr
+    assert gl_net == Decimal("3000.00"), (
+        f"GL net for bank ledger must equal account.balance=3000; got {gl_net}"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# S1: create_bank_account with initial balance must post a GL JV
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_bank_account_create_with_initial_balance_posts_gl_jv(
+    db_session: OrmSession,
+) -> None:
+    """S1: create_bank_account with non-zero balance must post a balanced GL JV.
+
+    Without this fix, the GL permanently understates bank assets vs the
+    denormalized balance column — an accounting asymmetry that compounds
+    with every subsequent update.
+    """
+    from sqlalchemy import select
+
+    from app.models import Voucher, VoucherLine
+    from app.models.accounting import JournalLineType, VoucherType
+    from app.models.masters import Ledger
+
+    org_id, firm_id, bank_ledger_id = _make_seeded_org_firm_ledger(db_session)
+
+    # Resolve 3200 for contra assertion.
+    ledger_3200 = db_session.execute(
+        sa_select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == "3200",
+            Ledger.firm_id.is_(None),
+        )
+    ).scalar_one()
+
+    account = banking_service.create_bank_account(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        ledger_id=bank_ledger_id,
+        bank_name="HDFC Bank",
+        balance=Decimal("1500.00"),
+    )
+    assert account.balance == Decimal("1500.00")
+
+    # A JOURNAL voucher must be posted immediately on create.
+    vouchers = list(
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == org_id,
+                Voucher.firm_id == firm_id,
+                Voucher.voucher_type == VoucherType.JOURNAL,
+            )
+        ).scalars()
+    )
+    assert len(vouchers) == 1, (
+        f"create_bank_account with balance must post exactly 1 GL JV; got {len(vouchers)}"
+    )
+    jv = vouchers[0]
+
+    lines = list(
+        db_session.execute(
+            select(VoucherLine).where(VoucherLine.voucher_id == jv.voucher_id)
+        ).scalars()
+    )
+    drs = sum(Decimal(ln.amount) for ln in lines if ln.line_type == JournalLineType.DR)
+    crs = sum(Decimal(ln.amount) for ln in lines if ln.line_type == JournalLineType.CR)
+    assert drs == crs == Decimal("1500.00"), "Opening GL JV must be balanced at the initial balance"
+
+    # Bank ledger must be on the DR side (positive initial balance).
+    dr_ledger_ids = {ln.ledger_id for ln in lines if ln.line_type == JournalLineType.DR}
+    assert bank_ledger_id in dr_ledger_ids, (
+        "Bank ledger must be debited for positive initial balance"
+    )
+
+    # NIT-5: contra leg must be 3200.
+    cr_ledger_ids = {ln.ledger_id for ln in lines if ln.line_type == JournalLineType.CR}
+    assert ledger_3200.ledger_id in cr_ledger_ids, (
+        "Contra leg of the opening JV must be ledger 3200 (Opening Balance Difference)"
+    )
+
+    # NIT-5: GL net movement for bank ledger == account.balance.
+    bank_dr = sum(
+        Decimal(ln.amount)
+        for ln in lines
+        if ln.ledger_id == bank_ledger_id and ln.line_type == JournalLineType.DR
+    )
+    bank_cr = sum(
+        Decimal(ln.amount)
+        for ln in lines
+        if ln.ledger_id == bank_ledger_id and ln.line_type == JournalLineType.CR
+    )
+    assert bank_dr - bank_cr == Decimal("1500.00"), (
+        "GL net for bank ledger must equal the initial account balance"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# NIT-4: create_bank_account must reject control accounts
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_bank_account_create_control_ledger_raises(
+    db_session: OrmSession,
+) -> None:
+    """NIT-4: linking a bank account to a control ledger (is_control_account=True)
+    must raise AppValidationError before any GL post is attempted."""
+
+    from app.models.masters import Ledger
+
+    org_id, firm_id, _bank_ledger_id = _make_seeded_org_firm_ledger(db_session)
+
+    # Ledger 1100 is the AR control account (seeded with is_control_account=True).
+    control_ledger = db_session.execute(
+        sa_select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == "1100",
+            Ledger.firm_id.is_(None),
+        )
+    ).scalar_one_or_none()
+
+    if control_ledger is None:
+        # If there is no 1100, find any control account.
+        control_ledger = (
+            db_session.execute(
+                sa_select(Ledger).where(
+                    Ledger.org_id == org_id,
+                    Ledger.is_control_account.is_(True),
+                    Ledger.deleted_at.is_(None),
+                )
+            )
+            .scalars()
+            .first()
+        )
+
+    assert control_ledger is not None, "No control ledger found in seeded org to test NIT-4"
+    assert control_ledger.is_control_account is True
+
+    with pytest.raises(AppValidationError, match="control"):
+        banking_service.create_bank_account(
+            db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            ledger_id=control_ledger.ledger_id,
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# NIT-3: user attribution threads through to GL JV
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_bank_account_create_jv_has_created_by(
+    db_session: OrmSession,
+) -> None:
+    """NIT-3: when created_by is passed to create_bank_account, the resulting
+    GL JV must carry that user as created_by."""
+    from sqlalchemy import select
+
+    from app.models import AppUser, Voucher
+    from app.models.accounting import VoucherType
+
+    org_id, firm_id, bank_ledger_id = _make_seeded_org_firm_ledger(db_session)
+
+    # Create a real user so the FK constraint on voucher.created_by is satisfied.
+    user = AppUser(
+        org_id=org_id,
+        email=f"banker-{uuid.uuid4().hex[:8]}@test.local",
+        password_hash="$2b$12$placeholder",
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.flush()
+
+    banking_service.create_bank_account(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        ledger_id=bank_ledger_id,
+        balance=Decimal("2000.00"),
+        created_by=user.user_id,
+    )
+
+    vouchers = list(
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == org_id,
+                Voucher.firm_id == firm_id,
+                Voucher.voucher_type == VoucherType.JOURNAL,
+            )
+        ).scalars()
+    )
+    assert len(vouchers) == 1
+    assert vouchers[0].created_by == user.user_id, (
+        "GL JV must carry the same created_by as the bank account create call"
+    )

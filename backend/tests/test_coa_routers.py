@@ -115,6 +115,9 @@ def test_create_ledger_returns_201(http_client: TestClient) -> None:
     list_resp = http_client.get("/coa/groups", headers=_auth(me["access_token"]))
     asset = next(g for g in list_resp.json()["items"] if g["code"] == "ASSET")
 
+    # Fix 1: use a valid ledger_type (not "ASSET" which is a group type, not a ledger type).
+    # Fix 3: omit opening_balance here (non-zero OB requires firm_id scoping which is tested
+    #         separately in the service tests).
     resp = http_client.post(
         "/ledgers",
         headers=_auth(me["access_token"]),
@@ -122,8 +125,7 @@ def test_create_ledger_returns_201(http_client: TestClient) -> None:
             "code": "9001",
             "name": "Test Fixed Asset",
             "coa_group_id": asset["coa_group_id"],
-            "ledger_type": "ASSET",
-            "opening_balance": "1000.00",
+            "ledger_type": "EXPENSE",
         },
     )
     assert resp.status_code == 201, resp.text
