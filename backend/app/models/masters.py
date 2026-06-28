@@ -112,7 +112,7 @@ class CostCentreType(enum.StrEnum):
 _TAX_STATUS_PG = PG_ENUM(TaxStatus, name="tax_status", create_type=False, native_enum=True)
 _ITEM_TYPE_PG = PG_ENUM(ItemType, name="item_type", create_type=False, native_enum=True)
 _TRACKING_TYPE_PG = PG_ENUM(TrackingType, name="tracking_type", create_type=False, native_enum=True)
-_UOM_TYPE_PG = PG_ENUM(UomType, name="uom_type", create_type=False, native_enum=True)
+_UOM_TYPE_PG: PG_ENUM = PG_ENUM(UomType, name="uom_type", create_type=False, native_enum=True)
 _SUPPLY_CLASS_PG = PG_ENUM(
     SupplyClassification, name="supply_classification", create_type=False, native_enum=True
 )
