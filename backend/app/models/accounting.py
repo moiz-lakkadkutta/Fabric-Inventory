@@ -156,8 +156,8 @@ class Voucher(Base, SoftDeleteMixin):
         ForeignKey("party.party_id", ondelete="SET NULL"),
         nullable=True,
     )
-    total_debit: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
-    total_credit: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    total_debit: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
+    total_credit: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("app_user.user_id", ondelete="SET NULL"),
@@ -211,7 +211,7 @@ class VoucherLine(Base):
         nullable=False,
     )
     line_type: Mapped[JournalLineType] = mapped_column(_JOURNAL_LINE_TYPE_PG, nullable=False)
-    amount: Mapped[Any] = mapped_column(Numeric(15, 2), nullable=False)
+    amount: Mapped[Any] = mapped_column(Numeric(18, 2), nullable=False)
     cost_centre_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("cost_centre.cost_centre_id", ondelete="SET NULL"),

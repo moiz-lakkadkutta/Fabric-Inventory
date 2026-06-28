@@ -208,7 +208,7 @@ class Party(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         SmallInteger, server_default=text("0"), nullable=True
     )
     credit_limit: Mapped[Any | None] = mapped_column(
-        Numeric(15, 2), server_default=text("0"), nullable=True
+        Numeric(18, 2), server_default=text("0"), nullable=True
     )
     charge_overdue_interest: Mapped[bool | None] = mapped_column(
         Boolean, server_default=text("true"), nullable=True
@@ -593,7 +593,7 @@ class Ledger(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     )
     bank_account_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     opening_balance: Mapped[Any | None] = mapped_column(
-        Numeric(15, 2), server_default=text("0"), nullable=True
+        Numeric(18, 2), server_default=text("0"), nullable=True
     )
     opening_balance_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     is_active: Mapped[bool | None] = mapped_column(

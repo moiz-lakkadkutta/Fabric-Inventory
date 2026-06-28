@@ -92,7 +92,7 @@ class BankAccount(Base, AuditByMixin, SoftDeleteMixin):
     account_number: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     ifsc_code: Mapped[str | None] = mapped_column(String(11), nullable=True)
     account_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    balance: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    balance: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     last_reconciled_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -146,7 +146,7 @@ class Cheque(Base, AuditByMixin, SoftDeleteMixin):
     cheque_number: Mapped[str] = mapped_column(String(20), nullable=False)
     cheque_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
     payee_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     status: Mapped[ChequeStatus | None] = mapped_column(
         _CHEQUE_STATUS_PG, server_default="ISSUED", nullable=True
     )

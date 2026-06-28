@@ -114,7 +114,7 @@ class SalesOrder(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         server_default=text("'DRAFT'::sales_order_status"),
         nullable=True,
     )
-    total_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    total_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # `sales_order.created_by` is declared inline in the DDL (with FK).
     created_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -155,7 +155,7 @@ class SOLine(Base):
         Numeric(15, 4), server_default=text("0"), nullable=True
     )
     price: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
-    line_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    line_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     gst_rate: Mapped[Any | None] = mapped_column(Numeric(5, 2), nullable=True)
     sequence: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
@@ -240,7 +240,7 @@ class DeliveryChallan(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         String(50), server_default=text("'DRAFT'"), nullable=True
     )
     total_qty: Mapped[Any | None] = mapped_column(Numeric(15, 4), nullable=True)
-    total_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    total_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     # `delivery_challan.created_by` declared inline in DDL with FK.
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -397,8 +397,8 @@ class SalesInvoice(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     ship_to_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     place_of_supply_state: Mapped[str | None] = mapped_column(String(2), nullable=True)
     invoice_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    invoice_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
-    gst_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    invoice_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
+    gst_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     status: Mapped[VoucherStatus | None] = mapped_column(
         _SALES_VOUCHER_STATUS_PG,
         server_default=text("'DRAFT'::voucher_status"),
@@ -483,9 +483,9 @@ class SiLine(Base):
     )
     qty: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
     price: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
-    line_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    line_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     gst_rate: Mapped[Any | None] = mapped_column(Numeric(5, 2), nullable=True)
-    gst_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    gst_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     sequence: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

@@ -336,3 +336,65 @@ def test_sale_voucher_narration_uses_party_name(db_session: OrmSession) -> None:
     assert str(party_id) not in (voucher.narration or ""), (
         f"narration should not leak party UUID {party_id}; got {voucher.narration!r}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BL-03: money column widening NUMERIC(15,2) → NUMERIC(18,2)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_bl03_large_amount_fits_widened_column(db_session: OrmSession) -> None:
+    """BL-03: money columns widened to NUMERIC(18,2).
+
+    A voucher totals / line amount with 14 digits before the decimal
+    (e.g. ₹10 trillion = 10_000_000_000_000.00) overflows NUMERIC(15,2)
+    but fits NUMERIC(18,2).  Before migration this INSERT would raise a
+    Postgres 'numeric field overflow' DataError.  After the E5 migration
+    the value must round-trip cleanly with no truncation.
+    """
+    org_id, firm_id, _, _ = _seed_org_with_coa(db_session)
+
+    # 14 digits before the decimal:
+    #   overflow → NUMERIC(15,2)  (max 13 digits before decimal)
+    #   fits     → NUMERIC(18,2)  (max 16 digits before decimal)
+    large_amount = Decimal("10000000000000.00")
+
+    voucher = Voucher(
+        org_id=org_id,
+        firm_id=firm_id,
+        voucher_type=VoucherType.JOURNAL,
+        series="BL03",
+        number="1",
+        voucher_date=datetime.date(2026, 6, 27),
+        status=VoucherStatus.POSTED,
+        total_debit=large_amount,
+        total_credit=large_amount,
+        reference_type="test",
+    )
+    db_session.add(voucher)
+    db_session.flush()
+
+    # Use the seeded AR ledger (code 1200) for the test line.
+    ar_ledger = db_session.execute(
+        select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "1200")
+    ).scalar_one()
+
+    line = VoucherLine(
+        org_id=org_id,
+        voucher_id=voucher.voucher_id,
+        ledger_id=ar_ledger.ledger_id,
+        line_type=JournalLineType.DR,
+        amount=large_amount,
+    )
+    db_session.add(line)
+    db_session.flush()
+
+    # Round-trip: expire the ORM cache, reload, and verify precision is intact.
+    db_session.expire(line)
+    reloaded = db_session.get(VoucherLine, line.voucher_line_id)
+    assert reloaded is not None
+    assert Decimal(reloaded.amount) == large_amount, (
+        f"BL-03: expected {large_amount!r}, got {reloaded.amount!r}. "
+        "NUMERIC(15,2) would have raised 'numeric field overflow' on INSERT; "
+        "NUMERIC(18,2) must persist this value without error or truncation."
+    )

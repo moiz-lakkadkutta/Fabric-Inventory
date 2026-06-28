@@ -107,7 +107,7 @@ class PurchaseOrder(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         server_default=text("'DRAFT'::purchase_order_status"),
         nullable=True,
     )
-    total_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    total_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # `purchase_order.created_by` is declared inline in the DDL (with FK).
     created_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -149,7 +149,7 @@ class POLine(Base):
         Numeric(15, 4), server_default=text("0"), nullable=True
     )
     rate: Mapped[Any] = mapped_column(Numeric(15, 4), nullable=False)
-    line_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    line_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     taxes_applicable: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     line_sequence: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -232,7 +232,7 @@ class GRN(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         String(50), server_default=text("'DRAFT'"), nullable=True
     )
     total_qty_received: Mapped[Any | None] = mapped_column(Numeric(15, 4), nullable=True)
-    total_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    total_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # `grn.created_by` declared inline in the DDL with FK.
     created_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -376,8 +376,8 @@ class PurchaseInvoice(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         nullable=True,
     )
     invoice_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
-    invoice_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
-    gst_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    invoice_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
+    gst_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     rcm_applicable: Mapped[bool | None] = mapped_column(
         Boolean, server_default=text("false"), nullable=True
     )
@@ -441,9 +441,9 @@ class PILine(Base):
     )
     qty: Mapped[Any | None] = mapped_column(Numeric(15, 4), nullable=True)
     rate: Mapped[Any | None] = mapped_column(Numeric(15, 4), nullable=True)
-    line_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    line_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     gst_rate: Mapped[Any | None] = mapped_column(Numeric(5, 2), nullable=True)
-    gst_amount: Mapped[Any | None] = mapped_column(Numeric(15, 2), nullable=True)
+    gst_amount: Mapped[Any | None] = mapped_column(Numeric(18, 2), nullable=True)
     line_sequence: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
