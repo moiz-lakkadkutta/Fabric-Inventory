@@ -9,9 +9,51 @@ import uuid
 from decimal import Decimal
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.sales import InvoiceLifecycleStatus, SalesOrderStatus
+from app.service.gst_service import VALID_GST_SLAB_RATES
+from app.utils.gst_states import normalize_state_code
+
+
+def _validate_state_code(v: str | None) -> str | None:
+    """Strip whitespace and validate an Indian GST state code.
+
+    Called by field_validator on every state-code field in sales request
+    schemas. Returns the normalised code on success; raises ValueError
+    (which Pydantic converts to a 422 ValidationError) on failure.
+    """
+    if v is None:
+        return None
+    normalised = normalize_state_code(v)
+    if normalised is None:
+        raise ValueError(
+            f"Invalid Indian GST state code {v!r}. "
+            "Must be a 2-character numeric code (e.g. '27') or a valid "
+            "2-character alphabetic abbreviation (e.g. 'MH')."
+        )
+    return normalised
+
+
+def _validate_gst_rate(v: Decimal | None) -> Decimal | None:
+    """Enforce GST rate is a recognised statutory slab rate.
+
+    Accepted: None (non-GST line) or one of {0, 0.25, 3, 5, 12, 18, 28}.
+    Raises ValueError for any other value (→ Pydantic 422 ValidationError).
+
+    CA-VALIDATED-PENDING: if the textile trade vertical uses special rates
+    (e.g. 1.5%, 7.5% compensation cess), add them to VALID_GST_SLAB_RATES
+    in gst_service.py — this validator references that single source of truth.
+    """
+    if v is None:
+        return None
+    normalised = Decimal(str(v))
+    if normalised not in VALID_GST_SLAB_RATES:
+        valid_str = ", ".join(str(r) for r in sorted(VALID_GST_SLAB_RATES))
+        raise ValueError(
+            f"GST rate {v} is not a recognised statutory slab rate. Valid rates: {valid_str}."
+        )
+    return normalised
 
 
 class SOLineRequest(BaseModel):
@@ -22,6 +64,14 @@ class SOLineRequest(BaseModel):
     price: Annotated[Decimal, Field(ge=0)]
     sequence: int | None = None
     gst_rate: Decimal | None = None
+
+    @field_validator("gst_rate", mode="before")
+    @classmethod
+    def validate_gst_rate(cls, v: object) -> object:
+        """GST-2: enforce statutory slab rates on SO lines."""
+        if v is None:
+            return v
+        return _validate_gst_rate(Decimal(str(v)))
 
 
 class SOLineResponse(BaseModel):
@@ -104,6 +154,14 @@ class DCCreateRequest(BaseModel):
     ship_to_address: str | None = None
     place_of_supply_state: str | None = Field(default=None, max_length=2)
     lines: list[DCLineRequest] = Field(min_length=1)
+
+    @field_validator("place_of_supply_state", mode="before")
+    @classmethod
+    def validate_place_of_supply_state(cls, v: object) -> object:
+        """GST-5: validate and normalise place_of_supply_state."""
+        if v is None:
+            return v
+        return _validate_state_code(str(v))
 
 
 class DCResponse(BaseModel):
@@ -220,6 +278,14 @@ class SiLineCreateRequest(BaseModel):
     gst_rate: Decimal | None = None
     sequence: int | None = None
 
+    @field_validator("gst_rate", mode="before")
+    @classmethod
+    def validate_gst_rate(cls, v: object) -> object:
+        """GST-2: enforce statutory slab rates on SI lines."""
+        if v is None:
+            return v
+        return _validate_gst_rate(Decimal(str(v)))
+
 
 class SalesInvoiceCreateRequest(BaseModel):
     """Body for POST /v1/invoices. Money values are rupees on the wire
@@ -236,3 +302,11 @@ class SalesInvoiceCreateRequest(BaseModel):
     ship_to_address: str | None = None
     notes: str | None = None
     lines: list[SiLineCreateRequest] = Field(min_length=1)
+
+    @field_validator("ship_to_state", mode="before")
+    @classmethod
+    def validate_ship_to_state(cls, v: object) -> object:
+        """GST-1/GST-5: validate and normalise ship_to_state."""
+        if v is None:
+            return v
+        return _validate_state_code(str(v))
