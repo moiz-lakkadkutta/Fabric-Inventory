@@ -7,9 +7,10 @@ import uuid
 from decimal import Decimal
 from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.procurement import PurchaseOrderStatus
+from app.service.gst_service import VALID_GST_SLAB_RATES
 
 
 class POLineRequest(BaseModel):
@@ -135,8 +136,28 @@ class PILineRequest(BaseModel):
     item_id: uuid.UUID
     qty: Annotated[Decimal, Field(gt=0)]
     rate: Annotated[Decimal, Field(ge=0)]
-    gst_rate: Annotated[Decimal | None, Field(ge=0, le=100)] = None
+    gst_rate: Decimal | None = None
     line_sequence: int | None = None
+
+    @field_validator("gst_rate", mode="before")
+    @classmethod
+    def validate_gst_rate(cls, v: object) -> object:
+        """GST-2: enforce statutory slab rates on purchase invoice lines.
+
+        Replaces the old loose Field(ge=0, le=100) which allowed non-slab
+        rates (e.g. 4%, 7%, 99%) that corrupt the GL balance and GSTR-1.
+        CA-VALIDATED-PENDING: confirm whether any special rate (1.5%, 7.5%
+        compensation cess) is needed for this trade vertical.
+        """
+        if v is None:
+            return v
+        normalised = Decimal(str(v))
+        if normalised not in VALID_GST_SLAB_RATES:
+            valid_str = ", ".join(str(r) for r in sorted(VALID_GST_SLAB_RATES))
+            raise ValueError(
+                f"GST rate {v} is not a recognised statutory slab rate. Valid rates: {valid_str}."
+            )
+        return normalised
 
 
 class PILineResponse(BaseModel):
