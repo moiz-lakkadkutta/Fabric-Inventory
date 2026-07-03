@@ -48,6 +48,7 @@ from app.service import (
 )
 from app.service.gst_service import BuyerStatus, TaxType
 from app.utils import crypto
+from app.utils.gst_states import normalize_state_code
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -821,7 +822,15 @@ def create_draft_invoice(
         qty = Decimal(str(line["qty"]))
         price = Decimal(str(line["price"]))
         gst_rate = Decimal(str(line.get("gst_rate", "0") or "0"))
+        # GST-2 belt-and-suspenders: validate rate against slab allow-list
+        # even when called outside the HTTP/Pydantic path.
+        if not gst_service.is_valid_gst_rate(gst_rate):
+            raise AppValidationError(
+                f"GST rate {gst_rate} is not a recognised statutory slab rate. "
+                "Valid rates: 0, 0.25, 3, 5, 12, 18, 28."
+            )
         line_amount = (qty * price).quantize(Decimal("0.01"))
+        # GST-7: already quantized to 2dp in sales_service; kept here for clarity.
         gst_amount = (line_amount * gst_rate / Decimal("100")).quantize(Decimal("0.01"))
         total_subtotal += line_amount
         total_gst += gst_amount
@@ -854,13 +863,21 @@ def create_draft_invoice(
     buyer_gstin_plain = (
         crypto.decrypt_pii(party.gstin, dek=dek, org_id=org_id) if party.gstin else None
     )
+    # S2 fix (B1): normalize all state inputs to canonical alpha form before
+    # passing to the PoS engine. Without normalization, Vyapar-migrated data
+    # with numeric state codes (e.g. party.state_code="27") compared against
+    # firm.state_code="MH" would trigger "27" != "MH" -> wrong IGST charged
+    # on an intra-state Maharashtra sale.
+    norm_seller_state = normalize_state_code(firm.state_code) or ""
+    norm_buyer_state = normalize_state_code(party.state_code)
+    norm_ship_to_state = normalize_state_code(ship_to_state) if ship_to_state else None
     pos_decision = gst_service.determine_place_of_supply(
-        seller_state=firm.state_code or "",
+        seller_state=norm_seller_state,
         seller_gstin=seller_gstin_plain,
-        buyer_state=party.state_code,
+        buyer_state=norm_buyer_state,
         buyer_gstin=buyer_gstin_plain,
         buyer_status=_classify_buyer(party),
-        ship_to_state=ship_to_state or party.state_code,
+        ship_to_state=norm_ship_to_state or norm_buyer_state,
         invoice_value=invoice_total,
     )
 
