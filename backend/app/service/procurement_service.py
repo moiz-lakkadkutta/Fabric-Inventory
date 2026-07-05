@@ -46,7 +46,7 @@ from app.models.procurement import (
     PurchaseOrderStatus,
     VoucherStatus,
 )
-from app.service import accounting_service, inventory_service
+from app.service import accounting_service, gst_service, inventory_service
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -722,7 +722,19 @@ def create_pi(
             raise AppValidationError(f"PI line rate cannot be negative (got {rate})")
         line_amount = qty * rate
         gst_rate = Decimal(str(line["gst_rate"])) if line.get("gst_rate") is not None else None
-        gst_amount = (line_amount * gst_rate / Decimal("100")) if gst_rate is not None else None
+        # GST-2 belt-and-suspenders: validate rate against slab allow-list
+        # even when called outside the HTTP/Pydantic path.
+        if gst_rate is not None and not gst_service.is_valid_gst_rate(gst_rate):
+            raise AppValidationError(
+                f"GST rate {gst_rate} is not a recognised statutory slab rate. "
+                "Valid rates: 0, 0.25, 3, 5, 12, 18, 28."
+            )
+        # GST-7: quantize to 2dp to avoid sub-paise values reaching the DB.
+        gst_amount = (
+            (line_amount * gst_rate / Decimal("100")).quantize(Decimal("0.01"))
+            if gst_rate is not None
+            else None
+        )
         invoice_total += line_amount
         if gst_amount is not None:
             gst_total += gst_amount
