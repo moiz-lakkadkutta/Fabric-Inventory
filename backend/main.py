@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 
 from app.config import get_settings, init_sentry
-from app.db import check_db_health, dispose_engine
+from app.db import assert_non_privileged_db_role, check_db_health, dispose_engine
 from app.middleware import (
     AuthMiddleware,
     ContentSizeLimitMiddleware,
@@ -93,6 +93,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # message. In dev/test the public fallback fires + warns; boot
     # still succeeds.
     _crypto.get_master_kek()
+    # SEC (INT-9 regression backstop): fail fast if the runtime DB role is a
+    # superuser / BYPASSRLS — Row-Level Security would be silently off and
+    # tenant isolation broken. The app must connect as fabric_app
+    # (NOBYPASSRLS); only the one-shot migrate runner uses the superuser.
+    # Dev only warns (see the guard); staging/prod crash the container.
+    assert_non_privileged_db_role()
     # CUT-QA-04: fail fast if WeasyPrint can't dlopen its native deps —
     # otherwise the /invoices/{id}/pdf endpoint silently 500s on every
     # request (Bug B7, 2026-05-12). Probe BEFORE swapping the email
