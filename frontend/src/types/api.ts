@@ -1829,6 +1829,24 @@ export interface paths {
         patch: operations["update_party_parties__party_id__patch"];
         trace?: never;
     };
+    "/payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List payments for the current firm (newest-first) */
+        get: operations["list_payments_payments_get"];
+        put?: never;
+        /** Record a supplier payment and FIFO-allocate it across open purchase invoices */
+        post: operations["post_payment_payments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/purchase-invoices": {
         parameters: {
             query?: never;
@@ -6788,6 +6806,144 @@ export interface components {
             /** State Code */
             state_code?: string | null;
             tax_status?: components["schemas"]["TaxStatus"] | null;
+        };
+        /**
+         * PaymentAllocationItem
+         * @description One PI allocation attached to a payment response.
+         */
+        PaymentAllocationItem: {
+            /** Amount */
+            amount: string;
+            /**
+             * Purchase Invoice Id
+             * Format: uuid
+             */
+            purchase_invoice_id: string;
+        };
+        /**
+         * PaymentCreateRequest
+         * @description POST /v1/payments body.
+         *
+         *     `amount` is the total payment to the supplier (in rupees, Decimal).
+         *     FIFO allocation across open PIs happens in the service layer.
+         *     Over-payment (amount > Σ outstanding) is rejected with 422.
+         */
+        PaymentCreateRequest: {
+            /** Amount */
+            amount: number | string;
+            /**
+             * Mode
+             * @default CASH
+             * @enum {string}
+             */
+            mode: "CASH" | "BANK" | "UPI";
+            /**
+             * Party Id
+             * Format: uuid
+             */
+            party_id: string;
+            /**
+             * Payment Date
+             * Format: date
+             */
+            payment_date: string;
+            /** Reference */
+            reference?: string | null;
+            /**
+             * Series
+             * @default PMT/2526
+             */
+            series: string;
+        };
+        /**
+         * PaymentListAllocation
+         * @description A single allocation surfaced on the payment-list row.
+         */
+        PaymentListAllocation: {
+            /** Amount */
+            amount: string;
+            /** Invoice Number */
+            invoice_number: string;
+        };
+        /** PaymentListItem */
+        PaymentListItem: {
+            /** Allocations */
+            allocations?: components["schemas"]["PaymentListAllocation"][];
+            /** Amount */
+            amount: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Mode */
+            mode?: string | null;
+            /** Narration */
+            narration: string | null;
+            /** Number */
+            number: string;
+            /** Party Id */
+            party_id?: string | null;
+            /** Party Name */
+            party_name?: string | null;
+            /** Series */
+            series: string;
+            /**
+             * Voucher Date
+             * Format: date
+             */
+            voucher_date: string;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
+        };
+        /** PaymentListResponse */
+        PaymentListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["PaymentListItem"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /**
+         * PaymentResponse
+         * @description Response returned after POSTing a payment.
+         */
+        PaymentResponse: {
+            /** Allocations */
+            allocations?: components["schemas"]["PaymentAllocationItem"][];
+            /** Amount */
+            amount: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Mode */
+            mode?: string | null;
+            /** Narration */
+            narration: string | null;
+            /** Number */
+            number: string;
+            /** Party Id */
+            party_id?: string | null;
+            /** Series */
+            series: string;
+            /**
+             * Voucher Date
+             * Format: date
+             */
+            voucher_date: string;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
         };
         /**
          * PermissionCatalogEntry
@@ -12549,6 +12705,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PartyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_payments_payments_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_payment_payments_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PaymentCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentResponse"];
                 };
             };
             /** @description Validation Error */
