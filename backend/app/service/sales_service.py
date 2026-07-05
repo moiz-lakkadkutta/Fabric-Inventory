@@ -583,13 +583,12 @@ def issue_dc(
         else {}
     )
 
-    consumed_dc: list[tuple[uuid.UUID, Decimal, Decimal]] = []
     for line in dc.lines:
         dc_item = dc_items_by_id.get(line.item_id)
         if dc_item is not None and dc_item.item_type == ItemType.SERVICE:
             continue  # Services have no inventory.
 
-        ledger_row = inventory_service.remove_stock(
+        inventory_service.remove_stock(
             session,
             org_id=org_id,
             firm_id=dc.firm_id,
@@ -601,21 +600,11 @@ def issue_dc(
             reference_id=dc.delivery_challan_id,
             txn_date=dc.dispatch_date,
         )
-        unit_cost = (
-            Decimal(ledger_row.unit_cost) if ledger_row.unit_cost is not None else Decimal("0")
-        )
-        consumed_dc.append((line.item_id, Decimal(line.qty_dispatched), unit_cost))
 
-    # Post COGS at delivery time.
-    accounting_service.post_cogs_voucher(
-        session,
-        org_id=org_id,
-        firm_id=dc.firm_id,
-        series=dc.series,
-        reference_type="delivery_challan",
-        reference_id=dc.delivery_challan_id,
-        consumed=consumed_dc,
-    )
+    # COGS is recognized at invoice finalize (revenue-matching principle),
+    # NOT at DC dispatch.  DC-linked invoices skip COGS in finalize_invoice
+    # via the `delivery_challan_id is None` guard, so posting COGS here
+    # would produce a double-count.  Do not add a post_cogs_voucher call here.
 
     dc.status = DCStatus.ISSUED.value
     dc.updated_at = datetime.datetime.now(tz=datetime.UTC)
@@ -1055,8 +1044,10 @@ def _post_cogs_for_invoice(
 ) -> None:
     """Remove stock and post COGS for each stockable line of a direct invoice.
 
-    Skips SERVICE items (no stock) and lines where there is no stock
-    position (AppValidationError is caught; finalize still succeeds).
+    Skips SERVICE items (no stock) and lines where no stock position exists
+    (item was never received — finalize still succeeds with no COGS for that
+    line).  If a position exists but on-hand is insufficient, the error
+    propagates and finalize fails loudly (no silent COGS skip for oversells).
     """
     location = inventory_service.get_or_create_default_location(
         session, org_id=org_id, firm_id=invoice.firm_id
@@ -1090,24 +1081,41 @@ def _post_cogs_for_invoice(
         if qty <= 0:
             continue
 
-        try:
-            ledger_row = inventory_service.remove_stock(
-                session,
-                org_id=org_id,
-                firm_id=invoice.firm_id,
-                item_id=line.item_id,
-                location_id=location.location_id,
-                qty=qty,
-                reference_type="sales_invoice",
-                reference_id=invoice.sales_invoice_id,
-                txn_date=invoice.invoice_date,
-            )
-        except AppValidationError:
-            # No stock position or insufficient stock: skip COGS for this
-            # line rather than blocking the finalize.  The task spec
-            # explicitly calls this the "zero-cost / no-position" guard:
-            # test_zero_cost_item_finalize_skips_cogs_voucher.
+        # SF1: check for a stock position first.
+        #
+        # Only the genuine "no position exists" case is silently skipped —
+        # i.e. the item was never received into this location (a legitimately
+        # non-inventory or never-stocked item).  If a position exists but
+        # on-hand is insufficient (oversell), remove_stock will raise an
+        # AppValidationError with "Insufficient stock" and finalize fails
+        # loudly — silently swallowing that would re-introduce the
+        # revenue-without-cost bug.
+        position = inventory_service.get_position(
+            session,
+            org_id=org_id,
+            firm_id=invoice.firm_id,
+            item_id=line.item_id,
+            location_id=location.location_id,
+        )
+        if position is None:
+            # Item has no stock position at this location — was never received
+            # here.  Skip COGS for this line; finalize still succeeds.
+            # (test: test_zero_cost_item_finalize_skips_cogs_voucher)
             continue
+
+        # Position exists — let remove_stock handle it; any insufficient-stock
+        # error propagates up and finalize fails with a clear message.
+        ledger_row = inventory_service.remove_stock(
+            session,
+            org_id=org_id,
+            firm_id=invoice.firm_id,
+            item_id=line.item_id,
+            location_id=location.location_id,
+            qty=qty,
+            reference_type="sales_invoice",
+            reference_id=invoice.sales_invoice_id,
+            txn_date=invoice.invoice_date,
+        )
 
         unit_cost = (
             Decimal(ledger_row.unit_cost) if ledger_row.unit_cost is not None else Decimal("0")
