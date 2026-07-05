@@ -305,6 +305,16 @@ def post_payment(
 
         allocations.append((pi.purchase_invoice_id, applied))
 
+    # Defense-in-depth (parity with receipt_service): over-payment was rejected
+    # above, so every rupee of `amount` must have landed on an open PI. If any
+    # remains, the DR AP total (Σ allocated) would not equal the CR bank total
+    # (`amount`) and the voucher would be unbalanced — fail loudly instead.
+    if remaining != Decimal("0"):
+        raise AppValidationError(
+            f"Payment allocation residual {remaining} != 0 after FIFO (amount={amount}); "
+            "the over-payment guard should have prevented this."
+        )
+
     session.flush()
 
     # GL postings: DR AP (2000), CR Cash/Bank.

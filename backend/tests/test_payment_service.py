@@ -27,6 +27,7 @@ from app.models import (
     Item,
     Party,
     PaymentAllocation,
+    Voucher,
     VoucherLine,
 )
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
@@ -346,6 +347,31 @@ def test_overpayment_rejected(db_session: OrmSession) -> None:
             payment_date=datetime.date(2026, 1, 20),
             mode="CASH",
         )
+
+    # No partial writes: the guard fires before any voucher / allocation exists.
+    payment_vouchers = (
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == org_id,
+                Voucher.firm_id == firm.firm_id,
+                Voucher.voucher_type == VoucherType.PAYMENT,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert payment_vouchers == [], "rejected over-payment must leave no PAYMENT voucher"
+    allocations = (
+        db_session.execute(
+            select(PaymentAllocation).where(
+                PaymentAllocation.org_id == org_id,
+                PaymentAllocation.firm_id == firm.firm_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert allocations == [], "rejected over-payment must leave no allocation rows"
 
 
 def test_payment_amount_must_be_positive(db_session: OrmSession) -> None:
