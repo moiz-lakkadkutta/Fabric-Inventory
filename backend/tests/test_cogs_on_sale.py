@@ -13,27 +13,22 @@ import datetime
 import uuid
 from decimal import Decimal
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session as OrmSession
 
-from app.exceptions import AppValidationError
 from app.models import Firm, Item, Party, SalesInvoice, SiLine, Voucher, VoucherLine
-from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
+from app.models.accounting import JournalLineType, VoucherType
 from app.models.masters import ItemType, TrackingType, UomType
-from app.models.sales import DCStatus, DeliveryChallan, DCLine, InvoiceLifecycleStatus
-from app.service import accounting_service, inventory_service, sales_service
+from app.models.sales import InvoiceLifecycleStatus
+from app.service import inventory_service, sales_service
 from app.service.seed_service import seed_coa
-
 
 # ──────────────────────────────────────────────────────────────────────
 # Shared helpers
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _seed_cogs_org(
-    db_session: OrmSession, org_id: uuid.UUID
-) -> tuple[Firm, Party, Item]:
+def _seed_cogs_org(db_session: OrmSession, org_id: uuid.UUID) -> tuple[Firm, Party, Item]:
     """Create firm, customer party, and a FINISHED item; seed COA."""
     seed_coa(db_session, org_id=org_id)
 
@@ -141,7 +136,6 @@ def test_finalize_direct_invoice_posts_cogs_and_relieves_stock(
     DR 5000=300, CR 1300=300; StockLedger OUT row; on_hand drops by 3.
     """
     from app.models import StockLedger
-    from app.models.inventory import StockPosition
 
     firm, party, item = _seed_cogs_org(db_session, fresh_org_id)
     _seed_stock(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="10", unit_cost="100")
@@ -206,8 +200,8 @@ def test_finalize_direct_invoice_posts_cogs_and_relieves_stock(
     assert total_dr == Decimal("300.00"), f"COGS DR expected 300, got {total_dr}"
     assert total_cr == Decimal("300.00"), f"COGS CR expected 300, got {total_cr}"
     assert total_dr == total_cr, "Voucher must be balanced"
-    assert Decimal(cogs_v.total_debit) == Decimal("300.00")
-    assert Decimal(cogs_v.total_credit) == Decimal("300.00")
+    assert Decimal(cogs_v.total_debit or 0) == Decimal("300.00")
+    assert Decimal(cogs_v.total_credit or 0) == Decimal("300.00")
 
     # 3. StockLedger OUT row for qty=3.
     out_rows = list(
@@ -221,7 +215,7 @@ def test_finalize_direct_invoice_posts_cogs_and_relieves_stock(
         ).scalars()
     )
     assert len(out_rows) == 1, f"expected 1 OUT ledger row, got {len(out_rows)}"
-    assert Decimal(out_rows[0].qty_out) == Decimal("3"), "wrong qty_out"
+    assert Decimal(out_rows[0].qty_out or 0) == Decimal("3"), "wrong qty_out"
 
     # 4. on_hand dropped by 3.
     db_session.expire(pos_before)
@@ -331,7 +325,7 @@ def test_finalize_service_item_no_cogs_no_stock(
             Voucher.deleted_at.is_(None),
         )
     ).scalar_one()
-    assert Decimal(si_voucher.total_debit) == Decimal(si_voucher.total_credit)
+    assert Decimal(si_voucher.total_debit or 0) == Decimal(si_voucher.total_credit or 0)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -339,14 +333,10 @@ def test_finalize_service_item_no_cogs_no_stock(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_issue_dc_posts_cogs(
-    db_session: OrmSession, fresh_org_id: uuid.UUID
-) -> None:
+def test_issue_dc_posts_cogs(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
     """Issuing a DC removes stock AND posts a COGS_SALE voucher for the cost."""
     firm, party, item = _seed_cogs_org(db_session, fresh_org_id)
-    _seed_stock(
-        db_session, org_id=fresh_org_id, firm=firm, item=item, qty="50", unit_cost="80"
-    )
+    _seed_stock(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="50", unit_cost="80")
 
     dc = sales_service.create_dc(
         db_session,
@@ -369,10 +359,10 @@ def test_issue_dc_posts_cogs(
         )
     ).scalar_one_or_none()
     assert cogs_v is not None, "issue_dc should post a COGS_SALE voucher"
-    assert Decimal(cogs_v.total_debit) == Decimal("800.00"), (
+    assert Decimal(cogs_v.total_debit or 0) == Decimal("800.00"), (
         f"DC COGS expected 800, got {cogs_v.total_debit}"
     )
-    assert Decimal(cogs_v.total_debit) == Decimal(cogs_v.total_credit), "must be balanced"
+    assert Decimal(cogs_v.total_debit or 0) == Decimal(cogs_v.total_credit or 0), "must be balanced"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -389,9 +379,7 @@ def test_dc_linked_invoice_does_not_double_post_cogs_or_stock(
     from app.models import StockLedger
 
     firm, party, item = _seed_cogs_org(db_session, fresh_org_id)
-    _seed_stock(
-        db_session, org_id=fresh_org_id, firm=firm, item=item, qty="20", unit_cost="60"
-    )
+    _seed_stock(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="20", unit_cost="60")
 
     location = inventory_service.get_or_create_default_location(
         db_session, org_id=fresh_org_id, firm_id=firm.firm_id
@@ -420,15 +408,15 @@ def test_dc_linked_invoice_does_not_double_post_cogs_or_stock(
     ).scalar_one_or_none()
     assert dc_cogs_count is not None, "DC COGS voucher should exist"
 
-    on_hand_after_dc = Decimal(
-        inventory_service.get_position(
-            db_session,
-            org_id=fresh_org_id,
-            firm_id=firm.firm_id,
-            item_id=item.item_id,
-            location_id=location.location_id,
-        ).on_hand_qty
+    _pos_dc = inventory_service.get_position(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
     )
+    assert _pos_dc is not None
+    on_hand_after_dc = Decimal(_pos_dc.on_hand_qty or 0)
     assert on_hand_after_dc == Decimal("15"), "after DC issue, on_hand should be 15"
 
     # Step 2: Create an invoice that references the DC and finalize it.
@@ -479,15 +467,15 @@ def test_dc_linked_invoice_does_not_double_post_cogs_or_stock(
     assert inv_cogs is None, "DC-linked invoice finalize must NOT post a second COGS voucher"
 
     # on_hand unchanged after invoice finalize (stock already left at DC).
-    on_hand_after_inv = Decimal(
-        inventory_service.get_position(
-            db_session,
-            org_id=fresh_org_id,
-            firm_id=firm.firm_id,
-            item_id=item.item_id,
-            location_id=location.location_id,
-        ).on_hand_qty
+    _pos_inv = inventory_service.get_position(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
     )
+    assert _pos_inv is not None
+    on_hand_after_inv = Decimal(_pos_inv.on_hand_qty or 0)
     assert on_hand_after_inv == on_hand_after_dc, (
         "DC-linked invoice finalize must NOT decrement stock again"
     )
