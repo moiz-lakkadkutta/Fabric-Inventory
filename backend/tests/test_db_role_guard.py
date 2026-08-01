@@ -29,7 +29,7 @@ class _Settings:
         self.environment = environment
 
 
-def _run_guard_with(monkeypatch, *, url: str, environment: str) -> None:
+def _run_guard_with(monkeypatch: pytest.MonkeyPatch, *, url: str, environment: str) -> None:
     engine = create_engine(_psycopg2(url), future=True)
     monkeypatch.setattr(db, "get_sync_engine", lambda: engine)
     monkeypatch.setattr(db, "get_settings", lambda: _Settings(environment))
@@ -39,25 +39,25 @@ def _run_guard_with(monkeypatch, *, url: str, environment: str) -> None:
         engine.dispose()
 
 
-def test_guard_raises_for_superuser_role_in_prod(monkeypatch) -> None:
+def test_guard_raises_for_superuser_role_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:
     super_url = os.environ["MIGRATION_DATABASE_URL"]  # fabric = superuser
     with pytest.raises(RuntimeError, match="Row-Level Security"):
         _run_guard_with(monkeypatch, url=super_url, environment="prod")
 
 
-def test_guard_raises_for_superuser_role_in_staging(monkeypatch) -> None:
+def test_guard_raises_for_superuser_role_in_staging(monkeypatch: pytest.MonkeyPatch) -> None:
     super_url = os.environ["MIGRATION_DATABASE_URL"]
     with pytest.raises(RuntimeError, match="fabric_app"):
         _run_guard_with(monkeypatch, url=super_url, environment="staging")
 
 
-def test_guard_passes_for_fabric_app_role_in_prod(monkeypatch) -> None:
+def test_guard_passes_for_fabric_app_role_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:
     app_url = os.environ["DATABASE_URL"]  # fabric_app = NOBYPASSRLS
     # No exception → the NOBYPASSRLS runtime role is accepted.
     _run_guard_with(monkeypatch, url=app_url, environment="prod")
 
 
-def test_guard_only_warns_in_dev_for_superuser(monkeypatch) -> None:
+def test_guard_only_warns_in_dev_for_superuser(monkeypatch: pytest.MonkeyPatch) -> None:
     super_url = os.environ["MIGRATION_DATABASE_URL"]
     # Dev tolerates a privileged role (local convenience) — warns, does not raise.
     _run_guard_with(monkeypatch, url=super_url, environment="dev")
