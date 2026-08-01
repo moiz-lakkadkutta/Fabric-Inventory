@@ -1,0 +1,46 @@
+# E2E acceptance overlay — used ONLY by the
+# "E2E acceptance (Playwright + docker-compose, CUT-503)" CI job and by
+# anyone reproducing it locally:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
+#
+# (CI sets COMPOSE_FILE=docker-compose.yml:docker-compose.e2e.yml so every
+# `docker compose ...` step in the job picks both files up.)
+#
+# Why this file exists
+# --------------------
+# `/auth/signup` is rate-limited to 3 requests / 3600s per IP (DOS-01). That
+# is the right production policy — bulk account creation is the classic
+# trial-account-spam / resource-exhaustion vector.
+#
+# It is incompatible with the acceptance suite. Every acceptance test mints a
+# brand-new tenant via `/auth/signup` so it can assert on a clean trial
+# balance, and every one of those requests reaches the API from the SAME
+# docker-network IP (the Vite proxy container). A green run already spends the
+# entire budget — cutover.spec.ts (1) + manufacturing-pipeline.spec.ts (2) = 3.
+# The moment Playwright retries ANY test, the retry's signup is the 4th, gets
+# 429, and every later test cascades into 429/401. One unrelated hiccup then
+# fails the whole job, which is what made this suite look flaky.
+#
+# So we raise the ceiling for the throwaway E2E stack only. The limiter still
+# runs (this is a bigger budget, not a bypass), so the dependency itself stays
+# on the executed path.
+#
+# Why this cannot weaken production
+# ---------------------------------
+#   * The secure values (3 / 3600s) are the DEFAULTS in `app/config.py`.
+#     Anything that does not set these vars gets the strict policy.
+#   * `Settings._reject_loose_signup_rate_limit_outside_dev` refuses to boot
+#     when ENVIRONMENT is staging/prod and either knob is looser than the
+#     secure default. A relaxed value in a prod `.env`, a copied compose file,
+#     or a stray shell export is a hard, loud startup failure — not a silent
+#     downgrade.
+#   * This overlay is never referenced by `docker-compose.prod.yml`, the
+#     deploy workflow, or the Makefile — only by the E2E job.
+services:
+  api:
+    environment:
+      # ~30x headroom over what the suite needs (max ~6 signups including
+      # retries), while keeping the limiter enforcing.
+      SIGNUP_RATE_LIMIT_MAX_REQUESTS: "200"
+      SIGNUP_RATE_LIMIT_WINDOW_SECONDS: "3600"

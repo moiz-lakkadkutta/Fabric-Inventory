@@ -115,12 +115,33 @@ _MFA_RATE_LIMIT = rate_limit(
     key_func=_ip_email_key,
 )
 
-# Signup: 3 per hour per IP. Creating accounts at scale is the classic
-# trial-account-spam / resource-exhaustion vector.
+
+# Signup: 3 per hour per IP by default. Creating accounts at scale is the
+# classic trial-account-spam / resource-exhaustion vector.
+#
+# The thresholds resolve from Settings on every request rather than being
+# frozen at import. That exists for exactly one consumer: the E2E acceptance
+# docker-compose stack (`docker-compose.e2e.yml`), where every test signs up a
+# fresh tenant and all traffic arrives from a single docker-network IP, so the
+# 3/hour budget is exhausted by the third test — and any Playwright retry then
+# cascades into 429 → 401 across the rest of the suite.
+#
+# Security note: the SECURE values are the defaults, and
+# `Settings._reject_loose_signup_rate_limit_outside_dev` refuses to boot
+# staging/prod with anything looser. Only an ENVIRONMENT=dev process can run a
+# relaxed signup budget.
+def _signup_max_requests() -> int:
+    return get_settings().signup_rate_limit_max_requests
+
+
+def _signup_window_seconds() -> int:
+    return get_settings().signup_rate_limit_window_seconds
+
+
 _SIGNUP_RATE_LIMIT = rate_limit(
     bucket="auth.signup",
-    max_requests=3,
-    window_seconds=3600,
+    max_requests=_signup_max_requests,
+    window_seconds=_signup_window_seconds,
 )
 
 # Password reset consumption: 5 per 60s per IP. Same order of magnitude as

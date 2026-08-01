@@ -349,6 +349,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+    env:
+      # Every `docker compose ...` step in this job composes the base stack
+      # with the E2E overlay. The overlay raises ONLY the `/auth/signup`
+      # rate limit (3/3600s per IP by default) for this throwaway stack:
+      # every acceptance test signs up a fresh tenant and they all share one
+      # docker-network IP, so a green run already spends the whole budget and
+      # any Playwright retry 429s — cascading into 401s for the rest of the
+      # suite. See docker-compose.e2e.yml for why prod cannot inherit this.
+      COMPOSE_FILE: docker-compose.yml:docker-compose.e2e.yml
     # TASK-CUT-503 — the wave 1-5 cutover scenario as one continuous
     # journey against a real docker-compose stack. We boot Postgres +
     # Redis + uvicorn + Vite via `docker compose up -d`, wait for the
@@ -361,7 +370,8 @@ jobs:
     # `branches: ['**']` for both `push` and `pull_request`). If the
     # solo-reviewer cost of running e2e on every event grows, switch
     # to `dorny/paths-filter` and gate by `frontend/**`, `backend/**`,
-    # `frontend/__tests__/e2e/**`, `docker-compose.yml`, this workflow.
+    # `frontend/__tests__/e2e/**`, `docker-compose.yml`,
+    # `docker-compose.e2e.yml`, this workflow.
     steps:
       - uses: actions/checkout@v4
 
