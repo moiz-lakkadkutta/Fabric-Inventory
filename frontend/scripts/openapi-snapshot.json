@@ -10628,6 +10628,322 @@
         "title": "PartyUpdateRequest",
         "type": "object"
       },
+      "PaymentAllocationItem": {
+        "description": "One PI allocation attached to a payment response.",
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "purchase_invoice_id": {
+            "format": "uuid",
+            "title": "Purchase Invoice Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purchase_invoice_id",
+          "amount"
+        ],
+        "title": "PaymentAllocationItem",
+        "type": "object"
+      },
+      "PaymentCreateRequest": {
+        "description": "POST /v1/payments body.\n\n`amount` is the total payment to the supplier (in rupees, Decimal).\nFIFO allocation across open PIs happens in the service layer.\nOver-payment (amount > \u03a3 outstanding) is rejected with 422.",
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d{0,2}0*$",
+                "type": "string"
+              }
+            ],
+            "title": "Amount"
+          },
+          "mode": {
+            "default": "CASH",
+            "enum": [
+              "CASH",
+              "BANK",
+              "UPI"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "party_id": {
+            "format": "uuid",
+            "title": "Party Id",
+            "type": "string"
+          },
+          "payment_date": {
+            "format": "date",
+            "title": "Payment Date",
+            "type": "string"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          },
+          "series": {
+            "default": "PMT/2526",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Series",
+            "type": "string"
+          }
+        },
+        "required": [
+          "party_id",
+          "amount",
+          "payment_date"
+        ],
+        "title": "PaymentCreateRequest",
+        "type": "object"
+      },
+      "PaymentListAllocation": {
+        "description": "A single allocation surfaced on the payment-list row.",
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "invoice_number": {
+            "title": "Invoice Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "invoice_number",
+          "amount"
+        ],
+        "title": "PaymentListAllocation",
+        "type": "object"
+      },
+      "PaymentListItem": {
+        "properties": {
+          "allocations": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentListAllocation"
+            },
+            "title": "Allocations",
+            "type": "array"
+          },
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "party_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party Id"
+          },
+          "party_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party Name"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "voucher_date": {
+            "format": "date",
+            "title": "Voucher Date",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "series",
+          "number",
+          "voucher_date",
+          "amount",
+          "narration",
+          "created_at"
+        ],
+        "title": "PaymentListItem",
+        "type": "object"
+      },
+      "PaymentListResponse": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset",
+          "count"
+        ],
+        "title": "PaymentListResponse",
+        "type": "object"
+      },
+      "PaymentResponse": {
+        "description": "Response returned after POSTing a payment.",
+        "properties": {
+          "allocations": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentAllocationItem"
+            },
+            "title": "Allocations",
+            "type": "array"
+          },
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "party_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party Id"
+          },
+          "series": {
+            "title": "Series",
+            "type": "string"
+          },
+          "voucher_date": {
+            "format": "date",
+            "title": "Voucher Date",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "series",
+          "number",
+          "voucher_date",
+          "amount",
+          "narration",
+          "created_at"
+        ],
+        "title": "PaymentResponse",
+        "type": "object"
+      },
       "PermissionCatalogEntry": {
         "description": "One row in the permission catalog \u2014 the FE renders these as\ncheckbox leaves in the Role builder.",
         "properties": {
@@ -22382,6 +22698,121 @@
         "tags": [
           "masters",
           "party"
+        ]
+      }
+    },
+    "/payments": {
+      "get": {
+        "operationId": "list_payments_payments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List payments for the current firm (newest-first)",
+        "tags": [
+          "banking",
+          "payments"
+        ]
+      },
+      "post": {
+        "operationId": "post_payment_payments_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record a supplier payment and FIFO-allocate it across open purchase invoices",
+        "tags": [
+          "banking",
+          "payments"
         ]
       }
     },

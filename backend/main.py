@@ -34,6 +34,7 @@ from app.routers import jobwork as jobwork_router
 from app.routers import manufacturing as manufacturing_router
 from app.routers import masters as masters_router
 from app.routers import migrations as migrations_router
+from app.routers import payments as payments_router
 from app.routers import procurement as procurement_router
 from app.routers import receipts as receipts_router
 from app.routers import reports as reports_router
@@ -190,6 +191,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_router.router)
     app.include_router(dashboard_router.activity_router)
     app.include_router(receipts_router.router)
+    app.include_router(payments_router.router)
     app.include_router(banking_router.router)
     app.include_router(bank_reconciliation_router.router)
     app.include_router(accounting_router.router)
