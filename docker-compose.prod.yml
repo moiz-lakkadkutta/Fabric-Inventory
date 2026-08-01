@@ -62,7 +62,13 @@ services:
       # only when the variable is empty, not when the path is missing).
       - ${ENV_FILE:-./ops/.env.production.example}
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # INT-9 / SEC: the RUNTIME connects as the fabric_app role, which is
+      # NOBYPASSRLS and not the table owner — so Postgres Row-Level Security
+      # is actually enforced for every app query. The superuser is used ONLY
+      # by the one-shot `migrate` service below (it needs DDL). Connecting the
+      # runtime as the superuser silently bypasses RLS (cross-tenant leak);
+      # the app now refuses to boot in prod if its role is privileged.
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-fabric_app}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379/0
       ENVIRONMENT: prod
     depends_on:

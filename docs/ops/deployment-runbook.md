@@ -184,6 +184,19 @@ SSH in as `moiz`. Run each step deliberately; do not script-glob.
       docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production --profile migrate run --rm migrate
       docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production up -d
       ```
+   > **First cutover only — runtime DB role (RLS enforcement).** The runtime
+   > `fastapi` container connects as the `fabric_app` role (NOBYPASSRLS) so
+   > Row-Level Security is actually enforced; only the one-shot `migrate`
+   > service uses the superuser. The `fabric_app` role is created by the
+   > `app_role_split` migration with a placeholder password, so once, set it to
+   > `APP_DB_PASSWORD` from `.env.production`:
+   > ```bash
+   > docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production exec postgres \
+   >   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "ALTER ROLE fabric_app WITH PASSWORD '<APP_DB_PASSWORD>';"
+   > ```
+   > The app **refuses to boot in prod** if its role is a superuser / has
+   > BYPASSRLS — so a misconfigured `DATABASE_URL` fails the health gate instead
+   > of silently leaking across tenants.
 6. After the workflow finishes (cold-start path) or after the manual `up -d` (re-bootstrap path), watch Caddy provision the LE cert (~30s):
    ```bash
    docker compose -f docker-compose.prod.yml --env-file /opt/fabric/.env.production logs -f caddy

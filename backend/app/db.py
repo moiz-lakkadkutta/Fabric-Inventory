@@ -14,6 +14,7 @@ asyncpg-shaped URL to psycopg2 (same trick alembic env.py uses).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Iterator
 
 from sqlalchemy import Engine, create_engine, text
@@ -26,6 +27,8 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 _async_engine: AsyncEngine | None = None
 _async_sessionmaker: async_sessionmaker[AsyncSession] | None = None
@@ -68,6 +71,40 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     """Yield an async session for one request, close after."""
     async with get_sessionmaker()() as session:
         yield session
+
+
+def assert_non_privileged_db_role() -> None:
+    """Fail-closed guard (INT-9 regression backstop): in staging/prod, refuse
+    to boot if the app's runtime DB connection role is a SUPERUSER or has
+    BYPASSRLS — either one silently defeats Row-Level Security and re-opens
+    cross-tenant reads/writes. The runtime must connect as the ``fabric_app``
+    NOBYPASSRLS role; only the one-shot migration runner uses the superuser
+    (it needs DDL). In dev this only warns, so a local superuser setup still
+    boots.
+
+    Synchronous by design — it runs once at boot (from the async lifespan,
+    alongside the other sync boot checks) via the psycopg2 sync engine, so it
+    never touches the loop-bound async engine.
+    """
+    with get_sync_engine().connect() as conn:
+        row = conn.execute(
+            text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
+        ).first()
+    is_super = bool(row and row[0])
+    bypasses_rls = bool(row and row[1])
+    if not (is_super or bypasses_rls):
+        return
+    msg = (
+        f"Runtime DB role is privileged (superuser={is_super}, bypassrls={bypasses_rls}); "
+        "Row-Level Security is NOT enforced on this connection, so tenant isolation is "
+        "silently broken. The app must connect as a NOBYPASSRLS role (fabric_app); only the "
+        "one-shot migration runner may use the superuser."
+    )
+    settings = get_settings()
+    if settings.environment == "dev":
+        logger.warning("%s (permitted in dev)", msg)
+        return
+    raise RuntimeError(msg)
 
 
 def get_sync_engine() -> Engine:
