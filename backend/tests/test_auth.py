@@ -203,8 +203,19 @@ async def signup_http(fake_redis: fakeredis.aioredis.FakeRedis) -> AsyncIterator
         set_redis_client_for_testing(None)
 
 
-async def test_signup_fourth_request_returns_429(signup_http: AsyncClient) -> None:
-    """First 3 signup requests from same IP succeed; 4th returns 429."""
+async def test_signup_fourth_request_returns_429(
+    signup_http: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First 3 signup requests from same IP succeed; 4th returns 429.
+
+    This is the DEFAULT policy with no env override in play — the shipped
+    behaviour for dev, staging and prod alike. The E2E acceptance stack raises
+    the ceiling via `docker-compose.e2e.yml`; nothing else may.
+    """
+    monkeypatch.delenv("SIGNUP_RATE_LIMIT_MAX_REQUESTS", raising=False)
+    monkeypatch.delenv("SIGNUP_RATE_LIMIT_WINDOW_SECONDS", raising=False)
+    reset_settings()
+
     payload = {"email": "new@example.com", "password": "x", "org_name": "X"}
     for i in range(3):
         resp = await signup_http.post("/auth/signup", json=payload)
@@ -214,6 +225,34 @@ async def test_signup_fourth_request_returns_429(signup_http: AsyncClient) -> No
     assert fourth.status_code == 429, fourth.text
     assert fourth.json()["code"] == "RATE_LIMIT_EXCEEDED"
     assert "Retry-After" in fourth.headers
+    reset_settings()
+
+
+async def test_signup_limit_is_settings_driven_at_request_time(
+    signup_http: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The E2E override path: raising SIGNUP_RATE_LIMIT_MAX_REQUESTS lifts the
+    ceiling, and the limiter still enforces the NEW value (a bigger budget,
+    not a bypass).
+
+    Resolution happens per request, not at router import — otherwise the
+    compose env would be read before `.env` loading and silently ignored.
+    """
+    monkeypatch.setenv("SIGNUP_RATE_LIMIT_MAX_REQUESTS", "5")
+    monkeypatch.setenv("SIGNUP_RATE_LIMIT_WINDOW_SECONDS", "3600")
+    reset_settings()
+    try:
+        payload = {"email": "e2e@example.com", "password": "x", "org_name": "X"}
+        for i in range(5):
+            resp = await signup_http.post("/auth/signup", json=payload)
+            assert resp.status_code != 429, f"request {i + 1} throttled too early: {resp.text}"
+
+        sixth = await signup_http.post("/auth/signup", json=payload)
+        assert sixth.status_code == 429, sixth.text
+        assert sixth.json()["code"] == "RATE_LIMIT_EXCEEDED"
+    finally:
+        monkeypatch.undo()
+        reset_settings()
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import os
 from collections.abc import Iterator
 
 import pytest
+from pydantic import ValidationError
 
 
 @pytest.fixture(autouse=True)
@@ -190,3 +191,107 @@ def test_redis_url_optional_in_dev() -> None:
 
     settings = _build_settings()
     assert settings.redis_url is None  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# DOS-01 signup rate-limit guard: the knobs exist for the E2E acceptance
+# stack (ENVIRONMENT=dev) only. staging/prod must never run a looser policy.
+#
+# These tests are the tripwire: if someone later "just bumps the default" or
+# drops the non-dev guard so a red CI job goes green, this file fails.
+# ---------------------------------------------------------------------------
+
+
+def _dev_base_env() -> None:
+    os.environ["DATABASE_URL"] = "postgresql+asyncpg://x:y@h:5432/z"
+    os.environ["JWT_SECRET"] = "test-secret-must-be-long-enough-32chars"
+    os.environ["ENVIRONMENT"] = "dev"
+    os.environ.pop("CORS_ORIGINS", None)
+    os.environ.pop("SIGNUP_RATE_LIMIT_MAX_REQUESTS", None)
+    os.environ.pop("SIGNUP_RATE_LIMIT_WINDOW_SECONDS", None)
+
+
+def _non_dev_base_env(env: str) -> None:
+    os.environ["DATABASE_URL"] = "postgresql+asyncpg://x:y@h:5432/z"
+    os.environ["JWT_SECRET"] = "aB3kR9mXpQ2wLnT7vYdF5hCeGjZuNsOiA8bWqDlPfHy"
+    os.environ["ENVIRONMENT"] = env
+    os.environ["CORS_ORIGINS"] = "https://app.fabric.example"
+    os.environ["REDIS_URL"] = "redis://localhost:6379/0"
+    os.environ.pop("SIGNUP_RATE_LIMIT_MAX_REQUESTS", None)
+    os.environ.pop("SIGNUP_RATE_LIMIT_WINDOW_SECONDS", None)
+
+
+def test_signup_rate_limit_defaults_are_secure() -> None:
+    """Unset env → the strict DOS-01 policy: 3 signups per 3600s per IP."""
+    from app.config import (
+        SECURE_SIGNUP_RATE_LIMIT_MAX_REQUESTS,
+        SECURE_SIGNUP_RATE_LIMIT_WINDOW_SECONDS,
+    )
+
+    assert SECURE_SIGNUP_RATE_LIMIT_MAX_REQUESTS == 3
+    assert SECURE_SIGNUP_RATE_LIMIT_WINDOW_SECONDS == 3600
+
+    _dev_base_env()
+    settings = _build_settings()
+    assert settings.signup_rate_limit_max_requests == 3  # type: ignore[attr-defined]
+    assert settings.signup_rate_limit_window_seconds == 3600  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_signup_rate_limit_defaults_are_secure_in_non_dev(env: str) -> None:
+    """staging/prod with nothing set boots on the strict policy."""
+    _non_dev_base_env(env)
+    settings = _build_settings()
+    assert settings.signup_rate_limit_max_requests == 3  # type: ignore[attr-defined]
+    assert settings.signup_rate_limit_window_seconds == 3600  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_signup_rate_limit_loose_max_rejected_in_non_dev(env: str) -> None:
+    """A raised max (the E2E override value) must refuse to boot in prod."""
+    _non_dev_base_env(env)
+    os.environ["SIGNUP_RATE_LIMIT_MAX_REQUESTS"] = "200"
+
+    with pytest.raises(Exception, match="Signup rate limit may not be loosened"):
+        _build_settings()
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_signup_rate_limit_short_window_rejected_in_non_dev(env: str) -> None:
+    """Shrinking the window is loosening too — same boot refusal."""
+    _non_dev_base_env(env)
+    os.environ["SIGNUP_RATE_LIMIT_WINDOW_SECONDS"] = "60"
+
+    with pytest.raises(Exception, match="Signup rate limit may not be loosened"):
+        _build_settings()
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_signup_rate_limit_tightening_allowed_in_non_dev(env: str) -> None:
+    """Stricter-than-default is always allowed (fewer signups, longer window)."""
+    _non_dev_base_env(env)
+    os.environ["SIGNUP_RATE_LIMIT_MAX_REQUESTS"] = "1"
+    os.environ["SIGNUP_RATE_LIMIT_WINDOW_SECONDS"] = "7200"
+
+    settings = _build_settings()
+    assert settings.signup_rate_limit_max_requests == 1  # type: ignore[attr-defined]
+    assert settings.signup_rate_limit_window_seconds == 7200  # type: ignore[attr-defined]
+
+
+def test_signup_rate_limit_override_allowed_in_dev() -> None:
+    """The E2E stack (ENVIRONMENT=dev) may raise the ceiling — that is the
+    single sanctioned consumer of these knobs."""
+    _dev_base_env()
+    os.environ["SIGNUP_RATE_LIMIT_MAX_REQUESTS"] = "200"
+
+    settings = _build_settings()
+    assert settings.signup_rate_limit_max_requests == 200  # type: ignore[attr-defined]
+
+
+def test_signup_rate_limit_max_must_be_positive() -> None:
+    """0 / negative would disable the limiter outright — rejected everywhere."""
+    _dev_base_env()
+    os.environ["SIGNUP_RATE_LIMIT_MAX_REQUESTS"] = "0"
+
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        _build_settings()
