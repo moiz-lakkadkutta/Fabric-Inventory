@@ -18,7 +18,7 @@ the DDL baseline — removing it would break the baseline migration on
 fresh installs.
 
 Revision ID: f2_ap_payment_schema
-Revises: e5_widen_money_numeric
+Revises: cogs_sale_voucher_type
 Create Date: 2026-07-05
 """
 
@@ -27,7 +27,7 @@ from __future__ import annotations
 from alembic import op
 
 revision: str = "f2_ap_payment_schema"
-down_revision: str = "e5_widen_money_numeric"
+down_revision: str = "cogs_sale_voucher_type"
 branch_labels = None
 depends_on = None
 

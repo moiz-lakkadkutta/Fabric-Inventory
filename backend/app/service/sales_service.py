@@ -38,6 +38,7 @@ from app.models import (
     SiLine,
     SOLine,
 )
+from app.models.masters import ItemType
 from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
 from app.service import (
     accounting_service,
@@ -49,6 +50,9 @@ from app.service import (
 from app.service.gst_service import BuyerStatus, TaxType
 from app.utils import crypto
 from app.utils.gst_states import normalize_state_code
+
+# Stockable item types (all types except SERVICE).
+_STOCKABLE_ITEM_TYPES = frozenset(t for t in ItemType if t != ItemType.SERVICE)
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -562,7 +566,29 @@ def issue_dc(
     location = inventory_service.get_or_create_default_location(
         session, org_id=org_id, firm_id=dc.firm_id
     )
+
+    # Load item types for DC lines in one query so we can skip SERVICE items.
+    dc_item_ids = [line.item_id for line in dc.lines]
+    dc_items_by_id = (
+        {
+            row.item_id: row
+            for row in session.execute(
+                select(Item).where(
+                    Item.item_id.in_(dc_item_ids),
+                    Item.org_id == org_id,
+                    Item.deleted_at.is_(None),
+                )
+            ).scalars()
+        }
+        if dc_item_ids
+        else {}
+    )
+
     for line in dc.lines:
+        dc_item = dc_items_by_id.get(line.item_id)
+        if dc_item is not None and dc_item.item_type == ItemType.SERVICE:
+            continue  # Services have no inventory.
+
         inventory_service.remove_stock(
             session,
             org_id=org_id,
@@ -575,6 +601,11 @@ def issue_dc(
             reference_id=dc.delivery_challan_id,
             txn_date=dc.dispatch_date,
         )
+
+    # COGS is recognized at invoice finalize (revenue-matching principle),
+    # NOT at DC dispatch.  DC-linked invoices skip COGS in finalize_invoice
+    # via the `delivery_challan_id is None` guard, so posting COGS here
+    # would produce a double-count.  Do not add a post_cogs_voucher call here.
 
     dc.status = DCStatus.ISSUED.value
     dc.updated_at = datetime.datetime.now(tz=datetime.UTC)
@@ -985,6 +1016,18 @@ def finalize_invoice(
 
     voucher = accounting_service.post_invoice_to_gl(session, invoice=invoice, posted_by=updated_by)
 
+    # COGS-on-sale: relieve inventory and post COGS for direct invoices.
+    # DC-linked invoices (delivery_challan_id is set) already had stock
+    # removed and COGS posted when the DC was issued — skip here to avoid
+    # double-posting.
+    if invoice.delivery_challan_id is None:
+        _post_cogs_for_invoice(
+            session,
+            invoice=invoice,
+            org_id=org_id,
+            updated_by=updated_by,
+        )
+
     audit_service.emit(
         session,
         org_id=org_id,
@@ -1007,6 +1050,105 @@ def finalize_invoice(
 
     dashboard_service.invalidate_firm(invoice.firm_id)
     return invoice
+
+
+def _post_cogs_for_invoice(
+    session: Session,
+    *,
+    invoice: SalesInvoice,
+    org_id: uuid.UUID,
+    updated_by: uuid.UUID | None,
+) -> None:
+    """Remove stock and post COGS for each stockable line of a direct invoice.
+
+    Skips SERVICE items (no stock) and lines where no stock position exists
+    (item was never received — finalize still succeeds with no COGS for that
+    line).  If a position exists but on-hand is insufficient, the error
+    propagates and finalize fails loudly (no silent COGS skip for oversells).
+    """
+    location = inventory_service.get_or_create_default_location(
+        session, org_id=org_id, firm_id=invoice.firm_id
+    )
+
+    # Load item types in a single query.
+    item_ids = [line.item_id for line in invoice.lines]
+    if not item_ids:
+        return
+
+    items_by_id = {
+        row.item_id: row
+        for row in session.execute(
+            select(Item).where(
+                Item.item_id.in_(item_ids),
+                Item.org_id == org_id,
+                Item.deleted_at.is_(None),
+            )
+        ).scalars()
+    }
+
+    consumed: list[tuple[uuid.UUID, Decimal, Decimal]] = []
+    for line in invoice.lines:
+        item = items_by_id.get(line.item_id)
+        if item is None:
+            continue
+        if item.item_type == ItemType.SERVICE:
+            continue  # Services have no inventory.
+
+        qty = Decimal(line.qty or 0)
+        if qty <= 0:
+            continue
+
+        # SF1: check for a stock position first.
+        #
+        # Only the genuine "no position exists" case is silently skipped —
+        # i.e. the item was never received into this location (a legitimately
+        # non-inventory or never-stocked item).  If a position exists but
+        # on-hand is insufficient (oversell), remove_stock will raise an
+        # AppValidationError with "Insufficient stock" and finalize fails
+        # loudly — silently swallowing that would re-introduce the
+        # revenue-without-cost bug.
+        position = inventory_service.get_position(
+            session,
+            org_id=org_id,
+            firm_id=invoice.firm_id,
+            item_id=line.item_id,
+            location_id=location.location_id,
+        )
+        if position is None:
+            # Item has no stock position at this location — was never received
+            # here.  Skip COGS for this line; finalize still succeeds.
+            # (test: test_zero_cost_item_finalize_skips_cogs_voucher)
+            continue
+
+        # Position exists — let remove_stock handle it; any insufficient-stock
+        # error propagates up and finalize fails with a clear message.
+        ledger_row = inventory_service.remove_stock(
+            session,
+            org_id=org_id,
+            firm_id=invoice.firm_id,
+            item_id=line.item_id,
+            location_id=location.location_id,
+            qty=qty,
+            reference_type="sales_invoice",
+            reference_id=invoice.sales_invoice_id,
+            txn_date=invoice.invoice_date,
+        )
+
+        unit_cost = (
+            Decimal(ledger_row.unit_cost) if ledger_row.unit_cost is not None else Decimal("0")
+        )
+        consumed.append((line.item_id, qty, unit_cost))
+
+    accounting_service.post_cogs_voucher(
+        session,
+        org_id=org_id,
+        firm_id=invoice.firm_id,
+        series=invoice.series,
+        reference_type="sales_invoice",
+        reference_id=invoice.sales_invoice_id,
+        consumed=consumed,
+        posted_by=updated_by,
+    )
 
 
 __all__ = [

@@ -44,6 +44,10 @@ _INVENTORY_LEDGER_CODE = "1300"  # Inventory (net taxable value debit)
 _ITC_RECEIVABLE_LEDGER_CODE = "1400"  # ITC Receivable (Input GST debit)
 _AP_LEDGER_CODE = "2000"  # Sundry Creditors (AP credit — gross payable)
 
+# COGS-on-sale ledger codes.
+_COGS_LEDGER_CODE = "5000"  # Cost of Goods Sold (DR on sale)
+_COGS_SERIES = "COGS"
+
 
 def _resolve_ledger(session: Session, *, org_id: uuid.UUID, code: str) -> Ledger:
     """Return the firm-agnostic system ledger seeded by seed_coa."""
@@ -219,6 +223,131 @@ def post_invoice_to_gl(
     if debits != credits:
         raise AppValidationError(
             f"Voucher {voucher.voucher_id} unbalanced: DR={debits}, CR={credits}"
+        )
+
+    return voucher
+
+
+# ──────────────────────────────────────────────────────────────────────
+# COGS-on-sale: post_cogs_voucher
+# ──────────────────────────────────────────────────────────────────────
+
+
+def post_cogs_voucher(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    series: str,
+    reference_type: str,
+    reference_id: uuid.UUID,
+    consumed: list[tuple[uuid.UUID, Decimal, Decimal]],
+    posted_by: uuid.UUID | None = None,
+) -> Voucher | None:
+    """Create a balanced GL voucher recording the cost of goods sold.
+
+    `consumed` is a list of ``(item_id, qty, unit_cost)`` tuples from
+    stock outbound movements.  Total COGS = sum(qty * unit_cost).
+
+    If the total is zero (no stock at cost, or all SERVICE items) → return
+    None; no voucher is created.
+
+    Idempotency: if a non-deleted COGS_SALE voucher already references
+    ``reference_id`` for this org, return it rather than creating a
+    duplicate.
+
+    Posts ONE balanced voucher:
+      DR  5000 Cost of Goods Sold  = total
+      CR  1300 Inventory            = total
+    """
+    total = sum(
+        (
+            Decimal(qty) * (Decimal(unit_cost) if unit_cost is not None else Decimal("0"))
+            for _, qty, unit_cost in consumed
+        ),
+        Decimal("0"),
+    ).quantize(Decimal("0.01"))
+
+    if total <= Decimal("0"):
+        return None
+
+    # Defense-in-depth: idempotency guard.
+    existing = session.execute(
+        select(Voucher).where(
+            Voucher.org_id == org_id,
+            Voucher.voucher_type == VoucherType.COGS_SALE,
+            Voucher.reference_id == reference_id,
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    cogs_ledger = _resolve_ledger(session, org_id=org_id, code=_COGS_LEDGER_CODE)
+    inventory_ledger = _resolve_ledger(session, org_id=org_id, code=_INVENTORY_LEDGER_CODE)
+
+    voucher_number = _allocate_voucher_number(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        voucher_type=VoucherType.COGS_SALE,
+        series=_COGS_SERIES,
+    )
+
+    voucher = Voucher(
+        org_id=org_id,
+        firm_id=firm_id,
+        voucher_type=VoucherType.COGS_SALE,
+        series=_COGS_SERIES,
+        number=voucher_number,
+        voucher_date=datetime.datetime.now(tz=datetime.UTC).date(),
+        reference_type=reference_type,
+        reference_id=reference_id,
+        narration=f"COGS · {reference_type} {reference_id}",
+        status=VoucherStatus.POSTED,
+        total_debit=total,
+        total_credit=total,
+        created_by=posted_by,
+    )
+    session.add(voucher)
+    session.flush()
+
+    session.add(
+        VoucherLine(
+            org_id=org_id,
+            voucher_id=voucher.voucher_id,
+            ledger_id=cogs_ledger.ledger_id,
+            line_type=JournalLineType.DR,
+            amount=total,
+            description=f"COGS · {reference_type}",
+            sequence=1,
+        )
+    )
+    session.add(
+        VoucherLine(
+            org_id=org_id,
+            voucher_id=voucher.voucher_id,
+            ledger_id=inventory_ledger.ledger_id,
+            line_type=JournalLineType.CR,
+            amount=total,
+            description=f"Inventory relief · {reference_type}",
+            sequence=2,
+        )
+    )
+    session.flush()
+
+    # Defense-in-depth: balanced bundle invariant.
+    debits = sum(
+        (Decimal(line.amount) for line in voucher.lines if line.line_type == JournalLineType.DR),
+        Decimal(0),
+    )
+    credits = sum(
+        (Decimal(line.amount) for line in voucher.lines if line.line_type == JournalLineType.CR),
+        Decimal(0),
+    )
+    if debits != credits:
+        raise AppValidationError(
+            f"COGS voucher {voucher.voucher_id} unbalanced: DR={debits}, CR={credits}"
         )
 
     return voucher
