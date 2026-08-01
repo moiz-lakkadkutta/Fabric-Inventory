@@ -11,10 +11,17 @@
  * is the one the receipt allocates against in step 7.
  *
  * How to run locally:
- *   1. `make dev` (boots compose; Vite on :5173, API on :8000)
+ *   1. `docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
+ *       up -d --build`  (Vite on :5173, API on :8000)
  *   2. `cd frontend && pnpm exec playwright install chromium` (once)
  *   3. `E2E_NO_WEBSERVER=1 PLAYWRIGHT_BASE_URL=http://localhost:5173 \
  *       pnpm exec playwright test cutover.spec.ts`
+ *
+ * The `docker-compose.e2e.yml` overlay raises the `/auth/signup` throttle
+ * (3 per 3600s per IP by default) for the throwaway E2E stack. This spec
+ * plus `manufacturing-pipeline.spec.ts` spend that entire budget on a
+ * first-attempt-green run, so without the overlay any Playwright retry
+ * 429s and poisons the rest of the job.
  *
  * CI runs the same way via `.github/workflows/ci.yml :: e2e-acceptance`.
  *

@@ -14335,7 +14335,8 @@
           "OPENING_BAL",
           "MATERIAL_ISSUE",
           "MANUFACTURING_COMPLETION",
-          "STOCK_ADJUSTMENT"
+          "STOCK_ADJUSTMENT",
+          "COGS_SALE"
         ],
         "title": "VoucherType",
         "type": "string"

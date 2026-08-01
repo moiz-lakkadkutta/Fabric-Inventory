@@ -50,10 +50,19 @@
  *   - Multi-firm / multi-MO scenarios
  *
  * How to run locally (mirrors CI):
- *   1. `make dev` (boots docker-compose; Vite on :5173, API on :8000)
+ *   1. `docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
+ *        up -d --build`  (Vite on :5173, API on :8000)
  *   2. `cd frontend && pnpm exec playwright install chromium` (once)
  *   3. `E2E_NO_WEBSERVER=1 PLAYWRIGHT_BASE_URL=http://localhost:5173 \
  *        pnpm exec playwright test manufacturing-pipeline.spec.ts`
+ *
+ * The `docker-compose.e2e.yml` overlay is NOT optional. Every test here
+ * signs up a fresh tenant, and `/auth/signup` ships a 3-per-3600s per-IP
+ * throttle (DOS-01) — all of this suite's traffic arrives from one
+ * docker-network IP, so plain `make dev` runs out of signup budget on the
+ * third test and every later test cascades into 429 → 401. The overlay
+ * raises that ceiling for the throwaway E2E stack only; see the header of
+ * `docker-compose.e2e.yml` for why prod cannot inherit it.
  */
 
 import { expect, test } from '@playwright/test';

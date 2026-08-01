@@ -121,11 +121,22 @@ def _client_ip(request: Request) -> str:
     return "unknown"
 
 
+def _resolve_limit(value: int | Callable[[], int]) -> int:
+    """Return the numeric limit, calling ``value`` when it is a provider.
+
+    The callable form lets a policy be sourced from ``Settings`` at REQUEST
+    time rather than at module-import time. Import-time resolution would
+    freeze the value before ``.env`` loading / test monkeypatching is applied
+    and would make the routers order-sensitive on import.
+    """
+    return value() if callable(value) else value
+
+
 def rate_limit(
     *,
     bucket: str,
-    max_requests: int,
-    window_seconds: int,
+    max_requests: int | Callable[[], int],
+    window_seconds: int | Callable[[], int],
     key_func: Callable[[Request], Awaitable[str]] | None = None,
 ) -> Callable[[Request], Awaitable[None]]:
     """Return a FastAPI dependency that enforces the sliding window.
@@ -134,8 +145,10 @@ def rate_limit(
         bucket: short stable string identifying the endpoint (e.g.
             ``"auth.forgot"``). Used as the Redis key prefix so two
             endpoints with the same threshold don't collide.
-        max_requests: maximum requests allowed inside the window.
-        window_seconds: window size in seconds.
+        max_requests: maximum requests allowed inside the window. May be a
+            zero-arg callable, resolved per request (see ``_resolve_limit``)
+            so a settings-driven policy stays live.
+        window_seconds: window size in seconds. May be a zero-arg callable.
         key_func: optional async callable that returns the rate-limit
             key string for this request. When ``None`` (default),
             uses the client IP from ``_client_ip()``. Provide a custom
@@ -158,19 +171,22 @@ def rate_limit(
         if redis_client is None:
             return  # No Redis -> no rate limiting (dev fallback).
 
+        max_allowed = _resolve_limit(max_requests)
+        window = _resolve_limit(window_seconds)
+
         if key_func is not None:
             bucket_key = await key_func(request)
         else:
             bucket_key = _client_ip(request)
         key = f"ratelimit:{bucket}:{bucket_key}"
         now_ms = int(time.time() * 1000)
-        window_ms = window_seconds * 1000
+        window_ms = window * 1000
         cutoff_ms = now_ms - window_ms
 
         # Drop expired entries first so ZCARD reflects the current window.
         await redis_client.zremrangebyscore(key, "-inf", cutoff_ms)
         current = await redis_client.zcard(key)
-        if current >= max_requests:
+        if current >= max_allowed:
             # Compute Retry-After from the OLDEST surviving entry — when
             # that one ages out, the caller has at least one slot back.
             oldest = await redis_client.zrange(key, 0, 0, withscores=True)
@@ -179,9 +195,9 @@ def rate_limit(
                 retry_ms = (oldest_score_ms + window_ms) - now_ms
                 retry_after = max(1, (retry_ms + 999) // 1000)
             else:
-                retry_after = window_seconds
+                retry_after = window
             raise RateLimitedError(
-                f"Rate limit exceeded for {bucket}: {max_requests} requests per {window_seconds}s.",
+                f"Rate limit exceeded for {bucket}: {max_allowed} requests per {window}s.",
                 retry_after_seconds=retry_after,
             )
 
@@ -189,7 +205,7 @@ def rate_limit(
         # within the same ms doesn't collapse to a single sorted-set entry.
         await redis_client.zadd(key, {f"{now_ms}-{uuid.uuid4().hex}": now_ms})
         # Cap key lifetime so idle IPs don't accumulate forever.
-        await redis_client.expire(key, window_seconds)
+        await redis_client.expire(key, window)
 
     return _dep
 

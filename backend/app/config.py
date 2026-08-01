@@ -31,6 +31,16 @@ _JWT_PLACEHOLDER_SUBSTRINGS: frozenset[str] = frozenset(
     }
 )
 
+# DOS-01 signup throttle (see `app/routers/auth.py :: _SIGNUP_RATE_LIMIT`).
+# These are the SECURE values and the shipped defaults: 3 signups per hour
+# per IP. They are overridable ONLY so the E2E acceptance stack — which mints
+# a fresh tenant per test and therefore needs many signups from a single
+# docker-network IP — can run without tripping the limiter. The model
+# validator below refuses to boot staging/prod with anything looser, so no
+# production deployment can inherit a relaxed value from a stray env var.
+SECURE_SIGNUP_RATE_LIMIT_MAX_REQUESTS = 3
+SECURE_SIGNUP_RATE_LIMIT_WINDOW_SECONDS = 3600
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -70,6 +80,16 @@ class Settings(BaseSettings):
     # `make sure I'm configured` audit but the fail-fast check that
     # rejects an unset value in prod lives in `crypto.get_master_kek`.
     pii_master_key: str | None = None
+    # DOS-01: signup throttle knobs. Defaults ARE the secure policy (3/hour
+    # per IP). Only the E2E docker-compose overlay
+    # (`docker-compose.e2e.yml`) sets these, and only because the acceptance
+    # suite signs up a fresh tenant per test from one docker-network IP.
+    # `_reject_loose_signup_rate_limit_outside_dev` makes a loosened value a
+    # hard boot failure in staging/prod.
+    signup_rate_limit_max_requests: int = Field(default=SECURE_SIGNUP_RATE_LIMIT_MAX_REQUESTS, ge=1)
+    signup_rate_limit_window_seconds: int = Field(
+        default=SECURE_SIGNUP_RATE_LIMIT_WINDOW_SECONDS, ge=1
+    )
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -142,6 +162,42 @@ class Settings(BaseSettings):
                 "Set REDIS_URL to a reachable Redis instance."
             )
 
+        return self
+
+    @model_validator(mode="after")
+    def _reject_loose_signup_rate_limit_outside_dev(self) -> Settings:
+        """DOS-01 guard: staging/prod may never run a signup limit looser
+        than the secure default (3 requests / 3600s per IP).
+
+        The knobs exist for exactly one consumer — the E2E acceptance
+        docker-compose overlay, which runs with ``ENVIRONMENT=dev``. Tightening
+        (a smaller max, a longer window) is always allowed. Loosening in a
+        non-dev environment is a boot refusal, so a relaxed value cannot reach
+        production via a stray env var, a copied compose file, or an on-box
+        ``.env.production``.
+        """
+        if self.environment == "dev":
+            return self
+
+        problems: list[str] = []
+        if self.signup_rate_limit_max_requests > SECURE_SIGNUP_RATE_LIMIT_MAX_REQUESTS:
+            problems.append(
+                f"SIGNUP_RATE_LIMIT_MAX_REQUESTS={self.signup_rate_limit_max_requests} "
+                f"exceeds the secure maximum of {SECURE_SIGNUP_RATE_LIMIT_MAX_REQUESTS}"
+            )
+        if self.signup_rate_limit_window_seconds < SECURE_SIGNUP_RATE_LIMIT_WINDOW_SECONDS:
+            problems.append(
+                f"SIGNUP_RATE_LIMIT_WINDOW_SECONDS={self.signup_rate_limit_window_seconds} "
+                f"is shorter than the secure window of "
+                f"{SECURE_SIGNUP_RATE_LIMIT_WINDOW_SECONDS}s"
+            )
+        if problems:
+            raise ValueError(
+                f"Signup rate limit may not be loosened when "
+                f"ENVIRONMENT={self.environment!r}: " + "; ".join(problems) + ". "
+                "These knobs exist only for the E2E acceptance stack "
+                "(docker-compose.e2e.yml, ENVIRONMENT=dev). Unset them here."
+            )
         return self
 
 
