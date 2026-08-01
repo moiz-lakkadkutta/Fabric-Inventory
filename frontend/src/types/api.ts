@@ -8293,7 +8293,7 @@ export interface components {
          * VoucherType
          * @enum {string}
          */
-        VoucherType: "SALES_INVOICE" | "PURCHASE_INVOICE" | "PAYMENT" | "RECEIPT" | "JOURNAL" | "CONTRA" | "DEBIT_NOTE" | "CREDIT_NOTE" | "OPENING_BAL" | "MATERIAL_ISSUE" | "MANUFACTURING_COMPLETION" | "STOCK_ADJUSTMENT";
+        VoucherType: "SALES_INVOICE" | "PURCHASE_INVOICE" | "PAYMENT" | "RECEIPT" | "JOURNAL" | "CONTRA" | "DEBIT_NOTE" | "CREDIT_NOTE" | "OPENING_BAL" | "MATERIAL_ISSUE" | "MANUFACTURING_COMPLETION" | "STOCK_ADJUSTMENT" | "COGS_SALE";
     };
     responses: never;
     parameters: never;

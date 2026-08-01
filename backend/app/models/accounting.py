@@ -74,6 +74,13 @@ class VoucherType(enum.StrEnum):
     # write-downs). Added via the ``c3_stock_adj_gl`` migration;
     # same forward-only caveat as MATERIAL_ISSUE.
     STOCK_ADJUSTMENT = "STOCK_ADJUSTMENT"
+    # COGS-on-sale: cost of goods sold recognition at stock-out point.
+    # DR 5000 Cost of Goods Sold / CR 1300 Inventory.  Posted by
+    # ``accounting_service.post_cogs_voucher`` when a direct sales invoice
+    # is finalized, or when a delivery challan is issued.  Added via the
+    # ``cogs_sale_voucher_type`` migration; same forward-only caveat as
+    # MATERIAL_ISSUE.
+    COGS_SALE = "COGS_SALE"
 
 
 class JournalLineType(enum.StrEnum):
