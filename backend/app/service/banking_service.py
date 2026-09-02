@@ -15,7 +15,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
@@ -28,6 +28,14 @@ from app.utils.crypto import encrypt_pii, get_org_dek
 # BANK-6 (Fix 5): Opening-balance difference ledger used as the contra
 # when the denormalized `bank_account.balance` is updated via PATCH.
 _OB_DIFF_LEDGER_CODE = "3200"
+
+# #201: system control ledgers a CASH / (account-less) BANK settlement
+# falls back to. A CASH settlement always posts to 1000; a BANK/UPI
+# settlement posts to the bank account's own sub-ledger when one is
+# supplied, else the legacy 1100 control ledger (only while the firm has
+# no bank accounts at all).
+_CASH_LEDGER_CODE = "1000"  # Cash on Hand
+_BANK_CONTROL_LEDGER_CODE = "1100"  # Bank Accounts (control)
 
 # Statuses that are valid at cheque creation. Others (CLEARED, BOUNCED,
 # STOPPED, CANCELLED) are terminal states reached via state-machine
@@ -98,6 +106,24 @@ def create_bank_account(
             "create or use a non-control sub-ledger instead."
         )
 
+    # #201: one bank account per GL sub-ledger. Bank reconciliation derives
+    # the voucher ↔ account link from the voucher line on the account's
+    # ledger, so that mapping must be 1:1. The partial-unique index
+    # `uq_bank_account_ledger` is the concurrency backstop; this check gives
+    # a clean 422 instead of an opaque IntegrityError on the common path.
+    existing = session.execute(
+        select(BankAccount).where(
+            BankAccount.ledger_id == ledger_id,
+            BankAccount.org_id == org_id,
+            BankAccount.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise AppValidationError(
+            f"Ledger {ledger_id} is already linked to bank account "
+            f"{existing.bank_account_id}; each bank account must use its own sub-ledger."
+        )
+
     dek = get_org_dek(session, org_id=org_id)
     account = BankAccount(
         org_id=org_id,
@@ -126,6 +152,115 @@ def create_bank_account(
         )
 
     return account
+
+
+def _resolve_system_ledger(session: Session, *, org_id: uuid.UUID, code: str) -> Ledger:
+    """Resolve a firm-agnostic system ledger by code (1000 / 1100 / …)."""
+    ledger = session.execute(
+        select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == code,
+            Ledger.firm_id.is_(None),
+            Ledger.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if ledger is None:
+        raise AppValidationError(
+            f"System ledger {code!r} missing for org {org_id}; "
+            "seed_coa should have created it at signup."
+        )
+    return ledger
+
+
+def resolve_settlement_ledger(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    mode: str,
+    bank_account_id: uuid.UUID | None = None,
+) -> Ledger:
+    """#201: resolve the cash/bank GL ledger a payment/receipt settles against.
+
+    Shared by ``payment_service.post_payment`` and
+    ``receipt_service.post_receipt`` so both post to the SAME destination
+    given the same inputs — the fix that lets bank reconciliation surface
+    real payments/receipts as candidates.
+
+    Resolution:
+      * ``mode == "CASH"``  → system ledger 1000. A non-null
+        ``bank_account_id`` is a caller error (422).
+      * ``mode in {BANK, UPI}`` with ``bank_account_id`` → that account's
+        own (non-control, in-org) sub-ledger.
+      * ``mode in {BANK, UPI}`` without ``bank_account_id`` → legacy
+        fallback to the 1100 control ledger, but ONLY while the firm has
+        no bank accounts at all. Once ≥1 account exists the account becomes
+        mandatory (422) so every bank movement lands on a reconcilable
+        sub-ledger.
+
+    Raises ``AppValidationError`` (→ 422) on any invalid combination.
+    """
+    if mode == "CASH":
+        if bank_account_id is not None:
+            raise AppValidationError(
+                "CASH mode must not carry a bank_account_id; omit it, or use mode=BANK/UPI."
+            )
+        return _resolve_system_ledger(session, org_id=org_id, code=_CASH_LEDGER_CODE)
+
+    if mode not in {"BANK", "UPI"}:
+        raise AppValidationError(f"Unknown settlement mode {mode!r}; expected CASH, BANK, or UPI.")
+
+    if bank_account_id is not None:
+        account = session.execute(
+            select(BankAccount).where(
+                BankAccount.bank_account_id == bank_account_id,
+                BankAccount.org_id == org_id,
+                BankAccount.firm_id == firm_id,
+                BankAccount.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if account is None:
+            raise AppValidationError(f"BankAccount {bank_account_id} not found in this firm.")
+        ledger = session.execute(
+            select(Ledger).where(
+                Ledger.ledger_id == account.ledger_id,
+                Ledger.org_id == org_id,
+                Ledger.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if ledger is None:
+            raise AppValidationError(
+                f"Bank sub-ledger {account.ledger_id} is not in this org; "
+                "cannot settle against a foreign ledger."
+            )
+        # Defense-in-depth vs legacy rows: the account's ledger must be a
+        # real sub-ledger, never a control account.
+        if ledger.is_control_account:
+            raise AppValidationError(
+                f"BankAccount {bank_account_id} is linked to control ledger {ledger.code}; "
+                "re-point it to a non-control sub-ledger before settling against it."
+            )
+        return ledger
+
+    # mode in {BANK, UPI} without a bank_account_id.
+    active_count = session.execute(
+        select(func.count())
+        .select_from(BankAccount)
+        .where(
+            BankAccount.org_id == org_id,
+            BankAccount.firm_id == firm_id,
+            BankAccount.deleted_at.is_(None),
+        )
+    ).scalar_one()
+    if active_count and active_count > 0:
+        raise AppValidationError(
+            f"mode={mode} requires bank_account_id — this firm has {active_count} "
+            "bank account(s). Pass the account to post to its ledger "
+            "(required for bank reconciliation)."
+        )
+    # Legacy fallback: no bank accounts yet → keep posting to 1100 so the
+    # existing FE keeps working until the account picker ships.
+    return _resolve_system_ledger(session, org_id=org_id, code=_BANK_CONTROL_LEDGER_CODE)
 
 
 def get_bank_account(

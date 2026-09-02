@@ -370,6 +370,27 @@ def confirm_matches(
     )
 
     voucher_ids = [m.voucher_id for m in matches]
+
+    # #201: reject duplicate voucher_ids WITHIN this confirm batch. Two
+    # statement rows targeting the same voucher would previously see the
+    # second row silently ride the "already stamped" skip path, so a
+    # duplicated statement line looked handled when it wasn't. Fail loudly
+    # instead. (The deliberate idempotent-replay skip for a voucher
+    # reconciled in a PREVIOUS call is preserved below.)
+    seen: set[uuid.UUID] = set()
+    dupes: set[uuid.UUID] = set()
+    for vid in voucher_ids:
+        if vid in seen:
+            dupes.add(vid)
+        seen.add(vid)
+    if dupes:
+        raise AppValidationError(
+            "Duplicate voucher(s) "
+            + ", ".join(sorted(str(d) for d in dupes))
+            + " appear in more than one match; each statement row must target a "
+            "distinct voucher (two rows cannot reconcile the same voucher)."
+        )
+
     rows = list(
         session.execute(
             select(Voucher).where(
@@ -416,6 +437,30 @@ def confirm_matches(
                 f"Voucher {v.voucher_id} amount {voucher_amt} does not match "
                 f"statement amount {stmt_amt} (tolerance ±₹1). "
                 "Confirm the correct voucher or correct the statement amount."
+            )
+
+    # BANK-4 (completed) / #201: the ledger guard the amount guard's own
+    # comment promised. Every confirmed voucher must actually have a leg on
+    # THIS bank account's ledger — that is exactly what `preview` filters on,
+    # so `confirm` must enforce the same invariant. Without it a CASH voucher
+    # (CR 1000) or a payment on the 1100 control ledger could be reconciled
+    # against an unrelated bank account.
+    touched = {
+        vid
+        for (vid,) in session.execute(
+            select(VoucherLine.voucher_id).where(
+                VoucherLine.voucher_id.in_(voucher_ids),
+                VoucherLine.ledger_id == account.ledger_id,
+            )
+        ).all()
+    }
+    for v in rows:
+        if v.voucher_id not in touched:
+            raise AppValidationError(
+                f"Voucher {v.series}/{v.number} has no line on this bank account's ledger; "
+                "it cannot be reconciled against this account. "
+                "(BANK/UPI receipts and payments must be posted with this bank account so "
+                "they settle against its sub-ledger.)"
             )
 
     now = datetime.datetime.now(tz=datetime.UTC)
