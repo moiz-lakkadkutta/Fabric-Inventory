@@ -32,7 +32,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -120,7 +120,9 @@ def create_invite(
     Audit: emits `user_invite.create` with `{after: {email, role_id,
     firm_id, expires_at}}`.
     """
-    email_normalized = email.strip().lower()
+    # #208: one canonical normalizer (trim + lowercase) shared with signup /
+    # login / reset so email identity is consistent everywhere.
+    email_normalized = identity_service.normalize_email(email or "")
     if not email_normalized:
         raise AppValidationError("email is required")
 
@@ -159,7 +161,7 @@ def create_invite(
     existing_user = session.execute(
         select(AppUser).where(
             AppUser.org_id == org_id,
-            AppUser.email == email_normalized,
+            func.lower(AppUser.email) == email_normalized,
             AppUser.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
@@ -309,7 +311,7 @@ def accept_invite(
     existing_user = session.execute(
         select(AppUser).where(
             AppUser.org_id == invite.org_id,
-            AppUser.email == invite.email,
+            func.lower(AppUser.email) == identity_service.normalize_email(invite.email or ""),
             AppUser.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
