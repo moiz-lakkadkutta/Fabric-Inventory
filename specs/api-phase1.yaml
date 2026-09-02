@@ -4952,6 +4952,13 @@ paths:
   /reports/ageing:
     get:
       summary: Get receivables ageing report
+      description: >-
+        Buckets age from days past each invoice's due date (falling back to
+        the invoice date when no due date is set), so invoices still within
+        their credit terms are reported as `current`. Balances are
+        reconstructed as of the report date from receipts posted on or before
+        it, so a backdated as_of shows the historical outstanding and is not
+        reduced by later receipts (#197).
       operationId: getAgeing
       tags:
         - reports

@@ -466,6 +466,14 @@ def get_ledger_statement(
     "/ageing",
     response_model=AgeingResponse,
     summary="AR ageing buckets per party (current, 1-30, 31-60, 61-90, >90)",
+    description=(
+        "AR ageing as of `as_of` (defaults to today). Buckets age from days "
+        "past each invoice's due date (falling back to the invoice date when "
+        "no due date is set), so invoices still within their credit terms land "
+        "in `current`. Balances are reconstructed as of the report date from "
+        "receipts posted on or before `as_of`, so a backdated `as_of` reflects "
+        "the historical outstanding and is not reduced by later receipts."
+    ),
 )
 def get_ageing(
     db: SyncDBSession,
