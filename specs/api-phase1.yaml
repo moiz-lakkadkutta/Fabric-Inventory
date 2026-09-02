@@ -4134,6 +4134,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Invoice'
+        '422':
+          description: >-
+            Validation error. Includes the non-GST-firm case (#194): a firm
+            with `has_gst = false` may only issue a Bill of Supply, so a line
+            carrying a positive `gst_rate` is rejected with an actionable
+            "not GST-registered" detail. (Such a firm's zero-rate lines are
+            accepted and stored as `invoice_type = BILL_OF_SUPPLY`,
+            `tax_type = NIL`, `gst_amount = 0`.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
       x-permission: sales.invoice.create
 
   /invoices/{invoice_id}:
@@ -5084,6 +5096,16 @@ paths:
                 type: object
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: >-
+            Firm is not GST-registered (#194): a firm with `has_gst = false`
+            has no GST return to file, so GSTR-1 (JSON, XLSX, and CSV export
+            paths) is refused with a "not GST-registered" detail rather than
+            an empty/misleading dataset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
       x-permission: accounting.report.view
 
   /reports/item-profit:
