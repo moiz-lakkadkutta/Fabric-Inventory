@@ -13,26 +13,12 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.models.sales import InvoiceLifecycleStatus, SalesOrderStatus
 from app.service.gst_service import VALID_GST_SLAB_RATES
-from app.utils.gst_states import normalize_state_code
+from app.utils.gst_states import validate_state_code as _validate_state_code
 
-
-def _validate_state_code(v: str | None) -> str | None:
-    """Strip whitespace and validate an Indian GST state code.
-
-    Called by field_validator on every state-code field in sales request
-    schemas. Returns the normalised code on success; raises ValueError
-    (which Pydantic converts to a 422 ValidationError) on failure.
-    """
-    if v is None:
-        return None
-    normalised = normalize_state_code(v)
-    if normalised is None:
-        raise ValueError(
-            f"Invalid Indian GST state code {v!r}. "
-            "Must be a 2-character numeric code (e.g. '27') or a valid "
-            "2-character alphabetic abbreviation (e.g. 'MH')."
-        )
-    return normalised
+# #193: the canonical raising validator now lives in ``app.utils.gst_states``
+# so every request schema (sales *and* masters) and the service layer share
+# one rule. It is aliased to the historical private name here so existing
+# ``field_validator`` wiring and imports in this module stay untouched.
 
 
 def _validate_gst_rate(v: Decimal | None) -> Decimal | None:

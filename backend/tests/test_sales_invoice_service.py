@@ -12,7 +12,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import NotFoundError
@@ -364,6 +364,19 @@ def test_create_draft_invoice_branch_transfer_same_gstin_is_not_a_supply(
     # at the header level. (Lines may still carry gst_rate in storage but
     # the header tax_type is the authoritative classifier.)
     assert invoice.tax_type == "NIL_NOT_A_SUPPLY"
+    # #193: scenario 22 was equally affected — a same-GSTIN branch transfer
+    # must now carry zero GST at both the header and every line, and the
+    # invoice_amount must equal the untaxed subtotal (10 x 100 = 1000).
+    assert invoice.gst_amount == Decimal("0.00")
+    assert invoice.invoice_amount == Decimal("1000.00")
+    branch_lines = (
+        db_session.execute(
+            select(SiLine).where(SiLine.sales_invoice_id == invoice.sales_invoice_id)
+        )
+        .scalars()
+        .all()
+    )
+    assert all(Decimal(line.gst_amount) == Decimal("0.00") for line in branch_lines)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -416,3 +429,150 @@ def test_si_line_qty_and_price_at_upper_bound_are_valid() -> None:
     )
     assert line.qty == Decimal("1000000000")
     assert line.price == Decimal("1000000000")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #193 (b): NIL_NOT_A_SUPPLY / NIL_LUT / NIL invoices must charge zero GST
+# so the books (ledger 2100) never diverge from the GSTR-1 return.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_org_with_coa(
+    session: OrmSession,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Seed org + COA + firm(MH) + no-state customer + item; return ids."""
+    from app.service import rbac_service, seed_service
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+    org = Organization(
+        org_id=org_id,
+        name=f"nil-org-{uuid.uuid4().hex[:8]}",
+        admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
+    )
+    session.add(org)
+    session.flush()
+    rbac_service.seed_system_roles(session, org_id=org_id)
+    seed_service.seed_system_catalog(session, org_id=org_id)
+
+    firm = Firm(
+        org_id=org_id,
+        code=f"F{uuid.uuid4().hex[:6].upper()}",
+        name="Test Firm",
+        has_gst=True,
+        state_code="MH",
+    )
+    session.add(firm)
+    party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="No State Customer",
+        is_customer=True,
+        state_code=None,  # no state → NIL_NOT_A_SUPPLY path
+    )
+    session.add(party)
+    item = Item(
+        org_id=org_id,
+        code=f"I{uuid.uuid4().hex[:6].upper()}",
+        name="Chiffon Silk",
+        item_type=ItemType.FINISHED,
+        tracking=TrackingType.NONE,
+        primary_uom=UomType.METER,
+    )
+    session.add(item)
+    session.flush()
+    return org_id, firm.firm_id, party.party_id, item.item_id
+
+
+def test_nil_not_a_supply_invoice_has_zero_gst(db_session: OrmSession) -> None:
+    """#193 P0-2 exact repro: no-state party, 10 x 50 @ 5%, no ship_to_state.
+
+    Before the fix the invoice stored tax_type NIL_NOT_A_SUPPLY *and*
+    gst_amount 25.00 (5% of 500). After the fix gst is forced to zero while
+    the line's gst_rate is retained.
+    """
+    from app.service.gst_service import TaxType
+
+    org_id, firm_id, party_id, item_id = _seed_org_with_coa(db_session)
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        lines=[
+            {
+                "item_id": item_id,
+                "qty": Decimal("10"),
+                "price": Decimal("50"),
+                "gst_rate": Decimal("5"),
+                "sequence": 1,
+            }
+        ],
+    )
+    assert invoice.tax_type == TaxType.NIL_NOT_A_SUPPLY.value
+    assert invoice.gst_amount == Decimal("0.00")
+    assert invoice.invoice_amount == Decimal("500.00")
+
+    lines = (
+        db_session.execute(
+            select(SiLine).where(SiLine.sales_invoice_id == invoice.sales_invoice_id)
+        )
+        .scalars()
+        .all()
+    )
+    assert len(lines) == 1
+    assert Decimal(lines[0].gst_amount) == Decimal("0.00")
+    # gst_rate is retained (decision 3 in the plan): zero-rated value at a rate.
+    assert Decimal(lines[0].gst_rate) == Decimal("5")
+
+
+def test_nil_invoice_finalize_posts_two_line_voucher_no_2100(
+    db_session: OrmSession,
+) -> None:
+    """A finalized NIL invoice posts DR 1200 / CR 4000 only — no CR 2100."""
+    from app.models import Ledger, Voucher
+    from app.models.accounting import JournalLineType, VoucherType
+
+    org_id, firm_id, party_id, item_id = _seed_org_with_coa(db_session)
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        lines=[
+            {
+                "item_id": item_id,
+                "qty": Decimal("10"),
+                "price": Decimal("50"),
+                "gst_rate": Decimal("5"),
+                "sequence": 1,
+            }
+        ],
+    )
+    sales_service.finalize_invoice(
+        db_session, org_id=org_id, sales_invoice_id=invoice.sales_invoice_id
+    )
+
+    voucher = db_session.execute(
+        select(Voucher).where(
+            Voucher.reference_id == invoice.sales_invoice_id,
+            Voucher.voucher_type == VoucherType.SALES_INVOICE,
+        )
+    ).scalar_one()
+    by_code = {
+        led.ledger_id: led.code
+        for led in db_session.execute(select(Ledger).where(Ledger.org_id == org_id)).scalars()
+    }
+    codes = {(by_code[line.ledger_id], line.line_type) for line in voucher.lines}
+    amounts = {
+        (by_code[line.ledger_id], line.line_type): Decimal(line.amount) for line in voucher.lines
+    }
+    assert len(voucher.lines) == 2, "NIL invoice must post exactly a 2-line voucher"
+    assert amounts[("1200", JournalLineType.DR)] == Decimal("500.00")
+    assert amounts[("4000", JournalLineType.CR)] == Decimal("500.00")
+    assert not any(code == "2100" for code, _ in codes), "no GST Payable line on a NIL invoice"
+    assert Decimal(voucher.total_debit) == Decimal(voucher.total_credit) == Decimal("500.00")

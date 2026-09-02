@@ -412,6 +412,14 @@ components:
         state_code:
           type: string
           maxLength: 2
+          nullable: true
+          description: >-
+            Indian GST state code. Accepts a 2-digit numeric GST-schedule code
+            (e.g. "27") or a 2-char ISO 3166-2:IN alphabetic abbreviation
+            (e.g. "MH"); numeric input is canonicalised to alpha on store.
+            An unrecognised value (e.g. "XX") is rejected with 422 — the same
+            rule invoices apply to ship_to_state (#193). Empty string / null
+            clears the field (PATCH-clear).
         is_supplier:
           type: boolean
           default: false
