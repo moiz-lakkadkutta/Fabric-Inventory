@@ -218,6 +218,83 @@ def test_pos_no_destination_falls_through_to_not_a_supply() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# #194: a non-GST-registered seller (firm.has_gst = false) can only issue a
+# Bill of Supply — always NIL, never CGST_SGST / IGST, regardless of buyer
+# state or status. The seller_has_gst check runs FIRST in the engine.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "buyer_state,buyer_status",
+    [
+        ("MH", BuyerStatus.CONSUMER),  # intra-state B2C
+        ("GJ", BuyerStatus.CONSUMER),  # inter-state B2C — still NIL, never IGST
+        ("GJ", BuyerStatus.REGISTERED),  # inter-state B2B — still NIL
+    ],
+)
+def test_pos_non_gst_seller_returns_nil_bill_of_supply(
+    buyer_state: str, buyer_status: BuyerStatus
+) -> None:
+    out = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin=None,
+        buyer_state=buyer_state,
+        buyer_gstin=None,
+        buyer_status=buyer_status,
+        invoice_value=Decimal("100000"),
+        seller_has_gst=False,
+    )
+    assert out.tax_type == TaxType.NIL
+    assert out.document_type == DocumentType.BILL_OF_SUPPLY
+    assert out.gstr1_section == "NIL"
+    # PoS is still recorded informationally when a destination is known.
+    assert out.pos_state == buyer_state
+
+
+def test_pos_non_gst_seller_export_buyer_still_bill_of_supply() -> None:
+    """A non-registered seller cannot issue a zero-rated-under-LUT export
+    doc — the seller_has_gst check runs before the SEZ/export branch."""
+    out = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin=None,
+        buyer_state=None,
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.EXPORT,
+        invoice_value=Decimal("500000"),
+        lut_active=True,
+        seller_has_gst=False,
+    )
+    assert out.tax_type == TaxType.NIL
+    assert out.document_type == DocumentType.BILL_OF_SUPPLY
+
+
+def test_pos_default_seller_has_gst_true_unchanged() -> None:
+    """Regression: omitting seller_has_gst reproduces the current
+    CGST_SGST / IGST decisions (default True) — GST firms unaffected."""
+    intra = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state="MH",
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+        invoice_value=Decimal("1000"),
+    )
+    assert intra.tax_type == TaxType.CGST_SGST
+    assert intra.document_type == DocumentType.TAX_INVOICE
+
+    inter = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state="GJ",
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+        invoice_value=Decimal("1000"),
+    )
+    assert inter.tax_type == TaxType.IGST
+    assert inter.document_type == DocumentType.TAX_INVOICE
+
+
+# ──────────────────────────────────────────────────────────────────────
 # split_tax — money math for CGST/SGST/IGST/NIL.
 # ──────────────────────────────────────────────────────────────────────
 

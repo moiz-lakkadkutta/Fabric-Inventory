@@ -1094,3 +1094,56 @@ def test_gstr1_tax_totals_match_gl_2100_for_period(db_session: OrmSession) -> No
     assert gl_2100_total == gstr1_tax, (
         f"books != return: ledger 2100 CR {gl_2100_total} vs GSTR-1 {gstr1_tax}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #194 — GSTR-1 is not applicable to a non-GST-registered firm
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _signup_owner_nongst(client: TestClient) -> dict[str, str]:
+    """Sign up WITHOUT a GSTIN → firm.has_gst = False, then switch firm."""
+    resp = client.post(
+        "/auth/signup",
+        json={
+            "email": f"u-{uuid.uuid4().hex[:10]}@example.com",
+            "password": "strong-password-1",
+            "org_name": f"Org-{uuid.uuid4().hex[:8]}",
+            "firm_name": "Non-GST Primary",
+            "state_code": "MH",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body: dict[str, str] = resp.json()
+    switch = client.post(
+        "/auth/switch-firm",
+        headers={"Authorization": f"Bearer {body['access_token']}"},
+        json={"firm_id": body["firm_id"]},
+    )
+    assert switch.status_code == 200, switch.text
+    body["access_token"] = switch.json()["access_token"]
+    return body
+
+
+def test_gstr1_refuses_non_gst_firm(http_client: TestClient, sync_engine: Engine) -> None:
+    me = _signup_owner_nongst(http_client)
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-09",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "not GST-registered" in body["detail"]
+
+
+def test_gstr1_xlsx_refuses_non_gst_firm(http_client: TestClient, sync_engine: Engine) -> None:
+    """The XLSX export path shares compute_gstr1 → same 422, no half-written file."""
+    me = _signup_owner_nongst(http_client)
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-09&format=xlsx",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"

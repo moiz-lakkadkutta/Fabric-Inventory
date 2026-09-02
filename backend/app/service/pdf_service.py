@@ -319,12 +319,21 @@ def _build_context(
         TaxType.CGST_SGST.value: "CGST + SGST (Intra-State)",
         TaxType.NIL_LUT.value: "NIL (LUT — Export)",
         TaxType.NIL_NOT_A_SUPPLY.value: "NIL (Not a supply)",
+        TaxType.NIL.value: "NIL (Bill of Supply)",
     }.get(tax_type_str, tax_type_str)
 
     doc_title = _doc_title_for(invoice, firm)
 
+    # #194: a Bill of Supply (non-GST firm) — and any zero-tax document —
+    # must not show GST columns/rows. `show_gst` drives the template to
+    # drop the GST% + CGST/SGST/IGST columns and the tax total rows, so a
+    # non-GST firm's PDF is a legally-coherent Bill of Supply rather than a
+    # Tax Invoice with zero-filled tax cells.
+    show_gst = gst_total > 0
+
     return {
         "doc_title": doc_title,
+        "show_gst": show_gst,
         "tax_split_label": _tax_split_label(invoice),
         "seller": {
             "name": firm.legal_name or firm.name,

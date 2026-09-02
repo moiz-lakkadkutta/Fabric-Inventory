@@ -1468,7 +1468,9 @@ def compute_gstr1(
     from_date, to_date = _parse_period(period)
 
     firm = session.execute(
-        select(Firm.firm_id, Firm.state_code).where(Firm.firm_id == firm_id, Firm.org_id == org_id)
+        select(Firm.firm_id, Firm.state_code, Firm.has_gst).where(
+            Firm.firm_id == firm_id, Firm.org_id == org_id
+        )
     ).one_or_none()
     if firm is None:
         # firm not visible — treat as empty bucket result (RLS-default).
@@ -1482,6 +1484,11 @@ def compute_gstr1(
             export=[],
             hsn=[],
         )
+    # #194: a non-GST-registered firm has no GST return to file — GSTR-1 is
+    # not applicable. Refuse with an actionable 422 rather than returning an
+    # empty/misleading dataset that could be mistaken for a filed nil return.
+    if not firm.has_gst:
+        raise AppValidationError("Firm is not GST-registered; GSTR-1 is not applicable.")
     seller_state = firm.state_code or ""
 
     # B2 fix: GSTR-1 must surface the *plaintext* GSTIN — the value

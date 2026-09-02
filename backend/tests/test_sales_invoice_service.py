@@ -576,3 +576,232 @@ def test_nil_invoice_finalize_posts_two_line_voucher_no_2100(
     assert amounts[("4000", JournalLineType.CR)] == Decimal("500.00")
     assert not any(code == "2100" for code, _ in codes), "no GST Payable line on a NIL invoice"
     assert Decimal(voucher.total_debit) == Decimal(voucher.total_credit) == Decimal("500.00")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #194: a non-GST-registered firm (firm.has_gst = false) can only issue a
+# Bill of Supply. A line bearing GST is rejected (actionable 422); a
+# zero-rate line produces a BILL_OF_SUPPLY / NIL / zero-GST invoice that
+# posts no CR 2100 (composes with #193's NIL⇒zero invariant).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_org_nongst(
+    session: OrmSession,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Seed org + COA + firm(MH, has_gst=False) + MH customer + item.
+
+    The customer has a state (MH) so a *GST* firm would resolve to
+    CGST_SGST — proving the non-GST path overrides geography, not that
+    the destination happened to be missing.
+    """
+    from app.service import rbac_service, seed_service
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+    org = Organization(
+        org_id=org_id,
+        name=f"nongst-org-{uuid.uuid4().hex[:8]}",
+        admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
+    )
+    session.add(org)
+    session.flush()
+    rbac_service.seed_system_roles(session, org_id=org_id)
+    seed_service.seed_system_catalog(session, org_id=org_id)
+
+    firm = Firm(
+        org_id=org_id,
+        code=f"F{uuid.uuid4().hex[:6].upper()}",
+        name="Non-GST Traders",
+        has_gst=False,
+        state_code="MH",
+    )
+    session.add(firm)
+    party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="MH Customer",
+        is_customer=True,
+        state_code="MH",
+    )
+    session.add(party)
+    item = Item(
+        org_id=org_id,
+        code=f"I{uuid.uuid4().hex[:6].upper()}",
+        name="Cotton Suit",
+        item_type=ItemType.FINISHED,
+        tracking=TrackingType.NONE,
+        primary_uom=UomType.METER,
+    )
+    session.add(item)
+    session.flush()
+    return org_id, firm.firm_id, party.party_id, item.item_id
+
+
+def test_non_gst_firm_rejects_gst_rate_on_invoice(db_session: OrmSession) -> None:
+    """#194 exact repro: firm has_gst=False, line 1 x ₹1000 @ 5% → 422.
+
+    Before the fix the invoice was created with gst_amount 50 on a document
+    titled 'Bill of Supply'. After the fix the create is rejected with an
+    actionable message naming the firm.
+    """
+    from app.exceptions import AppValidationError
+
+    org_id, firm_id, party_id, item_id = _seed_org_nongst(db_session)
+    with pytest.raises(AppValidationError, match="not GST-registered"):
+        sales_service.create_draft_invoice(
+            db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=party_id,
+            invoice_date=datetime.date(2026, 9, 2),
+            lines=[
+                {
+                    "item_id": item_id,
+                    "qty": Decimal("1"),
+                    "price": Decimal("1000"),
+                    "gst_rate": Decimal("5"),
+                    "sequence": 1,
+                }
+            ],
+        )
+
+
+def test_non_gst_firm_zero_rate_invoice_is_bill_of_supply(db_session: OrmSession) -> None:
+    """Zero-rate line on a non-GST firm → BILL_OF_SUPPLY / NIL / gst 0."""
+    from app.service.gst_service import TaxType
+
+    org_id, firm_id, party_id, item_id = _seed_org_nongst(db_session)
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        lines=[
+            {
+                "item_id": item_id,
+                "qty": Decimal("1"),
+                "price": Decimal("1000"),
+                "gst_rate": Decimal("0"),
+                "sequence": 1,
+            }
+        ],
+    )
+    assert invoice.invoice_type == "BILL_OF_SUPPLY"
+    assert invoice.tax_type == TaxType.NIL.value
+    assert invoice.gst_amount == Decimal("0.00")
+    assert invoice.invoice_amount == Decimal("1000.00")
+
+
+def test_non_gst_firm_null_rate_invoice_accepted(db_session: OrmSession) -> None:
+    """A gst_rate of null (P1-6: null → 0) must not trip the reject check."""
+    org_id, firm_id, party_id, item_id = _seed_org_nongst(db_session)
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        lines=[{"item_id": item_id, "qty": Decimal("2"), "price": Decimal("500"), "sequence": 1}],
+    )
+    assert invoice.invoice_type == "BILL_OF_SUPPLY"
+    assert invoice.gst_amount == Decimal("0.00")
+
+
+def test_non_gst_firm_finalize_posts_no_2100(db_session: OrmSession) -> None:
+    """A finalized non-GST Bill of Supply posts DR 1200 / CR 4000 only."""
+    from app.models import Ledger, Voucher
+    from app.models.accounting import JournalLineType, VoucherType
+
+    org_id, firm_id, party_id, item_id = _seed_org_nongst(db_session)
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        lines=[
+            {
+                "item_id": item_id,
+                "qty": Decimal("1"),
+                "price": Decimal("1000"),
+                "gst_rate": Decimal("0"),
+                "sequence": 1,
+            }
+        ],
+    )
+    sales_service.finalize_invoice(
+        db_session, org_id=org_id, sales_invoice_id=invoice.sales_invoice_id
+    )
+    voucher = db_session.execute(
+        select(Voucher).where(
+            Voucher.reference_id == invoice.sales_invoice_id,
+            Voucher.voucher_type == VoucherType.SALES_INVOICE,
+        )
+    ).scalar_one()
+    by_code = {
+        led.ledger_id: led.code
+        for led in db_session.execute(select(Ledger).where(Ledger.org_id == org_id)).scalars()
+    }
+    codes = {(by_code[line.ledger_id], line.line_type) for line in voucher.lines}
+    amounts = {
+        (by_code[line.ledger_id], line.line_type): Decimal(line.amount) for line in voucher.lines
+    }
+    assert len(voucher.lines) == 2, "Bill of Supply must post exactly a 2-line voucher"
+    assert amounts[("1200", JournalLineType.DR)] == Decimal("1000.00")
+    assert amounts[("4000", JournalLineType.CR)] == Decimal("1000.00")
+    assert not any(code == "2100" for code, _ in codes), "no GST Payable line on a Bill of Supply"
+    assert Decimal(voucher.total_debit) == Decimal(voucher.total_credit) == Decimal("1000.00")
+
+
+def test_gst_firm_unaffected_by_194(db_session: OrmSession) -> None:
+    """Regression: a has_gst=True firm still charges CGST_SGST and posts to
+    2100 — the #194 rule keys on the firm's own has_gst, not the org's."""
+    from app.models import Ledger, Voucher
+    from app.models.accounting import VoucherType
+    from app.service.gst_service import TaxType
+
+    org_id, firm_id, party_id, item_id = _seed_org_with_coa(db_session)
+    # _seed_org_with_coa's party has no state → give it MH so intra-state.
+    party = db_session.execute(select(Party).where(Party.party_id == party_id)).scalar_one()
+    party.state_code = "MH"
+    db_session.flush()
+
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        lines=[
+            {
+                "item_id": item_id,
+                "qty": Decimal("1"),
+                "price": Decimal("1000"),
+                "gst_rate": Decimal("5"),
+                "sequence": 1,
+            }
+        ],
+    )
+    assert invoice.tax_type == TaxType.CGST_SGST.value
+    assert invoice.invoice_type == "TAX_INVOICE"
+    assert invoice.gst_amount == Decimal("50.00")
+
+    sales_service.finalize_invoice(
+        db_session, org_id=org_id, sales_invoice_id=invoice.sales_invoice_id
+    )
+    voucher = db_session.execute(
+        select(Voucher).where(
+            Voucher.reference_id == invoice.sales_invoice_id,
+            Voucher.voucher_type == VoucherType.SALES_INVOICE,
+        )
+    ).scalar_one()
+    by_code = {
+        led.ledger_id: led.code
+        for led in db_session.execute(select(Ledger).where(Ledger.org_id == org_id)).scalars()
+    }
+    codes = {by_code[line.ledger_id] for line in voucher.lines}
+    assert "2100" in codes, "GST firm must still post CR 2100 GST Payable"

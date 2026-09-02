@@ -32,6 +32,10 @@ def _signup_owner(client: TestClient) -> dict[str, str]:
             "org_name": f"Org-{uuid.uuid4().hex[:8]}",
             "firm_name": "Primary",
             "state_code": "MH",
+            # #194: these tests charge 5% GST → firm must be GST-registered.
+            # A GSTIN at signup sets has_gst=True (distinct from any party
+            # GSTIN so the same-GSTIN branch-transfer check never fires).
+            "gstin": "27SELLER999S1Z5",
         },
     )
     assert resp.status_code == 201, resp.text

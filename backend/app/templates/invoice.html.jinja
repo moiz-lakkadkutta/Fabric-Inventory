@@ -270,12 +270,14 @@
         <th class="c" style="width:10mm;">UOM</th>
         <th class="r" style="width:14mm;">Rate (₹)</th>
         <th class="r" style="width:14mm;">Taxable (₹)</th>
+        {% if show_gst %}
         <th class="c" style="width:10mm;">GST %</th>
         {% if tax_split_label == 'IGST' %}
         <th class="r" style="width:14mm;">IGST (₹)</th>
         {% else %}
         <th class="r" style="width:12mm;">CGST (₹)</th>
         <th class="r" style="width:12mm;">SGST (₹)</th>
+        {% endif %}
         {% endif %}
         <th class="r" style="width:18mm;">Line Total (₹)</th>
       </tr>
@@ -290,12 +292,14 @@
         <td class="c">{{ line.uom }}</td>
         <td class="r">{{ line.rate }}</td>
         <td class="r">{{ line.taxable }}</td>
+        {% if show_gst %}
         <td class="c">{{ line.gst_rate }}</td>
         {% if tax_split_label == 'IGST' %}
         <td class="r">{{ line.igst }}</td>
         {% else %}
         <td class="r">{{ line.cgst }}</td>
         <td class="r">{{ line.sgst }}</td>
+        {% endif %}
         {% endif %}
         <td class="r">{{ line.line_total }}</td>
       </tr>
@@ -315,10 +319,12 @@
     <div class="totals">
       <dl>
         <dt>Subtotal (Taxable Value)</dt>   <dd>₹ {{ totals.subtotal }}</dd>
+        {% if show_gst %}
         <dt>IGST</dt>                        <dd>₹ {{ totals.igst }}</dd>
         <dt>CGST</dt>                        <dd>₹ {{ totals.cgst }}</dd>
         <dt>SGST</dt>                        <dd>₹ {{ totals.sgst }}</dd>
         <dt>Total GST</dt>                   <dd>₹ {{ totals.gst }}</dd>
+        {% endif %}
         <dt>Round-off</dt>                   <dd>₹ {{ totals.round_off }}</dd>
       </dl>
       <dl class="grand">

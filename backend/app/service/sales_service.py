@@ -867,6 +867,18 @@ def create_draft_invoice(
                 f"GST rate {gst_rate} is not a recognised statutory slab rate. "
                 "Valid rates: 0, 0.25, 3, 5, 12, 18, 28."
             )
+        # #194: a non-GST-registered firm (firm.has_gst = false) can only
+        # issue a Bill of Supply, which carries no tax. Reject any line
+        # bearing a positive GST rate with an actionable message rather
+        # than silently zeroing it — item masters carry GST rates, so the
+        # user must see WHY tax was dropped (data-entry / expectation
+        # mismatch). gst_rate 0 / null is fine (0 is a Bill of Supply line).
+        if not firm.has_gst and gst_rate > 0:
+            raise AppValidationError(
+                f"Firm {firm.name} is not GST-registered: remove GST rates from "
+                "invoice lines (a Bill of Supply carries no tax), or register the "
+                "firm for GST."
+            )
         line_amount = (qty * price).quantize(Decimal("0.01"))
         # GST-7: already quantized to 2dp in sales_service; kept here for clarity.
         gst_amount = (line_amount * gst_rate / Decimal("100")).quantize(Decimal("0.01"))
@@ -917,6 +929,7 @@ def create_draft_invoice(
         buyer_status=_classify_buyer(party),
         ship_to_state=norm_ship_to_state or norm_buyer_state,
         invoice_value=invoice_total,
+        seller_has_gst=firm.has_gst,
     )
 
     # #193: NIL family (NIL_NOT_A_SUPPLY / NIL_LUT / NIL) must carry zero GST

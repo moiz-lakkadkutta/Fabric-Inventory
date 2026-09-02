@@ -126,6 +126,7 @@ def determine_place_of_supply(
     ship_to_state: str | None = None,
     invoice_value: Decimal = Decimal("0"),
     lut_active: bool = False,
+    seller_has_gst: bool = True,
 ) -> PlaceOfSupply:
     """Return the (tax_type, pos_state, document_type) decision for one
     sales-invoice header.
@@ -149,6 +150,24 @@ def determine_place_of_supply(
     seller_state = normalize_state_code(seller_state) or seller_state
     buyer_state = normalize_state_code(buyer_state)
     ship_to_state = normalize_state_code(ship_to_state)
+
+    # 0) Non-GST seller (#194). A firm that is not GST-registered
+    # (`firm.has_gst = false` — no GSTIN to remit tax under) can only
+    # issue a Bill of Supply, which carries NO tax regardless of the
+    # buyer's state or status. This check runs FIRST so a non-registered
+    # seller can never fall through to CGST_SGST / IGST (nor to the
+    # branch-transfer / SEZ / export branches, none of which can apply
+    # without a seller GSTIN). tax_type NIL joins the NIL family that
+    # sales_service already forces to zero GST (#193), keeping the books
+    # (no CR 2100) in step with a legally-coherent zero-tax document.
+    # pos_state is recorded informationally when a destination is known.
+    if not seller_has_gst:
+        return PlaceOfSupply(
+            tax_type=TaxType.NIL,
+            pos_state=ship_to_state or buyer_state,
+            document_type=DocumentType.BILL_OF_SUPPLY,
+            gstr1_section="NIL",
+        )
 
     # 1) Same-GSTIN branch transfer — not a supply (Scenario 22).
     if seller_gstin is not None and buyer_gstin is not None and seller_gstin == buyer_gstin:
