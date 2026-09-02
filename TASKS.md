@@ -201,6 +201,24 @@ Each PR was merged with a known open item. **None is a live bug today**, but DEB
 
 ---
 
+## 2026-09-02 — Follow-ups from #205 (master delete guards)
+
+Filed while implementing #205 (in-use delete guards for BOM / Design / Operation-Master). None is a live bug; each is a scoped hardening or cleanup.
+
+### FUP-205-A: cost-centre in-use delete guard
+**Status:** Ready
+`manufacturing_masters_service.delete_cost_centre` has the same latent gap #205 fixed for the other masters — it soft-deletes unconditionally. Its references (`operation_master.cost_centre_id`, `manufacturing_order.cost_centre_id`, `design.cost_centre_id`) are `SET NULL` advisory links rather than structural `RESTRICT`, so orphaning is graceful, not corrupting — hence out of scope for #205. Decide whether a soft "in use — clear the links first" guard (or a warning) is worth it, or leave the SET-NULL behavior as intended.
+
+### FUP-205-B: `create_mo` advisory-lock hardening vs concurrent master delete
+**Status:** Ready
+`mo_service.create_mo` validates the BOM/routing then inserts the MO in its own transaction without taking the BOM partition advisory lock, so at READ COMMITTED a true interleave of "delete master" vs "create MO referencing it" is still possible (the #205 BOM guard sits inside the partition lock but `create_mo` does not participate in it). Same residual posture as the shipped Routing guard. To close fully, have `create_mo` take the BOM partition advisory lock (and an equivalent for routing/design/op-master) before inserting.
+
+### FUP-205-C: DELETE-on-referenced-master documented shape (404-vs-422 + OpenAPI)
+**Status:** Ready
+Two loose ends: (1) the P3 QA finding that `GET` on a soft-deleted master returns 422 not 404 (read-side of the same lifecycle); (2) the `/designs/{id}`, `/boms/{id}`, `/operation-masters/{id}` DELETE endpoints are not present in any OpenAPI spec — `specs/api-phase3.yaml` is an aspirational design-level spec with a different `/manufacturing/...` prefix and `archive` (not `delete`) ops. #205 could not add the "422 in use" response to spec entries that don't exist. Add the real TASK-TR-A02/A03 master CRUD (incl. DELETE 204 + 422 in-use) to the OpenAPI spec.
+
+---
+
 ## 2026-05-10 — Cutover plan v1 (audit-driven re-baseline)
 
 **Authoritative plan:** [`docs/ops/cutover-plan-2026-05-10.md`](docs/ops/cutover-plan-2026-05-10.md)

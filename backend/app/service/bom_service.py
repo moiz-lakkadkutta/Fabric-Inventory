@@ -56,7 +56,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError
-from app.models.manufacturing import Bom, BomLine
+from app.models.manufacturing import Bom, BomLine, ManufacturingOrder, MoStatus
 from app.models.masters import UomType
 from app.service import audit_service, items_service, manufacturing_masters_service
 from app.service.common_guards import assert_firm_in_org
@@ -513,6 +513,28 @@ def activate_bom(
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _has_blocking_mo(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    bom_id: uuid.UUID,
+) -> bool:
+    """Return True if any non-CLOSED, non-deleted ManufacturingOrder
+    references this BOM. CLOSED MOs are historic and don't block —
+    mirrors ``routing_service._has_blocking_mo``."""
+    blocking = session.execute(
+        select(ManufacturingOrder.manufacturing_order_id)
+        .where(
+            ManufacturingOrder.org_id == org_id,
+            ManufacturingOrder.bom_id == bom_id,
+            ManufacturingOrder.deleted_at.is_(None),
+            ManufacturingOrder.status != MoStatus.CLOSED,
+        )
+        .limit(1)
+    ).first()
+    return blocking is not None
+
+
 def delete_bom(
     session: Session,
     *,
@@ -548,6 +570,12 @@ def delete_bom(
     session.refresh(bom)
     if bom.deleted_at is not None:
         return
+
+    # In-use guard (inside the partition lock so it can't race a concurrent
+    # MO-create that grabbed this BOM). Non-CLOSED, non-deleted MOs block.
+    if _has_blocking_mo(session, org_id=org_id, bom_id=bom.bom_id):
+        raise AppValidationError(f"BOM {bom_id} is in use by an active manufacturing order")
+
     was_active = bool(bom.is_active)
 
     bom.deleted_at = datetime.now(tz=UTC)
