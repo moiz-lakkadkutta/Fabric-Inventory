@@ -37,6 +37,7 @@ from app.models import (
     SalesOrder,
     SiLine,
     SOLine,
+    StockLedger,
 )
 from app.models.masters import ItemType
 from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
@@ -603,9 +604,10 @@ def issue_dc(
         )
 
     # COGS is recognized at invoice finalize (revenue-matching principle),
-    # NOT at DC dispatch.  DC-linked invoices skip COGS in finalize_invoice
-    # via the `delivery_challan_id is None` guard, so posting COGS here
-    # would produce a double-count.  Do not add a post_cogs_voucher call here.
+    # NOT at DC dispatch.  issue_dc only relieves stock here; the COGS_SALE
+    # voucher is posted later by finalize_invoice → _post_cogs_for_dc_invoice
+    # (#198), which reads these outbound rows for the cost basis. Posting COGS
+    # here would double-count.  Do not add a post_cogs_voucher call here.
 
     dc.status = DCStatus.ISSUED.value
     dc.updated_at = datetime.datetime.now(tz=datetime.UTC)
@@ -1037,12 +1039,23 @@ def finalize_invoice(
 
     voucher = accounting_service.post_invoice_to_gl(session, invoice=invoice, posted_by=updated_by)
 
-    # COGS-on-sale: relieve inventory and post COGS for direct invoices.
-    # DC-linked invoices (delivery_challan_id is set) already had stock
-    # removed and COGS posted when the DC was issued — skip here to avoid
-    # double-posting.
+    # COGS-on-sale (#198): recognize cost at finalize for BOTH paths.
+    #  - Direct invoices: relieve inventory now and post COGS on the relief.
+    #  - DC-linked invoices: stock was already relieved at DC issue, so read
+    #    the DC's outbound movements for the cost basis and post COGS without
+    #    decrementing stock a second time.
+    # Both post exactly one COGS_SALE voucher referencing the invoice, dated
+    # invoice_date; the reference-idempotency guard in post_cogs_voucher (plus
+    # #190's finalize row-lock) prevents duplicates on replay.
     if invoice.delivery_challan_id is None:
         _post_cogs_for_invoice(
+            session,
+            invoice=invoice,
+            org_id=org_id,
+            updated_by=updated_by,
+        )
+    else:
+        _post_cogs_for_dc_invoice(
             session,
             invoice=invoice,
             org_id=org_id,
@@ -1169,6 +1182,81 @@ def _post_cogs_for_invoice(
         reference_id=invoice.sales_invoice_id,
         consumed=consumed,
         posted_by=updated_by,
+        voucher_date=invoice.invoice_date,
+    )
+
+
+def _post_cogs_for_dc_invoice(
+    session: Session,
+    *,
+    invoice: SalesInvoice,
+    org_id: uuid.UUID,
+    updated_by: uuid.UUID | None,
+) -> None:
+    """Post COGS for a DC-linked invoice at finalize (#198 Part 2).
+
+    Stock was already relieved when the DC was issued (``issue_dc``), so we
+    do NOT decrement stock again — we read the DC's outbound StockLedger rows
+    to recover the cost basis and post a single COGS_SALE voucher referencing
+    the INVOICE (DR 5000 / CR 1300, at the DC's weighted-average cost, dated
+    invoice_date).
+
+    Guard: if another non-deleted invoice already links to this DC, refuse —
+    two invoices sharing one DC would double-count the DC's cost.
+    """
+    dc_id = invoice.delivery_challan_id
+    if dc_id is None:  # pragma: no cover — caller only routes DC-linked here.
+        return
+
+    # Guard against two invoices sharing one DC (would double-count COGS):
+    # refuse if another already-FINALIZED invoice claims this DC. Two DRAFTs
+    # may coexist; the first to finalize wins, the second is rejected here.
+    other = session.execute(
+        select(SalesInvoice.sales_invoice_id).where(
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.delivery_challan_id == dc_id,
+            SalesInvoice.sales_invoice_id != invoice.sales_invoice_id,
+            SalesInvoice.lifecycle_status != InvoiceLifecycleStatus.DRAFT,
+            SalesInvoice.deleted_at.is_(None),
+        )
+    ).first()
+    if other is not None:
+        raise InvoiceStateError(
+            f"Delivery challan {dc_id} is already linked to a finalized invoice; "
+            "cannot post COGS twice for the same dispatch.",
+            title="Invoice already finalized",
+        )
+
+    # Recover the cost basis from the DC's outbound stock movements.
+    out_rows = list(
+        session.execute(
+            select(StockLedger).where(
+                StockLedger.org_id == org_id,
+                StockLedger.reference_type == "DC",
+                StockLedger.reference_id == dc_id,
+                StockLedger.qty_out > 0,
+            )
+        ).scalars()
+    )
+    consumed: list[tuple[uuid.UUID, Decimal, Decimal]] = [
+        (
+            row.item_id,
+            Decimal(row.qty_out or 0),
+            Decimal(row.unit_cost) if row.unit_cost is not None else Decimal("0"),
+        )
+        for row in out_rows
+    ]
+
+    accounting_service.post_cogs_voucher(
+        session,
+        org_id=org_id,
+        firm_id=invoice.firm_id,
+        series=invoice.series,
+        reference_type="sales_invoice",
+        reference_id=invoice.sales_invoice_id,
+        consumed=consumed,
+        posted_by=updated_by,
+        voucher_date=invoice.invoice_date,
     )
 
 

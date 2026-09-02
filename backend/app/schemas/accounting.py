@@ -17,10 +17,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-# The five canonical Indian-COA top-level groupings. Free text in DDL
-# but constrained at the API boundary so callers can't drift into
-# nonsense values (caught at request validation, returns 422).
-CoaGroupType = Literal["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"]
+# The canonical Indian-COA top-level groupings. Free text in DDL but
+# constrained at the API boundary so callers can't drift into nonsense
+# values (caught at request validation, returns 422). COGS is a distinct
+# P&L section from operating EXPENSE (see #198) so gross profit reports
+# separately; user-created ledgers may join the system COGS group.
+CoaGroupType = Literal["ASSET", "LIABILITY", "EQUITY", "REVENUE", "COGS", "EXPENSE"]
 
 # ──────────────────────────────────────────────────────────────────────
 # CoaGroup

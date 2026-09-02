@@ -121,6 +121,14 @@ _SYSTEM_COA_GROUPS: list[tuple[str, str, str]] = [
     ("LIABILITY", "Liabilities", "LIABILITY"),
     ("EQUITY", "Equity", "EQUITY"),
     ("REVENUE", "Revenue", "REVENUE"),
+    # COGS is a distinct P&L section from operating EXPENSE so the P&L can
+    # report gross profit (income minus COGS) separately from net profit
+    # (gross minus expenses). ledger 5000 (Cost of Goods Sold) and 5350
+    # (Inventory Adjustment) live here — see #198. compute_pnl buckets on
+    # CoaGroup.group_type, so without a COGS group `cogs` was always 0 and
+    # 5000/5350 were lumped into EXPENSE (a net stock-adjustment gain then
+    # rendered as a negative expense).
+    ("COGS", "Cost of Goods Sold", "COGS"),
     ("EXPENSE", "Expenses", "EXPENSE"),
 ]
 
@@ -163,7 +171,7 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     ("3200", "Opening Balance Difference", "EQUITY", "EQUITY", False),
     ("4000", "Sales Revenue", "REVENUE", "REVENUE", False),
     ("4100", "Other Income", "REVENUE", "REVENUE", False),
-    ("5000", "Cost of Goods Sold", "COGS", "EXPENSE", False),
+    ("5000", "Cost of Goods Sold", "COGS", "COGS", False),
     ("5100", "Salaries & Wages", "EXPENSE", "EXPENSE", False),
     ("5200", "Rent", "EXPENSE", "EXPENSE", False),
     ("5300", "Utilities", "EXPENSE", "EXPENSE", False),
@@ -173,7 +181,7 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     # Code 5300 is already "Utilities"; use the next gap in the 5xxx band.
     # DR when adjusting stock UP (write-in / found stock);
     # CR when adjusting stock DOWN (write-down / shrinkage).
-    ("5350", "Inventory Adjustment", "EXPENSE", "EXPENSE", False),
+    ("5350", "Inventory Adjustment", "EXPENSE", "COGS", False),
 ]
 
 

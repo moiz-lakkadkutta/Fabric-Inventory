@@ -265,11 +265,16 @@ def post_cogs_voucher(
     reference_id: uuid.UUID,
     consumed: list[tuple[uuid.UUID, Decimal, Decimal]],
     posted_by: uuid.UUID | None = None,
+    voucher_date: datetime.date | None = None,
 ) -> Voucher | None:
     """Create a balanced GL voucher recording the cost of goods sold.
 
     `consumed` is a list of ``(item_id, qty, unit_cost)`` tuples from
     stock outbound movements.  Total COGS = sum(qty * unit_cost).
+
+    `voucher_date` dates the voucher; callers pass the invoice_date so COGS
+    lands in the same fiscal period as the revenue (matching principle, see
+    #198). Defaults to today only for callers that omit it.
 
     If the total is zero (no stock at cost, or all SERVICE items) → return
     None; no voucher is created.
@@ -322,7 +327,7 @@ def post_cogs_voucher(
         voucher_type=VoucherType.COGS_SALE,
         series=_COGS_SERIES,
         number=voucher_number,
-        voucher_date=datetime.datetime.now(tz=datetime.UTC).date(),
+        voucher_date=voucher_date or datetime.datetime.now(tz=datetime.UTC).date(),
         reference_type=reference_type,
         reference_id=reference_id,
         narration=f"COGS · {reference_type} {reference_id}",
