@@ -28,7 +28,7 @@ from sqlalchemy import Integer, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.exceptions import AppValidationError
+from app.exceptions import AppValidationError, InvoiceStateError
 from app.models import Firm, Ledger, Party, PurchaseInvoice, SalesInvoice, Voucher, VoucherLine
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.service import audit_service
@@ -47,6 +47,13 @@ _AP_LEDGER_CODE = "2000"  # Sundry Creditors (AP credit — gross payable)
 # COGS-on-sale ledger codes.
 _COGS_LEDGER_CODE = "5000"  # Cost of Goods Sold (DR on sale)
 _COGS_SERIES = "COGS"
+
+# #190 concurrency backstop: partial-unique index guaranteeing at most one
+# non-deleted GL posting per (org, voucher_type, reference_type, reference_id)
+# for SALES_INVOICE / COGS_SALE. If the aggregate row lock is ever bypassed,
+# the loser's INSERT trips this and we translate it to InvoiceStateError (409),
+# mirroring the JV voucher-number-race handling below.
+_ONE_POSTING_PER_REF_INDEX = "uq_voucher_one_posting_per_ref"
 
 
 def _resolve_ledger(session: Session, *, org_id: uuid.UUID, code: str) -> Ledger:
@@ -170,7 +177,22 @@ def post_invoice_to_gl(
         created_by=posted_by,
     )
     session.add(voucher)
-    session.flush()
+    try:
+        session.flush()  # mint voucher_id; may trip uq_voucher_one_posting_per_ref
+    except IntegrityError as exc:
+        # #190: DB backstop for the finalize race. The invoice row lock in
+        # `sales_service.finalize_invoice` normally serializes this, but if a
+        # second posting for the same invoice ever reaches here, the partial
+        # unique index rejects it — translate to the same 409 the sequential
+        # loser gets rather than bubbling a 500. Match on the index name so we
+        # don't swallow unrelated unique violations.
+        if _ONE_POSTING_PER_REF_INDEX in str(exc.orig):
+            raise InvoiceStateError(
+                f"Invoice {invoice.sales_invoice_id} was finalized concurrently; "
+                "refresh and retry.",
+                title="Invoice already finalized",
+            ) from exc
+        raise
 
     seq = 1
     session.add(
@@ -310,7 +332,18 @@ def post_cogs_voucher(
         created_by=posted_by,
     )
     session.add(voucher)
-    session.flush()
+    try:
+        session.flush()  # mint voucher_id; may trip uq_voucher_one_posting_per_ref
+    except IntegrityError as exc:
+        # #190: DB backstop for the COGS side of the finalize race. Mirror the
+        # sales-GL translation above so a concurrent twin surfaces as 409.
+        if _ONE_POSTING_PER_REF_INDEX in str(exc.orig):
+            raise InvoiceStateError(
+                f"COGS for {reference_type} {reference_id} was posted concurrently; "
+                "refresh and retry.",
+                title="Invoice already finalized",
+            ) from exc
+        raise
 
     session.add(
         VoucherLine(
