@@ -6,6 +6,96 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 
 ---
 
+## 2026-08-02 — Debt carried onto `main` by the COGS / AP / security merge batch
+
+Four PRs landed together on `main` (`d208ff1` #183 COGS-on-sale, `0b222dc` #186 E2E limiter fix, `e29c9ed` #184 prod `fabric_app` RLS, `3ed2d13` #185 AP settlement). Alembic head is `f2_ap_payment_schema`, single head, verified.
+
+Each PR was merged with a known open item. **None is a live bug today**, but DEBT-01 touches real ledger postings and should not sit indefinitely. Pick these before starting new feature waves.
+
+### DEBT-01: CA sign-off on the COGS cost basis (weighted average)
+**Status:** Ready — needs Moiz + CA, not code
+**Origin:** PR #183, merged CA-review-pending
+**Files touched:** (none yet; outcome may change `app/service/sales_service.py`, `inventory_service.remove_stock` usage)
+
+**Scope:**
+- `finalize_invoice` posts `DR 5000 COGS / CR 1300 Inventory` valued at weighted-average `StockPosition.current_cost` (the WAC snapshot returned by `remove_stock(...).unit_cost`).
+- Basis was chosen for consistency with manufacturing FG valuation (`add_stock @ wip_pool/produced_qty`), NOT because a CA confirmed it.
+- Confirm with the CA whether WAC is acceptable, or whether lot-FIFO is required for the textile trade.
+- If FIFO is required, this is a re-valuation change against already-posted vouchers — scope a migration/restatement, do not silently switch.
+
+**Acceptance:**
+- [ ] CA has confirmed WAC (or specified FIFO) in writing.
+- [ ] Decision recorded in `docs/reviews/pentest/` alongside the E4 cheque-GL design note.
+- [ ] If changed: migration + restatement plan written before any code change.
+
+**Approximate time:** 1h to prepare the question + CA turnaround
+**Notes:**
+- Design record is in `.forge/20260705-cogs-on-sale-9118/ledger.md` decision D1.
+
+---
+
+### DEBT-02: Delivery-challan → invoice COGS double-relief guard
+**Status:** Ready
+**Blocked by:** nothing (DEBT-01 may change the cost basis but not this linkage)
+**Files touched:** `app/service/sales_service.py`, `app/models/sales.py`, `tests/test_cogs_on_sale.py`
+
+**Scope:**
+- `issue_dc` already removes stock. `finalize_invoice` now also removes stock + posts COGS.
+- Double relief is currently prevented only by a `delivery_challan_id IS NULL` guard, and that column is **never set in production** — so the guard has never actually been exercised.
+- Wire the DC → invoice linkage, then prove the guard: DC-dispatched stock must be relieved exactly once, and COGS posted exactly once.
+
+**Acceptance:**
+- [ ] Integration test: DC issue → invoice finalize relieves stock ONCE and posts ONE COGS voucher.
+- [ ] Integration test: direct invoice (no DC) still relieves + posts as today.
+- [ ] `delivery_challan_id` is populated on the real DC→invoice path.
+
+**Approximate time:** 2-4h
+**Notes:**
+- Deferred deliberately in PR #183 (ledger decision D3/SF2) to avoid scope-creeping the invoice-create contract.
+
+---
+
+### DEBT-03: `auth.forgot` rate limit is the next one to trip
+**Status:** Ready
+**Files touched:** `app/routers/auth.py`, `app/config.py`, `docker-compose.e2e.yml`, `backend/tests/test_config.py`
+
+**Scope:**
+- `/auth/signup` was 3/3600s per IP and the E2E suite spent exactly 3 of 3 on a green run — any retry cascaded into 429 → 401 and read as flakiness. Fixed in PR #186 by making the limit configurable, secure-by-default, with a boot refusal if loosened outside `dev`.
+- `auth.forgot` is 5/60s per IP and CI already consumes 4 of 5. Same trap, already armed.
+- Apply the same pattern: configurable, secure default, non-dev boot refusal, E2E overlay override, test pinning the strict default.
+
+**Acceptance:**
+- [ ] `auth.forgot` limit sourced from settings with the current value as the secure default.
+- [ ] Loosening it outside `ENVIRONMENT=dev` is a boot failure.
+- [ ] Test asserts the strict default holds for staging/prod.
+
+**Approximate time:** 1-2h
+**Notes:**
+- Follow `_reject_loose_signup_rate_limit_outside_dev` in `app/config.py` exactly; it is the established pattern.
+- Deliberately left out of PR #186 to keep that change's blast radius small.
+
+---
+
+### DEBT-04: E2E acceptance stack wedges intermittently
+**Status:** Ready (investigation)
+**Files touched:** `docker-compose.yml`, `docker-compose.e2e.yml`, `.github/workflows/ci.yml`, `frontend/__tests__/e2e/`
+
+**Scope:**
+- On PR #185 the E2E job ran **22m47s**: `cutover.spec.ts` hit two consecutive 10-minute `locator.click` timeouts, waiting on `new receipt` (line 363) then, on retry, `new party` (line 226) — different, unrelated buttons. A rerun of the identical commit passed in **2m2s**.
+- Distinct from the DEBT-03 limiter bug (which was deterministic and produced 429s). This looks like stack startup / resource starvation: buttons never render at all.
+- Diagnose properly — add stack health-gating or container-log capture on failure so the next occurrence is diagnosable instead of guesswork.
+
+**Acceptance:**
+- [ ] Failure mode reproduced or root-caused.
+- [ ] On E2E failure, CI uploads container logs + Playwright traces as artifacts.
+- [ ] Job fails fast rather than burning 2 × 10-minute timeouts.
+
+**Approximate time:** 2-4h
+**Notes:**
+- Cost a false red on #185 and ~23 minutes of CI. Will keep eroding trust in the E2E signal.
+
+---
+
 ## 2026-05-10 — Cutover plan v1 (audit-driven re-baseline)
 
 **Authoritative plan:** [`docs/ops/cutover-plan-2026-05-10.md`](docs/ops/cutover-plan-2026-05-10.md)
