@@ -1204,3 +1204,153 @@ def test_post_pi_zero_amount_posts_no_voucher(
         )
     ).scalar_one_or_none()
     assert voucher_count is None, "zero-amount PI must not create a GL voucher"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #200 — PI ↔ GRN quantity 3-way match (guard 5)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_pi_rejects_qty_over_grn(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """GRN received 50; a PI billing 500 of the same item → 422."""
+    firm, party, item = pi_setup
+    _, grn = _make_confirmed_po_and_acknowledged_grn(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="50", rate="50"
+    )
+    with pytest.raises(AppValidationError, match=r"bills 500.*received only 50"):
+        _make_pi(
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=item,
+            qty="500",
+            rate="50",
+            grn_id=grn.grn_id,
+        )
+
+
+def test_create_pi_rejects_item_not_on_grn(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """A PI line for an item that is not on the linked GRN → 422."""
+    firm, party, item = pi_setup
+    _, grn = _make_confirmed_po_and_acknowledged_grn(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="50", rate="50"
+    )
+    other = Item(
+        org_id=fresh_org_id,
+        firm_id=None,
+        code=f"IO-{uuid.uuid4().hex[:6]}",
+        name="Other",
+        item_type=ItemType.RAW,
+        primary_uom=UomType.METER,
+    )
+    db_session.add(other)
+    db_session.flush()
+    with pytest.raises(AppValidationError, match="is not on GRN"):
+        _make_pi(
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=other,
+            qty="1",
+            rate="50",
+            grn_id=grn.grn_id,
+        )
+
+
+def test_create_pi_qty_equal_grn_ok(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Billing exactly the received qty is allowed (<= boundary)."""
+    firm, party, item = pi_setup
+    _, grn = _make_confirmed_po_and_acknowledged_grn(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="50", rate="50"
+    )
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="50",
+        rate="50",
+        grn_id=grn.grn_id,
+    )
+    assert pi.grn_id == grn.grn_id
+
+
+def test_post_pi_recheck_catches_legacy_draft_pi(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DRAFT PI created before this guard (create-time validation bypassed)
+    with qty over the GRN is rejected at post; no GL voucher is created."""
+    firm, party, item = pi_setup
+    _, grn = _make_confirmed_po_and_acknowledged_grn(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="50", rate="50"
+    )
+    monkeypatch.setattr(procurement_service, "_validate_pi_lines_against_grn", lambda *a, **k: None)
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="500",
+        rate="50",
+        grn_id=grn.grn_id,
+    )
+    monkeypatch.undo()
+
+    with pytest.raises(AppValidationError, match=r"bills 500.*received only 50"):
+        procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+
+    db_session.refresh(pi)
+    assert pi.status == VoucherStatus.DRAFT
+    voucher = db_session.execute(
+        select(Voucher).where(Voucher.reference_id == pi.purchase_invoice_id)
+    ).scalar_one_or_none()
+    assert voucher is None
+
+
+def test_post_pi_amount_drift_still_warns_not_blocks(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Regression pin: qty matches GRN but rate is 2.5x — amount drift stays a
+    non-blocking warning (freight/surcharge flexibility preserved)."""
+    firm, party, item = pi_setup
+    _, grn = _make_confirmed_po_and_acknowledged_grn(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="80", rate="50"
+    )
+    # qty 80 == GRN 80 (passes qty guard); rate 125 (2.5x) → 150% amount drift.
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="80",
+        rate="125",
+        grn_id=grn.grn_id,
+    )
+    posted = procurement_service.post_pi(
+        db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id
+    )
+    assert posted.status == VoucherStatus.POSTED
+    assert posted.match_result is not None
+    assert posted.match_result.get("warning") == "amount_drift"
