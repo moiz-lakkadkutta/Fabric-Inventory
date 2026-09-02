@@ -811,3 +811,418 @@ def test_soft_delete_acknowledged_grn_raises(
 
     with pytest.raises(InvoiceStateError, match="only DRAFT"):
         procurement_service.soft_delete_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #200 — 3-way-match guards (over-receipt, DRAFT/soft-deleted GRN closure,
+# cancelled-PO receive, cross-PO / item-mismatch lines)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _second_item(db_session: OrmSession, org_id: uuid.UUID) -> Item:
+    item = Item(
+        org_id=org_id,
+        firm_id=None,
+        code=f"I2-{uuid.uuid4().hex[:6]}",
+        name="Dyed Cotton",
+        item_type=ItemType.RAW,
+        primary_uom=UomType.METER,
+    )
+    db_session.add(item)
+    db_session.flush()
+    return item
+
+
+def test_receive_grn_rejects_over_receipt(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """PO 100. Receive 60 (PARTIAL_GRN). A second GRN for 50 (cumulative 110)
+    is rejected at create with an actionable 422. A GRN for the remaining 40
+    receives fine and closes the PO at exactly 100."""
+    firm, party, item = grn_setup
+    po = _make_confirmed_po(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="50"
+    )
+    po_line = po.lines[0]
+
+    grn1 = _make_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_received="60",
+        purchase_order_id=po.purchase_order_id,
+        po_line_id=po_line.po_line_id,
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn1.grn_id)
+    db_session.refresh(po)
+    assert po.status == PurchaseOrderStatus.PARTIAL_GRN
+    db_session.refresh(po_line)
+    assert po_line.qty_received == Decimal("60")
+
+    with pytest.raises(
+        AppValidationError, match=r"Over-receipt.*ordered 100.*already received 60.*this GRN 50"
+    ):
+        _make_grn(
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=item,
+            qty_received="50",
+            purchase_order_id=po.purchase_order_id,
+            po_line_id=po_line.po_line_id,
+            series="GRN/2026-27",
+        )
+
+    # Exactly the remaining 40 is fine (<= boundary) and closes the PO.
+    grn3 = _make_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_received="40",
+        purchase_order_id=po.purchase_order_id,
+        po_line_id=po_line.po_line_id,
+        series="GRN/2027-28",
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn3.grn_id)
+    final_po = procurement_service.get_po(
+        db_session, org_id=fresh_org_id, po_id=po.purchase_order_id
+    )
+    assert final_po.status == PurchaseOrderStatus.FULLY_RECEIVED
+    assert final_po.lines[0].qty_received == Decimal("100.0000")
+
+
+def test_receive_grn_over_receipt_caught_at_receive_for_legacy_draft(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DRAFT GRN created before this guard existed (create-time validation
+    bypassed) must still be rejected at receive time."""
+    firm, party, item = grn_setup
+    po = _make_confirmed_po(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="50"
+    )
+    po_line = po.lines[0]
+
+    grn1 = _make_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_received="60",
+        purchase_order_id=po.purchase_order_id,
+        po_line_id=po_line.po_line_id,
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn1.grn_id)
+
+    # Simulate a pre-fix DRAFT GRN: create with create-time validation disabled.
+    monkeypatch.setattr(procurement_service, "_validate_grn_lines_against_po", lambda *a, **k: None)
+    grn2 = _make_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_received="50",
+        purchase_order_id=po.purchase_order_id,
+        po_line_id=po_line.po_line_id,
+        series="GRN/2026-27",
+    )
+    monkeypatch.undo()
+
+    with pytest.raises(AppValidationError, match="Over-receipt"):
+        procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn2.grn_id)
+
+
+def test_draft_grn_does_not_advance_po(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """A DRAFT (un-received) GRN's qty must NOT count toward the PO. PO of 20
+    with a DRAFT GRN of 20 and a received GRN of 1 → PARTIAL_GRN, received 1."""
+    firm, party, item = grn_setup
+    po = _make_confirmed_po(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="20", rate="50"
+    )
+    po_line = po.lines[0]
+
+    # DRAFT GRN of 20 — created but never received.
+    _make_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_received="20",
+        purchase_order_id=po.purchase_order_id,
+        po_line_id=po_line.po_line_id,
+    )
+    # Second GRN of 1, received.
+    grn2 = _make_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_received="1",
+        purchase_order_id=po.purchase_order_id,
+        po_line_id=po_line.po_line_id,
+        series="GRN/2026-27",
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn2.grn_id)
+
+    final_po = procurement_service.get_po(
+        db_session, org_id=fresh_org_id, po_id=po.purchase_order_id
+    )
+    assert final_po.status == PurchaseOrderStatus.PARTIAL_GRN
+    assert final_po.lines[0].qty_received == Decimal("1")
+
+
+def test_soft_deleted_grn_does_not_advance_po(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """A soft-deleted GRN's lines are excluded; a DRAFT GRN doesn't count; and
+    recompute walks the PO back to CONFIRMED when the only received GRN is gone."""
+    import datetime as _dt
+
+    firm, party, item = grn_setup
+    po = _make_confirmed_po(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="10", rate="50"
+    )
+    po_line = po.lines[0]
+
+    grn_a = _make_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_received="5",
+        purchase_order_id=po.purchase_order_id,
+        po_line_id=po_line.po_line_id,
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn_a.grn_id)
+    db_session.refresh(po)
+    assert po.status == PurchaseOrderStatus.PARTIAL_GRN
+
+    # A DRAFT GRN (within cap) plus its soft-delete must not move the PO.
+    grn_b = _make_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_received="3",
+        purchase_order_id=po.purchase_order_id,
+        po_line_id=po_line.po_line_id,
+        series="GRN/2026-27",
+    )
+    procurement_service.soft_delete_grn(db_session, org_id=fresh_org_id, grn_id=grn_b.grn_id)
+    db_session.refresh(po)
+    db_session.refresh(po_line)
+    assert po.status == PurchaseOrderStatus.PARTIAL_GRN
+    assert po_line.qty_received == Decimal("5")
+
+    # Soft-delete the received GRN (via direct row write) and recompute → walk-back.
+    grn_a.deleted_at = _dt.datetime.now(tz=_dt.UTC)
+    db_session.flush()
+    reloaded = procurement_service.get_po(
+        db_session, org_id=fresh_org_id, po_id=po.purchase_order_id
+    )
+    procurement_service._advance_po_status_after_grn(db_session, po=reloaded)
+    db_session.flush()
+    assert reloaded.status == PurchaseOrderStatus.CONFIRMED
+    assert reloaded.lines[0].qty_received == Decimal("0")
+
+
+def test_receive_grn_rejects_cancelled_po(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Create a DRAFT GRN, cancel the PO, then receive → InvoiceStateError and
+    no stock is posted; GRN stays DRAFT."""
+    from sqlalchemy import text
+
+    firm, party, item = grn_setup
+    po = _make_confirmed_po(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="50"
+    )
+    po_line = po.lines[0]
+    grn = _make_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_received="10",
+        purchase_order_id=po.purchase_order_id,
+        po_line_id=po_line.po_line_id,
+    )
+    # A CONFIRMED PO with only DRAFT GRNs cancels fine.
+    procurement_service.cancel_po(db_session, org_id=fresh_org_id, po_id=po.purchase_order_id)
+
+    with pytest.raises(InvoiceStateError, match="linked PO is CANCELLED"):
+        procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
+
+    ledger_rows = db_session.execute(
+        text("SELECT count(*) FROM stock_ledger WHERE reference_id = :g"),
+        {"g": str(grn.grn_id)},
+    ).scalar()
+    assert ledger_rows == 0
+    db_session.refresh(grn)
+    assert grn.status == GRNStatus.DRAFT.value
+
+
+def test_create_grn_rejects_foreign_po_line(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """A po_line_id belonging to a DIFFERENT PO is rejected."""
+    firm, party, item = grn_setup
+    item2 = _second_item(db_session, fresh_org_id)
+
+    po_a = _make_confirmed_po(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item2,
+        qty="7",
+        rate="50",
+        series="PO/A",
+    )
+    po_b = _make_confirmed_po(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="5",
+        rate="50",
+        series="PO/B",
+    )
+    foreign_line = po_b.lines[0]
+
+    with pytest.raises(AppValidationError, match="does not belong to PO"):
+        procurement_service.create_grn(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=firm.firm_id,
+            party_id=party.party_id,
+            grn_date=datetime.date(2026, 4, 27),
+            series="GRN/2025-26",
+            purchase_order_id=po_a.purchase_order_id,
+            lines=[
+                {
+                    "item_id": item.item_id,
+                    "qty_received": "3",
+                    "rate": "50",
+                    "po_line_id": foreign_line.po_line_id,
+                }
+            ],
+        )
+
+
+def test_create_grn_rejects_item_mismatch(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Right PO line, wrong item_id → rejected."""
+    firm, party, item = grn_setup
+    item2 = _second_item(db_session, fresh_org_id)
+    po = _make_confirmed_po(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item2, qty="7", rate="50"
+    )
+    po_line = po.lines[0]  # item2
+
+    with pytest.raises(AppValidationError, match="does not match PO line item"):
+        procurement_service.create_grn(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=firm.firm_id,
+            party_id=party.party_id,
+            grn_date=datetime.date(2026, 4, 27),
+            series="GRN/2025-26",
+            purchase_order_id=po.purchase_order_id,
+            lines=[
+                {
+                    "item_id": item.item_id,
+                    "qty_received": "3",
+                    "rate": "50",
+                    "po_line_id": po_line.po_line_id,
+                }
+            ],
+        )
+
+
+def test_create_grn_rejects_po_line_without_po(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """po_line_id set but no purchase_order_id → rejected."""
+    firm, party, item = grn_setup
+    po = _make_confirmed_po(db_session, org_id=fresh_org_id, firm=firm, party=party, item=item)
+    with pytest.raises(AppValidationError, match="no purchase_order_id"):
+        procurement_service.create_grn(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=firm.firm_id,
+            party_id=party.party_id,
+            grn_date=datetime.date(2026, 4, 27),
+            series="GRN/2025-26",
+            purchase_order_id=None,
+            lines=[
+                {
+                    "item_id": item.item_id,
+                    "qty_received": "3",
+                    "rate": "50",
+                    "po_line_id": po.lines[0].po_line_id,
+                }
+            ],
+        )
+
+
+def test_receive_grn_against_po_with_null_po_line_still_works(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """A GRN linked to a PO but whose line has a NULL po_line_id (direct extra
+    receipt) still receives and does NOT advance the PO."""
+    firm, party, item = grn_setup
+    po = _make_confirmed_po(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="50"
+    )
+    grn = procurement_service.create_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        grn_date=datetime.date(2026, 4, 27),
+        series="GRN/2025-26",
+        purchase_order_id=po.purchase_order_id,
+        lines=[{"item_id": item.item_id, "qty_received": "5", "rate": "50", "po_line_id": None}],
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
+    final_po = procurement_service.get_po(
+        db_session, org_id=fresh_org_id, po_id=po.purchase_order_id
+    )
+    # No po_line advanced → PO stays CONFIRMED, line received 0.
+    assert final_po.status == PurchaseOrderStatus.CONFIRMED
+    assert final_po.lines[0].qty_received == Decimal("0")
