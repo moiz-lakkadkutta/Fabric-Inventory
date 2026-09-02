@@ -77,6 +77,13 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        # Each migration commits in its own transaction. Required so a migration
+        # that ADD VALUEs to an enum (e.g. cogs_sale_voucher_type, c3_stock_adj_gl)
+        # commits before a LATER migration references that value (Postgres raises
+        # UnsafeNewEnumValueUsage otherwise) — which is exactly what #190's index
+        # predicate does with COGS_SALE. Makes a from-scratch upgrade behave like
+        # the incremental path.
+        transaction_per_migration=True,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -91,7 +98,13 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            # Per-migration transactions: see run_migrations_offline for why
+            # (enum ADD VALUE must commit before a later migration uses it).
+            transaction_per_migration=True,
+        )
         with context.begin_transaction():
             context.run_migrations()
 
