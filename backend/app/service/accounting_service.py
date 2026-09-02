@@ -39,6 +39,11 @@ _AR_LEDGER_CODE = "1200"  # Sundry Debtors (AR)
 _SALES_LEDGER_CODE = "4000"  # Sales Revenue
 _GST_PAYABLE_LEDGER_CODE = "2100"  # GST Payable
 
+# #193: tax_type values (string column on sales_invoice) that must never carry
+# GST. Mirrors gst_service.TaxType's NIL family; kept as literals here to avoid
+# importing the gst_service module into the accounting layer.
+_NIL_TAX_TYPES = frozenset({"NIL_NOT_A_SUPPLY", "NIL_LUT", "NIL"})
+
 # E1 (GL-1): Purchase invoice GL ledger codes.
 _INVENTORY_LEDGER_CODE = "1300"  # Inventory (net taxable value debit)
 _ITC_RECEIVABLE_LEDGER_CODE = "1400"  # ITC Receivable (Input GST debit)
@@ -132,6 +137,17 @@ def post_invoice_to_gl(
     if total <= 0:
         raise AppValidationError(
             f"Cannot post zero-amount invoice {invoice.sales_invoice_id} to the GL."
+        )
+
+    # #193 defense-in-depth: a NIL-family invoice (not-a-supply / LUT / nil)
+    # must never carry GST. sales_service.create_draft_invoice already zeroes
+    # it, but a guard here makes the "NIL ⇒ zero GST" invariant unbypassable
+    # for any current or future create path — refuse to post CR 2100 that the
+    # GSTR-1 return would omit (books != return).
+    if invoice.tax_type in _NIL_TAX_TYPES and gst_total > 0:
+        raise AppValidationError(
+            f"NIL invoice {invoice.sales_invoice_id} (tax_type={invoice.tax_type}) "
+            f"carries non-zero GST {gst_total} — refusing to post."
         )
 
     ar_ledger = _resolve_ledger(session, org_id=invoice.org_id, code=_AR_LEDGER_CODE)

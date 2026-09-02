@@ -28,6 +28,25 @@ from app.models.masters import TaxStatus
 from app.service import audit_service
 from app.service.common_guards import assert_firm_in_org
 from app.utils.crypto import encrypt_pii, get_org_dek
+from app.utils.gst_states import normalize_state_code
+
+
+def _canonical_state_code(state_code: str | None) -> str | None:
+    """#193: service-layer belt for party state codes (also covers the
+    Vyapar migration path, which bypasses the Pydantic schema). Empty /
+    absent → None; a recognised code is stored in its canonical alpha
+    form ("27" → "MH"); anything else raises ``AppValidationError``."""
+    if state_code is None or (isinstance(state_code, str) and not state_code.strip()):
+        return None
+    canonical = normalize_state_code(state_code)
+    if canonical is None:
+        raise AppValidationError(
+            f"Invalid Indian GST state code {state_code!r}. "
+            "Must be a 2-character numeric code (e.g. '27') or a valid "
+            "2-character alphabetic abbreviation (e.g. 'MH')."
+        )
+    return canonical
+
 
 # Format check only — full GSTIN validation (state-code lookup, checksum
 # digit, etc.) lives in TASK-047 GST engine. Here we just keep obvious
@@ -94,6 +113,7 @@ def create_party(
 
     _validate_gstin(gstin)
     _validate_pan(pan)
+    state_code = _canonical_state_code(state_code)
 
     # Resolve the org's DEK once — subsequent encrypts hit the in-process
     # cache (`app.utils.crypto._DEK_CACHE`).
@@ -306,7 +326,9 @@ def update_party(
     if email is not None:
         party.email = email if email != "" else None
     if state_code is not None:
-        party.state_code = state_code if state_code != "" else None
+        # "" clears the field to NULL (PATCH-clear); any non-empty value is
+        # validated and stored in canonical alpha form (#193).
+        party.state_code = _canonical_state_code(state_code)
     if contact_person is not None:
         party.contact_person = contact_person
     if credit_limit is not None:

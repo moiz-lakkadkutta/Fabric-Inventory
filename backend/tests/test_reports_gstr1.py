@@ -10,6 +10,7 @@ Buckets exercised:
 
 from __future__ import annotations
 
+import datetime
 import io
 import uuid
 from decimal import Decimal
@@ -944,4 +945,152 @@ def test_gstr1_gstin_masked_for_user_without_pii_read_permission(
     )
     assert gstin_in_response is not None and "*" in gstin_in_response, (
         f"Expected masked GSTIN (with '*'), got {gstin_in_response!r}"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #193 regression guard: Σ GSTR-1 tax == Σ ledger-2100 movement for the
+# period. A NIL invoice that used to charge GST broke this by exactly its
+# (omitted-from-return) tax.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_gstr1_recon_org(session: OrmSession) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """org + COA + firm(MH) + item; return (org_id, firm_id, item_id)."""
+    from app.models import Firm, Item, Organization
+    from app.models.masters import ItemType, TrackingType, UomType
+    from app.service import rbac_service, seed_service
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+    org = Organization(
+        org_id=org_id,
+        name=f"recon-org-{uuid.uuid4().hex[:8]}",
+        admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
+    )
+    session.add(org)
+    session.flush()
+    rbac_service.seed_system_roles(session, org_id=org_id)
+    seed_service.seed_system_catalog(session, org_id=org_id)
+    firm = Firm(
+        org_id=org_id,
+        code=f"F{uuid.uuid4().hex[:6].upper()}",
+        name="Recon Firm",
+        has_gst=True,
+        state_code="MH",
+    )
+    session.add(firm)
+    item = Item(
+        org_id=org_id,
+        code=f"I{uuid.uuid4().hex[:6].upper()}",
+        name="Chiffon",
+        item_type=ItemType.FINISHED,
+        tracking=TrackingType.NONE,
+        primary_uom=UomType.METER,
+        hsn_code="5208",
+    )
+    session.add(item)
+    session.flush()
+    return org_id, firm.firm_id, item.item_id
+
+
+def test_gstr1_tax_totals_match_gl_2100_for_period(db_session: OrmSession) -> None:
+    """Books == return: after #193, the sum of GSTR-1 tax across all buckets
+    equals the period's CR movement on ledger 2100 (GST Payable). Before the
+    fix the NIL invoice contributed 2100 CR but zero to the return."""
+    from app.models import Ledger, Party, Voucher, VoucherLine
+    from app.models.accounting import JournalLineType
+    from app.service import reports_service, sales_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(db_session)
+
+    # (1) intra-state 5% consumer sale (party MH, ship_to MH) → CGST_SGST, 50 tax
+    intra_party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="Intra Consumer",
+        is_customer=True,
+        state_code="MH",
+    )
+    # (2) NIL: no-state party, no ship_to → NIL_NOT_A_SUPPLY, 0 tax
+    nil_party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="No State",
+        is_customer=True,
+        state_code=None,
+    )
+    # (3) 0%-rate intra sale → CGST_SGST bucket but 0 tax
+    zero_party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="Zero Rate",
+        is_customer=True,
+        state_code="MH",
+    )
+    db_session.add_all([intra_party, nil_party, zero_party])
+    db_session.flush()
+
+    inv_date = datetime.date(2026, 9, 2)
+    for party_id, gst_rate, ship_to in (
+        (intra_party.party_id, Decimal("5"), "MH"),
+        (nil_party.party_id, Decimal("5"), None),
+        (zero_party.party_id, Decimal("0"), "MH"),
+    ):
+        inv = sales_service.create_draft_invoice(
+            db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=party_id,
+            invoice_date=inv_date,
+            ship_to_state=ship_to,
+            lines=[
+                {
+                    "item_id": item_id,
+                    "qty": Decimal("10"),
+                    "price": Decimal("100"),
+                    "gst_rate": gst_rate,
+                    "sequence": 1,
+                }
+            ],
+        )
+        sales_service.finalize_invoice(
+            db_session, org_id=org_id, sales_invoice_id=inv.sales_invoice_id
+        )
+
+    # Σ GSTR-1 tax across b2b / b2cl / b2cs / export (hsn would double-count).
+    result = reports_service.compute_gstr1(
+        db_session, org_id=org_id, firm_id=firm_id, period="2026-09"
+    )
+    gstr1_tax = sum(
+        (row.cgst + row.sgst + row.igst)
+        for bucket in (result.b2b, result.b2cl, result.b2cs, result.export)
+        for row in bucket
+    )
+
+    # Σ ledger-2100 CR movement for the period.
+    gst_ledger_id = db_session.execute(
+        select(Ledger.ledger_id).where(Ledger.org_id == org_id, Ledger.code == "2100")
+    ).scalar_one()
+    gl_2100 = (
+        db_session.execute(
+            select(VoucherLine.amount)
+            .join(Voucher, Voucher.voucher_id == VoucherLine.voucher_id)
+            .where(
+                VoucherLine.ledger_id == gst_ledger_id,
+                VoucherLine.line_type == JournalLineType.CR,
+                Voucher.voucher_date >= datetime.date(2026, 9, 1),
+                Voucher.voucher_date <= datetime.date(2026, 9, 30),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    gl_2100_total = sum((Decimal(a) for a in gl_2100), Decimal("0"))
+
+    assert gstr1_tax == Decimal("50.00"), f"expected 50.00 GSTR-1 tax, got {gstr1_tax}"
+    assert gl_2100_total == gstr1_tax, (
+        f"books != return: ledger 2100 CR {gl_2100_total} vs GSTR-1 {gstr1_tax}"
     )

@@ -667,3 +667,125 @@ def test_create_party_none_firm_id_skips_guard(
         is_supplier=True,
     )
     assert party.firm_id is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #193 (a): state_code validation + canonicalisation
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_party_rejects_invalid_state_code(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """#193 P2-1: junk state code (e.g. "XX") must be rejected, not stored.
+
+    Before the fix this returned a Party with state_code="XX"; invoices to
+    that party then resolved to NIL_NOT_A_SUPPLY but still charged GST.
+    """
+    with pytest.raises(AppValidationError, match="state code"):
+        masters_service.create_party(
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=None,
+            code="JUNK-STATE",
+            name="Junk State Co",
+            is_customer=True,
+            state_code="XX",
+        )
+
+
+def test_create_party_normalizes_numeric_state_code(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """Numeric GST-schedule code "27" is canonicalised to alpha "MH" on store."""
+    party = masters_service.create_party(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=None,
+        code="NUM-STATE",
+        name="Numeric State Co",
+        is_customer=True,
+        state_code="27",
+    )
+    assert party.state_code == "MH"
+
+
+def test_create_party_accepts_none_state_code(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """state_code is optional — None stays None (no walk-in customer breaks)."""
+    party = masters_service.create_party(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=None,
+        code="NO-STATE",
+        name="No State Co",
+        is_customer=True,
+        state_code=None,
+    )
+    assert party.state_code is None
+
+
+def test_update_party_rejects_invalid_state_code(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """PATCHing a junk state code must raise, not silently store it."""
+    party = masters_service.create_party(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=None,
+        code="UPD-STATE",
+        name="Update State Co",
+        is_customer=True,
+        state_code="MH",
+    )
+    with pytest.raises(AppValidationError, match="state code"):
+        masters_service.update_party(
+            db_session,
+            org_id=fresh_org_id,
+            party_id=party.party_id,
+            state_code="ZZ",
+        )
+
+
+def test_update_party_clears_state_code_with_empty_string(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """Regression: PATCH state_code="" still clears the field to NULL."""
+    party = masters_service.create_party(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=None,
+        code="CLR-STATE",
+        name="Clear State Co",
+        is_customer=True,
+        state_code="MH",
+    )
+    updated = masters_service.update_party(
+        db_session,
+        org_id=fresh_org_id,
+        party_id=party.party_id,
+        state_code="",
+    )
+    assert updated.state_code is None
+
+
+def test_update_party_normalizes_numeric_state_code(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """PATCH with a numeric code "29" canonicalises to "KA"."""
+    party = masters_service.create_party(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=None,
+        code="UPD-NUM",
+        name="Update Numeric Co",
+        is_customer=True,
+    )
+    updated = masters_service.update_party(
+        db_session,
+        org_id=fresh_org_id,
+        party_id=party.party_id,
+        state_code="29",
+    )
+    assert updated.state_code == "KA"

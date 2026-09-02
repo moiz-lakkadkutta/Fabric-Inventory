@@ -54,6 +54,11 @@ from app.utils.gst_states import normalize_state_code
 # Stockable item types (all types except SERVICE).
 _STOCKABLE_ITEM_TYPES = frozenset(t for t in ItemType if t != ItemType.SERVICE)
 
+# #193: tax types that must always carry zero GST (not-a-supply, LUT-zero-rated
+# export, or explicit nil). Kept in one place so create_draft_invoice and the
+# accounting-service posting guard share the same set.
+_NIL_TAX_TYPES = frozenset({TaxType.NIL_NOT_A_SUPPLY, TaxType.NIL_LUT, TaxType.NIL})
+
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
 # ──────────────────────────────────────────────────────────────────────
@@ -911,6 +916,21 @@ def create_draft_invoice(
         ship_to_state=norm_ship_to_state or norm_buyer_state,
         invoice_value=invoice_total,
     )
+
+    # #193: NIL family (NIL_NOT_A_SUPPLY / NIL_LUT / NIL) must carry zero GST
+    # so the books never diverge from the GSTR-1 return. The per-line
+    # gst_amount above is computed independently of the place-of-supply
+    # decision; when the PoS engine resolves to a NIL type (no usable
+    # destination, same-GSTIN branch transfer, or LUT export) we force every
+    # line's tax to zero and rebuild the totals. gst_rate on the lines is
+    # deliberately retained (zero-rated value is reported *at a rate*).
+    # invoice_value passed to the engine above only feeds the B2CL ₹2.5L
+    # bucket, which never applies to a NIL invoice — no re-call is needed.
+    if pos_decision.tax_type in _NIL_TAX_TYPES:
+        for record in line_records:
+            record["gst_amount"] = Decimal("0.00")
+        total_gst = Decimal("0.00")
+        invoice_total = total_subtotal
 
     number = _allocate_si_number(session, org_id=org_id, firm_id=firm_id, series=series)
 

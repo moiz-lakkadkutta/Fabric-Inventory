@@ -202,6 +202,31 @@ def test_post_invoice_to_gl_lines_reference_seeded_ledgers(
     assert code_amounts[("2100", JournalLineType.CR)] == Decimal("1800.00")
 
 
+def test_post_invoice_to_gl_refuses_nil_with_positive_gst(db_session: OrmSession) -> None:
+    """#193 defense-in-depth: a NIL tax_type invoice carrying non-zero GST
+    must be refused at the posting boundary — makes the "NIL ⇒ zero GST"
+    invariant unbypassable for any future create path."""
+    import pytest
+
+    from app.exceptions import AppValidationError
+
+    org_id, firm_id, party_id, item_id = _seed_org_with_coa(db_session)
+    invoice = _make_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_amount=Decimal("525.00"),
+        gst_amount=Decimal("25.00"),
+    )
+    invoice.tax_type = "NIL_NOT_A_SUPPLY"
+    db_session.flush()
+
+    with pytest.raises(AppValidationError, match="NIL"):
+        accounting_service.post_invoice_to_gl(db_session, invoice=invoice)
+
+
 def test_finalize_invoice_writes_voucher_via_endpoint() -> None:
     """Round-trip via the HTTP boundary lives in test_sales_invoice_routers;
     this placeholder keeps the file's intent obvious in the table-of-contents.
