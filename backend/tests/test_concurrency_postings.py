@@ -418,3 +418,95 @@ def test_concurrent_full_receipts_never_over_allocate(
             assert Decimal(advance) == Decimal("10000.00"), f"advance booking wrong: {advance}"
     finally:
         _drop_org(admin_engine, org_id)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Locus D (#200) — concurrent receives cannot exceed the ordered qty
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_parallel_receives_cannot_exceed_ordered(sync_engine: Engine, admin_engine: Engine) -> None:
+    """PO of 10 with two DRAFT GRNs of 7 each. Two parallel receive_grn calls:
+    exactly one succeeds; the other is rejected (over-receipt 422). The PO line
+    ends at qty_received <= 10 and total posted stock across both GRNs <= 7.
+
+    The over-receipt cap is enforced under a SELECT ... FOR UPDATE on the PO
+    row (lock order GRN-then-PO, built on #190's GRN row lock), so a single
+    winner commits before the loser re-reads the acknowledged sum.
+    """
+    org_id, firm_id, party_id, item_id = _seed_org_firm_party_item(sync_engine)
+    try:
+        with _new_session(sync_engine, org_id) as s:
+            po = procurement_service.create_po(
+                s,
+                org_id=org_id,
+                firm_id=firm_id,
+                party_id=party_id,
+                po_date=datetime.date(2026, 4, 15),
+                series="PO",
+                lines=[{"item_id": item_id, "qty_ordered": "10", "rate": "50"}],
+            )
+            procurement_service.confirm_po(s, org_id=org_id, po_id=po.purchase_order_id)
+            po_line_id = po.lines[0].po_line_id
+            grn_ids = []
+            for series in ("GRN-A", "GRN-B"):
+                grn = procurement_service.create_grn(
+                    s,
+                    org_id=org_id,
+                    firm_id=firm_id,
+                    party_id=party_id,
+                    grn_date=datetime.date(2026, 4, 15),
+                    series=series,
+                    purchase_order_id=po.purchase_order_id,
+                    lines=[
+                        {
+                            "item_id": item_id,
+                            "qty_received": "7",
+                            "rate": "50",
+                            "po_line_id": po_line_id,
+                        }
+                    ],
+                )
+                grn_ids.append(grn.grn_id)
+            po_id = po.purchase_order_id
+            s.commit()
+
+        counter = {"i": 0}
+        counter_lock = threading.Lock()
+
+        def _receive(s: OrmSession) -> None:
+            with counter_lock:
+                idx = counter["i"]
+                counter["i"] += 1
+            procurement_service.receive_grn(s, org_id=org_id, grn_id=grn_ids[idx])
+
+        results = _race(sync_engine, org_id, 2, _receive)
+
+        assert results.count("OK") == 1, f"expected exactly one winner, got {results}"
+        assert all(r in ("OK", "AppValidationError", "InvoiceStateError") for r in results), (
+            f"unexpected results: {results}"
+        )
+
+        with _new_session(sync_engine, org_id) as s:
+            qty_received = s.execute(
+                text("SELECT qty_received FROM po_line WHERE po_line_id = :pl"),
+                {"pl": str(po_line_id)},
+            ).scalar()
+            assert Decimal(qty_received) <= Decimal("10"), f"PO over-received: {qty_received}"
+
+            total_stock = s.execute(
+                text(
+                    "SELECT coalesce(sum(qty_in), 0) FROM stock_ledger "
+                    "WHERE reference_type = 'GRN' AND reference_id::text = ANY(:g)"
+                ),
+                {"g": [str(g) for g in grn_ids]},
+            ).scalar()
+            assert Decimal(total_stock) <= Decimal("7"), f"stock over-posted: {total_stock}"
+
+            po_status = s.execute(
+                text("SELECT status FROM purchase_order WHERE purchase_order_id = :p"),
+                {"p": str(po_id)},
+            ).scalar()
+            assert po_status == "PARTIAL_GRN", f"unexpected PO status: {po_status}"
+    finally:
+        _drop_org(admin_engine, org_id)
