@@ -82,6 +82,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError
+from app.models import Party
 from app.models.manufacturing import (
     Bom,
     BomLine,
@@ -95,6 +96,16 @@ from app.models.manufacturing import (
 )
 from app.service import audit_service, bom_service, items_service, routing_service
 from app.service.common_guards import assert_firm_in_org
+
+# Executor lanes for an MO operation. Mirrors the constants in
+# ``karigar_send_out_service`` / ``operation_progress_service`` (whose
+# ``_ensure_karigar`` / ``_ensure_in_house`` guards read the same column)
+# and the ``mo_operation.executor`` VARCHAR(20) DEFAULT 'IN_HOUSE' — a
+# plain string, not a Postgres enum, so no migration is needed to add the
+# API surface (#204).
+_IN_HOUSE = "IN_HOUSE"
+_KARIGAR = "KARIGAR"
+_VALID_EXECUTORS: frozenset[str] = frozenset({_IN_HOUSE, _KARIGAR})
 
 # Default MO number series. Per-firm + per-series; future tasks can let
 # the user configure a fiscal-year-stamped series (``MO/2026-27``); the
@@ -234,6 +245,72 @@ def _topological_order_operations(edges: list[RoutingEdge]) -> list[uuid.UUID]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Executor (IN_HOUSE vs KARIGAR) validation — shared by create-time
+# overrides and the post-create PATCH (#204)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _advisory_lock_operation(session: Session, *, mo_operation_id: uuid.UUID) -> None:
+    """Transaction-scoped advisory lock on a single MO operation.
+
+    Same key namespace (``mo_operation:{id}``) the karigar / QC services
+    use, so a ``set_operation_executor`` flip and a concurrent
+    ``dispatch_to_karigar`` on the same op serialise against each other —
+    the flip either lands entirely before the dispatch reads state, or
+    loses the race and re-checks ``state == PENDING`` afterwards.
+    """
+    key = f"mo_operation:{mo_operation_id}"
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:k)::bigint)"),
+        {"k": key},
+    )
+
+
+def _validate_executor_choice(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    executor: str,
+    karigar_party_id: uuid.UUID | None,
+) -> None:
+    """Validate an executor + optional karigar party for an MO operation.
+
+    Shared by the create-time overrides and the post-create PATCH so both
+    paths reject identically:
+
+      - ``executor`` must be one of ``{IN_HOUSE, KARIGAR}``.
+      - a ``karigar_party_id`` supplied with ``executor="IN_HOUSE"`` is a
+        contradiction (422).
+      - when a ``karigar_party_id`` is supplied, the party must exist in
+        the org, be non-deleted, and be flagged ``is_karigar`` — the same
+        three checks ``karigar_send_out_service.dispatch_to_karigar`` does.
+
+    All failures raise ``AppValidationError`` (→ 422).
+    """
+    if executor not in _VALID_EXECUTORS:
+        raise AppValidationError(
+            f"executor must be one of {sorted(_VALID_EXECUTORS)} (got {executor!r})."
+        )
+    if karigar_party_id is not None and executor != _KARIGAR:
+        raise AppValidationError("karigar_party_id may only be supplied when executor='KARIGAR'.")
+    if karigar_party_id is None:
+        return
+    party = session.execute(
+        select(Party).where(
+            Party.party_id == karigar_party_id,
+            Party.org_id == org_id,
+            Party.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if party is None:
+        raise AppValidationError(f"Karigar party {karigar_party_id} not found.")
+    if not party.is_karigar:
+        raise AppValidationError(
+            f"Party {karigar_party_id} is not flagged as a karigar — set is_karigar=True first."
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Request DTO (service-layer, not Pydantic)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -277,6 +354,7 @@ def create_mo(
     narration: str | None = None,
     series: str = _DEFAULT_SERIES,
     created_by: uuid.UUID | None = None,
+    operation_overrides: dict[uuid.UUID, tuple[str, uuid.UUID | None]] | None = None,
 ) -> ManufacturingOrder:
     """Create a new MO in ``DRAFT`` status and materialize its lines.
 
@@ -473,6 +551,28 @@ def create_mo(
     #     dispatch the right physical item — e.g. cut → stitch ships raw
     #     fabric (input) for the cut op, not the finished garment.
     op_order = _topological_order_operations(list(routing.edges))
+
+    # #204: validate per-operation executor overrides against the routing's
+    # actual op set. Every override key must be one of the routing's
+    # operations; the executor value + optional karigar party are validated
+    # by the shared helper (same checks the PATCH endpoint + dispatch use).
+    # An empty / None dict leaves every op IN_HOUSE — byte-identical to the
+    # pre-#204 behaviour.
+    overrides = operation_overrides or {}
+    if overrides:
+        routing_op_ids = set(op_order)
+        for master_id, (executor, karigar_party_id) in overrides.items():
+            if master_id not in routing_op_ids:
+                raise AppValidationError(
+                    f"operation_master_id {master_id} is not part of routing {routing_id}."
+                )
+            _validate_executor_choice(
+                session,
+                org_id=org_id,
+                executor=executor,
+                karigar_party_id=karigar_party_id,
+            )
+
     # Pick the "primary raw" for the first op = first non-deleted,
     # non-optional BOM line's item_id. Fall back to the first non-deleted
     # line if every line is somehow optional (defensive — the M4 check
@@ -496,6 +596,9 @@ def create_mo(
         # consume the previous op's output.
         op_input_item_id = primary_raw_item_id if seq == 1 else prev_output_item_id
         op_output_item_id = finished_item_id
+        # #204: apply the per-op executor override when present; default to
+        # IN_HOUSE / no karigar party otherwise.
+        op_executor, op_karigar_party_id = overrides.get(op_id, (_IN_HOUSE, None))
         session.add(
             MoOperation(
                 org_id=org_id,
@@ -504,7 +607,8 @@ def create_mo(
                 operation_sequence=seq,
                 firm_id=firm_id,
                 state=MoOperationState.PENDING,
-                executor="IN_HOUSE",
+                executor=op_executor,
+                karigar_party_id=op_karigar_party_id,
                 qty_in=Decimal("0"),
                 qty_out=Decimal("0"),
                 input_item_id=op_input_item_id,
@@ -540,11 +644,145 @@ def create_mo(
                 "material_line_count": total_line_count,
                 "required_material_line_count": required_line_count,
                 "operation_count": len(op_order),
+                # #204: record which ops were flipped off the IN_HOUSE
+                # default at create time so the audit trail explains a
+                # karigar-reachable MO without re-reading mo_operation.
+                "operation_overrides": {
+                    str(master_id): {
+                        "executor": executor,
+                        "karigar_party_id": str(kp) if kp is not None else None,
+                    }
+                    for master_id, (executor, kp) in overrides.items()
+                },
             }
         },
         reason=narration,
     )
     return mo
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Post-create executor flip (#204)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def set_operation_executor(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    mo_operation_id: uuid.UUID,
+    executor: str,
+    karigar_party_id: uuid.UUID | None = None,
+    updated_by: uuid.UUID | None = None,
+    narration: str | None = None,
+) -> MoOperation:
+    """Flip a **PENDING** MO operation between IN_HOUSE and KARIGAR (#204).
+
+    The create-time ``operation_overrides`` cover new MOs; this covers
+    mind-changes and MOs created before the caller knew a step would be
+    outsourced. Guards (all ``AppValidationError`` → 422 unless noted):
+
+      - operation exists, ``org_id`` matches, ``deleted_at IS NULL`` and
+        ``firm_id`` matches (explicit org/firm params per CLAUDE.md);
+      - operation is ``PENDING`` **and** has no recorded work
+        (``qty_in_record_count == 0``, ``qty_out == 0``,
+        ``outward_challan_id is None``) — an op that has already
+        dispatched / received / progressed can't change lanes;
+      - parent MO is not soft-deleted and not in
+        ``{COMPLETED, CLOSED}``;
+      - executor + optional karigar party validate identically to the
+        create-time override (shared helper). Switching to ``IN_HOUSE``
+        clears ``karigar_party_id``.
+
+    Takes the per-operation advisory lock first so a concurrent
+    ``dispatch_to_karigar`` cannot interleave with the flip. Bumps the
+    optimistic-lock ``version`` and emits an ``audit_log`` row with
+    ``action="set_executor"``.
+    """
+    # Validate the requested executor/party shape first (cheap, no lock).
+    _validate_executor_choice(
+        session, org_id=org_id, executor=executor, karigar_party_id=karigar_party_id
+    )
+
+    _advisory_lock_operation(session, mo_operation_id=mo_operation_id)
+
+    op = session.execute(
+        select(MoOperation).where(
+            MoOperation.mo_operation_id == mo_operation_id,
+            MoOperation.org_id == org_id,
+            MoOperation.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if op is None:
+        raise AppValidationError(f"MO operation {mo_operation_id} not found.")
+    if op.firm_id != firm_id:
+        raise AppValidationError(f"Operation {mo_operation_id} does not belong to firm {firm_id}.")
+
+    if op.state != MoOperationState.PENDING:
+        raise AppValidationError(
+            f"Cannot change executor on operation {mo_operation_id}: state is "
+            f"{op.state}, expected PENDING (only un-started operations can "
+            "switch lanes)."
+        )
+    if (
+        (op.qty_in_record_count or 0) != 0
+        or Decimal(op.qty_out or 0) != Decimal("0")
+        or op.outward_challan_id is not None
+    ):
+        raise AppValidationError(
+            f"Cannot change executor on operation {mo_operation_id}: it already "
+            "has recorded work (dispatched / received / progressed)."
+        )
+
+    mo = session.execute(
+        select(ManufacturingOrder).where(
+            ManufacturingOrder.manufacturing_order_id == op.manufacturing_order_id,
+            ManufacturingOrder.org_id == org_id,
+            ManufacturingOrder.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if mo is None:
+        raise AppValidationError(f"Manufacturing order {op.manufacturing_order_id} not found.")
+    if mo.status in {MoStatus.COMPLETED, MoStatus.CLOSED}:
+        raise AppValidationError(
+            f"Cannot change executor: parent MO {mo.manufacturing_order_id} is "
+            f"in status {mo.status}."
+        )
+
+    before = {
+        "executor": op.executor,
+        "karigar_party_id": str(op.karigar_party_id) if op.karigar_party_id else None,
+    }
+
+    op.executor = executor
+    # Switching to IN_HOUSE clears any previously-set karigar party;
+    # switching to KARIGAR sets it to whatever was supplied (may be None —
+    # the dispatch step will require + set it then).
+    op.karigar_party_id = karigar_party_id if executor == _KARIGAR else None
+    now = datetime.now(tz=UTC)
+    op.updated_at = now
+    if updated_by is not None:
+        op.updated_by = updated_by
+    op.version = (op.version or 0) + 1
+    session.flush()
+
+    after = {
+        "executor": op.executor,
+        "karigar_party_id": str(op.karigar_party_id) if op.karigar_party_id else None,
+    }
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        user_id=updated_by,
+        entity_type="manufacturing.mo_operation",
+        entity_id=op.mo_operation_id,
+        action="set_executor",
+        changes={"before": before, "after": after},
+        reason=narration,
+    )
+    return op
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -803,5 +1041,6 @@ __all__ = [
     "get_mo",
     "list_mos",
     "release_mo",
+    "set_operation_executor",
     "start_mo",
 ]

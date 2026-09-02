@@ -1881,3 +1881,204 @@ def test_create_mo_service_guard_rejects_firm_not_in_org(
     )
     assert resp.status_code == 422, resp.text
     assert "not found in this organization" in resp.json()["detail"].lower()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #204 — per-operation executor overrides at MO-create time
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _create_karigar_party(
+    client: TestClient, owner: dict[str, str], *, label: str = "Imran"
+) -> str:
+    resp = client.post(
+        "/parties",
+        headers=_auth(owner["access_token"]),
+        json={
+            "firm_id": owner["firm_id"],
+            "code": f"K-{uuid.uuid4().hex[:6]}",
+            "name": f"{label} Karigar",
+            "is_karigar": True,
+            "state_code": "MH",
+            "tax_status": "UNREGISTERED",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["party_id"])
+
+
+def _create_plain_party(client: TestClient, owner: dict[str, str]) -> str:
+    resp = client.post(
+        "/parties",
+        headers=_auth(owner["access_token"]),
+        json={
+            "firm_id": owner["firm_id"],
+            "code": f"P-{uuid.uuid4().hex[:6]}",
+            "name": "Plain Vendor",
+            "is_supplier": True,
+            "is_karigar": False,
+            "state_code": "MH",
+            "tax_status": "UNREGISTERED",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["party_id"])
+
+
+def _op_ids_from_routing(routing: dict[str, object]) -> list[str]:
+    """Recover the linear-chain operation_master_id order from a routing's
+    edges (from-of-edge[0], then to-of-each-edge)."""
+    edges = routing["edges"]  # type: ignore[index]
+    ordered = [str(edges[0]["from_operation_id"])]  # type: ignore[index]
+    for e in edges:  # type: ignore[union-attr]
+        ordered.append(str(e["to_operation_id"]))
+    return ordered
+
+
+def test_create_mo_with_karigar_override_sets_executor(
+    http_client: TestClient,
+) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    op_ids = _op_ids_from_routing(routing)
+    karigar = _create_karigar_party(http_client, me)
+    # Mark the SECOND op as KARIGAR via the override.
+    target_master = op_ids[1]
+
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {"operation_master_id": target_master, "executor": "KARIGAR", "karigar_party_id": karigar}
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 201, resp.text
+    ops = resp.json()["operations"]
+    by_master = {op["operation_master_id"]: op for op in ops}
+    assert by_master[target_master]["executor"] == "KARIGAR"
+    # Every other op stays IN_HOUSE (default path unchanged).
+    for master_id, op in by_master.items():
+        if master_id != target_master:
+            assert op["executor"] == "IN_HOUSE"
+
+
+def test_create_mo_empty_overrides_is_all_in_house(http_client: TestClient) -> None:
+    """Regression: passing an explicit empty overrides list is
+    byte-identical to omitting it — every op IN_HOUSE."""
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = []
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 201, resp.text
+    assert all(op["executor"] == "IN_HOUSE" for op in resp.json()["operations"])
+
+
+def test_create_mo_override_rejects_foreign_operation_master(
+    http_client: TestClient,
+) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    karigar = _create_karigar_party(http_client, me)
+    # An op master that exists but is NOT part of this routing.
+    foreign_master = _create_op(http_client, me, code=f"FOR-{uuid.uuid4().hex[:4]}")
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {"operation_master_id": foreign_master, "executor": "KARIGAR", "karigar_party_id": karigar}
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, resp.text
+    assert "not part of routing" in resp.json()["detail"].lower()
+
+
+def test_create_mo_override_rejects_non_karigar_party(http_client: TestClient) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    op_ids = _op_ids_from_routing(routing)
+    plain = _create_plain_party(http_client, me)
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {"operation_master_id": op_ids[0], "executor": "KARIGAR", "karigar_party_id": plain}
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, resp.text
+    assert "not flagged as a karigar" in resp.json()["detail"].lower()
+
+
+def test_create_mo_override_rejects_unknown_party(http_client: TestClient) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    op_ids = _op_ids_from_routing(routing)
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {
+            "operation_master_id": op_ids[0],
+            "executor": "KARIGAR",
+            "karigar_party_id": str(uuid.uuid4()),
+        }
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, resp.text
+    assert "not found" in resp.json()["detail"].lower()
+
+
+def test_create_mo_override_rejects_party_with_in_house(http_client: TestClient) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    op_ids = _op_ids_from_routing(routing)
+    karigar = _create_karigar_party(http_client, me)
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {"operation_master_id": op_ids[0], "executor": "IN_HOUSE", "karigar_party_id": karigar}
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, resp.text
+    assert "executor='karigar'" in resp.json()["detail"].lower()
+
+
+def test_create_mo_override_rejects_duplicate_master(http_client: TestClient) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    op_ids = _op_ids_from_routing(routing)
+    karigar = _create_karigar_party(http_client, me)
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {"operation_master_id": op_ids[0], "executor": "KARIGAR", "karigar_party_id": karigar},
+        {"operation_master_id": op_ids[0], "executor": "IN_HOUSE"},
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, resp.text
+    assert "duplicate" in resp.json()["detail"].lower()
