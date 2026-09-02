@@ -88,12 +88,14 @@ from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.manufacturing import (
     ManufacturingOrder,
     MaterialIssue,
+    MoMaterialLine,
     MoOperation,
     MoOperationState,
     MoStatus,
     OperationMaster,
     OperationType,
     ProductionEvent,
+    RoutingEdge,
 )
 from app.service import audit_service, inventory_service, mo_service
 
@@ -401,6 +403,123 @@ def _assert_all_ops_closed(session: Session, *, org_id: uuid.UUID, mo_id: uuid.U
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Actual-output reconciliation (#192 — MFGC-1 / MFG-S1)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def sum_final_good_output(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    mo: ManufacturingOrder,
+) -> Decimal | None:
+    """Return the verified good output of the MO — the sum of ``qty_out``
+    on the routing's **terminal** (sink) operations.
+
+    A sink operation-master is one that never appears as the
+    ``from_operation_id`` of any routing edge (no outgoing edge). This
+    mirrors the Kahn source computation in
+    ``mo_service._topological_order_operations``: sources have no
+    incoming edge, sinks have no outgoing edge.
+
+    QC ops store the cumulative ``qty_passed`` into ``qty_out`` (see
+    ``qc_service.record_qc_result``), so ``qty_out`` is the uniform
+    "good output" column for QC and non-QC ops alike — no special-casing.
+
+    Rework clones (``rework_of_mo_operation_id IS NOT NULL``) are
+    excluded: their output already accumulates into the parent QC op's
+    ``qty_out`` on re-record, so counting both would double-count.
+
+    Returns ``None`` (⇒ caller blocks completion — fail-closed) when
+    there is no evidence to verify against:
+      - the MO has zero canonical operations, OR
+      - ``mo.routing_id is None`` (no routing), OR
+      - the routing has zero (non-deleted) edges.
+
+    A single-operation routing has no edges, so it also yields ``None``;
+    that is intentional (a routing must declare its op graph via edges
+    for a sink to be derivable).
+    """
+    if mo.routing_id is None:
+        return None
+
+    canonical_ops = list(
+        session.execute(
+            select(MoOperation).where(
+                MoOperation.org_id == org_id,
+                MoOperation.manufacturing_order_id == mo.manufacturing_order_id,
+                MoOperation.deleted_at.is_(None),
+                MoOperation.rework_of_mo_operation_id.is_(None),
+            )
+        ).scalars()
+    )
+    if not canonical_ops:
+        return None
+
+    edges = list(
+        session.execute(
+            select(RoutingEdge).where(
+                RoutingEdge.org_id == org_id,
+                RoutingEdge.routing_id == mo.routing_id,
+                RoutingEdge.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    if not edges:
+        return None
+
+    from_masters = {e.from_operation_id for e in edges}
+    all_masters = from_masters | {e.to_operation_id for e in edges}
+    sink_masters = all_masters - from_masters
+
+    total = Decimal("0")
+    for op in canonical_ops:
+        if op.operation_master_id in sink_masters:
+            total += Decimal(op.qty_out or 0)
+    return total.quantize(_QTY_QUANT)
+
+
+def list_unissued_required_materials(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    mo_id: uuid.UUID,
+) -> list[tuple[uuid.UUID, Decimal, Decimal]]:
+    """Return ``(item_id, qty_required, qty_issued)`` triples for every
+    non-deleted, **non-optional** ``mo_material_line`` whose issued qty
+    falls short of its required qty.
+
+    Optional lines never block completion (they mirror the ``is_optional``
+    contract in ``mo_service.create_mo``). An empty list ⇒ all required
+    materials are fully issued.
+    """
+    rows = list(
+        session.execute(
+            select(
+                MoMaterialLine.item_id,
+                MoMaterialLine.qty_required,
+                MoMaterialLine.qty_issued,
+            ).where(
+                MoMaterialLine.org_id == org_id,
+                MoMaterialLine.manufacturing_order_id == mo_id,
+                MoMaterialLine.deleted_at.is_(None),
+                MoMaterialLine.is_optional.is_(False),
+                func.coalesce(MoMaterialLine.qty_issued, 0)
+                < func.coalesce(MoMaterialLine.qty_required, 0),
+            )
+        )
+    )
+    return [
+        (
+            item_id,
+            Decimal(qty_required or 0).quantize(_QTY_QUANT),
+            Decimal(qty_issued or 0).quantize(_QTY_QUANT),
+        )
+        for item_id, qty_required, qty_issued in rows
+    ]
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Main entry point
 # ──────────────────────────────────────────────────────────────────────
 
@@ -468,17 +587,51 @@ def complete_mo_with_settlement(
     # the schema column has more positions to fill.
     policy = (mo.completion_policy or "ALL_OR_NONE").upper()
     planned_qty = Decimal(mo.planned_qty).quantize(_QTY_QUANT)
-    if policy == "ALL_OR_NONE":
-        if produced_qty_dec != planned_qty:
-            raise AppValidationError(
-                f"Cannot complete MO {mo_id} with completion_policy=ALL_OR_NONE: "
-                f"produced_qty {produced_qty_dec} does not equal planned_qty "
-                f"{planned_qty}. ALL_OR_NONE requires an exact match."
-            )
-    else:
+    if policy != "ALL_OR_NONE":
         raise AppValidationError(
             f"Cannot complete MO {mo_id}: completion_policy={policy} is not "
             "supported in v1 (only ALL_OR_NONE)."
+        )
+    # D1 (#192): ALL_OR_NONE no longer means "produced == planned"
+    # (which deadlocked every MO with real spoilage). It now means the
+    # reported ``produced_qty`` must equal the VERIFIED good output and
+    # must not exceed the plan. The full WIP cost pool still drains into
+    # the produced units (normal-loss absorption). PENDING MOIZ + CA
+    # SIGN-OFF.
+    if produced_qty_dec > planned_qty:
+        raise AppValidationError(
+            f"Cannot complete MO {mo_id}: produced_qty {produced_qty_dec} exceeds "
+            f"planned_qty {planned_qty}. Cannot produce more than planned."
+        )
+
+    # Phase 3.5: reconcile the reported produced_qty against the actual
+    # verified good output, and refuse if required materials are under-
+    # issued (#192 — fabricated finished-goods stock).
+    final_out = sum_final_good_output(session, org_id=org_id, mo=mo)
+    if final_out is None:
+        raise AppValidationError(
+            f"Cannot complete MO {mo_id}: no operations or routing edges to verify "
+            "actual output against (MO has no operations; actual output cannot be "
+            "verified). Attach a routing with operations before completing."
+        )
+    if produced_qty_dec != final_out:
+        raise AppValidationError(
+            f"Cannot complete MO {mo_id}: produced_qty {produced_qty_dec} does not "
+            f"match the verified final-operation output {final_out} (sum of qty_out "
+            "on the routing's terminal operations). Record the correct output or fix "
+            "upstream operations."
+        )
+
+    shortfalls = list_unissued_required_materials(session, org_id=org_id, mo_id=mo_id)
+    if shortfalls:
+        listed = "; ".join(
+            f"required material {item_id}: issued {issued} of {required}"
+            for item_id, required, issued in shortfalls[:5]
+        )
+        more = "" if len(shortfalls) <= 5 else f" (+{len(shortfalls) - 5} more)"
+        raise AppValidationError(
+            f"Cannot complete MO {mo_id}: required materials are not fully issued — "
+            f"{listed}{more}. Issue the remaining materials before completing."
         )
 
     # Phase 4: aggregate the loss buckets.
@@ -825,11 +978,33 @@ def preview_completion(
         )
 
     planned_qty = Decimal(mo.planned_qty).quantize(_QTY_QUANT)
-    if policy == "ALL_OR_NONE" and target_dec > Decimal("0") and target_dec != planned_qty:
+    # D1 (#192): planned ceiling + verified-output reconciliation, mirror
+    # of ``complete_mo_with_settlement`` Phase 3 / 3.5 (no raise here).
+    if target_dec > planned_qty:
         blocking_reasons.append(
-            f"ALL_OR_NONE policy requires produced_qty_target ({target_dec}) "
-            f"to equal planned_qty ({planned_qty})."
+            f"produced_qty_target ({target_dec}) exceeds planned_qty ({planned_qty}); "
+            "cannot produce more than planned."
         )
+    final_out = sum_final_good_output(session, org_id=org_id, mo=mo)
+    if final_out is None:
+        blocking_reasons.append(
+            "MO has no operations (or no routing edges); actual output cannot be verified."
+        )
+    elif target_dec != final_out:
+        blocking_reasons.append(
+            f"produced_qty_target ({target_dec}) does not match the verified "
+            f"final-operation output ({final_out}) — sum of qty_out on the routing's "
+            "terminal operations."
+        )
+
+    shortfalls = list_unissued_required_materials(session, org_id=org_id, mo_id=mo_id)
+    if shortfalls:
+        listed = "; ".join(
+            f"required material {item_id}: issued {issued} of {required}"
+            for item_id, required, issued in shortfalls[:5]
+        )
+        more = "" if len(shortfalls) <= 5 else f" (+{len(shortfalls) - 5} more)"
+        blocking_reasons.append(f"Required materials not fully issued — {listed}{more}.")
 
     # Aggregate loss buckets — same helper the real settlement calls.
     breakdown = aggregate_loss_breakdown(session, org_id=org_id, mo_id=mo_id)
@@ -875,6 +1050,8 @@ __all__ = [
     "LossBreakdown",
     "aggregate_loss_breakdown",
     "complete_mo_with_settlement",
+    "list_unissued_required_materials",
     "preview_completion",
+    "sum_final_good_output",
     "sum_wip_cost_pool",
 ]
