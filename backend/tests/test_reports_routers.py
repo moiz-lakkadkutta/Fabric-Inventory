@@ -88,17 +88,21 @@ def _create_and_finalize_invoice(
     qty: str = "1",
     price: str = "1000",
     gst_rate: str = "5",
+    due_date: str | None = None,
 ) -> str:
+    body: dict[str, object] = {
+        "firm_id": me["firm_id"],
+        "party_id": str(party_id),
+        "invoice_date": invoice_date,
+        "ship_to_state": "MH",
+        "lines": [{"item_id": str(item_id), "qty": qty, "price": price, "gst_rate": gst_rate}],
+    }
+    if due_date is not None:
+        body["due_date"] = due_date
     create = http_client.post(
         "/invoices",
         headers=_auth(me["access_token"]),
-        json={
-            "firm_id": me["firm_id"],
-            "party_id": str(party_id),
-            "invoice_date": invoice_date,
-            "ship_to_state": "MH",
-            "lines": [{"item_id": str(item_id), "qty": qty, "price": price, "gst_rate": gst_rate}],
-        },
+        json=body,
     )
     assert create.status_code == 201, create.text
     invoice_id: str = create.json()["sales_invoice_id"]
