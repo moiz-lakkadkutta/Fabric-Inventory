@@ -914,3 +914,333 @@ def test_create_design_with_valid_firm_in_org_succeeds(http_client: TestClient) 
         },
     )
     assert resp.status_code == 201, resp.text
+
+
+# ──────────────────────────────────────────────────────────────────────
+# In-use delete guards (issue #205)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _create_design_id(client: TestClient, owner: dict[str, str]) -> str:
+    resp = client.post(
+        "/designs",
+        headers=_auth(owner["access_token"]),
+        json={"code": f"D-{uuid.uuid4().hex[:6]}", "name": "X", "firm_id": owner["firm_id"]},
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["design_id"])
+
+
+def _create_op_id(client: TestClient, owner: dict[str, str]) -> str:
+    resp = client.post(
+        "/operation-masters",
+        headers=_auth(owner["access_token"]),
+        json={"code": f"OP-{uuid.uuid4().hex[:6]}", "name": "X", "firm_id": owner["firm_id"]},
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["operation_master_id"])
+
+
+def _create_finished_item_id(client: TestClient, owner: dict[str, str]) -> str:
+    resp = client.post(
+        "/items",
+        headers=_auth(owner["access_token"]),
+        json={
+            "code": f"F-{uuid.uuid4().hex[:6]}",
+            "name": "fin",
+            "item_type": "FINISHED",
+            "primary_uom": "PIECE",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["item_id"])
+
+
+def _create_bom_id(
+    client: TestClient, owner: dict[str, str], *, design_id: str, finished_item_id: str
+) -> str:
+    raw = client.post(
+        "/items",
+        headers=_auth(owner["access_token"]),
+        json={
+            "code": f"R-{uuid.uuid4().hex[:6]}",
+            "name": "raw",
+            "item_type": "RAW",
+            "primary_uom": "METER",
+        },
+    ).json()
+    resp = client.post(
+        "/boms",
+        headers=_auth(owner["access_token"]),
+        json={
+            "firm_id": owner["firm_id"],
+            "design_id": design_id,
+            "finished_item_id": finished_item_id,
+            "lines": [
+                {
+                    "item_id": raw["item_id"],
+                    "qty_required": "2.5000",
+                    "uom": "METER",
+                    "is_optional": False,
+                    "part_role": "SHELL",
+                    "sequence": 1,
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["bom_id"])
+
+
+def _create_routing_id(
+    client: TestClient, owner: dict[str, str], *, design_id: str, from_op: str, to_op: str
+) -> str:
+    resp = client.post(
+        "/routings",
+        headers=_auth(owner["access_token"]),
+        json={
+            "firm_id": owner["firm_id"],
+            "design_id": design_id,
+            "code": f"R-{uuid.uuid4().hex[:6]}",
+            "edges": [
+                {
+                    "from_operation_id": from_op,
+                    "to_operation_id": to_op,
+                    "edge_type": "FINISH_TO_START",
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["routing_id"])
+
+
+def _insert_mo(
+    sync_engine: Engine,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    design_id: uuid.UUID,
+    finished_item_id: uuid.UUID,
+    status: str = "DRAFT",
+) -> uuid.UUID:
+    from datetime import date
+
+    from app.models.manufacturing import ManufacturingOrder, MoStatus
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        mo = ManufacturingOrder(
+            org_id=org_id,
+            firm_id=firm_id,
+            series="MO",
+            number=uuid.uuid4().hex[:8],
+            design_id=design_id,
+            finished_item_id=finished_item_id,
+            status=MoStatus(status),
+            mo_date=date.today(),
+            planned_qty=10,
+        )
+        session.add(mo)
+        session.commit()
+        return mo.manufacturing_order_id
+
+
+def _insert_mo_operation(
+    sync_engine: Engine,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    mo_id: uuid.UUID,
+    operation_master_id: uuid.UUID,
+) -> None:
+    from app.models.manufacturing import MoOperation, MoOperationState
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        op = MoOperation(
+            org_id=org_id,
+            firm_id=firm_id,
+            manufacturing_order_id=mo_id,
+            operation_master_id=operation_master_id,
+            state=MoOperationState.PENDING,
+        )
+        session.add(op)
+        session.commit()
+
+
+def test_delete_design_refuses_when_bom_references_it(
+    http_client: TestClient,
+) -> None:
+    me = _signup_owner(http_client)
+    design_id = _create_design_id(http_client, me)
+    fin = _create_finished_item_id(http_client, me)
+    bom_id = _create_bom_id(http_client, me, design_id=design_id, finished_item_id=fin)
+
+    resp = http_client.delete(f"/designs/{design_id}", headers=_auth(me["access_token"]))
+    assert resp.status_code == 422, resp.text
+    assert "referenced by a bom" in resp.json()["detail"].lower()
+
+    # After removing the BOM (no MO), the design can be deleted.
+    assert (
+        http_client.delete(f"/boms/{bom_id}", headers=_auth(me["access_token"])).status_code == 204
+    )
+    assert (
+        http_client.delete(f"/designs/{design_id}", headers=_auth(me["access_token"])).status_code
+        == 204
+    )
+
+
+def test_delete_design_refuses_when_routing_references_it(
+    http_client: TestClient,
+) -> None:
+    me = _signup_owner(http_client)
+    design_id = _create_design_id(http_client, me)
+    op_a = _create_op_id(http_client, me)
+    op_b = _create_op_id(http_client, me)
+    _create_routing_id(http_client, me, design_id=design_id, from_op=op_a, to_op=op_b)
+
+    resp = http_client.delete(f"/designs/{design_id}", headers=_auth(me["access_token"]))
+    assert resp.status_code == 422, resp.text
+    assert "referenced by a routing" in resp.json()["detail"].lower()
+
+
+def test_delete_design_refuses_when_active_mo_references_it(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """COMPLETED (not CLOSED) MO still blocks — QA's orphaned-MO repro."""
+    me = _signup_owner(http_client)
+    design_id = _create_design_id(http_client, me)
+    fin = _create_finished_item_id(http_client, me)
+    _insert_mo(
+        sync_engine,
+        org_id=uuid.UUID(me["org_id"]),
+        firm_id=uuid.UUID(me["firm_id"]),
+        design_id=uuid.UUID(design_id),
+        finished_item_id=uuid.UUID(fin),
+        status="COMPLETED",
+    )
+
+    resp = http_client.delete(f"/designs/{design_id}", headers=_auth(me["access_token"]))
+    assert resp.status_code == 422, resp.text
+    assert "active manufacturing order" in resp.json()["detail"].lower()
+
+
+def test_delete_operation_master_refuses_when_routing_edge_references_it(
+    http_client: TestClient,
+) -> None:
+    """QA repro: op-master used by a routing edge cannot be deleted."""
+    me = _signup_owner(http_client)
+    design_id = _create_design_id(http_client, me)
+    op_a = _create_op_id(http_client, me)
+    op_b = _create_op_id(http_client, me)
+    routing_id = _create_routing_id(http_client, me, design_id=design_id, from_op=op_a, to_op=op_b)
+
+    resp = http_client.delete(f"/operation-masters/{op_a}", headers=_auth(me["access_token"]))
+    assert resp.status_code == 422, resp.text
+    assert "referenced by a routing" in resp.json()["detail"].lower()
+
+    # After deleting the routing, the op-master can be deleted.
+    assert (
+        http_client.delete(f"/routings/{routing_id}", headers=_auth(me["access_token"])).status_code
+        == 204
+    )
+    assert (
+        http_client.delete(
+            f"/operation-masters/{op_a}", headers=_auth(me["access_token"])
+        ).status_code
+        == 204
+    )
+
+
+def test_delete_operation_master_refuses_when_active_mo_operation_references_it(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    me = _signup_owner(http_client)
+    design_id = _create_design_id(http_client, me)
+    fin = _create_finished_item_id(http_client, me)
+    op_id = _create_op_id(http_client, me)
+    mo_id = _insert_mo(
+        sync_engine,
+        org_id=uuid.UUID(me["org_id"]),
+        firm_id=uuid.UUID(me["firm_id"]),
+        design_id=uuid.UUID(design_id),
+        finished_item_id=uuid.UUID(fin),
+        status="IN_PROGRESS",
+    )
+    _insert_mo_operation(
+        sync_engine,
+        org_id=uuid.UUID(me["org_id"]),
+        firm_id=uuid.UUID(me["firm_id"]),
+        mo_id=mo_id,
+        operation_master_id=uuid.UUID(op_id),
+    )
+
+    resp = http_client.delete(f"/operation-masters/{op_id}", headers=_auth(me["access_token"]))
+    assert resp.status_code == 422, resp.text
+    assert "active manufacturing order" in resp.json()["detail"].lower()
+
+
+def test_delete_design_emits_audit_row(http_client: TestClient, sync_engine: Engine) -> None:
+    from sqlalchemy import select
+
+    from app.models import AuditLog
+
+    me = _signup_owner(http_client)
+    design_id = _create_design_id(http_client, me)
+    assert (
+        http_client.delete(f"/designs/{design_id}", headers=_auth(me["access_token"])).status_code
+        == 204
+    )
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        rows = list(
+            session.execute(
+                select(AuditLog).where(
+                    AuditLog.entity_type == "manufacturing.design",
+                    AuditLog.entity_id == uuid.UUID(design_id),
+                    AuditLog.action == "delete",
+                )
+            ).scalars()
+        )
+    assert len(rows) == 1
+
+
+def test_delete_operation_master_emits_audit_row(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    from sqlalchemy import select
+
+    from app.models import AuditLog
+
+    me = _signup_owner(http_client)
+    op_id = _create_op_id(http_client, me)
+    assert (
+        http_client.delete(
+            f"/operation-masters/{op_id}", headers=_auth(me["access_token"])
+        ).status_code
+        == 204
+    )
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        rows = list(
+            session.execute(
+                select(AuditLog).where(
+                    AuditLog.entity_type == "manufacturing.operation_master",
+                    AuditLog.entity_id == uuid.UUID(op_id),
+                    AuditLog.action == "delete",
+                )
+            ).scalars()
+        )
+    assert len(rows) == 1
+
+
+def test_delete_design_idempotent_on_already_deleted(http_client: TestClient) -> None:
+    """Re-deleting an unreferenced, already-deleted design stays a no-op
+    (the in-use guard must not fire on the second call)."""
+    me = _signup_owner(http_client)
+    design_id = _create_design_id(http_client, me)
+    r1 = http_client.delete(f"/designs/{design_id}", headers=_auth(me["access_token"]))
+    r2 = http_client.delete(f"/designs/{design_id}", headers=_auth(me["access_token"]))
+    assert r1.status_code == 204, r1.text
+    assert r2.status_code == 204, r2.text

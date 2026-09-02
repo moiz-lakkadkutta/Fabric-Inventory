@@ -25,7 +25,17 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
-from app.models.manufacturing import Design, OperationMaster, OperationType
+from app.models.manufacturing import (
+    Bom,
+    Design,
+    ManufacturingOrder,
+    MoOperation,
+    MoStatus,
+    OperationMaster,
+    OperationType,
+    Routing,
+    RoutingEdge,
+)
 from app.models.masters import CostCentre, CostCentreType
 from app.service import audit_service
 from app.service.common_guards import assert_firm_in_org
@@ -209,6 +219,50 @@ def patch_design(
     return design
 
 
+def _design_in_use(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    design_id: uuid.UUID,
+) -> str | None:
+    """Return a human-readable reason if this design is still referenced by
+    a live BOM, routing, or non-CLOSED MO — else None. A design must have
+    its referencing records removed/closed before it can be deleted (all
+    three FKs are ``ON DELETE RESTRICT NOT NULL``)."""
+    if session.execute(
+        select(Bom.bom_id)
+        .where(
+            Bom.org_id == org_id,
+            Bom.design_id == design_id,
+            Bom.deleted_at.is_(None),
+        )
+        .limit(1)
+    ).first():
+        return "referenced by a BOM"
+    if session.execute(
+        select(Routing.routing_id)
+        .where(
+            Routing.org_id == org_id,
+            Routing.design_id == design_id,
+            Routing.deleted_at.is_(None),
+        )
+        .limit(1)
+    ).first():
+        return "referenced by a routing"
+    if session.execute(
+        select(ManufacturingOrder.manufacturing_order_id)
+        .where(
+            ManufacturingOrder.org_id == org_id,
+            ManufacturingOrder.design_id == design_id,
+            ManufacturingOrder.deleted_at.is_(None),
+            ManufacturingOrder.status != MoStatus.CLOSED,
+        )
+        .limit(1)
+    ).first():
+        return "in use by an active manufacturing order"
+    return None
+
+
 def delete_design(
     session: Session,
     *,
@@ -216,7 +270,8 @@ def delete_design(
     design_id: uuid.UUID,
     deleted_by: uuid.UUID | None = None,
 ) -> None:
-    """Soft-delete. Idempotent on already-deleted rows."""
+    """Soft-delete. Idempotent on already-deleted rows. Refuses if the
+    design is still referenced by a live BOM, routing, or non-CLOSED MO."""
     design = session.execute(
         select(Design).where(Design.design_id == design_id, Design.org_id == org_id)
     ).scalar_one_or_none()
@@ -224,10 +279,28 @@ def delete_design(
         raise AppValidationError(f"Design {design_id} not found")
     if design.deleted_at is not None:
         return
+
+    reason = _design_in_use(session, org_id=org_id, design_id=design.design_id)
+    if reason is not None:
+        raise AppValidationError(
+            f"Design {design_id} is {reason}; delete/close the referencing records first"
+        )
+
     design.deleted_at = datetime.now(tz=UTC)
     if deleted_by is not None:
         design.updated_by = deleted_by
     session.flush()
+
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=design.firm_id,
+        user_id=deleted_by,
+        entity_type="manufacturing.design",
+        entity_id=design_id,
+        action="delete",
+        changes={"after": {"deleted": True}},
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -388,6 +461,50 @@ def patch_operation_master(
     return op
 
 
+def _operation_master_in_use(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    operation_master_id: uuid.UUID,
+) -> str | None:
+    """Return a human-readable reason if this operation master is still
+    referenced by a live routing edge or by an mo_operation of a
+    non-CLOSED MO — else None. Both FKs are ``ON DELETE RESTRICT NOT
+    NULL``, so the reference must be removed before deletion."""
+    if session.execute(
+        select(RoutingEdge.routing_edge_id)
+        .join(Routing, RoutingEdge.routing_id == Routing.routing_id)
+        .where(
+            RoutingEdge.org_id == org_id,
+            RoutingEdge.deleted_at.is_(None),
+            Routing.deleted_at.is_(None),
+            or_(
+                RoutingEdge.from_operation_id == operation_master_id,
+                RoutingEdge.to_operation_id == operation_master_id,
+            ),
+        )
+        .limit(1)
+    ).first():
+        return "referenced by a routing"
+    if session.execute(
+        select(MoOperation.mo_operation_id)
+        .join(
+            ManufacturingOrder,
+            MoOperation.manufacturing_order_id == ManufacturingOrder.manufacturing_order_id,
+        )
+        .where(
+            MoOperation.org_id == org_id,
+            MoOperation.operation_master_id == operation_master_id,
+            MoOperation.deleted_at.is_(None),
+            ManufacturingOrder.deleted_at.is_(None),
+            ManufacturingOrder.status != MoStatus.CLOSED,
+        )
+        .limit(1)
+    ).first():
+        return "in use by an active manufacturing order"
+    return None
+
+
 def delete_operation_master(
     session: Session,
     *,
@@ -395,6 +512,9 @@ def delete_operation_master(
     operation_master_id: uuid.UUID,
     deleted_by: uuid.UUID | None = None,
 ) -> None:
+    """Soft-delete. Idempotent on already-deleted rows. Refuses if the
+    operation master is still referenced by a live routing edge or by an
+    active MO's operation."""
     op = session.execute(
         select(OperationMaster).where(
             OperationMaster.operation_master_id == operation_master_id,
@@ -405,11 +525,32 @@ def delete_operation_master(
         raise AppValidationError(f"Operation {operation_master_id} not found")
     if op.deleted_at is not None:
         return
+
+    reason = _operation_master_in_use(
+        session, org_id=org_id, operation_master_id=op.operation_master_id
+    )
+    if reason is not None:
+        raise AppValidationError(
+            f"Operation {operation_master_id} is {reason}; "
+            "remove it from routings first, or set is_active=false to retire it"
+        )
+
     op.deleted_at = datetime.now(tz=UTC)
     op.is_active = False
     if deleted_by is not None:
         op.updated_by = deleted_by
     session.flush()
+
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=op.firm_id,
+        user_id=deleted_by,
+        entity_type="manufacturing.operation_master",
+        entity_id=operation_master_id,
+        action="delete",
+        changes={"after": {"deleted": True}},
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
