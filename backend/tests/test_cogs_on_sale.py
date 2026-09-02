@@ -1036,3 +1036,87 @@ def test_cogs_multiline_mixed_stock_and_service(
         )
     ).scalar_one_or_none()
     assert svc_out is None, "SERVICE item must not produce a StockLedger OUT row"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #202 — COGS posts for a lot-stocked item (regression: silent-skip)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_cogs_posts_for_lot_stocked_item(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """Item stocked ONLY via a lot-keyed position (no NULL-lot). Finalizing a
+    10-unit invoice must post COGS DR 5000 / CR 1300 = 500.00 (10 @ ₹50) — NOT
+    silently skip it (which a NULL-lot get_position probe would have done)."""
+    from app.models import Lot, StockLedger
+
+    firm, party, item = _seed_cogs_org(db_session, fresh_org_id)
+    location = inventory_service.get_or_create_default_location(
+        db_session, org_id=fresh_org_id, firm_id=firm.firm_id
+    )
+    lot = Lot(
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        lot_number="COGS-LOT-1",
+        received_date=datetime.date(2026, 4, 27),
+    )
+    db_session.add(lot)
+    db_session.flush()
+    inventory_service.add_stock(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("10"),
+        unit_cost=Decimal("50"),
+        lot_id=lot.lot_id,
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+        txn_date=datetime.date(2026, 4, 27),
+    )
+    # Sanity: no NULL-lot position exists for this item.
+    assert (
+        inventory_service.get_position(
+            db_session, org_id=fresh_org_id, firm_id=firm.firm_id,
+            item_id=item.item_id, location_id=location.location_id,
+        )
+        is None
+    )
+
+    invoice = _create_direct_invoice(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="10", price="500"
+    )
+    sales_service.finalize_invoice(
+        db_session, org_id=fresh_org_id, sales_invoice_id=invoice.sales_invoice_id
+    )
+
+    cogs_vouchers = list(
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.voucher_type == VoucherType.COGS_SALE,
+                Voucher.reference_id == invoice.sales_invoice_id,
+                Voucher.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    assert len(cogs_vouchers) == 1, "COGS voucher must be posted for lot-stocked item"
+    cogs_v = cogs_vouchers[0]
+    assert Decimal(cogs_v.total_debit or 0) == Decimal("500.00")
+    assert Decimal(cogs_v.total_credit or 0) == Decimal("500.00")
+
+    # Stock relieved from the lot position via FIFO.
+    out_rows = list(
+        db_session.execute(
+            select(StockLedger).where(
+                StockLedger.reference_id == invoice.sales_invoice_id,
+                StockLedger.txn_type == "OUT",
+            )
+        ).scalars()
+    )
+    assert len(out_rows) == 1
+    assert out_rows[0].lot_id == lot.lot_id
+    assert Decimal(out_rows[0].qty_out) == Decimal("10")

@@ -720,3 +720,46 @@ def test_date_span_exactly_367_days_is_rejected(
     assert body["code"] == "VALIDATION_ERROR", (
         f"Expected code='VALIDATION_ERROR', got {body.get('code')!r}"
     )
+
+
+def test_stock_summary_lot_count(http_client: TestClient, sync_engine: Engine) -> None:
+    """#202: stock-summary reports lot_count = number of distinct non-empty
+    lots for the item. Two live lots + one emptied lot → lot_count == 2."""
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    _party_id, item_id = _seed_party_and_item(sync_engine, org_id=org_id)
+
+    from app.models import Location, Lot, StockPosition
+    from app.models.inventory import LocationType
+
+    firm_id = uuid.UUID(me["firm_id"])
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        loc = Location(
+            org_id=org_id, firm_id=firm_id, code=f"WH-{uuid.uuid4().hex[:4].upper()}",
+            name="Main", location_type=LocationType.WAREHOUSE, is_active=True,
+        )
+        session.add(loc)
+        session.flush()
+        for i, qty in enumerate((Decimal("5"), Decimal("7"), Decimal("0"))):
+            lot = Lot(
+                org_id=org_id, firm_id=firm_id, item_id=item_id,
+                lot_number=f"L{i}-{uuid.uuid4().hex[:4]}",
+            )
+            session.add(lot)
+            session.flush()
+            session.add(
+                StockPosition(
+                    org_id=org_id, firm_id=firm_id, item_id=item_id, lot_id=lot.lot_id,
+                    location_id=loc.location_id, on_hand_qty=qty, current_cost=Decimal("10"),
+                )
+            )
+        session.commit()
+
+    resp = http_client.get(
+        "/reports/stock-summary?as_of=2026-04-30", headers=_auth(me["access_token"])
+    )
+    assert resp.status_code == 200, resp.text
+    rows = [r for r in resp.json()["rows"] if r["item_id"] == str(item_id)]
+    assert len(rows) == 1
+    assert rows[0]["lot_count"] == 2  # emptied lot (qty 0) drops out
