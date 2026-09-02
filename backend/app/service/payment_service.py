@@ -138,6 +138,10 @@ def _list_open_pis_fifo(
 
     Order: invoice_date ASC, then number ASC (deterministic tiebreaker).
     Outstanding = invoice_amount + COALESCE(gst_amount, 0) - paid_amount > 0.
+
+    #190 concurrency: same AP-side race as receipt FIFO. `.with_for_update`
+    locks the PI set in deterministic order so two overlapping payments
+    serialize instead of both reading paid_amount=0 and over-allocating.
     """
     return list(
         session.execute(
@@ -153,6 +157,8 @@ def _list_open_pis_fifo(
                 PurchaseInvoice.invoice_date.asc(),
                 PurchaseInvoice.number.asc(),
             )
+            .with_for_update(of=PurchaseInvoice)
+            .execution_options(populate_existing=True)
         ).scalars()
     )
 

@@ -122,6 +122,15 @@ def _list_open_invoices_fifo(
 
     Order: invoice_date ASC, then number ASC (deterministic tiebreaker
     so concurrent receipts don't allocate non-deterministically).
+
+    #190 concurrency: `.with_for_update` locks the FIFO invoice set so two
+    overlapping receipts serialize on these rows instead of both reading
+    paid_amount=0 and each allocating the full outstanding. Because the order
+    is deterministic, both receipts acquire the locks in the same sequence
+    (no deadlock). The loser blocks; on wake, READ COMMITTED re-evaluates the
+    `invoice_amount > paid_amount` predicate and drops now-paid invoices, so a
+    second full receipt sees no open invoice and books the surplus to Customer
+    Advances (2500) — the documented behavior.
     """
     return list(
         session.execute(
@@ -135,6 +144,8 @@ def _list_open_invoices_fifo(
                 SalesInvoice.invoice_amount > SalesInvoice.paid_amount,
             )
             .order_by(SalesInvoice.invoice_date.asc(), SalesInvoice.number.asc())
+            .with_for_update(of=SalesInvoice)
+            .execution_options(populate_existing=True)
         ).scalars()
     )
 

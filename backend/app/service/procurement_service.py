@@ -555,7 +555,25 @@ def receive_grn(
     Idempotent in the sense that an already-ACKNOWLEDGED GRN raises an
     `InvoiceStateError` rather than double-posting stock.
     """
-    grn = get_grn(session, org_id=org_id, grn_id=grn_id)
+    # #190 concurrency: lock the GRN header row BEFORE the DRAFT check so two
+    # overlapping receive transactions serialize here instead of both posting
+    # stock. The loser blocks on the row lock, wakes after the winner commits,
+    # sees ACKNOWLEDGED (READ COMMITTED re-reads under the lock, aided by
+    # populate_existing) and raises InvoiceStateError (→ 409). `get_grn` stays
+    # lock-free for GET paths, so we inline the locked read here.
+    grn = session.execute(
+        select(GRN)
+        .options(selectinload(GRN.lines))
+        .where(
+            GRN.grn_id == grn_id,
+            GRN.org_id == org_id,
+            GRN.deleted_at.is_(None),
+        )
+        .with_for_update(of=GRN)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if grn is None:
+        raise AppValidationError(f"GRN {grn_id} not found")
     if grn.status != GRNStatus.DRAFT.value:
         raise InvoiceStateError(
             f"Cannot receive GRN {grn_id}: current status is {grn.status}, expected DRAFT"
