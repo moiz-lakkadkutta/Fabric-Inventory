@@ -193,17 +193,19 @@ class LedgerStatementResponse(BaseModel):
 class AgeingRow(BaseModel):
     """One party row in the AR ageing report.
 
-    Buckets are computed from each open invoice's ``invoice_date`` to
-    ``as_of`` (days), then summed per party. ``outstanding`` is the
-    sum of ``invoice_amount - paid_amount`` for the party's
-    non-cancelled invoices as of the report date. The five buckets
+    Buckets are computed from days past each open invoice's ``due_date``
+    (``as_of - due_date``; ``invoice_date`` is used when no due date is
+    set), then summed per party. ``outstanding`` is the balance
+    reconstructed as of the report date — ``invoice_amount`` minus
+    receipts allocated on or before ``as_of`` (not the live paid amount)
+    — over the party's billed, non-cancelled invoices. The five buckets
     must sum exactly to ``outstanding``.
     """
 
     party_id: uuid.UUID
     party_name: str
     outstanding: Decimal
-    current: Decimal  # 0 days (not yet due / same day)
+    current: Decimal  # not yet due (or due today / future-dated)
     bucket_1_30: Decimal
     bucket_31_60: Decimal
     bucket_61_90: Decimal
