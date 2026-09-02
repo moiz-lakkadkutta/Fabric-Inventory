@@ -42,7 +42,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "198a_cogs_coa_group"
-down_revision: str | Sequence[str] | None = "190_voucher_posting_unique"
+down_revision: str | Sequence[str] | None = "t208_email_lowercase"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
