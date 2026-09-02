@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -86,5 +87,8 @@ def test_baseline_migration_smoke(sync_postgres_engine: Engine) -> None:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
 
     assert table_count >= _MIN_TABLES, f"expected >= {_MIN_TABLES} tables, got {table_count}"
-    # Latest forward-only migration head; bump on each new migration.
-    assert version == "f2_ap_payment_schema", f"unexpected revision: {version!r}"
+    # Assert the DB landed on whatever the script tree's single head is, rather
+    # than a hardcoded revision that must be hand-bumped on every migration.
+    # This also asserts the chain is linear (a single head).
+    script_head = ScriptDirectory.from_config(config).get_current_head()
+    assert version == script_head, f"unexpected revision: {version!r} (script head {script_head!r})"
