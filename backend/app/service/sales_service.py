@@ -699,18 +699,35 @@ def issue_dc(
         if dc_item is not None and dc_item.item_type == ItemType.SERVICE:
             continue  # Services have no inventory.
 
-        inventory_service.remove_stock(
-            session,
-            org_id=org_id,
-            firm_id=dc.firm_id,
-            item_id=line.item_id,
-            location_id=location.location_id,
-            qty=Decimal(line.qty_dispatched),
-            lot_id=line.lot_id,
-            reference_type="DC",
-            reference_id=dc.delivery_challan_id,
-            txn_date=dc.dispatch_date,
-        )
+        if line.lot_id is not None:
+            # Explicit lot chosen on the DC line — deplete exactly that lot.
+            inventory_service.remove_stock(
+                session,
+                org_id=org_id,
+                firm_id=dc.firm_id,
+                item_id=line.item_id,
+                location_id=location.location_id,
+                qty=Decimal(line.qty_dispatched),
+                lot_id=line.lot_id,
+                reference_type="DC",
+                reference_id=dc.delivery_challan_id,
+                txn_date=dc.dispatch_date,
+            )
+        else:
+            # #202: lot-agnostic dispatch — consume across lots FIFO so stock
+            # received under a lot number (which now lands in per-lot positions)
+            # is actually dispatchable instead of failing "Insufficient stock".
+            inventory_service.remove_stock_fifo(
+                session,
+                org_id=org_id,
+                firm_id=dc.firm_id,
+                item_id=line.item_id,
+                location_id=location.location_id,
+                qty=Decimal(line.qty_dispatched),
+                reference_type="DC",
+                reference_id=dc.delivery_challan_id,
+                txn_date=dc.dispatch_date,
+            )
 
     # COGS is recognized at invoice finalize (revenue-matching principle),
     # NOT at DC dispatch.  DC-linked invoices skip COGS in finalize_invoice
@@ -1228,31 +1245,33 @@ def _post_cogs_for_invoice(
         if qty <= 0:
             continue
 
-        # SF1: check for a stock position first.
+        # SF1: check for any on-hand stock first (across all lots, #202).
         #
-        # Only the genuine "no position exists" case is silently skipped —
-        # i.e. the item was never received into this location (a legitimately
-        # non-inventory or never-stocked item).  If a position exists but
-        # on-hand is insufficient (oversell), remove_stock will raise an
+        # Only the genuine "no stock at all" case is silently skipped — i.e.
+        # the item was never received into this location (a legitimately
+        # non-inventory or never-stocked item).  If stock exists but on-hand is
+        # insufficient (oversell), remove_stock_fifo raises an
         # AppValidationError with "Insufficient stock" and finalize fails
         # loudly — silently swallowing that would re-introduce the
-        # revenue-without-cost bug.
-        position = inventory_service.get_position(
+        # revenue-without-cost bug.  We use the total across lots (not a
+        # NULL-lot get_position probe) because #202 GRN stock lands in per-lot
+        # positions — a NULL-lot probe would find nothing and wrongly skip COGS.
+        total_on_hand = inventory_service.get_total_on_hand(
             session,
             org_id=org_id,
             firm_id=invoice.firm_id,
             item_id=line.item_id,
             location_id=location.location_id,
         )
-        if position is None:
-            # Item has no stock position at this location — was never received
-            # here.  Skip COGS for this line; finalize still succeeds.
+        if total_on_hand <= 0:
+            # Item has no stock at this location — was never received here.
+            # Skip COGS for this line; finalize still succeeds.
             # (test: test_zero_cost_item_finalize_skips_cogs_voucher)
             continue
 
-        # Position exists — let remove_stock handle it; any insufficient-stock
+        # Stock exists — consume it FIFO across lots; any insufficient-stock
         # error propagates up and finalize fails with a clear message.
-        ledger_row = inventory_service.remove_stock(
+        ledger_rows = inventory_service.remove_stock_fifo(
             session,
             org_id=org_id,
             firm_id=invoice.firm_id,
@@ -1264,9 +1283,17 @@ def _post_cogs_for_invoice(
             txn_date=invoice.invoice_date,
         )
 
-        unit_cost = (
-            Decimal(ledger_row.unit_cost) if ledger_row.unit_cost is not None else Decimal("0")
+        # Qty-weighted average unit cost across the consumed lots so the COGS
+        # voucher amount equals the actual value relieved from stock.
+        total_qty_out = sum((Decimal(r.qty_out or 0) for r in ledger_rows), Decimal("0"))
+        total_cost = sum(
+            (
+                Decimal(r.qty_out or 0) * (Decimal(r.unit_cost) if r.unit_cost is not None else Decimal("0"))
+                for r in ledger_rows
+            ),
+            Decimal("0"),
         )
+        unit_cost = (total_cost / total_qty_out) if total_qty_out > 0 else Decimal("0")
         consumed.append((line.item_id, qty, unit_cost))
 
     accounting_service.post_cogs_voucher(

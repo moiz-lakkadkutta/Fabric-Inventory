@@ -20,7 +20,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import AppValidationError
-from app.models import Firm, Item, Location, Organization, StockLedger, StockPosition
+from app.models import Firm, Item, Location, Lot, Organization, StockLedger, StockPosition
 from app.models.inventory import LocationType
 from app.models.masters import ItemType, UomType
 from app.service import inventory_service
@@ -850,3 +850,104 @@ def test_create_location_succeeds_for_valid_firm_in_org(
     assert loc.code == "CUSTOM-A"
     assert loc.firm_id == firm.firm_id
     assert loc.org_id == fresh_org_id
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #202 — remove_stock_fifo + get_total_on_hand
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _mk_lot(
+    db_session: OrmSession,
+    *,
+    org_id: uuid.UUID,
+    firm: Firm,
+    item: Item,
+    lot_number: str,
+    received_date: datetime.date,
+) -> Lot:
+    lot = Lot(
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        lot_number=lot_number,
+        received_date=received_date,
+    )
+    db_session.add(lot)
+    db_session.flush()
+    return lot
+
+
+def test_remove_stock_fifo_consumes_oldest_lot_first(
+    db_session: OrmSession, firm_and_item: tuple[Firm, Item, Location]
+) -> None:
+    import datetime
+
+    firm, item, location = firm_and_item
+    org_id = firm.org_id
+    # NULL-lot 5 @ 10
+    inventory_service.add_stock(
+        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+        location_id=location.location_id, qty=Decimal("5"), unit_cost=Decimal("10"),
+        reference_type="TEST", reference_id=uuid.uuid4(),
+    )
+    lot_d1 = _mk_lot(db_session, org_id=org_id, firm=firm, item=item, lot_number="D1",
+                     received_date=datetime.date(2026, 1, 1))
+    lot_d2 = _mk_lot(db_session, org_id=org_id, firm=firm, item=item, lot_number="D2",
+                     received_date=datetime.date(2026, 2, 1))
+    inventory_service.add_stock(
+        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+        location_id=location.location_id, qty=Decimal("10"), unit_cost=Decimal("20"),
+        lot_id=lot_d1.lot_id, reference_type="TEST", reference_id=uuid.uuid4(),
+    )
+    inventory_service.add_stock(
+        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+        location_id=location.location_id, qty=Decimal("10"), unit_cost=Decimal("30"),
+        lot_id=lot_d2.lot_id, reference_type="TEST", reference_id=uuid.uuid4(),
+    )
+
+    rows = inventory_service.remove_stock_fifo(
+        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+        location_id=location.location_id, qty=Decimal("18"),
+        reference_type="DC", reference_id=uuid.uuid4(),
+    )
+    # 5 from NULL, 10 from D1, 3 from D2 → 3 OUT rows.
+    assert len(rows) == 3
+    by_lot = {r.lot_id: (Decimal(r.qty_out), Decimal(r.unit_cost)) for r in rows}
+    assert by_lot[None] == (Decimal("5"), Decimal("10"))
+    assert by_lot[lot_d1.lot_id] == (Decimal("10"), Decimal("20"))
+    assert by_lot[lot_d2.lot_id] == (Decimal("3"), Decimal("30"))
+
+    # Positions decremented per key; D2 keeps 7.
+    pos_d2 = inventory_service.get_position(
+        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+        location_id=location.location_id, lot_id=lot_d2.lot_id,
+    )
+    assert Decimal(pos_d2.on_hand_qty) == Decimal("7")
+    assert inventory_service.get_total_on_hand(
+        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+        location_id=location.location_id,
+    ) == Decimal("7")
+
+
+def test_remove_stock_fifo_insufficient_raises(
+    db_session: OrmSession, firm_and_item: tuple[Firm, Item, Location]
+) -> None:
+    firm, item, location = firm_and_item
+    org_id = firm.org_id
+    inventory_service.add_stock(
+        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+        location_id=location.location_id, qty=Decimal("25"), unit_cost=Decimal("10"),
+        reference_type="TEST", reference_id=uuid.uuid4(),
+    )
+    with pytest.raises(AppValidationError, match="on_hand=25"):
+        inventory_service.remove_stock_fifo(
+            db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+            location_id=location.location_id, qty=Decimal("40"),
+            reference_type="DC", reference_id=uuid.uuid4(),
+        )
+    # No partial consumption — position intact.
+    assert inventory_service.get_total_on_hand(
+        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+        location_id=location.location_id,
+    ) == Decimal("25")

@@ -26,6 +26,7 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError, InvoiceStateError
@@ -34,12 +35,14 @@ from app.models import (
     Firm,
     GRNLine,
     Item,
+    Lot,
     Party,
     PILine,
     POLine,
     PurchaseInvoice,
     PurchaseOrder,
 )
+from app.models.masters import TrackingType
 from app.models.procurement import (
     GRNStatus,
     PurchaseInvoiceLifecycleStatus,
@@ -674,6 +677,85 @@ def list_grns(
     return list(session.execute(stmt).scalars())
 
 
+def _get_or_create_lot_for_grn_line(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    grn: GRN,
+    line: GRNLine,
+    tracking: TrackingType | None,
+    created_by: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """Resolve (get-or-create) the `lot_id` a GRN line's stock should key to.
+
+    #202 — lot traceability. Called once per line from `receive_grn`, inside
+    the #190 GRN row lock and after the #200 3-way-match guards, so the
+    minting happens on the already-serialized, already-validated receive path.
+
+    Rules:
+      * `line.lot_number` set → use it verbatim (any tracking type).
+      * else item ``tracking in (LOT, BATCH)`` → auto-generate
+        ``f"{grn.series}/{grn.number}-{seq}"`` so tracked items always get a
+        lot rather than silently landing in a NULL-lot position (which is the
+        exact bug #202 fixes).
+      * else (``NONE`` / ``SERIAL``) → return ``None`` (commodity items keep a
+        single NULL-lot position; SERIAL is Phase-3).
+
+    Get-or-create by the ``(org_id, firm_id, item_id, lot_number)`` unique key:
+    the same supplier lot received across two GRNs is one Lot, and the original
+    ``grn_id`` (first receipt) is preserved. A concurrent insert of the same
+    lot from two *different* GRNs surfaces as the unique-constraint
+    IntegrityError — caught and re-selected. Two receives of the *same* GRN
+    can't race here: the #190 GRN row lock serializes them.
+    """
+    lot_number = line.lot_number.strip() if line.lot_number else None
+    if not lot_number:
+        if tracking in {TrackingType.LOT, TrackingType.BATCH}:
+            lot_number = f"{grn.series}/{grn.number}-{line.line_sequence or 1}"
+        else:
+            return None
+
+    predicate = (
+        Lot.org_id == org_id,
+        Lot.firm_id == grn.firm_id,
+        Lot.item_id == line.item_id,
+        Lot.lot_number == lot_number,
+        Lot.deleted_at.is_(None),
+    )
+    existing = session.execute(select(Lot).where(*predicate)).scalar_one_or_none()
+    if existing is not None:
+        return existing.lot_id
+
+    lot = Lot(
+        org_id=org_id,
+        firm_id=grn.firm_id,
+        item_id=line.item_id,
+        lot_number=lot_number,
+        grn_id=grn.grn_id,
+        received_date=grn.grn_date,
+        primary_cost=Decimal(line.rate) if line.rate is not None else None,
+        cost_basis="GRN_RATE",
+        weight_kg=Decimal(line.weight_kg) if line.weight_kg is not None else None,
+        measured_length_m=(
+            Decimal(line.measured_length_m) if line.measured_length_m is not None else None
+        ),
+        created_by=created_by,
+        updated_by=created_by,
+    )
+    try:
+        # Nested savepoint so a cross-GRN unique-violation rolls back only the
+        # lot insert, not the whole receive transaction (GRN lock + stock).
+        with session.begin_nested():
+            session.add(lot)
+            session.flush()
+    except IntegrityError:
+        existing = session.execute(select(Lot).where(*predicate)).scalar_one_or_none()
+        if existing is None:  # pragma: no cover — defensive; the unique key won.
+            raise
+        return existing.lot_id
+    return lot.lot_id
+
+
 def receive_grn(
     session: Session,
     *,
@@ -755,8 +837,28 @@ def receive_grn(
     location = inventory_service.get_or_create_default_location(
         session, org_id=org_id, firm_id=grn.firm_id
     )
+    # #202: fetch each line's item tracking once so we know whether to mint a
+    # lot for lines that carry no explicit lot_number (LOT/BATCH auto-generate).
+    line_item_ids = {line.item_id for line in grn.lines}
+    tracking_by_item = {
+        row.item_id: row.tracking
+        for row in session.execute(
+            select(Item).where(Item.item_id.in_(line_item_ids), Item.org_id == org_id)
+        ).scalars()
+    }
     for line in grn.lines:
         unit_cost = Decimal(line.rate) if line.rate is not None else Decimal("0")
+        # #202: mint (or reuse) the lot this line's stock keys to, then thread
+        # its lot_id into add_stock so stock_ledger.lot_id + the per-lot
+        # stock_position are populated (was silently dropped before).
+        lot_id = _get_or_create_lot_for_grn_line(
+            session,
+            org_id=org_id,
+            grn=grn,
+            line=line,
+            tracking=tracking_by_item.get(line.item_id),
+            created_by=updated_by,
+        )
         inventory_service.add_stock(
             session,
             org_id=org_id,
@@ -765,6 +867,7 @@ def receive_grn(
             location_id=location.location_id,
             qty=Decimal(line.qty_received),
             unit_cost=unit_cost,
+            lot_id=lot_id,
             reference_type="GRN",
             reference_id=grn.grn_id,
             txn_date=grn.grn_date,

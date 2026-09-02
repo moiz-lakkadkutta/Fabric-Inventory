@@ -240,19 +240,38 @@ def create_adjustment(
     elif direction == "DECREASE":
         if qty == _ZERO_COST:
             raise AppValidationError("qty must be positive for DECREASE direction")
-        ledger = inventory_service.remove_stock(
-            session,
-            org_id=org_id,
-            firm_id=firm_id,
-            item_id=item_id,
-            location_id=location_id,
-            qty=qty,
-            reference_type="ADJUSTMENT",
-            reference_id=adj_id,
-            lot_id=lot_id,
-            txn_date=txn_date,
-            notes=reason,
-        )
+        if lot_id is None:
+            # #202: no explicit lot → consume FIFO across lots so a lot-stocked
+            # item can still be decreased. remove_stock_fifo returns one OUT row
+            # per consumed position; keep the first for the header's ledger link
+            # (the header records the aggregate qty_change).
+            fifo_rows = inventory_service.remove_stock_fifo(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                item_id=item_id,
+                location_id=location_id,
+                qty=qty,
+                reference_type="ADJUSTMENT",
+                reference_id=adj_id,
+                txn_date=txn_date,
+                notes=reason,
+            )
+            ledger = fifo_rows[0]
+        else:
+            ledger = inventory_service.remove_stock(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                item_id=item_id,
+                location_id=location_id,
+                qty=qty,
+                reference_type="ADJUSTMENT",
+                reference_id=adj_id,
+                lot_id=lot_id,
+                txn_date=txn_date,
+                notes=reason,
+            )
         qty_change = -qty  # signed negative in the header
 
     elif direction == "COUNT_RESET":
@@ -267,7 +286,21 @@ def create_adjustment(
             location_id=location_id,
             lot_id=lot_id,
         )
-        current_qty = Decimal(pos.on_hand_qty) if pos is not None else Decimal("0")
+        # #202: a lot-less COUNT_RESET counts the AGGREGATE on-hand across every
+        # lot (the physical count is one number for the item at this location),
+        # then resets the difference via FIFO below. An explicit-lot COUNT_RESET
+        # counts only that lot's position (unchanged). For untracked items the
+        # NULL-lot position IS the aggregate, so this is a no-op for them.
+        if lot_id is None:
+            current_qty = inventory_service.get_total_on_hand(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                item_id=item_id,
+                location_id=location_id,
+            )
+        else:
+            current_qty = Decimal(pos.on_hand_qty) if pos is not None else Decimal("0")
         delta = qty - current_qty
 
         # For COUNT_RESET→increase: use caller's unit_cost if provided; otherwise
@@ -333,8 +366,23 @@ def create_adjustment(
                 txn_date=txn_date,
                 notes=reason,
             )
+        elif lot_id is None:
+            # delta < 0, lot-less → decrease across lots FIFO (#202).
+            fifo_rows = inventory_service.remove_stock_fifo(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                item_id=item_id,
+                location_id=location_id,
+                qty=-delta,
+                reference_type="ADJUSTMENT",
+                reference_id=adj_id,
+                txn_date=txn_date,
+                notes=reason,
+            )
+            ledger = fifo_rows[0]
         else:
-            # delta < 0 → decrease
+            # delta < 0, explicit lot → decrease that lot exactly.
             ledger = inventory_service.remove_stock(
                 session,
                 org_id=org_id,
