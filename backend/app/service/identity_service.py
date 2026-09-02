@@ -38,7 +38,7 @@ from typing import Any, Final, Literal
 import bcrypt
 import jwt
 import pyotp
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -148,6 +148,17 @@ def verify_password(plaintext: str, hashed: str) -> bool:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def normalize_email(email: str) -> str:
+    """Canonical form for storage + lookup: trimmed, lowercased.
+
+    Email is case-insensitive for identity across the whole app (issue #208).
+    Use `str.lower()` (NOT `casefold()`) so Python and the SQL `lower()` in the
+    `uq_app_user_org_lower_email` index compute identical bytes for our ASCII
+    (EmailStr-constrained) data — `casefold()` diverges on Turkish-I / ß.
+    """
+    return email.strip().lower()
+
+
 def register_user(
     session: Session,
     *,
@@ -161,11 +172,12 @@ def register_user(
     email within the same org. Email uniqueness is also DB-enforced via the
     `app_user_org_id_email_key` unique constraint.
     """
+    email = normalize_email(email or "")
     if not email:
         raise AppValidationError("email is required")
 
     existing = session.execute(
-        select(AppUser).where(AppUser.org_id == org_id, AppUser.email == email)
+        select(AppUser).where(AppUser.org_id == org_id, func.lower(AppUser.email) == email)
     ).scalar_one_or_none()
     if existing is not None:
         raise AppValidationError(f"User with email {email!r} already exists in this org")
@@ -320,10 +332,11 @@ def login(
     message — never leak whether the email is registered or whether the
     password was wrong vs the account being suspended.
     """
+    email = normalize_email(email or "")
     user = session.execute(
         select(AppUser).where(
             AppUser.org_id == org_id,
-            AppUser.email == email,
+            func.lower(AppUser.email) == email,
             AppUser.deleted_at.is_(None),
         )
     ).scalar_one_or_none()

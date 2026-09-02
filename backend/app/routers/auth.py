@@ -17,7 +17,7 @@ import json as _json
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 
 from app.config import get_settings
 from app.dependencies import CurrentUser, SyncDBSession
@@ -278,6 +278,11 @@ def signup(
     # no current org yet — so we generate the id, declare it via SET, then
     # insert. Every subsequent INSERT in this transaction (firm, roles,
     # ledgers, user) inherits the GUC and passes WITH CHECK.
+    # #208: canonicalize the email once (trimmed + lowercased) and use it
+    # for every write below (admin_email, the user row, the audit blob) so
+    # storage is consistent and case-insensitive login/reset can find it.
+    email_norm = identity_service.normalize_email(body.email)
+
     new_org_id = uuid.uuid4()
     db.execute(text(f"SET LOCAL app.current_org_id = '{new_org_id}'"))
 
@@ -288,7 +293,7 @@ def signup(
     org = Organization(
         org_id=new_org_id,
         name=body.org_name,
-        admin_email=body.email,
+        admin_email=email_norm,
         encrypted_dek=wrap_dek(dek, org_id=new_org_id),
     )
     db.add(org)
@@ -326,7 +331,7 @@ def signup(
     ).scalar_one()
 
     user = identity_service.register_user(
-        db, email=body.email, password=body.password, org_id=org.org_id
+        db, email=email_norm, password=body.password, org_id=org.org_id
     )
     rbac_service.assign_role(
         db,
@@ -336,7 +341,11 @@ def signup(
         org_id=org.org_id,
     )
 
-    pair = identity_service.issue_tokens(db, user=user, firm_id=None)
+    # #208: a fresh org has exactly one firm (created just above), so seed
+    # the token's firm_id with it — mirrors login's single-firm auto-select
+    # (auth.py login handler) and lets firm-scoped endpoints work straight
+    # off the signup token instead of 403'ing "No active firm".
+    pair = identity_service.issue_tokens(db, user=user, firm_id=firm.firm_id)
     _set_refresh_cookie(
         response,
         pair.refresh_token,
@@ -355,7 +364,7 @@ def signup(
             "after": {
                 "org_name": body.org_name,
                 "firm_name": body.firm_name,
-                "email": body.email,
+                "email": email_norm,
             }
         },
     )
@@ -398,10 +407,16 @@ def login(
         identity_service.verify_password(body.password, identity_service.DUMMY_BCRYPT_HASH)
         raise InvalidCredentialsError("Invalid email or password")
 
+    # #208: email is case-insensitive for identity — compare on lower() both
+    # sides so a mixed-case typed email matches the canonical stored row
+    # (index-backed by uq_app_user_org_lower_email). Normalization happens
+    # AFTER the rate-limit dependency (which already lowercases its key) and
+    # does not alter the dummy-bcrypt timing paths below.
+    email_norm = identity_service.normalize_email(body.email)
     user = db.execute(
         select(AppUser).where(
             AppUser.org_id == org.org_id,
-            AppUser.email == body.email,
+            func.lower(AppUser.email) == email_norm,
             AppUser.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
@@ -600,10 +615,12 @@ def mfa_verify(
         identity_service.verify_password(body.password, identity_service.DUMMY_BCRYPT_HASH)
         raise InvalidCredentialsError("Invalid email or password")
 
+    # #208: case-insensitive email lookup — see login handler comment.
+    email_norm = identity_service.normalize_email(body.email)
     user = db.execute(
         select(AppUser).where(
             AppUser.org_id == org.org_id,
-            AppUser.email == body.email,
+            func.lower(AppUser.email) == email_norm,
             AppUser.deleted_at.is_(None),
         )
     ).scalar_one_or_none()
@@ -653,7 +670,19 @@ def mfa_verify(
 
     user.last_login_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
-    pair = identity_service.issue_tokens(db, user=user, firm_id=None)
+
+    # #208 (D3): single-firm auto-select, identical to the login handler, so
+    # an MFA user isn't dead-ended on "No active firm" after every login.
+    firms = list(
+        db.execute(
+            select(Firm)
+            .where(Firm.org_id == user.org_id, Firm.deleted_at.is_(None))
+            .order_by(Firm.created_at.asc())
+        ).scalars()
+    )
+    auto_firm_id = firms[0].firm_id if len(firms) == 1 else None
+
+    pair = identity_service.issue_tokens(db, user=user, firm_id=auto_firm_id)
     _set_refresh_cookie(
         response,
         pair.refresh_token,
@@ -663,7 +692,7 @@ def mfa_verify(
     audit_service.emit(
         db,
         org_id=user.org_id,
-        firm_id=None,
+        firm_id=auto_firm_id,
         user_id=user.user_id,
         entity_type="auth.session",
         entity_id=user.user_id,
