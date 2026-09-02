@@ -1027,3 +1027,32 @@ def test_bank_account_create_jv_has_created_by(
     assert vouchers[0].created_by == user.user_id, (
         "GL JV must carry the same created_by as the bank account create call"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #201: one bank account per GL sub-ledger
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_two_bank_accounts_cannot_share_ledger(db_session: OrmSession) -> None:
+    """#201: a second bank account on the same (non-deleted) ledger must be
+    rejected — the voucher-line → account mapping recon relies on must be 1:1.
+    """
+    org_id, firm_id, bank_ledger_id = _make_seeded_org_firm_ledger(db_session)
+
+    banking_service.create_bank_account(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        ledger_id=bank_ledger_id,
+        bank_name="First",
+    )
+
+    with pytest.raises(AppValidationError, match="already linked"):
+        banking_service.create_bank_account(
+            db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            ledger_id=bank_ledger_id,
+            bank_name="Second",
+        )
