@@ -1106,7 +1106,28 @@ def finalize_invoice(
     Raises `InvoiceStateError` (mapped to 409 by the router) when the
     invoice has already moved past DRAFT.
     """
-    invoice = get_sales_invoice(session, org_id=org_id, sales_invoice_id=sales_invoice_id)
+    # #190 concurrency: lock the invoice header row BEFORE the DRAFT check so
+    # two overlapping finalize transactions serialize here instead of both
+    # observing the pre-state and each posting a voucher. The loser blocks on
+    # the row lock, wakes after the winner commits, and — under READ COMMITTED,
+    # `populate_existing=True` refreshing the identity-map copy — sees FINALIZED
+    # and raises InvoiceStateError (→ 409). `get_sales_invoice` itself must stay
+    # lock-free (it serves GET/PDF read paths), so we inline the locked read.
+    # Lock ordering (deadlock-avoidance): invoice row → stock positions → firm
+    # row (voucher numbering, last). See module note in accounting_service.
+    invoice = session.execute(
+        select(SalesInvoice)
+        .options(selectinload(SalesInvoice.lines))
+        .where(
+            SalesInvoice.sales_invoice_id == sales_invoice_id,
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.deleted_at.is_(None),
+        )
+        .with_for_update(of=SalesInvoice)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise NotFoundError(f"Sales invoice {sales_invoice_id} not found.")
 
     if invoice.lifecycle_status != InvoiceLifecycleStatus.DRAFT:
         raise InvoiceStateError(

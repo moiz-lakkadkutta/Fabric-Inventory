@@ -1078,6 +1078,50 @@ def test_void_pi_posted_reverses_gl_voucher(
     assert net_by_code.get("2000", Decimal(0)) == Decimal(0), "Creditors nets to 0"
 
 
+def test_void_pi_reversal_not_blocked_by_190_posting_index(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """#190 guard: the partial-unique index ``uq_voucher_one_posting_per_ref``
+    is deliberately scoped to SALES_INVOICE / COGS_SALE and MUST NOT cover
+    PURCHASE_INVOICE — a void legitimately posts a second PURCHASE_INVOICE
+    voucher sharing (voucher_type, reference_id). If the index predicate ever
+    grew to include PURCHASE_INVOICE, the void's reversal INSERT below would
+    trip an IntegrityError at flush and this test would fail loudly.
+    """
+    firm, party, item = pi_setup
+    _seed_coa_for_pi_gl_tests(db_session, org_id=fresh_org_id)
+
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="4",
+        rate="100",
+        gst_rate="5",
+    )
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+    # This flush inserts the SECOND PURCHASE_INVOICE voucher for the same
+    # reference_id — must succeed (index excludes PURCHASE_INVOICE).
+    procurement_service.void_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+    db_session.flush()
+
+    vouchers = list(
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+                Voucher.reference_id == pi.purchase_invoice_id,
+                Voucher.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    assert len(vouchers) == 2, f"void must leave 2 PURCHASE_INVOICE vouchers, got {len(vouchers)}"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # S1: RCM PI with non-zero gst_amount sets a deferred warning
 # ──────────────────────────────────────────────────────────────────────
