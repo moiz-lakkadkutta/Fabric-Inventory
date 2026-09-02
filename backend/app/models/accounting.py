@@ -74,10 +74,12 @@ class VoucherType(enum.StrEnum):
     # write-downs). Added via the ``c3_stock_adj_gl`` migration;
     # same forward-only caveat as MATERIAL_ISSUE.
     STOCK_ADJUSTMENT = "STOCK_ADJUSTMENT"
-    # COGS-on-sale: cost of goods sold recognition at stock-out point.
+    # COGS-on-sale: cost of goods sold recognition at invoice finalize.
     # DR 5000 Cost of Goods Sold / CR 1300 Inventory.  Posted by
-    # ``accounting_service.post_cogs_voucher`` when a direct sales invoice
-    # is finalized, or when a delivery challan is issued.  Added via the
+    # ``accounting_service.post_cogs_voucher`` when a sales invoice is
+    # finalized — for direct invoices on the stock relief, and for DC-linked
+    # invoices from the DC's already-relieved outbound stock (#198).  The
+    # voucher is dated invoice_date (matching principle).  Added via the
     # ``cogs_sale_voucher_type`` migration; same forward-only caveat as
     # MATERIAL_ISSUE.
     COGS_SALE = "COGS_SALE"
