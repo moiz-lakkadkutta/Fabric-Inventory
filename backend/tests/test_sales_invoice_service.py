@@ -815,21 +815,46 @@ def test_gst_firm_unaffected_by_194(db_session: OrmSession) -> None:
 def _mixed_rate_lines(item_id: uuid.UUID) -> list[dict[str, object]]:
     """Canonical odd-paisa mixed-rate shape from finding #195."""
     return [
-        {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("233.31"),
-         "gst_rate": Decimal("5"), "sequence": 1},
-        {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("100"),
-         "gst_rate": Decimal("12"), "sequence": 2},
-        {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("50"),
-         "gst_rate": Decimal("18"), "sequence": 3},
-        {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("200"),
-         "gst_rate": Decimal("0"), "sequence": 4},
-        {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("41.17"),
-         "gst_rate": Decimal("28"), "sequence": 5},
+        {
+            "item_id": item_id,
+            "qty": Decimal("1"),
+            "price": Decimal("233.31"),
+            "gst_rate": Decimal("5"),
+            "sequence": 1,
+        },
+        {
+            "item_id": item_id,
+            "qty": Decimal("1"),
+            "price": Decimal("100"),
+            "gst_rate": Decimal("12"),
+            "sequence": 2,
+        },
+        {
+            "item_id": item_id,
+            "qty": Decimal("1"),
+            "price": Decimal("50"),
+            "gst_rate": Decimal("18"),
+            "sequence": 3,
+        },
+        {
+            "item_id": item_id,
+            "qty": Decimal("1"),
+            "price": Decimal("200"),
+            "gst_rate": Decimal("0"),
+            "sequence": 4,
+        },
+        {
+            "item_id": item_id,
+            "qty": Decimal("1"),
+            "price": Decimal("41.17"),
+            "gst_rate": Decimal("28"),
+            "sequence": 5,
+        },
     ]
 
 
 def test_mixed_rate_invoice_line_gst_uses_half_rate_method(db_session: OrmSession) -> None:
-    """#195 (a) exact repro: each line's gst_amount = 2 × round(taxable×rate/200);
+    """#195 (a) exact repro: each line's gst_amount = 2 x round(taxablexrate/200);
     CGST == SGST implicitly (even totals); header gst = Σ lines.
 
     Before the fix line 1 (233.31 @ 5%) stored 11.67 (full-rate rounding,
@@ -873,7 +898,7 @@ def test_mixed_rate_invoice_line_gst_uses_half_rate_method(db_session: OrmSessio
         rate = Decimal(line.gst_rate)
         gst = Decimal(line.gst_amount)
         half = (Decimal(line.line_amount) * rate / Decimal("200")).quantize(Decimal("0.01"))
-        assert gst == 2 * half, f"line @ {rate}%: {gst} != 2×{half}"
+        assert gst == 2 * half, f"line @ {rate}%: {gst} != 2x{half}"
         assert (gst * 100) % 2 == 0, f"line @ {rate}% gst {gst} is not even-paisa"
         assert gst == expected[rate]
         total += gst

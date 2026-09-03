@@ -339,8 +339,8 @@ def test_split_tax_legacy_odd_input_equal_halves() -> None:
 def test_compute_line_gst_cgst_sgst_equal_halves() -> None:
     """#195 canonical vector: taxable 233.31 @ 5% intra-state.
 
-    Old full-rate method: 233.31 × 5% = 11.6655 → 11.67, split 5.84/5.83.
-    New statutory method: each half = round(233.31 × 2.5%) = round(5.83275)
+    Old full-rate method: 233.31 x 5% = 11.6655 → 11.67, split 5.84/5.83.
+    New statutory method: each half = round(233.31 x 2.5%) = round(5.83275)
     = 5.83 → CGST == SGST == 5.83, line gst_amount 11.66.
     """
     s = compute_line_gst(
@@ -371,9 +371,7 @@ def test_compute_line_gst_igst_full_rate() -> None:
 
 def test_compute_line_gst_nil_zero() -> None:
     for t in (TaxType.NIL, TaxType.NIL_LUT, TaxType.NIL_NOT_A_SUPPLY):
-        s = compute_line_gst(
-            line_amount=Decimal("1000.00"), gst_rate=Decimal("18"), tax_type=t
-        )
+        s = compute_line_gst(line_amount=Decimal("1000.00"), gst_rate=Decimal("18"), tax_type=t)
         assert s.cgst == s.sgst == s.igst == Decimal("0.00"), t
 
 

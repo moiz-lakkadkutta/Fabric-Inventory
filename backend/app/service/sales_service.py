@@ -956,7 +956,7 @@ def create_draft_invoice(
 
     # #195: SECOND PASS — now that tax_type is known, compute each line's
     # FINAL, statutory GST via gst_service.compute_line_gst. This is the single
-    # source of truth: CGST == SGST == round(taxable × rate/200) for intra-state
+    # source of truth: CGST == SGST == round(taxable x rate/200) for intra-state
     # (so the odd paisa never lands lopsided on CGST), the full rate on IGST,
     # and ZERO for the NIL family (subsumes #193's zeroing block — a NIL type
     # returns an all-zero split regardless of gst_rate, so the books never

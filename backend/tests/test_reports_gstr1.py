@@ -1181,8 +1181,15 @@ def _create_finalize_multiline(
     return invoice_id
 
 
-_SLAB_RATES = {Decimal("0"), Decimal("0.25"), Decimal("3"), Decimal("5"),
-               Decimal("12"), Decimal("18"), Decimal("28")}
+_SLAB_RATES = {
+    Decimal("0"),
+    Decimal("0.25"),
+    Decimal("3"),
+    Decimal("5"),
+    Decimal("12"),
+    Decimal("18"),
+    Decimal("28"),
+}
 
 
 def test_gstr1_b2b_one_row_per_invoice_per_rate(
@@ -1196,7 +1203,10 @@ def test_gstr1_b2b_one_row_per_invoice_per_rate(
     item5 = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
     item12 = _seed_item(sync_engine, org_id=org_id, hsn_code="6006")
     _create_finalize_multiline(
-        http_client, me, party_id=party_id, invoice_date="2026-09-02",
+        http_client,
+        me,
+        party_id=party_id,
+        invoice_date="2026-09-02",
         lines=[
             {"item_id": str(item5), "qty": "1", "price": "233.31", "gst_rate": "5"},
             {"item_id": str(item12), "qty": "1", "price": "100", "gst_rate": "12"},
@@ -1237,7 +1247,10 @@ def test_gstr1_b2cs_groups_by_state_and_slab_rate(
     # Two invoices, each carrying a 5% and a 12% line.
     for _ in range(2):
         _create_finalize_multiline(
-            http_client, me, party_id=party, invoice_date="2026-09-03",
+            http_client,
+            me,
+            party_id=party,
+            invoice_date="2026-09-03",
             lines=[
                 {"item_id": str(item5), "qty": "1", "price": "1000", "gst_rate": "5"},
                 {"item_id": str(item12), "qty": "1", "price": "1000", "gst_rate": "12"},
@@ -1255,9 +1268,7 @@ def test_gstr1_b2cs_groups_by_state_and_slab_rate(
     assert Decimal(b2cs[("MH", Decimal("12"))]["cgst"]) == Decimal("120.00")
 
 
-def test_gstr1_hsn_rows_carry_slab_rate(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_gstr1_hsn_rows_carry_slab_rate(http_client: TestClient, sync_engine: Engine) -> None:
     """HSN summary is rate-wise: each row carries gst_rate and CGST == SGST."""
     me = _signup_owner(http_client)
     org_id = uuid.UUID(me["org_id"])
@@ -1265,7 +1276,10 @@ def test_gstr1_hsn_rows_carry_slab_rate(
     item5 = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
     item12 = _seed_item(sync_engine, org_id=org_id, hsn_code="6006")
     _create_finalize_multiline(
-        http_client, me, party_id=party_id, invoice_date="2026-09-04",
+        http_client,
+        me,
+        party_id=party_id,
+        invoice_date="2026-09-04",
         lines=[
             {"item_id": str(item5), "qty": "2", "price": "500", "gst_rate": "5"},
             {"item_id": str(item12), "qty": "1", "price": "1000", "gst_rate": "12"},
@@ -1305,13 +1319,27 @@ def test_gstr1_total_tax_equals_gl_2100_ratewise(
     db_session.flush()
 
     inv = sales_service.create_draft_invoice(
-        db_session, org_id=org_id, firm_id=firm_id, party_id=party.party_id,
-        invoice_date=datetime.date(2026, 9, 2), ship_to_state="MH",
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party.party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        ship_to_state="MH",
         lines=[
-            {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("233.31"),
-             "gst_rate": Decimal("5"), "sequence": 1},
-            {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("50"),
-             "gst_rate": Decimal("18"), "sequence": 2},
+            {
+                "item_id": item_id,
+                "qty": Decimal("1"),
+                "price": Decimal("233.31"),
+                "gst_rate": Decimal("5"),
+                "sequence": 1,
+            },
+            {
+                "item_id": item_id,
+                "qty": Decimal("1"),
+                "price": Decimal("50"),
+                "gst_rate": Decimal("18"),
+                "sequence": 2,
+            },
         ],
     )
     sales_service.finalize_invoice(db_session, org_id=org_id, sales_invoice_id=inv.sales_invoice_id)

@@ -269,21 +269,19 @@ class GstSplit:
     igst: Decimal
 
 
-def compute_line_gst(
-    *, line_amount: Decimal, gst_rate: Decimal, tax_type: TaxType
-) -> GstSplit:
+def compute_line_gst(*, line_amount: Decimal, gst_rate: Decimal, tax_type: TaxType) -> GstSplit:
     """Statutory per-line GST split — the single source of truth (#195).
 
     The GSTN portal validates CGST and SGST *independently*, each as
-    ``round(taxable × rate / 2)`` — NOT as a halved full-rate total (which
+    ``round(taxable x rate / 2)`` — NOT as a halved full-rate total (which
     dumped the odd paisa onto CGST and made CGST ≠ SGST). This helper
     computes each component directly from the taxable amount so the two
     halves are always exactly equal and the line total is always even to
     the paisa.
 
-      - CGST_SGST: cgst = sgst = quantize(line_amount × rate / 200); the
+      - CGST_SGST: cgst = sgst = quantize(line_amount x rate / 200); the
         line's gst_amount is ``cgst + sgst`` (always even).
-      - IGST: igst = quantize(line_amount × rate / 100); cgst = sgst = 0.
+      - IGST: igst = quantize(line_amount x rate / 100); cgst = sgst = 0.
       - NIL / NIL_LUT / NIL_NOT_A_SUPPLY: every component is zero (a
         zero-rated / not-a-supply line carries value but no tax — #193).
 
@@ -345,9 +343,9 @@ def split_tax(*, tax_type: TaxType, gst_amount: Decimal) -> GstSplit:
 
 __all__ = [
     "B2C_INTER_STATE_THRESHOLD",
-    "VALID_GST_SLAB_RATES",
     "GST_ROUNDING",
     "TWOPLACES",
+    "VALID_GST_SLAB_RATES",
     "BuyerStatus",
     "DocumentType",
     "GstSplit",
