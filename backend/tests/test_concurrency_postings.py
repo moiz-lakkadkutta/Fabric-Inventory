@@ -129,7 +129,7 @@ def _drop_org(admin_engine: Engine, org_id: uuid.UUID) -> None:
         session.commit()
 
 
-def _race(engine: Engine, org_id: uuid.UUID, n: int, fn: Callable[[OrmSession], None]) -> list[str]:
+def _race(engine: Engine, org_id: uuid.UUID, n: int, fn: Callable[[OrmSession], object]) -> list[str]:
     """Run ``fn`` on ``n`` threads, each on its own committed session, all
     released from a barrier at once. Returns one label per worker:
     "OK", the caught exception's class name, or "UNEXPECTED:<repr>".
@@ -227,7 +227,7 @@ def test_concurrent_finalize_posts_exactly_one_voucher(
                 ),
                 {"inv": str(inv_id)},
             ).scalar()
-            assert Decimal(revenue) == Decimal("1000.00"), f"revenue inflated: {revenue}"
+            assert Decimal(str(revenue)) == Decimal("1000.00"), f"revenue inflated: {revenue}"
     finally:
         _drop_org(admin_engine, org_id)
 
@@ -354,7 +354,7 @@ def test_concurrent_cancel_single_reversal(
                 ),
                 {"o": str(org_id)},
             ).scalar()
-            assert Decimal(ar_net) == Decimal("0"), f"AR not netted to zero: {ar_net}"
+            assert Decimal(str(ar_net)) == Decimal("0"), f"AR not netted to zero: {ar_net}"
     finally:
         _drop_org(admin_engine, org_id)
 
@@ -481,7 +481,7 @@ def test_cancel_reverses_duplicate_finalize_vouchers(
                 ),
                 {"o": str(org_id)},
             ).scalar()
-            assert Decimal(ar_net) == Decimal("0"), f"AR not netted after dup reversal: {ar_net}"
+            assert Decimal(str(ar_net)) == Decimal("0"), f"AR not netted after dup reversal: {ar_net}"
     finally:
         _drop_org(admin_engine, org_id)
         # Restore #190's index (org is wiped, so no duplicates remain to trip it).
@@ -543,7 +543,7 @@ def test_concurrent_grn_receive_posts_stock_once(sync_engine: Engine, admin_engi
                 ),
                 {"o": str(org_id), "i": str(item_id)},
             ).scalar()
-            assert Decimal(on_hand) == Decimal("7"), f"on_hand wrong: {on_hand}"
+            assert Decimal(str(on_hand)) == Decimal("7"), f"on_hand wrong: {on_hand}"
 
             status = s.execute(
                 text("SELECT status FROM grn WHERE grn_id = :g"), {"g": str(grn_id)}
@@ -606,13 +606,13 @@ def test_concurrent_full_receipts_never_over_allocate(
                 ),
                 {"inv": str(inv_id)},
             ).scalar()
-            assert Decimal(allocated) == Decimal("10000.00"), f"invoice over-allocated: {allocated}"
+            assert Decimal(str(allocated)) == Decimal("10000.00"), f"invoice over-allocated: {allocated}"
 
             paid = s.execute(
                 text("SELECT paid_amount FROM sales_invoice WHERE sales_invoice_id = :inv"),
                 {"inv": str(inv_id)},
             ).scalar()
-            assert Decimal(paid) == Decimal("10000.00"), f"paid_amount wrong: {paid}"
+            assert Decimal(str(paid)) == Decimal("10000.00"), f"paid_amount wrong: {paid}"
 
             # Exactly one receipt voucher carries a CR-2500 (advance) line for
             # the full amount (the loser); the other credited AR (1200).
@@ -624,7 +624,7 @@ def test_concurrent_full_receipts_never_over_allocate(
                 ),
                 {"o": str(org_id)},
             ).scalar()
-            assert Decimal(advance) == Decimal("10000.00"), f"advance booking wrong: {advance}"
+            assert Decimal(str(advance)) == Decimal("10000.00"), f"advance booking wrong: {advance}"
     finally:
         _drop_org(admin_engine, org_id)
 
@@ -701,7 +701,7 @@ def test_parallel_receives_cannot_exceed_ordered(sync_engine: Engine, admin_engi
                 text("SELECT qty_received FROM po_line WHERE po_line_id = :pl"),
                 {"pl": str(po_line_id)},
             ).scalar()
-            assert Decimal(qty_received) <= Decimal("10"), f"PO over-received: {qty_received}"
+            assert Decimal(str(qty_received)) <= Decimal("10"), f"PO over-received: {qty_received}"
 
             total_stock = s.execute(
                 text(
@@ -710,7 +710,7 @@ def test_parallel_receives_cannot_exceed_ordered(sync_engine: Engine, admin_engi
                 ),
                 {"g": [str(g) for g in grn_ids]},
             ).scalar()
-            assert Decimal(total_stock) <= Decimal("7"), f"stock over-posted: {total_stock}"
+            assert Decimal(str(total_stock)) <= Decimal("7"), f"stock over-posted: {total_stock}"
 
             po_status = s.execute(
                 text("SELECT status FROM purchase_order WHERE purchase_order_id = :p"),
@@ -804,7 +804,7 @@ def test_parallel_issues_cannot_exceed_ordered(sync_engine: Engine, admin_engine
                 text("SELECT qty_dispatched FROM so_line WHERE so_line_id = :sl"),
                 {"sl": str(so_line_id)},
             ).scalar()
-            assert Decimal(qty_dispatched) <= Decimal("10"), f"SO over-dispatched: {qty_dispatched}"
+            assert Decimal(str(qty_dispatched)) <= Decimal("10"), f"SO over-dispatched: {qty_dispatched}"
 
             total_out = s.execute(
                 text(
@@ -813,7 +813,7 @@ def test_parallel_issues_cannot_exceed_ordered(sync_engine: Engine, admin_engine
                 ),
                 {"d": [str(d) for d in dc_ids]},
             ).scalar()
-            assert Decimal(total_out) <= Decimal("7"), f"stock over-relieved: {total_out}"
+            assert Decimal(str(total_out)) <= Decimal("7"), f"stock over-relieved: {total_out}"
 
             so_status = s.execute(
                 text("SELECT status FROM sales_order WHERE sales_order_id = :p"),
