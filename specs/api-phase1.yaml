@@ -3178,6 +3178,52 @@ paths:
           $ref: '#/components/responses/NotFound'
       x-permission: procurement.purchase_invoice.update
 
+  /purchase-invoices/{purchase_invoice_id}/void:
+    post:
+      summary: Void a purchase invoice
+      description: >
+        Void a POSTED (or DRAFT) purchase invoice, reversing its GL postings.
+        Voiding an already-VOIDED PI is an idempotent no-op (200).
+
+        Refused with 409 INVOICE_STATE_ERROR when the PI is not safely
+        voidable: (a) status is RECONCILED (fully paid), or (b) paid_amount > 0
+        (partially paid), or (c) any live payment allocation still references
+        it. A paid/partially-paid PI must be unwound via the supplier
+        refund/debit-note workflow first — voiding it would reverse the full
+        invoice in GL while the payment's AP leg remained, orphaning the cash
+        and diverging AP control from supplier outstanding (see issue #191).
+      operationId: voidPurchaseInvoice
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: purchase_invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Purchase invoice voided (or already void)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseInvoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >
+            Invalid state — the PI is RECONCILED, has paid_amount > 0, or has a
+            live payment allocation. Error code INVOICE_STATE_ERROR.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: purchase.invoice.void
+
   /landed-costs:
     get:
       summary: List landed costs

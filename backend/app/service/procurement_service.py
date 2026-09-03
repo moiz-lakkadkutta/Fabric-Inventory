@@ -1234,12 +1234,14 @@ def void_pi(
         )
     # Belt-and-suspenders: catch rows where paid_amount drifted from allocations.
     has_live_alloc = session.execute(
-        select(PaymentAllocation.allocation_id).where(
+        select(PaymentAllocation.allocation_id)
+        .where(
             PaymentAllocation.purchase_invoice_id == pi.purchase_invoice_id,
             PaymentAllocation.org_id == org_id,
             PaymentAllocation.deleted_at.is_(None),
             PaymentAllocation.reversed_by_allocation_id.is_(None),
-        ).limit(1)
+        )
+        .limit(1)
     ).scalar_one_or_none()
     if has_live_alloc is not None:
         raise InvoiceStateError(

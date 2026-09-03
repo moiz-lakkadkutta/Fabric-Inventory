@@ -801,12 +801,24 @@ def test_void_pi_refuses_when_partially_paid(
 
     # PI-A ₹1000 (oldest by number 0001 → FIFO target), PI-B ₹500.
     pi_a = _make_pi(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty="10", rate="100", gst_rate="0",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="0",
     )
     pi_b = _make_pi(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty="10", rate="50", gst_rate="0",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="50",
+        gst_rate="0",
     )
     procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi_a.purchase_invoice_id)
     procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi_b.purchase_invoice_id)
@@ -824,38 +836,44 @@ def test_void_pi_refuses_when_partially_paid(
     assert pi_a.lifecycle_status == PurchaseInvoiceLifecycleStatus.PARTIALLY_PAID
     assert Decimal(pi_a.paid_amount) == Decimal("600.00")
 
-    # AP control after post+pay: CR(1000+500) − DR(600) = CR 900 = outstanding.
+    # AP control after post+pay: CR(1000+500) minus DR(600) = CR 900 = outstanding.
     assert _ap_control_balance(db_session, org_id=fresh_org_id) == Decimal("900.00")
 
     # Act: void the partially-paid PI → refused.
     with pytest.raises(InvoiceStateError, match="paid/allocated"):
-        procurement_service.void_pi(
-            db_session, org_id=fresh_org_id, pi_id=pi_a.purchase_invoice_id
-        )
+        procurement_service.void_pi(db_session, org_id=fresh_org_id, pi_id=pi_a.purchase_invoice_id)
 
     # PI-A unchanged; no reversal voucher created.
     db_session.expire(pi_a)
     assert pi_a.status == VoucherStatus.POSTED
     assert Decimal(pi_a.paid_amount) == Decimal("600.00")
-    pi_a_vouchers = db_session.execute(
-        select(Voucher).where(
-            Voucher.org_id == fresh_org_id,
-            Voucher.reference_id == pi_a.purchase_invoice_id,
-            Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
-            Voucher.deleted_at.is_(None),
+    pi_a_vouchers = (
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.reference_id == pi_a.purchase_invoice_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+                Voucher.deleted_at.is_(None),
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(pi_a_vouchers) == 1  # only the original post, no reversal
 
     # AP control invariant still holds: == Σ open-PI outstanding (400 + 500).
     assert _ap_control_balance(db_session, org_id=fresh_org_id) == Decimal("900.00")
     # Belt-and-suspenders: live allocation still references PI-A.
-    live_alloc = db_session.execute(
-        select(PaymentAllocation).where(
-            PaymentAllocation.purchase_invoice_id == pi_a.purchase_invoice_id,
-            PaymentAllocation.deleted_at.is_(None),
+    live_alloc = (
+        db_session.execute(
+            select(PaymentAllocation).where(
+                PaymentAllocation.purchase_invoice_id == pi_a.purchase_invoice_id,
+                PaymentAllocation.deleted_at.is_(None),
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(live_alloc) == 1
 
 
@@ -867,8 +885,14 @@ def test_void_pi_still_works_when_unpaid(
     """Regression guard: an UNPAID POSTED PI still voids and reverses GL."""
     firm, party, item = pi_setup
     pi = _make_pi(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty="10", rate="100", gst_rate="0",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="0",
     )
     procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
 
@@ -879,14 +903,18 @@ def test_void_pi_still_works_when_unpaid(
     assert voided.lifecycle_status == PurchaseInvoiceLifecycleStatus.CANCELLED
 
     # Original + reversal vouchers exist; their AP legs net to zero.
-    vouchers = db_session.execute(
-        select(Voucher).where(
-            Voucher.org_id == fresh_org_id,
-            Voucher.reference_id == pi.purchase_invoice_id,
-            Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
-            Voucher.deleted_at.is_(None),
+    vouchers = (
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.reference_id == pi.purchase_invoice_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+                Voucher.deleted_at.is_(None),
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(vouchers) == 2
     assert _ap_control_balance(db_session, org_id=fresh_org_id) == Decimal("0")
 
@@ -903,8 +931,14 @@ def test_void_pi_refuses_fully_paid_reconciled(
 
     firm, party, item = pi_setup
     pi = _make_pi(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty="10", rate="100", gst_rate="0",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="0",
     )
     procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
 
@@ -936,17 +970,27 @@ def test_void_pi_refuses_on_live_allocation_even_if_paid_amount_zero(
 
     firm, party, item = pi_setup
     pi = _make_pi(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty="10", rate="100", gst_rate="0",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="0",
     )
     procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
-    voucher = db_session.execute(
-        select(Voucher).where(
-            Voucher.org_id == fresh_org_id,
-            Voucher.reference_id == pi.purchase_invoice_id,
-            Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+    voucher = (
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.reference_id == pi.purchase_invoice_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
     # Insert an orphan-shaped allocation directly, leaving paid_amount at 0.
     db_session.add(
@@ -976,17 +1020,27 @@ def test_void_pi_allows_after_allocation_soft_deleted(
 
     firm, party, item = pi_setup
     pi = _make_pi(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty="10", rate="100", gst_rate="0",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="0",
     )
     procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
-    voucher = db_session.execute(
-        select(Voucher).where(
-            Voucher.org_id == fresh_org_id,
-            Voucher.reference_id == pi.purchase_invoice_id,
-            Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+    voucher = (
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.reference_id == pi.purchase_invoice_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
     db_session.add(
         PaymentAllocation(
