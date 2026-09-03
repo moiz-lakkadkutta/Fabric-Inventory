@@ -882,6 +882,16 @@ def receive_grn(
     if po is not None:
         _advance_po_status_after_grn(session, po=po)
 
+    # #203: post the GRN-receipt accrual (DR 1300 Inventory / CR 2010 GRN
+    # Clearing) so received-but-unbilled stock reaches the GL — otherwise a
+    # mid-cycle Balance Sheet understates inventory and 1300 drifts negative
+    # (outflows credit it at cost while receipts posted nothing). Runs INSIDE
+    # the #190 GRN row lock, after #200's 3-way-match guards and #202's lot
+    # minting, so the accrual rides the already-serialized, already-validated
+    # receive path. Idempotent + index-guarded (uq_voucher_grn_accrual): a
+    # concurrent twin receive that slips past the row lock trips it → 409.
+    accounting_service.post_grn_accrual_voucher(session, grn=grn, posted_by=updated_by)
+
     session.flush()
     return grn
 
@@ -1167,6 +1177,29 @@ def post_pi(
         )
     if pi.grn_id is not None:
         grn = get_grn(session, org_id=org_id, grn_id=pi.grn_id)
+        # #203: one POSTED PI per GRN. The GRN accrual (DR 1300 / CR 2010) is
+        # cleared in full by the first GRN-linked PI that posts (DR 2010). A
+        # second POSTED PI against the same GRN would DR 2010 again — clearing
+        # an accrual that no longer exists and double-relieving the liability.
+        # Reject it (the minimal slice of #200's 3-way match this fix needs;
+        # nothing else enforces one-PI-per-GRN today).
+        other_posted = session.execute(
+            select(PurchaseInvoice.purchase_invoice_id)
+            .where(
+                PurchaseInvoice.org_id == org_id,
+                PurchaseInvoice.grn_id == pi.grn_id,
+                PurchaseInvoice.purchase_invoice_id != pi.purchase_invoice_id,
+                PurchaseInvoice.deleted_at.is_(None),
+                PurchaseInvoice.status.in_([VoucherStatus.POSTED, VoucherStatus.RECONCILED]),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if other_posted is not None:
+            raise InvoiceStateError(
+                f"Cannot post PI {pi_id}: GRN {pi.grn_id} is already invoiced by a "
+                f"posted purchase invoice. One posted PI per GRN — void the other "
+                f"first or raise a debit note."
+            )
         # #200 guard 5 (defense-in-depth): re-check qty over-billing for DRAFT
         # PIs created before this guard existed, before the state flip / GL post.
         _validate_pi_lines_against_grn(

@@ -21,7 +21,7 @@ from app.exceptions import AppValidationError, InvoiceStateError
 from app.models import Firm, Item, Party
 from app.models.masters import ItemType, UomType
 from app.models.procurement import GRN, GRNStatus, PurchaseOrder, PurchaseOrderStatus
-from app.service import inventory_service, procurement_service
+from app.service import inventory_service, procurement_service, seed_service
 
 # ──────────────────────────────────────────────────────────────────────
 # Shared fixture
@@ -31,6 +31,11 @@ from app.service import inventory_service, procurement_service
 @pytest.fixture
 def grn_setup(db_session: OrmSession, fresh_org_id: uuid.UUID) -> tuple[Firm, Party, Item]:
     """One Firm, one supplier Party, one Item — re-used across all GRN tests."""
+    # #203: receive_grn now posts a GRN-receipt accrual voucher (DR 1300 /
+    # CR 2010), so the COA must exist — exactly as it does in production, where
+    # seed_coa runs at signup. Idempotent.
+    seed_service.seed_coa(db_session, org_id=fresh_org_id)
+
     firm = Firm(
         org_id=fresh_org_id,
         code=f"F-{uuid.uuid4().hex[:6]}",
@@ -1275,7 +1280,12 @@ def test_receive_grn_creates_lot_row(
         grn_date=datetime.date(2026, 4, 27),
         series="GRN/2025-26",
         lines=[
-            {"item_id": item.item_id, "qty_received": "30", "rate": "150.00", "lot_number": "LOT-A1"}
+            {
+                "item_id": item.item_id,
+                "qty_received": "30",
+                "rate": "150.00",
+                "lot_number": "LOT-A1",
+            }
         ],
     )
     procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
@@ -1427,7 +1437,9 @@ def test_grn_minted_lot_surfaces_via_list_lots(
         party_id=party.party_id,
         grn_date=datetime.date(2026, 4, 27),
         series="GRN/2025-26",
-        lines=[{"item_id": item.item_id, "qty_received": "30", "rate": "150", "lot_number": "LOT-A1"}],
+        lines=[
+            {"item_id": item.item_id, "qty_received": "30", "rate": "150", "lot_number": "LOT-A1"}
+        ],
     )
     procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
 
