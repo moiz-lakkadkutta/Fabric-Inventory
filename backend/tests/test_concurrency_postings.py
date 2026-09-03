@@ -719,3 +719,106 @@ def test_parallel_receives_cannot_exceed_ordered(sync_engine: Engine, admin_engi
             assert po_status == "PARTIAL_GRN", f"unexpected PO status: {po_status}"
     finally:
         _drop_org(admin_engine, org_id)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #206 — parallel DC issues cannot exceed the SO's ordered qty
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_parallel_issues_cannot_exceed_ordered(sync_engine: Engine, admin_engine: Engine) -> None:
+    """SO of 10 with two DRAFT DCs of 7 each. Two parallel issue_dc calls:
+    exactly one succeeds; the other is rejected (over-dispatch 422). The SO
+    line ends at qty_dispatched <= 10 and total OUT stock across both DCs <= 7.
+
+    The cumulative cap is enforced under a SELECT ... FOR UPDATE on the SO
+    row (lock order DC-then-SO, built on #190's DC row lock), so a single
+    winner commits before the loser re-reads the dispatched sum.
+    """
+    org_id, firm_id, party_id, item_id = _seed_org_firm_party_item(sync_engine)
+    try:
+        with _new_session(sync_engine, org_id) as s:
+            # Seed enough stock that stock is NOT the limiting factor (14 > 10);
+            # the over-dispatch cap, not remove_stock, must reject the loser.
+            from app.service import inventory_service
+
+            location = inventory_service.get_or_create_default_location(
+                s, org_id=org_id, firm_id=firm_id
+            )
+            inventory_service.add_stock(
+                s,
+                org_id=org_id,
+                firm_id=firm_id,
+                item_id=item_id,
+                location_id=location.location_id,
+                qty=Decimal("14"),
+                unit_cost=Decimal("50"),
+                reference_type="SEED",
+                reference_id=uuid.uuid4(),
+            )
+            so = sales_service.create_so(
+                s,
+                org_id=org_id,
+                firm_id=firm_id,
+                party_id=party_id,
+                so_date=datetime.date(2026, 4, 15),
+                series="SO",
+                lines=[{"item_id": item_id, "qty_ordered": "10", "price": "50"}],
+            )
+            sales_service.confirm_so(s, org_id=org_id, so_id=so.sales_order_id)
+            so_line_id = so.lines[0].so_line_id
+            so_id = so.sales_order_id
+            dc_ids = []
+            for series in ("DC-A", "DC-B"):
+                dc = sales_service.create_dc(
+                    s,
+                    org_id=org_id,
+                    firm_id=firm_id,
+                    party_id=party_id,
+                    dispatch_date=datetime.date(2026, 4, 15),
+                    series=series,
+                    sales_order_id=so_id,
+                    lines=[{"item_id": item_id, "qty_dispatched": "7", "price": "50"}],
+                )
+                dc_ids.append(dc.delivery_challan_id)
+            s.commit()
+
+        counter = {"i": 0}
+        counter_lock = threading.Lock()
+
+        def _issue(s: OrmSession) -> None:
+            with counter_lock:
+                idx = counter["i"]
+                counter["i"] += 1
+            sales_service.issue_dc(s, org_id=org_id, dc_id=dc_ids[idx])
+
+        results = _race(sync_engine, org_id, 2, _issue)
+
+        assert results.count("OK") == 1, f"expected exactly one winner, got {results}"
+        assert all(r in ("OK", "AppValidationError", "InvoiceStateError") for r in results), (
+            f"unexpected results: {results}"
+        )
+
+        with _new_session(sync_engine, org_id) as s:
+            qty_dispatched = s.execute(
+                text("SELECT qty_dispatched FROM so_line WHERE so_line_id = :sl"),
+                {"sl": str(so_line_id)},
+            ).scalar()
+            assert Decimal(qty_dispatched) <= Decimal("10"), f"SO over-dispatched: {qty_dispatched}"
+
+            total_out = s.execute(
+                text(
+                    "SELECT coalesce(sum(qty_out), 0) FROM stock_ledger "
+                    "WHERE reference_type = 'DC' AND reference_id::text = ANY(:d)"
+                ),
+                {"d": [str(d) for d in dc_ids]},
+            ).scalar()
+            assert Decimal(total_out) <= Decimal("7"), f"stock over-relieved: {total_out}"
+
+            so_status = s.execute(
+                text("SELECT status FROM sales_order WHERE sales_order_id = :p"),
+                {"p": str(so_id)},
+            ).scalar()
+            assert so_status == "PARTIAL_DC", f"unexpected SO status: {so_status}"
+    finally:
+        _drop_org(admin_engine, org_id)
