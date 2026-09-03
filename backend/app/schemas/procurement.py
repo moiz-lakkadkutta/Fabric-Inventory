@@ -17,8 +17,11 @@ class POLineRequest(BaseModel):
     """One line in a create-PO request body."""
 
     item_id: uuid.UUID
-    qty_ordered: Annotated[Decimal, Field(gt=0)]
-    rate: Annotated[Decimal, Field(ge=0)]
+    # #207: ≤1e9 caps keep qty/rate within NUMERIC(15,4)'s 11 integer digits
+    # and stop an oversized input from 500ing on flush. The derived
+    # line_amount = qty*rate is guarded separately in the service layer.
+    qty_ordered: Annotated[Decimal, Field(gt=0, le=Decimal("1e9"))]
+    rate: Annotated[Decimal, Field(ge=0, le=Decimal("1e9"))]
     line_sequence: int | None = None
     notes: str | None = None
     taxes_applicable: dict[str, Any] | None = None
@@ -73,8 +76,9 @@ class POListResponse(BaseModel):
 
 class GRNLineRequest(BaseModel):
     item_id: uuid.UUID
-    qty_received: Annotated[Decimal, Field(gt=0)]
-    rate: Annotated[Decimal | None, Field(ge=0)] = None
+    # #207: ≤1e9 caps — see POLineRequest.
+    qty_received: Annotated[Decimal, Field(gt=0, le=Decimal("1e9"))]
+    rate: Annotated[Decimal | None, Field(ge=0, le=Decimal("1e9"))] = None
     lot_number: str | None = Field(default=None, max_length=100)
     po_line_id: uuid.UUID | None = None
     line_sequence: int | None = None
@@ -134,8 +138,9 @@ class GRNListResponse(BaseModel):
 
 class PILineRequest(BaseModel):
     item_id: uuid.UUID
-    qty: Annotated[Decimal, Field(gt=0)]
-    rate: Annotated[Decimal, Field(ge=0)]
+    # #207: ≤1e9 caps — see POLineRequest.
+    qty: Annotated[Decimal, Field(gt=0, le=Decimal("1e9"))]
+    rate: Annotated[Decimal, Field(ge=0, le=Decimal("1e9"))]
     gst_rate: Decimal | None = None
     line_sequence: int | None = None
 

@@ -51,6 +51,7 @@ from app.models.procurement import (
     VoucherStatus,
 )
 from app.service import accounting_service, gst_service, inventory_service
+from app.utils.money import ensure_money_in_range
 
 # ──────────────────────────────────────────────────────────────────────
 # 3-way-match policy constants (#200)
@@ -209,6 +210,9 @@ def create_po(
         qty = Decimal(str(line["qty_ordered"]))
         rate = Decimal(str(line["rate"]))
         line_amount = qty * rate
+        # #207: derived product can overflow NUMERIC(18,2) even when qty/rate
+        # each pass their ≤1e9 field caps — reject with a 422 per-line.
+        ensure_money_in_range(line_amount, field=f"lines.{idx}.line_amount")
         total += line_amount
         po_line = POLine(
             org_id=org_id,
@@ -225,6 +229,7 @@ def create_po(
             updated_by=created_by,
         )
         session.add(po_line)
+    ensure_money_in_range(total, field="total_amount")
     po.total_amount = total
     session.flush()
     return po
@@ -618,6 +623,8 @@ def create_grn(
         rate = Decimal(str(line["rate"])) if line.get("rate") is not None else None
         total_qty += qty
         if rate is not None:
+            # #207: guard the derived product before it reaches NUMERIC(18,2).
+            ensure_money_in_range(qty * rate, field=f"lines.{idx}.line_amount")
             total_amount += qty * rate
         grn_line = GRNLine(
             org_id=org_id,
@@ -632,6 +639,7 @@ def create_grn(
             updated_by=created_by,
         )
         session.add(grn_line)
+    ensure_money_in_range(total_amount, field="total_amount")
     grn.total_qty_received = total_qty
     grn.total_amount = total_amount if total_amount > 0 else None
     session.flush()
@@ -1061,6 +1069,8 @@ def create_pi(
         if rate < 0:
             raise AppValidationError(f"PI line rate cannot be negative (got {rate})")
         line_amount = qty * rate
+        # #207: reject a derived product that overflows NUMERIC(18,2).
+        ensure_money_in_range(line_amount, field=f"lines.{idx}.line_amount")
         gst_rate = Decimal(str(line["gst_rate"])) if line.get("gst_rate") is not None else None
         # GST-2 belt-and-suspenders: validate rate against slab allow-list
         # even when called outside the HTTP/Pydantic path.
@@ -1092,6 +1102,8 @@ def create_pi(
             updated_by=created_by,
         )
         session.add(pi_line)
+    ensure_money_in_range(invoice_total, field="invoice_amount")
+    ensure_money_in_range(gst_total, field="gst_amount")
     pi.invoice_amount = invoice_total
     pi.gst_amount = gst_total if gst_total > 0 else None
     session.flush()

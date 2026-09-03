@@ -162,7 +162,8 @@ def test_invoice_total_accumulation_overflow_is_422(
         },
     )
     body = _assert_validation_envelope(resp)
-    assert "total" in (body["detail"] + str(body["field_errors"])).lower()
+    # The header total (invoice_amount), not any single line, must be named.
+    assert "invoice_amount" in body["field_errors"], body
 
 
 # ── (b) receipt amount ──────────────────────────────────────────────────
