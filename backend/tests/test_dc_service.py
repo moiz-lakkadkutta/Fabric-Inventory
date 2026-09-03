@@ -685,8 +685,13 @@ def test_issue_dc_rejects_cumulative_over_dispatch(
     )
 
     dc1 = _make_dc(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty_dispatched="5", sales_order_id=so.sales_order_id,
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="5",
+        sales_order_id=so.sales_order_id,
     )
     so = _issue_and_get_so(
         db_session, org_id=fresh_org_id, dc_id=dc1.delivery_challan_id, so_id=so.sales_order_id
@@ -696,13 +701,25 @@ def test_issue_dc_rejects_cumulative_over_dispatch(
 
     with pytest.raises(AppValidationError, match="Over-dispatch"):
         _make_dc(
-            db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-            qty_dispatched="20", sales_order_id=so.sales_order_id, series="DC/2025-26",
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=item,
+            qty_dispatched="20",
+            sales_order_id=so.sales_order_id,
+            series="DC/2025-26",
         )
 
     dc3 = _make_dc(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty_dispatched="5", sales_order_id=so.sales_order_id, series="DC/2025-26",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="5",
+        sales_order_id=so.sales_order_id,
+        series="DC/2025-26",
     )
     so = _issue_and_get_so(
         db_session, org_id=fresh_org_id, dc_id=dc3.delivery_challan_id, so_id=so.sales_order_id
@@ -719,8 +736,9 @@ def test_issue_dc_over_dispatch_caught_at_issue_for_legacy_draft(
     """A DRAFT DC that exceeds the SO must be rejected at issue-time (the
     authoritative guard) even if create-time validation were bypassed, with
     zero stock_ledger rows written for the DC."""
-    from app.models import StockLedger
     from sqlalchemy import select as _select
+
+    from app.models import StockLedger
 
     firm, party, item = dc_setup
     _add_stock_for_dc(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="100")
@@ -774,8 +792,9 @@ def test_issue_dc_rejects_cancelled_so(
 ) -> None:
     """create DC (DRAFT) → cancel SO → issue DC must be rejected 409 and the
     SO must stay CANCELLED (never resurrect to PARTIAL_DC), no stock moved."""
-    from app.models import StockLedger
     from sqlalchemy import select as _select
+
+    from app.models import StockLedger
 
     firm, party, item = dc_setup
     _add_stock_for_dc(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="100")
@@ -783,8 +802,13 @@ def test_issue_dc_rejects_cancelled_so(
         db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="10", price="50"
     )
     dc = _make_dc(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty_dispatched="5", sales_order_id=so.sales_order_id,
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="5",
+        sales_order_id=so.sales_order_id,
     )
     sales_service.cancel_so(db_session, org_id=fresh_org_id, so_id=so.sales_order_id)
     db_session.refresh(so)
@@ -846,8 +870,13 @@ def test_issue_dc_rejects_item_not_on_so(
     )
     with pytest.raises(AppValidationError, match="not on SO"):
         _make_dc(
-            db_session, org_id=fresh_org_id, firm=firm, party=party, item=other_item,
-            qty_dispatched="5", sales_order_id=so.sales_order_id,
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=other_item,
+            qty_dispatched="5",
+            sales_order_id=so.sales_order_id,
         )
 
 
@@ -863,8 +892,13 @@ def test_exact_fill_boundary(
         db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="10", price="50"
     )
     dc = _make_dc(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty_dispatched="10", sales_order_id=so.sales_order_id,
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="10",
+        sales_order_id=so.sales_order_id,
     )
     so = _issue_and_get_so(
         db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id, so_id=so.sales_order_id
@@ -897,12 +931,23 @@ def test_two_so_lines_same_item_aggregate(
 
     with pytest.raises(AppValidationError, match="Over-dispatch"):
         _make_dc(
-            db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-            qty_dispatched="11", sales_order_id=so.sales_order_id,
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=item,
+            qty_dispatched="11",
+            sales_order_id=so.sales_order_id,
         )
     dc = _make_dc(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty_dispatched="10", sales_order_id=so.sales_order_id, series="DC/2025-26",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="10",
+        sales_order_id=so.sales_order_id,
+        series="DC/2025-26",
     )
     issued = sales_service.issue_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
     assert issued.status == DCStatus.ISSUED.value
@@ -917,8 +962,13 @@ def test_direct_dc_unaffected(
     firm, party, item = dc_setup
     _add_stock_for_dc(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="100")
     dc = _make_dc(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        qty_dispatched="90", sales_order_id=None,
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="90",
+        sales_order_id=None,
     )
     issued = sales_service.issue_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
     assert issued.status == DCStatus.ISSUED.value

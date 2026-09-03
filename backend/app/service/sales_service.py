@@ -449,7 +449,7 @@ def _validate_dc_lines_against_so(
     this_by_item: dict[uuid.UUID, Decimal] = {}
     for line in dc_lines:
         if isinstance(line, dict):
-            item_id = line["item_id"]  # type: ignore[assignment]
+            item_id: uuid.UUID = line["item_id"]  # type: ignore[assignment]
             qty = Decimal(str(line["qty_dispatched"]))
         else:
             item_id = line.item_id
@@ -476,9 +476,7 @@ def _validate_dc_lines_against_so(
 
     for item_id, this in this_by_item.items():
         if item_id not in ordered_by_item:
-            raise AppValidationError(
-                f"DC line item {item_id} is not on SO {so.series}/{so.number}"
-            )
+            raise AppValidationError(f"DC line item {item_id} is not on SO {so.series}/{so.number}")
         ordered = ordered_by_item[item_id]
         already = already_by_item.get(item_id, Decimal("0"))
         if already + this > ordered:
