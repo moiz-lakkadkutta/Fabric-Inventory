@@ -86,6 +86,7 @@ def post_receipt(
         amount=body.amount,
         receipt_date=body.receipt_date,
         mode=body.mode,
+        bank_account_id=body.bank_account_id,
         series=body.series,
         reference=body.reference,
         posted_by=current_user.user_id,
