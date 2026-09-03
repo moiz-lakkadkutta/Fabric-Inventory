@@ -77,6 +77,7 @@ from app.schemas.manufacturing import (
     MoListItem,
     MoListResponse,
     MoMaterialLineResponse,
+    MoOperationExecutorRequest,
     MoOperationListItem,
     MoOperationResponse,
     MoResponse,
@@ -1075,6 +1076,18 @@ def create_mo(
         raise AppValidationError("firm_id must match the current session firm")
 
     series = body.series or "MO"
+    # #204: fold the per-op executor overrides into the dict the service
+    # consumes, rejecting duplicate operation_master_ids at the boundary
+    # (the last-writer-wins ambiguity is a client bug, not something to
+    # silently resolve).
+    operation_overrides: dict[uuid.UUID, tuple[str, uuid.UUID | None]] = {}
+    for ov in body.operation_overrides:
+        if ov.operation_master_id in operation_overrides:
+            raise AppValidationError(
+                f"duplicate operation_override for operation_master_id {ov.operation_master_id}."
+            )
+        operation_overrides[ov.operation_master_id] = (ov.executor, ov.karigar_party_id)
+
     mo = mo_service.create_mo(
         db,
         org_id=current_user.org_id,
@@ -1089,6 +1102,7 @@ def create_mo(
         narration=body.narration,
         series=series,
         created_by=current_user.user_id,
+        operation_overrides=operation_overrides or None,
     )
     # Re-fetch with eager-loaded children for the response builder.
     fresh = mo_service.get_mo(db, org_id=current_user.org_id, mo_id=mo.manufacturing_order_id)
@@ -1774,6 +1788,40 @@ def can_start_mo_operation(
         allowed=allowed,
         reason=reason,
     )
+
+
+@operation_progress_router.patch(
+    "/mo-operations/{mo_operation_id}/executor",
+    response_model=OperationProgressResponse,
+    summary="Set an MO operation's executor (IN_HOUSE ⇄ KARIGAR) — PENDING ops only (#204)",
+)
+def set_mo_operation_executor(
+    mo_operation_id: uuid.UUID,
+    body: MoOperationExecutorRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("manufacturing.mo.write"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> OperationProgressResponse:
+    """#204 — make the karigar (job-work) flow reachable on any MO.
+
+    Flips a PENDING operation between IN_HOUSE and KARIGAR so
+    ``dispatch-karigar`` no longer 422s on API-created MOs. Guarded to
+    PENDING ops with no recorded work; advisory-locked against a
+    concurrent dispatch. Idempotency-Key flows via the global middleware.
+    """
+    if current_user.firm_id is not None and body.firm_id != current_user.firm_id:
+        raise AppValidationError("firm_id must match the current session firm")
+    op = mo_service.set_operation_executor(
+        db,
+        org_id=current_user.org_id,
+        firm_id=body.firm_id,
+        mo_operation_id=mo_operation_id,
+        executor=body.executor,
+        karigar_party_id=body.karigar_party_id,
+        updated_by=current_user.user_id,
+        narration=body.narration,
+    )
+    return _to_progress_response(op)
 
 
 # ──────────────────────────────────────────────────────────────────────

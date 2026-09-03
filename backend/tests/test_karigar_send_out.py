@@ -971,3 +971,257 @@ def test_dispatch_karigar_qty_in_starts_at_zero_no_reset_needed(
     # Post-dispatch: qty_in still 0 (only receive-back bumps it).
     assert Decimal(str(r.json()["qty_in"])) == Decimal("0")
     assert Decimal(str(r.json()["qty_out"])) == Decimal("30.0000")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #204 — karigar flow reachable on an API-created MO (executor overrides
+# + PATCH executor endpoint). Before #204 the only way to get a KARIGAR
+# op was the raw-SQL flip in ``_seed_world`` / the seed-demo backdoor;
+# these tests drive the public API surface end-to-end.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _op_masters_from_routing(routing: dict[str, object]) -> list[str]:
+    edges = routing["edges"]  # type: ignore[index]
+    ordered = [str(edges[0]["from_operation_id"])]  # type: ignore[index]
+    for e in edges:  # type: ignore[union-attr]
+        ordered.append(str(e["to_operation_id"]))
+    return ordered
+
+
+def _seed_world_with_override(
+    http_client: TestClient,
+    sync_engine: Engine,
+    *,
+    planned_qty: str = "100.0000",
+) -> tuple[dict[str, str], str, list[str], str, str]:
+    """Same shape as ``_seed_world`` but the FIRST op is marked KARIGAR
+    via the create-time ``operation_overrides`` (public API), NOT the raw
+    SQL flip. Returns ``(owner, mo_id, [op_ids], karigar_party_id, raw)``.
+    """
+    me = _signup_owner(http_client)
+    design_id = _create_design(http_client, me, code=f"D-{uuid.uuid4().hex[:6]}")
+    finished = _create_item(http_client, me, code=f"F-{uuid.uuid4().hex[:6]}", item_type="FINISHED")
+    raw = _create_item(http_client, me, code=f"R-{uuid.uuid4().hex[:6]}")
+    bom = _create_bom(
+        http_client,
+        me,
+        design_id=design_id,
+        finished_item_id=finished,
+        line_items=[(raw, "1.0000")],
+    )
+    op1 = _create_op(http_client, me, code=f"OP1-{uuid.uuid4().hex[:4]}")
+    op2 = _create_op(http_client, me, code=f"OP2-{uuid.uuid4().hex[:4]}")
+    routing = _create_routing(http_client, me, design_id=design_id, ops=[op1, op2])
+    _pre_stock_items(
+        sync_engine,
+        org_id=uuid.UUID(me["org_id"]),
+        firm_id=uuid.UUID(me["firm_id"]),
+        item_ids=[uuid.UUID(raw), uuid.UUID(finished)],
+    )
+    karigar_party_id = _create_karigar_party(http_client, me)
+
+    payload = {
+        "firm_id": me["firm_id"],
+        "design_id": design_id,
+        "finished_item_id": finished,
+        "bom_id": bom["bom_id"],
+        "routing_id": routing["routing_id"],
+        "qty_to_produce": planned_qty,
+        "planned_start_date": "2026-06-01",
+        "operation_overrides": [
+            {
+                "operation_master_id": op1,
+                "executor": "KARIGAR",
+                "karigar_party_id": karigar_party_id,
+            }
+        ],
+    }
+    r = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert r.status_code == 201, r.text
+    mo_id = str(r.json()["manufacturing_order_id"])
+
+    ops_resp = http_client.get(
+        f"/manufacturing/mo/{mo_id}/operations",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"]},
+    )
+    assert ops_resp.status_code == 200, ops_resp.text
+    mo_ops = [it["mo_operation_id"] for it in ops_resp.json()["items"]]
+    return me, mo_id, mo_ops, karigar_party_id, raw
+
+
+def test_dispatch_karigar_reachable_on_api_created_mo(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """The QA repro inverted: an MO whose op was marked KARIGAR through
+    the public ``operation_overrides`` must flow dispatch → ack → receive
+    → close. Before #204 dispatch-karigar 422'd on any API-created MO."""
+    me, mo_id, mo_ops, karigar, _raw = _seed_world_with_override(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+    op_id = mo_ops[0]
+
+    r = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/dispatch-karigar",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "karigar_party_id": karigar,
+            "qty_dispatched": "100.0000",
+            "dispatch_date": "2026-06-02",
+        },
+    )
+    assert r.status_code == 200, r.text  # was 422 "executor='IN_HOUSE'" pre-#204
+    assert r.json()["state"] == "DISPATCHED"
+
+    r_ack = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/acknowledge-karigar",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"]},
+    )
+    assert r_ack.status_code == 200, r_ack.text
+    assert r_ack.json()["state"] == "ACKNOWLEDGED"
+
+    r_rec = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/receive-karigar",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "qty_received": "100.0000"},
+    )
+    assert r_rec.status_code == 200, r_rec.text
+    assert r_rec.json()["state"] == "RECEIVED_FULL"
+
+    r_close = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/close-karigar",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"]},
+    )
+    assert r_close.status_code == 200, r_close.text
+    assert r_close.json()["state"] == "CLOSED"
+
+
+def test_patch_executor_flips_pending_op(http_client: TestClient, sync_engine: Engine) -> None:
+    """PATCH flips a PENDING op IN_HOUSE→KARIGAR (with an audit row) and
+    back to IN_HOUSE (which clears the karigar party)."""
+    me, _mo_id, mo_ops, karigar, _raw = _seed_world(http_client, sync_engine, karigar_ops=0)
+    op_id = mo_ops[0]
+
+    r = http_client.patch(
+        f"/manufacturing/mo-operations/{op_id}/executor",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "executor": "KARIGAR", "karigar_party_id": karigar},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["executor"] == "KARIGAR"
+
+    # Audit row written with action="set_executor".
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        cnt = session.execute(
+            text(
+                "SELECT count(*) FROM audit_log WHERE entity_id = :eid AND action = 'set_executor'"
+            ),
+            {"eid": op_id},
+        ).scalar_one()
+    assert cnt == 1
+
+    # Verify karigar_party_id landed on the row.
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        kp = session.execute(
+            text("SELECT karigar_party_id FROM mo_operation WHERE mo_operation_id = :op"),
+            {"op": op_id},
+        ).scalar_one()
+    assert str(kp) == karigar
+
+    # Flip back to IN_HOUSE — clears karigar_party_id.
+    r_back = http_client.patch(
+        f"/manufacturing/mo-operations/{op_id}/executor",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "executor": "IN_HOUSE"},
+    )
+    assert r_back.status_code == 200, r_back.text
+    assert r_back.json()["executor"] == "IN_HOUSE"
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        kp2 = session.execute(
+            text("SELECT karigar_party_id FROM mo_operation WHERE mo_operation_id = :op"),
+            {"op": op_id},
+        ).scalar_one()
+    assert kp2 is None
+
+
+def test_patch_executor_rejects_after_dispatch(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Once an op has dispatched (outward_challan set / state DISPATCHED)
+    it can no longer switch lanes."""
+    me, mo_id, mo_ops, karigar, _raw = _seed_world_with_override(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+    op_id = mo_ops[0]
+    r = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/dispatch-karigar",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "karigar_party_id": karigar,
+            "qty_dispatched": "100.0000",
+            "dispatch_date": "2026-06-02",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    r_patch = http_client.patch(
+        f"/manufacturing/mo-operations/{op_id}/executor",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "executor": "IN_HOUSE"},
+    )
+    assert r_patch.status_code == 422, r_patch.text
+    assert (
+        "pending" in r_patch.json()["detail"].lower()
+        or "recorded work" in r_patch.json()["detail"].lower()
+    )
+
+
+def test_patch_executor_rejects_non_pending_state(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """An in-house op that has been started (IN_PROGRESS) cannot switch."""
+    me, mo_id, mo_ops, karigar, _raw = _seed_world(http_client, sync_engine, karigar_ops=0)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+    op_id = mo_ops[0]
+    # Start the in-house op → IN_PROGRESS.
+    r_start = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/start",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"]},
+    )
+    assert r_start.status_code == 200, r_start.text
+
+    r_patch = http_client.patch(
+        f"/manufacturing/mo-operations/{op_id}/executor",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "executor": "KARIGAR", "karigar_party_id": karigar},
+    )
+    assert r_patch.status_code == 422, r_patch.text
+    assert "pending" in r_patch.json()["detail"].lower()
+
+
+def test_patch_executor_permission_denied(http_client: TestClient, sync_engine: Engine) -> None:
+    """A salesperson (no manufacturing.mo.write) gets 403."""
+    me, _mo_id, mo_ops, karigar, _raw = _seed_world(http_client, sync_engine, karigar_ops=0)
+    op_id = mo_ops[0]
+    sales_token = _make_user_with_role(
+        sync_engine,
+        org_id=uuid.UUID(me["org_id"]),
+        firm_id=uuid.UUID(me["firm_id"]),
+        role_code="SALESPERSON",
+    )
+    r = http_client.patch(
+        f"/manufacturing/mo-operations/{op_id}/executor",
+        headers=_auth(sales_token),
+        json={"firm_id": me["firm_id"], "executor": "KARIGAR", "karigar_party_id": karigar},
+    )
+    assert r.status_code == 403, r.text
