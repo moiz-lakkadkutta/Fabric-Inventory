@@ -39,9 +39,8 @@ from app.models import (
     SOLine,
     StockLedger,
 )
-from app.models.accounting import VoucherStatus
 from app.models.masters import ItemType
-from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
+from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus, VoucherStatus
 from app.service import (
     accounting_service,
     audit_service,

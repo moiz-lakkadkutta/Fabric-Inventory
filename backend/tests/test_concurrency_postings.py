@@ -424,10 +424,26 @@ def test_cancel_reverses_duplicate_finalize_vouchers(
             )
             s.add(dup)
             s.flush()
-            s.add(VoucherLine(org_id=org_id, voucher_id=dup.voucher_id, ledger_id=ar.ledger_id,
-                              line_type=JournalLineType.DR, amount=Decimal("1000"), sequence=1))
-            s.add(VoucherLine(org_id=org_id, voucher_id=dup.voucher_id, ledger_id=sales.ledger_id,
-                              line_type=JournalLineType.CR, amount=Decimal("1000"), sequence=2))
+            s.add(
+                VoucherLine(
+                    org_id=org_id,
+                    voucher_id=dup.voucher_id,
+                    ledger_id=ar.ledger_id,
+                    line_type=JournalLineType.DR,
+                    amount=Decimal("1000"),
+                    sequence=1,
+                )
+            )
+            s.add(
+                VoucherLine(
+                    org_id=org_id,
+                    voucher_id=dup.voucher_id,
+                    ledger_id=sales.ledger_id,
+                    line_type=JournalLineType.CR,
+                    amount=Decimal("1000"),
+                    sequence=2,
+                )
+            )
             s.commit()
 
         # Cancel: must reverse BOTH originals.
