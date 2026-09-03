@@ -138,8 +138,9 @@ def register_error_handlers(app: FastAPI) -> None:
 
         A ``NUMERIC`` column overflow raises SQLSTATE ``22003``
         (numeric_value_out_of_range); SQLAlchemy surfaces it as
-        ``DataError``. This net guarantees NO numeric overflow can ever
-        500 — it maps 22003 to the 422 VALIDATION_ERROR envelope
+        ``DataError``. The Pydantic caps + service guards catch every known
+        input path, but this net guarantees NO numeric overflow can ever
+        500 again — it maps 22003 to the 422 VALIDATION_ERROR envelope
         (rolled back by ``get_db_sync``) and leaks no SQL. Any other
         ``DataError`` (e.g. 22P02 invalid text) is a genuine bug → 500.
 

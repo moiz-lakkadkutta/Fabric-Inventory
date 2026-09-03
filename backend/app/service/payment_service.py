@@ -67,6 +67,7 @@ from app.models.procurement import (
     VoucherStatus as PIVoucherStatus,
 )
 from app.service import audit_service, banking_service, dashboard_service
+from app.utils.money import ensure_money_in_range
 
 DEFAULT_PAYMENT_SERIES = "PMT/2526"
 
@@ -210,6 +211,9 @@ def post_payment(
     """
     if amount <= 0:
         raise AppValidationError(f"Payment amount must be positive; got {amount}")
+    # #207: belt-and-suspenders magnitude guard (service is callable outside
+    # the HTTP/Pydantic path) before posting to NUMERIC(18,2) GL columns.
+    ensure_money_in_range(amount, field="amount")
     if mode not in {"CASH", "BANK", "UPI"}:
         raise AppValidationError(f"Unknown payment mode {mode!r}; expected CASH, BANK, or UPI")
 

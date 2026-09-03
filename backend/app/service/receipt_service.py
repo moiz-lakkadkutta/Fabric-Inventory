@@ -51,6 +51,7 @@ from app.models import (
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.sales import InvoiceLifecycleStatus
 from app.service import audit_service, banking_service, dashboard_service
+from app.utils.money import ensure_money_in_range
 
 DEFAULT_RECEIPT_SERIES = "RCT/2526"
 
@@ -194,6 +195,10 @@ def post_receipt(
     """
     if amount <= 0:
         raise AppValidationError(f"Receipt amount must be positive; got {amount}")
+    # #207: belt-and-suspenders — the service is callable outside the HTTP
+    # path (migration adapter, other services), so re-check the magnitude
+    # ceiling here too, before it posts to the NUMERIC(18,2) GL columns.
+    ensure_money_in_range(amount, field="amount")
     if mode not in {"CASH", "BANK", "UPI"}:
         raise AppValidationError(f"Unknown receipt mode {mode!r}; expected CASH, BANK, or UPI")
 
