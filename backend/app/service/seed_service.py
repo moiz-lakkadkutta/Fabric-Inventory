@@ -154,6 +154,14 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     # "TAX","LIABILITY". is_control=False; postings hit this ledger directly.
     ("1400", "ITC Receivable (Input GST)", "TAX", "ASSET", False),
     ("2000", "Sundry Creditors (AP)", "PAYABLE", "LIABILITY", True),
+    # #203: GRN Clearing (GRNI) — the goods-received-not-invoiced accrual.
+    # Credited at GRN receipt (DR 1300 Inventory / CR 2010) so received-but-
+    # unbilled stock shows on the Balance Sheet as both an asset and a
+    # liability; the accrual is cleared when the matching Purchase Invoice
+    # posts (DR 2010 / DR-or-CR 5360 PPV / DR 1400 ITC / CR 2000 AP). A
+    # LIABILITY (like AP) but NOT a control account — postings hit it
+    # directly, no per-supplier sub-ledger.
+    ("2010", "GRN Clearing (GRNI)", "PAYABLE", "LIABILITY", False),
     ("2100", "GST Payable", "TAX", "LIABILITY", False),
     ("2200", "TDS Payable", "TAX", "LIABILITY", False),
     # E2 (BL-01): Customer Advances — liability for money received from customers
@@ -182,6 +190,14 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     # DR when adjusting stock UP (write-in / found stock);
     # CR when adjusting stock DOWN (write-down / shrinkage).
     ("5350", "Inventory Adjustment", "EXPENSE", "COGS", False),
+    # #203: Purchase Price Variance — the P&L home for the difference between
+    # what a GRN accrued (goods received at the GRN line rate) and what the
+    # matching Purchase Invoice actually bills. Debited when the PI costs more
+    # than the GRN accrued (unfavourable), credited when it costs less
+    # (favourable). Parented under COGS (like 5350) so gross profit reflects
+    # supplier price drift; keeps the drift out of Inventory (1300) valuation,
+    # which stays aligned with the weighted-average cost the GRN already set.
+    ("5360", "Purchase Price Variance", "EXPENSE", "COGS", False),
 ]
 
 
