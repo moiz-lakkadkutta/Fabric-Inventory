@@ -741,22 +741,33 @@ def test_stock_summary_lot_count(http_client: TestClient, sync_engine: Engine) -
     with OrmSession(sync_engine, expire_on_commit=False) as session:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         loc = Location(
-            org_id=org_id, firm_id=firm_id, code=f"WH-{uuid.uuid4().hex[:4].upper()}",
-            name="Main", location_type=LocationType.WAREHOUSE, is_active=True,
+            org_id=org_id,
+            firm_id=firm_id,
+            code=f"WH-{uuid.uuid4().hex[:4].upper()}",
+            name="Main",
+            location_type=LocationType.WAREHOUSE,
+            is_active=True,
         )
         session.add(loc)
         session.flush()
         for i, qty in enumerate((Decimal("5"), Decimal("7"), Decimal("0"))):
             lot = Lot(
-                org_id=org_id, firm_id=firm_id, item_id=item_id,
+                org_id=org_id,
+                firm_id=firm_id,
+                item_id=item_id,
                 lot_number=f"L{i}-{uuid.uuid4().hex[:4]}",
             )
             session.add(lot)
             session.flush()
             session.add(
                 StockPosition(
-                    org_id=org_id, firm_id=firm_id, item_id=item_id, lot_id=lot.lot_id,
-                    location_id=loc.location_id, on_hand_qty=qty, current_cost=Decimal("10"),
+                    org_id=org_id,
+                    firm_id=firm_id,
+                    item_id=item_id,
+                    lot_id=lot.lot_id,
+                    location_id=loc.location_id,
+                    on_hand_qty=qty,
+                    current_cost=Decimal("10"),
                 )
             )
         session.commit()

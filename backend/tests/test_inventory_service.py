@@ -888,29 +888,66 @@ def test_remove_stock_fifo_consumes_oldest_lot_first(
     org_id = firm.org_id
     # NULL-lot 5 @ 10
     inventory_service.add_stock(
-        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
-        location_id=location.location_id, qty=Decimal("5"), unit_cost=Decimal("10"),
-        reference_type="TEST", reference_id=uuid.uuid4(),
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("5"),
+        unit_cost=Decimal("10"),
+        reference_type="TEST",
+        reference_id=uuid.uuid4(),
     )
-    lot_d1 = _mk_lot(db_session, org_id=org_id, firm=firm, item=item, lot_number="D1",
-                     received_date=datetime.date(2026, 1, 1))
-    lot_d2 = _mk_lot(db_session, org_id=org_id, firm=firm, item=item, lot_number="D2",
-                     received_date=datetime.date(2026, 2, 1))
-    inventory_service.add_stock(
-        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
-        location_id=location.location_id, qty=Decimal("10"), unit_cost=Decimal("20"),
-        lot_id=lot_d1.lot_id, reference_type="TEST", reference_id=uuid.uuid4(),
+    lot_d1 = _mk_lot(
+        db_session,
+        org_id=org_id,
+        firm=firm,
+        item=item,
+        lot_number="D1",
+        received_date=datetime.date(2026, 1, 1),
+    )
+    lot_d2 = _mk_lot(
+        db_session,
+        org_id=org_id,
+        firm=firm,
+        item=item,
+        lot_number="D2",
+        received_date=datetime.date(2026, 2, 1),
     )
     inventory_service.add_stock(
-        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
-        location_id=location.location_id, qty=Decimal("10"), unit_cost=Decimal("30"),
-        lot_id=lot_d2.lot_id, reference_type="TEST", reference_id=uuid.uuid4(),
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("10"),
+        unit_cost=Decimal("20"),
+        lot_id=lot_d1.lot_id,
+        reference_type="TEST",
+        reference_id=uuid.uuid4(),
+    )
+    inventory_service.add_stock(
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("10"),
+        unit_cost=Decimal("30"),
+        lot_id=lot_d2.lot_id,
+        reference_type="TEST",
+        reference_id=uuid.uuid4(),
     )
 
     rows = inventory_service.remove_stock_fifo(
-        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
-        location_id=location.location_id, qty=Decimal("18"),
-        reference_type="DC", reference_id=uuid.uuid4(),
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("18"),
+        reference_type="DC",
+        reference_id=uuid.uuid4(),
     )
     # 5 from NULL, 10 from D1, 3 from D2 → 3 OUT rows.
     assert len(rows) == 3
@@ -921,12 +958,19 @@ def test_remove_stock_fifo_consumes_oldest_lot_first(
 
     # Positions decremented per key; D2 keeps 7.
     pos_d2 = inventory_service.get_position(
-        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
-        location_id=location.location_id, lot_id=lot_d2.lot_id,
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        lot_id=lot_d2.lot_id,
     )
     assert Decimal(pos_d2.on_hand_qty) == Decimal("7")
     assert inventory_service.get_total_on_hand(
-        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
         location_id=location.location_id,
     ) == Decimal("7")
 
@@ -937,18 +981,32 @@ def test_remove_stock_fifo_insufficient_raises(
     firm, item, location = firm_and_item
     org_id = firm.org_id
     inventory_service.add_stock(
-        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
-        location_id=location.location_id, qty=Decimal("25"), unit_cost=Decimal("10"),
-        reference_type="TEST", reference_id=uuid.uuid4(),
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("25"),
+        unit_cost=Decimal("10"),
+        reference_type="TEST",
+        reference_id=uuid.uuid4(),
     )
     with pytest.raises(AppValidationError, match="on_hand=25"):
         inventory_service.remove_stock_fifo(
-            db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
-            location_id=location.location_id, qty=Decimal("40"),
-            reference_type="DC", reference_id=uuid.uuid4(),
+            db_session,
+            org_id=org_id,
+            firm_id=firm.firm_id,
+            item_id=item.item_id,
+            location_id=location.location_id,
+            qty=Decimal("40"),
+            reference_type="DC",
+            reference_id=uuid.uuid4(),
         )
     # No partial consumption — position intact.
     assert inventory_service.get_total_on_hand(
-        db_session, org_id=org_id, firm_id=firm.firm_id, item_id=item.item_id,
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
         location_id=location.location_id,
     ) == Decimal("25")

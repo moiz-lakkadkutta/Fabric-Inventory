@@ -397,9 +397,7 @@ def test_payment_amount_must_be_positive(db_session: OrmSession) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _make_bank_account(
-    session: OrmSession, *, org_id: uuid.UUID, firm: Firm, label: str = "A"
-):
+def _make_bank_account(session: OrmSession, *, org_id: uuid.UUID, firm: Firm, label: str = "A"):
     """Create a non-control bank sub-ledger + a BankAccount linked to it.
 
     Reuses the coa_group of the seeded bank control ledger (1100) so the
@@ -440,9 +438,7 @@ def _cr_ledger_codes(session: OrmSession, voucher_id: uuid.UUID) -> set[str]:
     from app.models import Ledger
 
     lines = list(
-        session.execute(
-            select(VoucherLine).where(VoucherLine.voucher_id == voucher_id)
-        ).scalars()
+        session.execute(select(VoucherLine).where(VoucherLine.voucher_id == voucher_id)).scalars()
     )
     ledger_by_id = {
         ld.ledger_id: ld
@@ -450,11 +446,7 @@ def _cr_ledger_codes(session: OrmSession, voucher_id: uuid.UUID) -> set[str]:
             select(Ledger).where(Ledger.ledger_id.in_([ln.ledger_id for ln in lines]))
         ).scalars()
     }
-    return {
-        ledger_by_id[ln.ledger_id].code
-        for ln in lines
-        if ln.line_type == JournalLineType.CR
-    }
+    return {ledger_by_id[ln.ledger_id].code for ln in lines if ln.line_type == JournalLineType.CR}
 
 
 def test_bank_payment_posts_to_account_subledger(db_session: OrmSession) -> None:
@@ -591,9 +583,7 @@ def test_cross_firm_bank_account_rejected(db_session: OrmSession) -> None:
     )
     db_session.add(other_firm)
     db_session.flush()
-    other_account, _ = _make_bank_account(
-        db_session, org_id=org_id, firm=other_firm, label="OTHER"
-    )
+    other_account, _ = _make_bank_account(db_session, org_id=org_id, firm=other_firm, label="OTHER")
 
     _make_posted_pi(
         db_session,

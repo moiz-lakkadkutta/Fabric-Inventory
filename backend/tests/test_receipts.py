@@ -255,9 +255,7 @@ def _ledger_code_by_id(session: OrmSession, ledger_ids: list[uuid.UUID]) -> dict
 
     return {
         ld.ledger_id: ld.code
-        for ld in session.execute(
-            select(Ledger).where(Ledger.ledger_id.in_(ledger_ids))
-        ).scalars()
+        for ld in session.execute(select(Ledger).where(Ledger.ledger_id.in_(ledger_ids))).scalars()
     }
 
 
@@ -267,9 +265,7 @@ def test_receipt_bank_account_subledger(db_session: OrmSession) -> None:
     open invoice smaller than the receipt so the CR side lands on both AR
     (1200) and Customer Advances (2500) and the voucher stays balanced.
     """
-    org_id, firm_id, party_id = _seed_org_with_coa_and_party(
-        db_session, party_name="Silk House"
-    )
+    org_id, firm_id, party_id = _seed_org_with_coa_and_party(db_session, party_name="Silk House")
     account, sub = _make_bank_account(db_session, org_id=org_id, firm_id=firm_id)
 
     # One open invoice with ₹600 outstanding.
@@ -329,9 +325,7 @@ def test_receipt_bank_account_subledger(db_session: OrmSession) -> None:
 
 def test_receipt_cash_mode_rejects_bank_account_id(db_session: OrmSession) -> None:
     """#201: CASH receipt must not carry a bank_account_id."""
-    org_id, firm_id, party_id = _seed_org_with_coa_and_party(
-        db_session, party_name="Cash Co"
-    )
+    org_id, firm_id, party_id = _seed_org_with_coa_and_party(db_session, party_name="Cash Co")
     account, _sub = _make_bank_account(db_session, org_id=org_id, firm_id=firm_id)
 
     with pytest.raises(AppValidationError, match="CASH"):
@@ -352,9 +346,7 @@ def test_receipt_bank_mode_requires_account_when_one_exists(
 ) -> None:
     """#201: with ≥1 bank account, a BANK receipt without bank_account_id
     is rejected."""
-    org_id, firm_id, party_id = _seed_org_with_coa_and_party(
-        db_session, party_name="Needs Account"
-    )
+    org_id, firm_id, party_id = _seed_org_with_coa_and_party(db_session, party_name="Needs Account")
     _make_bank_account(db_session, org_id=org_id, firm_id=firm_id)
 
     with pytest.raises(AppValidationError, match="requires bank_account_id"):
