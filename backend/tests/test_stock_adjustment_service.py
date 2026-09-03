@@ -1179,7 +1179,7 @@ def test_stock_decrease_without_lot_consumes_fifo(
             lot_id=lot.lot_id, reference_type="GRN", reference_id=uuid.uuid4(),
         )
 
-    adj, ledger = stock_service.create_adjustment(
+    adj, _ledger = stock_service.create_adjustment(
         db_session,
         org_id=fresh_org_id,
         firm_id=firm.firm_id,

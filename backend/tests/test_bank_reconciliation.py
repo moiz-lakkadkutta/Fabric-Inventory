@@ -1232,7 +1232,7 @@ def test_confirm_rejects_duplicate_voucher_in_batch(db_session) -> None:  # type
         statement_ref="DUP",
         statement_amount=Decimal("-500.00"),
     )
-    with pytest.raises(AppValidationError, match="(?i)duplicate|same voucher"):
+    with pytest.raises(AppValidationError, match=r"(?i)duplicate|same voucher"):
         recon.confirm_matches(
             db_session,
             org_id=env["org_id"],
