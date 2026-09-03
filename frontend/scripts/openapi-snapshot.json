@@ -255,7 +255,7 @@
         "type": "object"
       },
       "AgeingRow": {
-        "description": "One party row in the AR ageing report.\n\nBuckets are computed from each open invoice's ``invoice_date`` to\n``as_of`` (days), then summed per party. ``outstanding`` is the\nsum of ``invoice_amount - paid_amount`` for the party's\nnon-cancelled invoices as of the report date. The five buckets\nmust sum exactly to ``outstanding``.",
+        "description": "One party row in the AR ageing report.\n\nBuckets are computed from days past each open invoice's ``due_date``\n(``as_of - due_date``; ``invoice_date`` is used when no due date is\nset), then summed per party. ``outstanding`` is the balance\nreconstructed as of the report date \u2014 ``invoice_amount`` minus\nreceipts allocated on or before ``as_of`` (not the live paid amount)\n\u2014 over the party's billed, non-cancelled invoices. The five buckets\nmust sum exactly to ``outstanding``.",
         "properties": {
           "bucket_1_30": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -1566,6 +1566,7 @@
                   "LIABILITY",
                   "EQUITY",
                   "REVENUE",
+                  "COGS",
                   "EXPENSE"
                 ],
                 "type": "string"
@@ -2935,6 +2936,7 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
@@ -2947,6 +2949,7 @@
           "rate": {
             "anyOf": [
               {
+                "maximum": 1000000000.0,
                 "minimum": 0.0,
                 "type": "number"
               },
@@ -3278,7 +3281,7 @@
         "type": "object"
       },
       "Gstr1HsnRow": {
-        "description": "One HSN summary row. The GSTR-1 HSN section aggregates all\ninvoice lines by HSN code (with UQC/UOM and rate alongside). Items\nwithout an HSN set surface as empty-string ``hsn_code``; the FE\nflags them as data-quality issues.",
+        "description": "One HSN summary row, rate-wise (#195). The GSTR-1 HSN section\naggregates invoice lines by ``(HSN code, UQC/UOM, gst_rate)``. Items\nwithout an HSN set surface as empty-string ``hsn_code``; the FE\nflags them as data-quality issues.",
         "properties": {
           "cgst": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -3295,6 +3298,11 @@
               }
             ],
             "title": "Description"
+          },
+          "gst_rate": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Gst Rate",
+            "type": "string"
           },
           "hsn_code": {
             "title": "Hsn Code",
@@ -3328,11 +3336,6 @@
           "uom": {
             "title": "Uom",
             "type": "string"
-          },
-          "gst_rate": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-            "title": "Gst Rate",
-            "type": "string"
           }
         },
         "required": [
@@ -3351,7 +3354,7 @@
         "type": "object"
       },
       "Gstr1InvoiceRow": {
-        "description": "One invoice row in the B2B / B2CL / EXPORT buckets. Tax split\nmatches CGST/SGST/IGST per the invoice's tax_type. ``gstin`` is\nmasked-but-printable (hex of the encrypted blob is opaque; the FE\ncan render \"GSTIN on file\" without the value). Future Wave-5\nrefinement will decrypt for filing-XML generation.",
+        "description": "One (invoice, rate) row in the B2B / B2CL / EXPORT buckets (#195).\n\nGSTR-1 is rate-wise: a mixed-rate invoice emits ONE ROW PER SLAB RATE\n(0/5/12/18/28), each with that rate's taxable_value and tax; the header\n``invoice_value`` is repeated on every row (portal convention). CGST ==\nSGST on every intra-state row. ``gstin`` is the plaintext GSTIN (or\nmasked to last-3 when the caller lacks masters.party.pii.read).",
         "properties": {
           "cgst": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -3922,6 +3925,22 @@
           "expires_at"
         ],
         "title": "InviteCreateResponse",
+        "type": "object"
+      },
+      "InvoiceCancelRequest": {
+        "description": "Body for POST /invoices/{id}/cancel \u2014 a mandatory reason (spec \u00a77).",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "InvoiceCancelRequest",
         "type": "object"
       },
       "InvoiceLifecycleStatus": {
@@ -7645,6 +7664,13 @@
             ],
             "title": "Narration"
           },
+          "operation_overrides": {
+            "items": {
+              "$ref": "#/components/schemas/MoOperationExecutorOverride"
+            },
+            "title": "Operation Overrides",
+            "type": "array"
+          },
           "planned_end_date": {
             "anyOf": [
               {
@@ -7896,6 +7922,90 @@
           "is_optional"
         ],
         "title": "MoMaterialLineResponse",
+        "type": "object"
+      },
+      "MoOperationExecutorOverride": {
+        "description": "Per-operation executor override supplied at MO-create time (#204).\n\nLets the caller mark one (or more) of the routing's operations as a\n``KARIGAR`` (job-work) operation so the karigar send-out flow is\nreachable on a freshly-created MO \u2014 without it every op materialises\nas ``IN_HOUSE`` and ``dispatch-karigar`` 422s.\n\n``operation_master_id`` MUST be one of the routing's operations; the\nservice validates membership and rejects duplicates / foreign masters\nwith a 422. ``karigar_party_id`` is optional at create time (the\ndispatch step sets it if omitted) but, when provided, the party must\nbe an org-scoped, non-deleted ``is_karigar`` party. Supplying a\n``karigar_party_id`` with ``executor=\"IN_HOUSE\"`` is a 422.",
+        "properties": {
+          "executor": {
+            "enum": [
+              "IN_HOUSE",
+              "KARIGAR"
+            ],
+            "title": "Executor",
+            "type": "string"
+          },
+          "karigar_party_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Karigar Party Id"
+          },
+          "operation_master_id": {
+            "format": "uuid",
+            "title": "Operation Master Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_master_id",
+          "executor"
+        ],
+        "title": "MoOperationExecutorOverride",
+        "type": "object"
+      },
+      "MoOperationExecutorRequest": {
+        "description": "Body for ``PATCH /manufacturing/mo-operations/{id}/executor`` (#204).\n\nFlips a PENDING operation between ``IN_HOUSE`` and ``KARIGAR`` after\nthe MO already exists (mind-changes, or MOs created before the caller\nknew a step would be outsourced). Only PENDING ops with no recorded\nwork may be flipped \u2014 the service 422s otherwise.\n\n``firm_id`` is defence-in-depth on top of RLS (must match the\nsession's firm scope when set). ``karigar_party_id`` is required-shape\nidentical to the create-time override: allowed only with\n``executor=\"KARIGAR\"`` and only for an ``is_karigar`` org party.",
+        "properties": {
+          "executor": {
+            "enum": [
+              "IN_HOUSE",
+              "KARIGAR"
+            ],
+            "title": "Executor",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "karigar_party_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Karigar Party Id"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          }
+        },
+        "required": [
+          "firm_id",
+          "executor"
+        ],
+        "title": "MoOperationExecutorRequest",
         "type": "object"
       },
       "MoOperationListItem": {
@@ -9102,6 +9212,7 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
@@ -9114,6 +9225,7 @@
           "rate": {
             "anyOf": [
               {
+                "maximum": 1000000000.0,
                 "minimum": 0.0,
                 "type": "number"
               },
@@ -9537,6 +9649,7 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
@@ -9549,6 +9662,7 @@
           "rate": {
             "anyOf": [
               {
+                "maximum": 1000000000.0,
                 "minimum": 0.0,
                 "type": "number"
               },
@@ -10655,6 +10769,7 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
@@ -10663,6 +10778,18 @@
               }
             ],
             "title": "Amount"
+          },
+          "bank_account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account Id"
           },
           "mode": {
             "default": "CASH",
@@ -11588,14 +11715,27 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d{0,2}0*$",
                 "type": "string"
               }
             ],
             "title": "Amount"
+          },
+          "bank_account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account Id"
           },
           "mode": {
             "default": "CASH",
@@ -14058,6 +14198,11 @@
             "title": "Item Name",
             "type": "string"
           },
+          "lot_count": {
+            "default": 0,
+            "title": "Lot Count",
+            "type": "integer"
+          },
           "on_hand_qty": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "On Hand Qty",
@@ -14651,7 +14796,8 @@
           "MATERIAL_ISSUE",
           "MANUFACTURING_COMPLETION",
           "STOCK_ADJUSTMENT",
-          "COGS_SALE"
+          "COGS_SALE",
+          "GRN_ACCRUAL"
         ],
         "title": "VoucherType",
         "type": "string"
@@ -18892,6 +19038,76 @@
         ]
       }
     },
+    "/invoices/{sales_invoice_id}/cancel": {
+      "post": {
+        "operationId": "cancel_invoice_invoices__sales_invoice_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sales_invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Sales Invoice Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvoiceCancelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesInvoiceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel a finalized invoice (posts a reversing GL voucher)",
+        "tags": [
+          "sales",
+          "invoices"
+        ]
+      }
+    },
     "/invoices/{sales_invoice_id}/finalize": {
       "post": {
         "operationId": "finalize_invoice_invoices__sales_invoice_id__finalize_post",
@@ -20859,6 +21075,77 @@
         "tags": [
           "manufacturing",
           "karigar"
+        ]
+      }
+    },
+    "/manufacturing/mo-operations/{mo_operation_id}/executor": {
+      "patch": {
+        "description": "#204 \u2014 make the karigar (job-work) flow reachable on any MO.\n\nFlips a PENDING operation between IN_HOUSE and KARIGAR so\n``dispatch-karigar`` no longer 422s on API-created MOs. Guarded to\nPENDING ops with no recorded work; advisory-locked against a\nconcurrent dispatch. Idempotency-Key flows via the global middleware.",
+        "operationId": "set_mo_operation_executor_manufacturing_mo_operations__mo_operation_id__executor_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoOperationExecutorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationProgressResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set an MO operation's executor (IN_HOUSE \u21c4 KARIGAR) \u2014 PENDING ops only (#204)",
+        "tags": [
+          "manufacturing",
+          "operation_progress"
         ]
       }
     },
@@ -23818,6 +24105,7 @@
     },
     "/reports/ageing": {
       "get": {
+        "description": "AR ageing as of `as_of` (defaults to today). Buckets age from days past each invoice's due date (falling back to the invoice date when no due date is set), so invoices still within their credit terms land in `current`. Balances are reconstructed as of the report date from receipts posted on or before `as_of`, so a backdated `as_of` reflects the historical outstanding and is not reduced by later receipts.",
         "operationId": "get_ageing_reports_ageing_get",
         "parameters": [
           {
