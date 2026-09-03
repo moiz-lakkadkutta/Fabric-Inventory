@@ -379,6 +379,11 @@ def _advance_so_status_after_dc(session: Session, *, so: SalesOrder) -> None:
     DCs (status == ISSUED or beyond). If all lines are fully dispatched →
     FULLY_DISPATCHED; if any is partially dispatched → PARTIAL_DC.
     """
+    # #206 (d): a CANCELLED SO must never be resurrected. Even if some future
+    # path reaches here without the issue_dc guard, freeze the status and the
+    # qty_dispatched snapshot instead of illegally flipping CANCELLED -> PARTIAL_DC.
+    if so.status == SalesOrderStatus.CANCELLED:
+        return
     # Sum qty_dispatched per item across all non-soft-deleted issued DC lines
     # linked to this SO.
     rows = session.execute(
@@ -413,6 +418,80 @@ def _advance_so_status_after_dc(session: Session, *, so: SalesOrder) -> None:
     elif any_dispatched:
         so.status = SalesOrderStatus.PARTIAL_DC
     so.updated_at = datetime.datetime.now(tz=datetime.UTC)
+
+
+def _validate_dc_lines_against_so(
+    session: Session,
+    *,
+    so: SalesOrder,
+    dc_lines: list[DCLine] | list[dict[str, object]],
+    exclude_dc_id: uuid.UUID | None = None,
+) -> None:
+    """#206: cap cumulative DC dispatch at the SO's ordered qty (per item).
+
+    Aggregates per ``item_id`` (an SO or DC may carry several lines of one
+    item) exactly like ``_advance_so_status_after_dc``:
+
+    - ``ordered_by_item``  — sum of ``so_line.qty_ordered``.
+    - ``already_by_item``  — sum of ``dc_line.qty_dispatched`` over prior
+      non-DRAFT, non-soft-deleted DCs linked to this SO (filters mirror the
+      advancement query). ``exclude_dc_id`` drops the candidate DC when it is
+      already ISSUED-and-being-revalidated (belt-and-suspenders; the DRAFT
+      status filter already excludes an unissued candidate).
+    - ``this_by_item``     — the candidate DC's own line quantities.
+
+    Raises :class:`AppValidationError` (422) if any candidate item is not on
+    the SO, or if ``already + this > ordered`` for any item. Hard cap, zero
+    tolerance — exactly-equal (``<=``) passes; partial dispatch stays legal.
+    Accepts ORM ``DCLine`` rows (issue path) or ``{item_id, qty_dispatched}``
+    dicts (create path).
+    """
+    ordered_by_item: dict[uuid.UUID, Decimal] = {}
+    for so_line in so.lines:
+        ordered_by_item[so_line.item_id] = ordered_by_item.get(
+            so_line.item_id, Decimal("0")
+        ) + Decimal(so_line.qty_ordered)
+
+    this_by_item: dict[uuid.UUID, Decimal] = {}
+    for line in dc_lines:
+        if isinstance(line, dict):
+            item_id = line["item_id"]  # type: ignore[assignment]
+            qty = Decimal(str(line["qty_dispatched"]))
+        else:
+            item_id = line.item_id
+            qty = Decimal(line.qty_dispatched)
+        this_by_item[item_id] = this_by_item.get(item_id, Decimal("0")) + qty
+
+    stmt = (
+        select(DCLine.item_id, func.sum(DCLine.qty_dispatched))
+        .join(DeliveryChallan, DCLine.delivery_challan_id == DeliveryChallan.delivery_challan_id)
+        .where(
+            DeliveryChallan.sales_order_id == so.sales_order_id,
+            DeliveryChallan.org_id == so.org_id,
+            DeliveryChallan.deleted_at.is_(None),
+            DeliveryChallan.status != DCStatus.DRAFT.value,
+            DCLine.deleted_at.is_(None),
+        )
+        .group_by(DCLine.item_id)
+    )
+    if exclude_dc_id is not None:
+        stmt = stmt.where(DeliveryChallan.delivery_challan_id != exclude_dc_id)
+    already_by_item: dict[uuid.UUID, Decimal] = {
+        item_id: Decimal(total or 0) for item_id, total in session.execute(stmt).all()
+    }
+
+    for item_id, this in this_by_item.items():
+        if item_id not in ordered_by_item:
+            raise AppValidationError(
+                f"DC line item {item_id} is not on SO {so.series}/{so.number}"
+            )
+        ordered = ordered_by_item[item_id]
+        already = already_by_item.get(item_id, Decimal("0"))
+        if already + this > ordered:
+            raise AppValidationError(
+                f"Over-dispatch on SO {so.series}/{so.number}: item {item_id} "
+                f"ordered {ordered}, already dispatched {already}, this DC {this}"
+            )
 
 
 def create_dc(
@@ -453,6 +532,10 @@ def create_dc(
             raise InvoiceStateError(
                 f"Cannot DC against SO in status {so.status}: must be CONFIRMED+"
             )
+        # #206: early UX feedback — reject over-dispatch / off-SO items at
+        # create-time. Not the authority (another DC can be issued between
+        # create and issue); issue_dc re-validates under a lock.
+        _validate_dc_lines_against_so(session, so=so, dc_lines=lines)
 
     number = _allocate_dc_number(session, org_id=org_id, firm_id=firm_id, series=series)
 
@@ -569,6 +652,35 @@ def issue_dc(
             f"Cannot issue DC {dc_id}: current status is {dc.status}, expected DRAFT"
         )
 
+    # #206: authoritative SO guards run BEFORE any stock is moved. When the DC
+    # is linked to a SO, lock the SO row FOR UPDATE (lock order DC -> SO; #190
+    # locks the DC row first) so two concurrent issues of different DCs against
+    # one SO serialize and the cumulative cap cannot be raced. The SO is then
+    # reused for status advancement below (no re-fetch).
+    locked_so: SalesOrder | None = None
+    if dc.sales_order_id is not None:
+        locked_so = session.execute(
+            select(SalesOrder)
+            .where(
+                SalesOrder.sales_order_id == dc.sales_order_id,
+                SalesOrder.org_id == org_id,
+                SalesOrder.deleted_at.is_(None),
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if locked_so is None or locked_so.status in {
+            SalesOrderStatus.CANCELLED,
+            SalesOrderStatus.DRAFT,
+        }:
+            label = locked_so.status if locked_so is not None else "missing/deleted"
+            raise InvoiceStateError(
+                f"Cannot issue DC {dc_id}: linked SO {dc.sales_order_id} is "
+                f"{label}; must be CONFIRMED+"
+            )
+        _validate_dc_lines_against_so(
+            session, so=locked_so, dc_lines=dc.lines, exclude_dc_id=dc.delivery_challan_id
+        )
+
     location = inventory_service.get_or_create_default_location(
         session, org_id=org_id, firm_id=dc.firm_id
     )
@@ -636,9 +748,8 @@ def issue_dc(
     if updated_by is not None:
         dc.updated_by = updated_by
 
-    if dc.sales_order_id is not None:
-        so = get_so(session, org_id=org_id, so_id=dc.sales_order_id)
-        _advance_so_status_after_dc(session, so=so)
+    if locked_so is not None:
+        _advance_so_status_after_dc(session, so=locked_so)
 
     session.flush()
     return dc
