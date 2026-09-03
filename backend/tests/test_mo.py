@@ -1851,14 +1851,15 @@ def test_list_mos_exposes_planned_end_date(http_client: TestClient) -> None:
 def test_create_mo_service_guard_rejects_firm_not_in_org(
     http_client: TestClient,
 ) -> None:
-    """Bmo: assert_firm_in_org must fire at the service layer so that
-    a firm_id outside this org is rejected before any BOM / routing
-    cross-checks run.
+    """Bmo: a firm_id outside this org must be rejected before any
+    BOM / routing cross-checks run — firm-spoof writes are blocked.
 
-    The signup token has firm_id=None (OWNER JWT — see auth.py line 302:
-    ``issue_tokens(db, user=user, firm_id=None)``), so the router-partial
-    check (``if current_user.firm_id is not None ...``) is bypassed.
-    This confirms the guard lives in the *service*, not only the router.
+    Since #208, signup auto-selects the sole firm, so the OWNER token now
+    carries a real firm_id. A foreign firm_id in the body is therefore
+    rejected by the session-firm-match guard ("firm_id must match the
+    current session firm"); if a session ever had firm_id=None the
+    service-layer ``assert_firm_in_org`` ("not found in this organization")
+    would fire instead. Either way the cross-firm write is refused with 422.
 
     Positive case (valid in-org firm succeeds) is already covered by
     ``test_create_mo_materializes_material_lines_and_operations``.
@@ -1868,7 +1869,7 @@ def test_create_mo_service_guard_rejects_firm_not_in_org(
     foreign_firm_id = str(uuid.uuid4())
     resp = http_client.post(
         "/manufacturing/mo",
-        headers=_auth(me["access_token"]),  # firm_id=None in JWT → router check skips
+        headers=_auth(me["access_token"]),
         json={
             "firm_id": foreign_firm_id,
             "design_id": design_id,
@@ -1880,7 +1881,10 @@ def test_create_mo_service_guard_rejects_firm_not_in_org(
         },
     )
     assert resp.status_code == 422, resp.text
-    assert "not found in this organization" in resp.json()["detail"].lower()
+    detail = resp.json()["detail"].lower()
+    assert "not found in this organization" in detail or "must match the current session firm" in detail, (
+        f"expected a cross-firm rejection, got: {detail}"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
