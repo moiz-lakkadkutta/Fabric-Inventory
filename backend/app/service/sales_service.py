@@ -55,10 +55,10 @@ from app.utils.gst_states import normalize_state_code
 # Stockable item types (all types except SERVICE).
 _STOCKABLE_ITEM_TYPES = frozenset(t for t in ItemType if t != ItemType.SERVICE)
 
-# #193: tax types that must always carry zero GST (not-a-supply, LUT-zero-rated
-# export, or explicit nil). Kept in one place so create_draft_invoice and the
-# accounting-service posting guard share the same set.
-_NIL_TAX_TYPES = frozenset({TaxType.NIL_NOT_A_SUPPLY, TaxType.NIL_LUT, TaxType.NIL})
+# #193/#195: the NIL tax-type family (not-a-supply, LUT-zero-rated export, or
+# explicit nil) must always carry zero GST. Zeroing now lives inside
+# gst_service.compute_line_gst (single source of truth), which returns an
+# all-zero split for these types; accounting_service keeps its own guard set.
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -897,7 +897,12 @@ def create_draft_invoice(
                 "firm for GST."
             )
         line_amount = (qty * price).quantize(Decimal("0.01"))
-        # GST-7: already quantized to 2dp in sales_service; kept here for clarity.
+        # #195: this first pass computes only a PROVISIONAL full-rate GST so the
+        # PoS engine sees a realistic invoice_value for the B2CL ₹2.5L bucket
+        # test (`invoice_value > 250000`). The FINAL per-line tax is recomputed
+        # below via gst_service.compute_line_gst once tax_type is known — a ±1
+        # paisa/line difference here can never flip that strict-greater-than
+        # threshold. Do NOT persist this provisional value.
         gst_amount = (line_amount * gst_rate / Decimal("100")).quantize(Decimal("0.01"))
         total_subtotal += line_amount
         total_gst += gst_amount
@@ -949,20 +954,25 @@ def create_draft_invoice(
         seller_has_gst=firm.has_gst,
     )
 
-    # #193: NIL family (NIL_NOT_A_SUPPLY / NIL_LUT / NIL) must carry zero GST
-    # so the books never diverge from the GSTR-1 return. The per-line
-    # gst_amount above is computed independently of the place-of-supply
-    # decision; when the PoS engine resolves to a NIL type (no usable
-    # destination, same-GSTIN branch transfer, or LUT export) we force every
-    # line's tax to zero and rebuild the totals. gst_rate on the lines is
-    # deliberately retained (zero-rated value is reported *at a rate*).
-    # invoice_value passed to the engine above only feeds the B2CL ₹2.5L
-    # bucket, which never applies to a NIL invoice — no re-call is needed.
-    if pos_decision.tax_type in _NIL_TAX_TYPES:
-        for record in line_records:
-            record["gst_amount"] = Decimal("0.00")
-        total_gst = Decimal("0.00")
-        invoice_total = total_subtotal
+    # #195: SECOND PASS — now that tax_type is known, compute each line's
+    # FINAL, statutory GST via gst_service.compute_line_gst. This is the single
+    # source of truth: CGST == SGST == round(taxable × rate/200) for intra-state
+    # (so the odd paisa never lands lopsided on CGST), the full rate on IGST,
+    # and ZERO for the NIL family (subsumes #193's zeroing block — a NIL type
+    # returns an all-zero split regardless of gst_rate, so the books never
+    # diverge from the GSTR-1 return). gst_rate on the lines is deliberately
+    # retained (zero-rated value is reported *at a rate*).
+    total_gst = Decimal("0.00")
+    for record in line_records:
+        split = gst_service.compute_line_gst(
+            line_amount=record["line_amount"],  # type: ignore[arg-type]
+            gst_rate=record["gst_rate"],  # type: ignore[arg-type]
+            tax_type=pos_decision.tax_type,
+        )
+        line_gst = split.cgst + split.sgst + split.igst
+        record["gst_amount"] = line_gst
+        total_gst += line_gst
+    invoice_total = total_subtotal + total_gst
 
     number = _allocate_si_number(session, org_id=org_id, firm_id=firm_id, series=series)
 

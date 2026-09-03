@@ -805,3 +805,117 @@ def test_gst_firm_unaffected_by_194(db_session: OrmSession) -> None:
     }
     codes = {by_code[line.ledger_id] for line in voucher.lines}
     assert "2100" in codes, "GST firm must still post CR 2100 GST Payable"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #195 — equal-halves per-line GST + books==return precondition
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _mixed_rate_lines(item_id: uuid.UUID) -> list[dict[str, object]]:
+    """Canonical odd-paisa mixed-rate shape from finding #195."""
+    return [
+        {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("233.31"),
+         "gst_rate": Decimal("5"), "sequence": 1},
+        {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("100"),
+         "gst_rate": Decimal("12"), "sequence": 2},
+        {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("50"),
+         "gst_rate": Decimal("18"), "sequence": 3},
+        {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("200"),
+         "gst_rate": Decimal("0"), "sequence": 4},
+        {"item_id": item_id, "qty": Decimal("1"), "price": Decimal("41.17"),
+         "gst_rate": Decimal("28"), "sequence": 5},
+    ]
+
+
+def test_mixed_rate_invoice_line_gst_uses_half_rate_method(db_session: OrmSession) -> None:
+    """#195 (a) exact repro: each line's gst_amount = 2 × round(taxable×rate/200);
+    CGST == SGST implicitly (even totals); header gst = Σ lines.
+
+    Before the fix line 1 (233.31 @ 5%) stored 11.67 (full-rate rounding,
+    split 5.84/5.83). After: 11.66 (even, split 5.83/5.83).
+    """
+    from app.service.gst_service import TaxType
+
+    org_id, firm_id, party_id, item_id = _seed_org_with_coa(db_session)
+    party = db_session.execute(select(Party).where(Party.party_id == party_id)).scalar_one()
+    party.state_code = "MH"  # intra-state → CGST_SGST
+    db_session.flush()
+
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        lines=_mixed_rate_lines(item_id),
+    )
+    assert invoice.tax_type == TaxType.CGST_SGST.value
+
+    lines = (
+        db_session.execute(
+            select(SiLine)
+            .where(SiLine.sales_invoice_id == invoice.sales_invoice_id)
+            .order_by(SiLine.sequence)
+        )
+        .scalars()
+        .all()
+    )
+    expected = {
+        Decimal("5"): Decimal("11.66"),
+        Decimal("12"): Decimal("12.00"),
+        Decimal("18"): Decimal("9.00"),
+        Decimal("0"): Decimal("0.00"),
+        Decimal("28"): Decimal("11.52"),
+    }
+    total = Decimal("0.00")
+    for line in lines:
+        rate = Decimal(line.gst_rate)
+        gst = Decimal(line.gst_amount)
+        half = (Decimal(line.line_amount) * rate / Decimal("200")).quantize(Decimal("0.01"))
+        assert gst == 2 * half, f"line @ {rate}%: {gst} != 2×{half}"
+        assert (gst * 100) % 2 == 0, f"line @ {rate}% gst {gst} is not even-paisa"
+        assert gst == expected[rate]
+        total += gst
+    assert Decimal(invoice.gst_amount) == total == Decimal("44.18")
+
+
+def test_finalize_gl_2100_equals_header_gst(db_session: OrmSession) -> None:
+    """Books == return precondition: the finalized voucher's CR-2100 amount
+    equals the header gst_amount (which GSTR-1 will report), to the paisa."""
+    from app.models import Ledger, Voucher, VoucherLine
+    from app.models.accounting import JournalLineType, VoucherType
+
+    org_id, firm_id, party_id, item_id = _seed_org_with_coa(db_session)
+    party = db_session.execute(select(Party).where(Party.party_id == party_id)).scalar_one()
+    party.state_code = "MH"
+    db_session.flush()
+
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        lines=_mixed_rate_lines(item_id),
+    )
+    sales_service.finalize_invoice(
+        db_session, org_id=org_id, sales_invoice_id=invoice.sales_invoice_id
+    )
+    voucher = db_session.execute(
+        select(Voucher).where(
+            Voucher.reference_id == invoice.sales_invoice_id,
+            Voucher.voucher_type == VoucherType.SALES_INVOICE,
+        )
+    ).scalar_one()
+    led_2100 = db_session.execute(
+        select(Ledger.ledger_id).where(Ledger.org_id == org_id, Ledger.code == "2100")
+    ).scalar_one()
+    cr_2100 = sum(
+        Decimal(vl.amount)
+        for vl in db_session.execute(
+            select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id)
+        ).scalars()
+        if vl.ledger_id == led_2100 and vl.line_type == JournalLineType.CR
+    )
+    assert cr_2100 == Decimal(invoice.gst_amount) == Decimal("44.18")
