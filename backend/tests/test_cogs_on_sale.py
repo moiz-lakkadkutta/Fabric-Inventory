@@ -321,11 +321,14 @@ def test_finalize_service_item_no_cogs_no_stock(
     from app.models import StockLedger
 
     seed_coa(db_session, org_id=fresh_org_id)
+    # has_gst=True: this test is about SERVICE items not producing COGS, not
+    # about non-GST firms. Since #194 a non-GST firm rejects gst_rate>0, so a
+    # GST-registered firm is used here to keep the 18% line valid.
     firm = Firm(
         org_id=fresh_org_id,
         code=f"F-{uuid.uuid4().hex[:6]}",
         name="Svc Firm",
-        has_gst=False,
+        has_gst=True,
         state_code="MH",
     )
     db_session.add(firm)
