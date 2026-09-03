@@ -1212,7 +1212,8 @@ def _post_cogs_for_invoice(
         total_qty_out = sum((Decimal(r.qty_out or 0) for r in ledger_rows), Decimal("0"))
         total_cost = sum(
             (
-                Decimal(r.qty_out or 0) * (Decimal(r.unit_cost) if r.unit_cost is not None else Decimal("0"))
+                Decimal(r.qty_out or 0)
+                * (Decimal(r.unit_cost) if r.unit_cost is not None else Decimal("0"))
                 for r in ledger_rows
             ),
             Decimal("0"),
