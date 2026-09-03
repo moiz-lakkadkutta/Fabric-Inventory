@@ -1882,9 +1882,10 @@ def test_create_mo_service_guard_rejects_firm_not_in_org(
     )
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"].lower()
-    assert "not found in this organization" in detail or "must match the current session firm" in detail, (
-        f"expected a cross-firm rejection, got: {detail}"
-    )
+    assert (
+        "not found in this organization" in detail
+        or "must match the current session firm" in detail
+    ), f"expected a cross-firm rejection, got: {detail}"
 
 
 # ──────────────────────────────────────────────────────────────────────
