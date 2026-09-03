@@ -951,7 +951,7 @@ def test_remove_stock_fifo_consumes_oldest_lot_first(
     )
     # 5 from NULL, 10 from D1, 3 from D2 → 3 OUT rows.
     assert len(rows) == 3
-    by_lot = {r.lot_id: (Decimal(r.qty_out), Decimal(r.unit_cost)) for r in rows}
+    by_lot = {r.lot_id: (Decimal(str(r.qty_out)), Decimal(str(r.unit_cost))) for r in rows}
     assert by_lot[None] == (Decimal("5"), Decimal("10"))
     assert by_lot[lot_d1.lot_id] == (Decimal("10"), Decimal("20"))
     assert by_lot[lot_d2.lot_id] == (Decimal("3"), Decimal("30"))
@@ -965,6 +965,7 @@ def test_remove_stock_fifo_consumes_oldest_lot_first(
         location_id=location.location_id,
         lot_id=lot_d2.lot_id,
     )
+    assert pos_d2 is not None
     assert Decimal(pos_d2.on_hand_qty) == Decimal("7")
     assert inventory_service.get_total_on_hand(
         db_session,

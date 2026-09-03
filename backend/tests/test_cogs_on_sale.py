@@ -19,7 +19,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import InvoiceStateError
-from app.models import Firm, Item, Ledger, Party, SalesInvoice, SiLine, Voucher, VoucherLine
+from app.models import (
+    DeliveryChallan,
+    Firm,
+    Item,
+    Ledger,
+    Party,
+    SalesInvoice,
+    SiLine,
+    Voucher,
+    VoucherLine,
+)
 from app.models.accounting import JournalLineType, VoucherType
 from app.models.masters import ItemType, TrackingType, UomType
 from app.models.sales import InvoiceLifecycleStatus
@@ -469,7 +479,7 @@ def _build_dc_linked_invoice(
     firm: Firm,
     party: Party,
     item: Item,
-    dc,
+    dc: DeliveryChallan,
     qty: str = "5",
     price: str = "200",
     number: str = "9001",
@@ -1123,4 +1133,4 @@ def test_cogs_posts_for_lot_stocked_item(db_session: OrmSession, fresh_org_id: u
     )
     assert len(out_rows) == 1
     assert out_rows[0].lot_id == lot.lot_id
-    assert Decimal(out_rows[0].qty_out) == Decimal("10")
+    assert Decimal(str(out_rows[0].qty_out)) == Decimal("10")

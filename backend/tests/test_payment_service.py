@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import uuid
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -397,7 +398,9 @@ def test_payment_amount_must_be_positive(db_session: OrmSession) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _make_bank_account(session: OrmSession, *, org_id: uuid.UUID, firm: Firm, label: str = "A"):
+def _make_bank_account(
+    session: OrmSession, *, org_id: uuid.UUID, firm: Firm, label: str = "A"
+) -> tuple[Any, Any]:
     """Create a non-control bank sub-ledger + a BankAccount linked to it.
 
     Reuses the coa_group of the seeded bank control ledger (1100) so the

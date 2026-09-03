@@ -720,7 +720,7 @@ def test_issue_dc_dispatches_lot_stock_without_lot_id(
     )
     assert len(out_rows) == 1
     assert out_rows[0].lot_id == lot.lot_id
-    assert Decimal(out_rows[0].qty_out) == Decimal("30")
+    assert Decimal(str(out_rows[0].qty_out)) == Decimal("30")
     pos = inventory_service.get_position(
         db_session,
         org_id=fresh_org_id,
@@ -729,6 +729,7 @@ def test_issue_dc_dispatches_lot_stock_without_lot_id(
         location_id=location.location_id,
         lot_id=lot.lot_id,
     )
+    assert pos is not None
     assert Decimal(pos.on_hand_qty) == Decimal("20")
 
 

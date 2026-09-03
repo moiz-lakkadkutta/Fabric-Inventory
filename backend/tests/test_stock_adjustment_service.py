@@ -1220,5 +1220,7 @@ def test_stock_decrease_without_lot_consumes_fifo(
         location_id=location.location_id,
         lot_id=lot_new.lot_id,
     )
+    assert pos_old is not None
+    assert pos_new is not None
     assert Decimal(pos_old.on_hand_qty) == Decimal("5")  # oldest depleted first
     assert Decimal(pos_new.on_hand_qty) == Decimal("10")

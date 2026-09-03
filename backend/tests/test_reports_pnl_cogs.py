@@ -19,7 +19,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session as OrmSession
 
-from app.models import Firm
+from app.models import Firm, Ledger
 from app.models.accounting import JournalLineType
 from app.service import reports_service
 from app.service.accounting_service import JournalLineInput, post_journal_voucher
@@ -30,7 +30,7 @@ _PERIOD_TO = datetime.date(2026, 9, 30)
 _IN_PERIOD = datetime.date(2026, 9, 15)
 
 
-def _seed_firm(db_session: OrmSession, org_id: uuid.UUID) -> tuple[Firm, dict]:
+def _seed_firm(db_session: OrmSession, org_id: uuid.UUID) -> tuple[Firm, dict[str, Ledger]]:
     ledgers = seed_coa(db_session, org_id=org_id)
     firm = Firm(
         org_id=org_id,
@@ -49,8 +49,8 @@ def _jv(
     *,
     org_id: uuid.UUID,
     firm: Firm,
-    dr_ledger,
-    cr_ledger,
+    dr_ledger: Ledger,
+    cr_ledger: Ledger,
     amount: str,
     when: datetime.date = _IN_PERIOD,
 ) -> None:

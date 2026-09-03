@@ -1299,7 +1299,7 @@ def test_receive_grn_creates_lot_row(
     lot = lots[0]
     assert lot.grn_id == grn.grn_id
     assert lot.received_date == grn.grn_date
-    assert Decimal(lot.primary_cost) == Decimal("150")
+    assert Decimal(str(lot.primary_cost)) == Decimal("150")
     assert lot.firm_id == firm.firm_id
 
     # Ledger IN row carries the lot_id.

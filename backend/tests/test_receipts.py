@@ -217,7 +217,7 @@ def test_receipt_allocate_voucher_number_numeric_max_after_9999(
 
 def _make_bank_account(
     session: OrmSession, *, org_id: uuid.UUID, firm_id: uuid.UUID, label: str = "A"
-):
+) -> tuple[Any, Any]:
     """Create a non-control bank sub-ledger + BankAccount (mirror of the
     payment-service test helper)."""
     from app.models import Ledger
@@ -250,7 +250,7 @@ def _make_bank_account(
     return account, sub
 
 
-def _ledger_code_by_id(session: OrmSession, ledger_ids: list[uuid.UUID]) -> dict:
+def _ledger_code_by_id(session: OrmSession, ledger_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
     from app.models import Ledger
 
     return {
