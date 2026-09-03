@@ -495,6 +495,7 @@ GSTR1_HSN_COLUMNS: Sequence[Column] = (
     Column("hsn_code", "HSN"),
     Column("description", "Description"),
     Column("uom", "UOM"),
+    Column("gst_rate", "GST rate %", "number"),
     Column("total_qty", "Qty", "number"),
     Column("total_value", "Total", "money"),
     Column("taxable_value", "Taxable", "money"),

@@ -19,6 +19,7 @@ from app.service.gst_service import (
     BuyerStatus,
     DocumentType,
     TaxType,
+    compute_line_gst,
     determine_place_of_supply,
     split_tax,
 )
@@ -313,15 +314,74 @@ def test_split_tax_cgst_sgst_even() -> None:
     assert s.igst == Decimal("0")
 
 
-def test_split_tax_cgst_sgst_odd_paise_rounding() -> None:
-    """Odd-paise totals: rounding remainder goes onto SGST so the sum
-    matches the input exactly.
+def test_split_tax_legacy_odd_input_equal_halves() -> None:
+    """#195: CGST must ALWAYS equal SGST — even for a legacy odd-paise
+    total. Replaces the old dump-on-SGST behaviour.
+
+    A pre-#195 FINALIZED line may carry an odd-paise gst_amount (e.g.
+    11.67). Splitting it yields EQUAL halves (5.84 / 5.84 via HALF_EVEN)
+    that can differ from the stored total by ≤1 paisa — a deliberate
+    legacy divergence documented in split_tax.
     """
-    s = split_tax(tax_type=TaxType.CGST_SGST, gst_amount=Decimal("1.01"))
-    assert s.cgst + s.sgst == Decimal("1.01")
-    # cgst is rounded-half: 0.50; sgst absorbs the remainder: 0.51.
-    assert s.cgst == Decimal("0.50")
-    assert s.sgst == Decimal("0.51")
+    s = split_tax(tax_type=TaxType.CGST_SGST, gst_amount=Decimal("11.67"))
+    assert s.cgst == s.sgst, "CGST must equal SGST (statutory GSTR-1 rule)"
+    # 11.67 / 2 = 5.835 → HALF_EVEN → 5.84 on each side.
+    assert s.cgst == Decimal("5.84")
+    assert s.sgst == Decimal("5.84")
+    assert s.igst == Decimal("0")
+
+    # Even input splits exactly.
+    s2 = split_tax(tax_type=TaxType.CGST_SGST, gst_amount=Decimal("11.66"))
+    assert s2.cgst == s2.sgst == Decimal("5.83")
+    assert s2.cgst + s2.sgst == Decimal("11.66")
+
+
+def test_compute_line_gst_cgst_sgst_equal_halves() -> None:
+    """#195 canonical vector: taxable 233.31 @ 5% intra-state.
+
+    Old full-rate method: 233.31 x 5% = 11.6655 → 11.67, split 5.84/5.83.
+    New statutory method: each half = round(233.31 x 2.5%) = round(5.83275)
+    = 5.83 → CGST == SGST == 5.83, line gst_amount 11.66.
+    """
+    s = compute_line_gst(
+        line_amount=Decimal("233.31"), gst_rate=Decimal("5"), tax_type=TaxType.CGST_SGST
+    )
+    assert s.cgst == Decimal("5.83")
+    assert s.sgst == Decimal("5.83")
+    assert s.igst == Decimal("0.00")
+    assert s.cgst == s.sgst
+    assert s.cgst + s.sgst == Decimal("11.66")
+
+    # Clean 18% line: 100.00 @ 18% → 9.00 / 9.00, total 18.00.
+    s2 = compute_line_gst(
+        line_amount=Decimal("100.00"), gst_rate=Decimal("18"), tax_type=TaxType.CGST_SGST
+    )
+    assert s2.cgst == s2.sgst == Decimal("9.00")
+    assert s2.cgst + s2.sgst == Decimal("18.00")
+
+
+def test_compute_line_gst_igst_full_rate() -> None:
+    s = compute_line_gst(
+        line_amount=Decimal("233.31"), gst_rate=Decimal("5"), tax_type=TaxType.IGST
+    )
+    assert s.igst == Decimal("11.67")
+    assert s.cgst == Decimal("0.00")
+    assert s.sgst == Decimal("0.00")
+
+
+def test_compute_line_gst_nil_zero() -> None:
+    for t in (TaxType.NIL, TaxType.NIL_LUT, TaxType.NIL_NOT_A_SUPPLY):
+        s = compute_line_gst(line_amount=Decimal("1000.00"), gst_rate=Decimal("18"), tax_type=t)
+        assert s.cgst == s.sgst == s.igst == Decimal("0.00"), t
+
+
+def test_compute_line_gst_negative_raises() -> None:
+    from app.exceptions import AppValidationError
+
+    with pytest.raises(AppValidationError, match="negative"):
+        compute_line_gst(
+            line_amount=Decimal("-1"), gst_rate=Decimal("5"), tax_type=TaxType.CGST_SGST
+        )
 
 
 def test_split_tax_nil_returns_zeros() -> None:

@@ -241,7 +241,7 @@ export interface Gstr1InvoiceVM {
   number: string;
   invoice_date: string;
   place_of_supply_state: string | null;
-  gst_rate: string | null;
+  gst_rate: string; // #195: real slab rate (one row per rate), never blended
   taxable_value: number; // paise
   cgst: number; // paise
   sgst: number; // paise
@@ -263,6 +263,7 @@ export interface Gstr1HsnVM {
   hsn_code: string;
   description: string | null;
   uom: string;
+  gst_rate: string; // #195: HSN summary is rate-wise
   total_qty: number; // bare count (not money) — display tolerates float
   total_value: number; // paise
   taxable_value: number; // paise
@@ -318,6 +319,7 @@ function mapGstr1Hsn(b: BackendGstr1HsnRow): Gstr1HsnVM {
     hsn_code: b.hsn_code,
     description: b.description,
     uom: b.uom,
+    gst_rate: b.gst_rate,
     total_qty: parseFloat(b.total_qty || '0'),
     total_value: rupeesToPaise(b.total_value),
     taxable_value: rupeesToPaise(b.taxable_value),

@@ -3328,12 +3328,18 @@
           "uom": {
             "title": "Uom",
             "type": "string"
+          },
+          "gst_rate": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Gst Rate",
+            "type": "string"
           }
         },
         "required": [
           "hsn_code",
           "description",
           "uom",
+          "gst_rate",
           "total_qty",
           "taxable_value",
           "cgst",
@@ -3353,16 +3359,9 @@
             "type": "string"
           },
           "gst_rate": {
-            "anyOf": [
-              {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gst Rate"
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Gst Rate",
+            "type": "string"
           },
           "gstin": {
             "anyOf": [

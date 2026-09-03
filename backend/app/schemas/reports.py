@@ -270,11 +270,13 @@ class PartyStatementResponse(BaseModel):
 
 
 class Gstr1InvoiceRow(BaseModel):
-    """One invoice row in the B2B / B2CL / EXPORT buckets. Tax split
-    matches CGST/SGST/IGST per the invoice's tax_type. ``gstin`` is
-    masked-but-printable (hex of the encrypted blob is opaque; the FE
-    can render "GSTIN on file" without the value). Future Wave-5
-    refinement will decrypt for filing-XML generation."""
+    """One (invoice, rate) row in the B2B / B2CL / EXPORT buckets (#195).
+
+    GSTR-1 is rate-wise: a mixed-rate invoice emits ONE ROW PER SLAB RATE
+    (0/5/12/18/28), each with that rate's taxable_value and tax; the header
+    ``invoice_value`` is repeated on every row (portal convention). CGST ==
+    SGST on every intra-state row. ``gstin`` is the plaintext GSTIN (or
+    masked to last-3 when the caller lacks masters.party.pii.read)."""
 
     sales_invoice_id: uuid.UUID
     invoice_date: datetime.date
@@ -284,9 +286,9 @@ class Gstr1InvoiceRow(BaseModel):
     party_name: str
     gstin: str | None
     place_of_supply_state: str | None
-    invoice_value: Decimal
-    taxable_value: Decimal
-    gst_rate: Decimal | None  # representative rate; lines may differ
+    invoice_value: Decimal  # header total, repeated across the invoice's rate rows
+    taxable_value: Decimal  # taxable value AT THIS RATE
+    gst_rate: Decimal  # #195: real slab rate for this row (was a blended rate)
     cgst: Decimal
     sgst: Decimal
     igst: Decimal
@@ -307,14 +309,15 @@ class Gstr1B2csRow(BaseModel):
 
 
 class Gstr1HsnRow(BaseModel):
-    """One HSN summary row. The GSTR-1 HSN section aggregates all
-    invoice lines by HSN code (with UQC/UOM and rate alongside). Items
+    """One HSN summary row, rate-wise (#195). The GSTR-1 HSN section
+    aggregates invoice lines by ``(HSN code, UQC/UOM, gst_rate)``. Items
     without an HSN set surface as empty-string ``hsn_code``; the FE
     flags them as data-quality issues."""
 
     hsn_code: str
     description: str | None
     uom: str
+    gst_rate: Decimal  # #195: slab rate for this HSN group
     total_qty: Decimal
     taxable_value: Decimal
     cgst: Decimal
