@@ -1314,7 +1314,14 @@ def test_create_routing_rejects_firm_from_foreign_org(http_client: TestClient) -
         ),
     )
     assert resp.status_code == 422, resp.text
-    assert "not found in this organization" in resp.json()["detail"]
+    # Since #208 auto-selects the sole firm, a foreign firm_id is rejected by
+    # the session-firm-match guard; with a firm_id=None session the service
+    # assert_firm_in_org fires instead. Either way the cross-firm write is refused.
+    detail = resp.json()["detail"].lower()
+    assert (
+        "not found in this organization" in detail
+        or "must match the current session firm" in detail
+    )
 
 
 def test_create_routing_owner_null_jwt_proves_router_bypass(http_client: TestClient) -> None:
@@ -1343,4 +1350,11 @@ def test_create_routing_owner_null_jwt_proves_router_bypass(http_client: TestCli
         ),
     )
     assert resp.status_code == 422, resp.text
-    assert "not found in this organization" in resp.json()["detail"]
+    # Since #208 auto-selects the sole firm, a foreign firm_id is rejected by
+    # the session-firm-match guard; with a firm_id=None session the service
+    # assert_firm_in_org fires instead. Either way the cross-firm write is refused.
+    detail = resp.json()["detail"].lower()
+    assert (
+        "not found in this organization" in detail
+        or "must match the current session firm" in detail
+    )
