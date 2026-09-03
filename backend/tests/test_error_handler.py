@@ -42,6 +42,29 @@ async def client_with_test_routes() -> AsyncIterator[AsyncClient]:
     async def _unhandled() -> None:
         raise RuntimeError("internal cache miss — should not leak to client")
 
+    @app.get("/_test/data-error-22003")
+    async def _data_error_overflow() -> None:
+        # #207: synthetic DataError whose orig carries pgcode 22003
+        # (numeric_value_out_of_range) — the net that maps DB numeric
+        # overflow to 422 instead of a 500 UNKNOWN.
+        from sqlalchemy.exc import DataError
+
+        class _FakeOrigError(Exception):
+            pgcode = "22003"
+
+        raise DataError("stmt", {}, _FakeOrigError("numeric field overflow"))
+
+    @app.get("/_test/data-error-other")
+    async def _data_error_other() -> None:
+        # A non-overflow DataError (e.g. invalid text representation) must
+        # still surface as a generic 500 — we only special-case 22003.
+        from sqlalchemy.exc import DataError
+
+        class _FakeOrigError(Exception):
+            pgcode = "22P02"
+
+        raise DataError("stmt", {}, _FakeOrigError("invalid input syntax"))
+
     # raise_app_exceptions=False so the generic-Exception handler runs
     # instead of httpx surfacing the exception to the test caller.
     transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -90,3 +113,30 @@ async def test_unhandled_exception_returns_generic_500_envelope(
     # The original message must not bleed through.
     assert "internal cache miss" not in body["detail"]
     assert "internal cache miss" not in body.get("title", "")
+
+
+async def test_data_error_22003_maps_to_422(client_with_test_routes: AsyncClient) -> None:
+    """#207: a DB numeric overflow (SQLSTATE 22003) is the last-resort net —
+    it must render as a 422 VALIDATION_ERROR envelope, never a 500 UNKNOWN."""
+    response = await client_with_test_routes.get("/_test/data-error-22003")
+    assert response.status_code == 422
+
+    body = response.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert body["status"] == 422
+    assert body["field_errors"] == {}
+    assert body["request_id"]
+    # The raw SQL / DB message must not leak.
+    assert "numeric field overflow" not in body["detail"]
+
+
+async def test_non_overflow_data_error_stays_500(client_with_test_routes: AsyncClient) -> None:
+    """A non-22003 DataError is not user-input overflow — keep it a 500 so we
+    don't mislabel a genuine bug as a validation error."""
+    response = await client_with_test_routes.get("/_test/data-error-other")
+    assert response.status_code == 500
+
+    body = response.json()
+    assert body["code"] == "UNKNOWN"
+    assert body["status"] == 500
+    assert "invalid input syntax" not in body["detail"]

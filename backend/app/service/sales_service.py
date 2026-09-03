@@ -51,6 +51,7 @@ from app.service import (
 from app.service.gst_service import BuyerStatus, TaxType
 from app.utils import crypto
 from app.utils.gst_states import normalize_state_code
+from app.utils.money import ensure_money_in_range
 
 # Stockable item types (all types except SERVICE).
 _STOCKABLE_ITEM_TYPES = frozenset(t for t in ItemType if t != ItemType.SERVICE)
@@ -1006,6 +1007,10 @@ def create_draft_invoice(
                 "firm for GST."
             )
         line_amount = (qty * price).quantize(Decimal("0.01"))
+        # #207: reject a derived product that overflows the money ceiling
+        # (each of qty/price passes its ≤1e9 field cap, but qty*price can be
+        # ~1e18) with a per-line 422 before it hits NUMERIC(18,2) at flush.
+        ensure_money_in_range(line_amount, field=f"lines.{idx}.line_amount")
         # #195: this first pass computes only a PROVISIONAL full-rate GST so the
         # PoS engine sees a realistic invoice_value for the B2CL ₹2.5L bucket
         # test (`invoice_value > 250000`). The FINAL per-line tax is recomputed
@@ -1082,6 +1087,10 @@ def create_draft_invoice(
         record["gst_amount"] = line_gst
         total_gst += line_gst
     invoice_total = total_subtotal + total_gst
+    # #207: guard the accumulated header total (subtotal + GST) — per-line
+    # amounts can each be ≤ ceiling yet sum past it — before it reaches the
+    # NUMERIC(18,2) invoice_amount column at flush.
+    ensure_money_in_range(invoice_total, field="invoice_amount")
 
     number = _allocate_si_number(session, org_id=org_id, firm_id=firm_id, series=series)
 

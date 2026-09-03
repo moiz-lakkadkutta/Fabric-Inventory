@@ -735,9 +735,16 @@ components:
         quantity:
           type: number
           format: double
+          maximum: 1000000000
+          description: >-
+            #207: capped at 1e9. The derived line_amount (quantity * unit_rate)
+            and the invoice total are additionally guarded server-side against
+            the ₹1e9 ceiling, so a product/sum that overflows NUMERIC(18,2)
+            returns 422 VALIDATION_ERROR, never 500.
         unit_rate:
           type: number
           format: double
+          maximum: 1000000000
         line_amount:
           type: number
           format: double
@@ -2805,9 +2812,15 @@ paths:
                       quantity:
                         type: number
                         format: double
+                        maximum: 1000000000
+                        description: >-
+                          #207: qty_ordered capped at 1e9; derived line_amount
+                          (qty * rate) guarded server-side so an overflow of
+                          NUMERIC(18,2) is 422, not 500.
                       unit_rate:
                         type: number
                         format: double
+                        maximum: 1000000000
       responses:
         '201':
           description: PO created
@@ -4238,7 +4251,10 @@ paths:
             carrying a positive `gst_rate` is rejected with an actionable
             "not GST-registered" detail. (Such a firm's zero-rate lines are
             accepted and stored as `invoice_type = BILL_OF_SUPPLY`,
-            `tax_type = NIL`, `gst_amount = 0`.)
+            `tax_type = NIL`, `gst_amount = 0`.) Also (#207): a computed
+            line_amount or invoice total exceeding the ₹1e9 ceiling — even
+            when each qty/price passes its own 1e9 cap — is rejected here
+            (VALIDATION_ERROR) rather than overflowing NUMERIC(18,2) into 500.
           content:
             application/json:
               schema:
