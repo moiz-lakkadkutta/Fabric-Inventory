@@ -254,6 +254,19 @@ class SalesInvoiceListResponse(BaseModel):
     count: int
 
 
+class InvoiceCancelRequest(BaseModel):
+    """Body for POST /invoices/{id}/cancel — a mandatory reason (spec §7)."""
+
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("reason must not be blank")
+        return v.strip()
+
+
 class SiLineCreateRequest(BaseModel):
     item_id: uuid.UUID
     # BL-02: upper bound prevents values that would overflow NUMERIC(15,4)

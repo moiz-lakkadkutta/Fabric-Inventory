@@ -39,6 +39,7 @@ from app.models import (
     SOLine,
     StockLedger,
 )
+from app.models.accounting import VoucherStatus
 from app.models.masters import ItemType
 from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
 from app.service import (
@@ -1136,6 +1137,188 @@ def finalize_invoice(
     return invoice
 
 
+# Lifecycle states a cancel may act on: the invoice is finalized into the
+# GL but not yet settled by a receipt. PARTIALLY_PAID / PAID are blocked by
+# the paid_amount guard below (unwind the receipt via the credit-note flow).
+_CANCELLABLE_LIFECYCLE = frozenset(
+    {
+        InvoiceLifecycleStatus.FINALIZED,
+        InvoiceLifecycleStatus.POSTED,
+        InvoiceLifecycleStatus.OVERDUE,
+    }
+)
+
+
+def cancel_invoice(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    sales_invoice_id: uuid.UUID,
+    reason: str,
+    cancelled_by: uuid.UUID | None = None,
+) -> SalesInvoice:
+    """Cancel a FINALIZED sales invoice: post reversing GL vouchers, restore
+    stock, and move the invoice to CANCELLED.
+
+    The reversal is what keeps voucher-driven reports (TB, P&L, party
+    statement, daybook) consistent with status-driven ones (GSTR-1, ageing),
+    which already drop CANCELLED invoices. See
+    ``accounting_service.reverse_sales_invoice_gl`` for why the sales-GL
+    reversal is a CREDIT_NOTE and how it avoids #190's posting index.
+
+    Guards (raise InvoiceStateError → 409):
+      - not in {FINALIZED, POSTED, OVERDUE} (DRAFT is discarded via other
+        flows; a re-cancel of a CANCELLED invoice is an idempotent no-op);
+      - ``paid_amount > 0`` — a receipt was applied; unwind it first;
+      - DC-linked — goods were physically dispatched (v1 scope: use the
+        credit-note / sales-return flow, a follow-up ticket).
+
+    ``reason`` is required (spec §7). Idempotent: cancelling an already-
+    CANCELLED invoice returns it unchanged (exactly one reversal per
+    original voucher, enforced by the reversal unique index).
+
+    GATED — schema + GST-period semantics PENDING MOIZ + CA SIGN-OFF.
+    """
+    if not reason or not reason.strip():
+        raise AppValidationError("A cancellation reason is required.")
+    reason = reason.strip()
+
+    # #190-style lock: take the invoice row FOR UPDATE before the state check
+    # so two overlapping cancels serialize here. The loser wakes after the
+    # winner commits, sees CANCELLED, and returns the idempotent no-op.
+    invoice = session.execute(
+        select(SalesInvoice)
+        .options(selectinload(SalesInvoice.lines))
+        .where(
+            SalesInvoice.sales_invoice_id == sales_invoice_id,
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.deleted_at.is_(None),
+        )
+        .with_for_update(of=SalesInvoice)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise NotFoundError(f"Sales invoice {sales_invoice_id} not found.")
+
+    # Idempotent terminal transition (matches void_pi / cancel_so convention).
+    if invoice.lifecycle_status == InvoiceLifecycleStatus.CANCELLED:
+        return invoice
+
+    if invoice.lifecycle_status not in _CANCELLABLE_LIFECYCLE:
+        raise InvoiceStateError(
+            f"Cannot cancel invoice {sales_invoice_id}: status is "
+            f"{invoice.lifecycle_status.value}. Only a finalized, unpaid invoice "
+            "can be cancelled.",
+            title="Invoice cannot be cancelled",
+        )
+
+    if Decimal(invoice.paid_amount or 0) > 0:
+        raise InvoiceStateError(
+            f"Cannot cancel invoice {sales_invoice_id}: "
+            f"₹{Decimal(invoice.paid_amount):.2f} already received. Unwind the "
+            "receipt first (credit-note / refund workflow).",
+            title="Invoice cannot be cancelled",
+        )
+
+    if invoice.delivery_challan_id is not None:
+        raise InvoiceStateError(
+            f"Cannot cancel invoice {sales_invoice_id}: it is linked to a delivery "
+            "challan (goods were dispatched). Use the sales-return / credit-note "
+            "workflow instead.",
+            title="Invoice cannot be cancelled",
+        )
+
+    # Reverse ALL sales-GL vouchers (usually one; duplicates from a pre-#190
+    # race are all reversed) and the COGS voucher if present.
+    reversals = accounting_service.reverse_sales_invoice_gl(
+        session, invoice=invoice, reason=reason, posted_by=cancelled_by
+    )
+    cogs_reversal = accounting_service.reverse_cogs_sale_gl(
+        session, invoice=invoice, reason=reason, posted_by=cancelled_by
+    )
+
+    # Restore stock relieved at finalize (direct invoices only — DC-linked is
+    # blocked above). Keeps GL-1300 (restored by the COGS reversal) and the
+    # physical stock position moving together.
+    _restore_stock_for_cancel(session, invoice=invoice, org_id=org_id)
+
+    before_status = invoice.lifecycle_status.value
+    now = datetime.datetime.now(tz=datetime.UTC)
+    invoice.lifecycle_status = InvoiceLifecycleStatus.CANCELLED
+    invoice.status = VoucherStatus.VOIDED
+    invoice.cancelled_at = now
+    invoice.cancel_reason = reason
+    invoice.updated_at = now
+    if cancelled_by is not None:
+        invoice.updated_by = cancelled_by
+
+    reversal_ids = [str(v.voucher_id) for v in reversals]
+    if cogs_reversal is not None:
+        reversal_ids.append(str(cogs_reversal.voucher_id))
+
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=invoice.firm_id,
+        user_id=cancelled_by,
+        entity_type="sales.invoice",
+        entity_id=invoice.sales_invoice_id,
+        action="cancel",
+        changes={
+            "before": {"lifecycle_status": before_status},
+            "after": {
+                "lifecycle_status": InvoiceLifecycleStatus.CANCELLED.value,
+                "cancelled_at": now.isoformat(),
+                "cancel_reason": reason,
+                "reversal_voucher_ids": reversal_ids,
+            },
+        },
+    )
+    session.flush()
+
+    dashboard_service.invalidate_firm(invoice.firm_id)
+    return invoice
+
+
+def _restore_stock_for_cancel(
+    session: Session,
+    *,
+    invoice: SalesInvoice,
+    org_id: uuid.UUID,
+) -> None:
+    """Add back the stock relieved at finalize for a direct invoice.
+
+    Reads the outbound ``stock_ledger`` rows written by ``_post_cogs_for_invoice``
+    (reference_type='sales_invoice') and posts a matching inbound move per row
+    at the same unit_cost, so the weighted-average position value is restored
+    exactly. No-op when nothing was relieved (services-only invoice).
+    """
+    out_rows = list(
+        session.execute(
+            select(StockLedger).where(
+                StockLedger.org_id == org_id,
+                StockLedger.reference_type == "sales_invoice",
+                StockLedger.reference_id == invoice.sales_invoice_id,
+                StockLedger.qty_out > 0,
+            )
+        ).scalars()
+    )
+    for row in out_rows:
+        inventory_service.add_stock(
+            session,
+            org_id=org_id,
+            firm_id=invoice.firm_id,
+            item_id=row.item_id,
+            location_id=row.location_id,
+            qty=Decimal(row.qty_out or 0),
+            unit_cost=Decimal(row.unit_cost) if row.unit_cost is not None else Decimal("0"),
+            lot_id=row.lot_id,
+            reference_type="sales_invoice_cancel",
+            reference_id=invoice.sales_invoice_id,
+            txn_date=datetime.datetime.now(tz=datetime.UTC).date(),
+        )
+
+
 def _post_cogs_for_invoice(
     session: Session,
     *,
@@ -1323,6 +1506,7 @@ def _post_cogs_for_dc_invoice(
 
 __all__ = [
     "DEFAULT_INVOICE_SERIES",
+    "cancel_invoice",
     "cancel_so",
     "confirm_so",
     "create_dc",

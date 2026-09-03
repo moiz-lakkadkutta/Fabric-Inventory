@@ -24,6 +24,7 @@ from app.schemas.sales import (
     DCLineResponse,
     DCListResponse,
     DCResponse,
+    InvoiceCancelRequest,
     SalesInvoiceCreateRequest,
     SalesInvoiceListItem,
     SalesInvoiceListResponse,
@@ -706,6 +707,40 @@ def finalize_invoice(
         org_id=current_user.org_id,
         sales_invoice_id=sales_invoice_id,
         updated_by=current_user.user_id,
+    )
+    party_names = sales_service.party_name_map(
+        db, org_id=current_user.org_id, party_ids=[invoice.party_id]
+    )
+    item_meta = sales_service.item_meta_map(
+        db,
+        org_id=current_user.org_id,
+        item_ids=[line.item_id for line in invoice.lines],
+    )
+    return _invoice_to_response(
+        invoice,
+        party_name=party_names.get(invoice.party_id),
+        item_meta=item_meta,
+    )
+
+
+@invoice_router.post(
+    "/{sales_invoice_id}/cancel",
+    response_model=SalesInvoiceResponse,
+    summary="Cancel a finalized invoice (posts a reversing GL voucher)",
+)
+def cancel_invoice(
+    sales_invoice_id: uuid.UUID,
+    body: InvoiceCancelRequest,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("sales.invoice.cancel"))],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> SalesInvoiceResponse:
+    invoice = sales_service.cancel_invoice(
+        db,
+        org_id=current_user.org_id,
+        sales_invoice_id=sales_invoice_id,
+        reason=body.reason,
+        cancelled_by=current_user.user_id,
     )
     party_names = sales_service.party_name_map(
         db, org_id=current_user.org_id, party_ids=[invoice.party_id]
