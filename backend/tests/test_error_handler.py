@@ -49,10 +49,10 @@ async def client_with_test_routes() -> AsyncIterator[AsyncClient]:
         # overflow to 422 instead of a 500 UNKNOWN.
         from sqlalchemy.exc import DataError
 
-        class _Orig(Exception):
+        class _FakeOrigError(Exception):
             pgcode = "22003"
 
-        raise DataError("stmt", {}, _Orig("numeric field overflow"))
+        raise DataError("stmt", {}, _FakeOrigError("numeric field overflow"))
 
     @app.get("/_test/data-error-other")
     async def _data_error_other() -> None:
@@ -60,10 +60,10 @@ async def client_with_test_routes() -> AsyncIterator[AsyncClient]:
         # still surface as a generic 500 — we only special-case 22003.
         from sqlalchemy.exc import DataError
 
-        class _Orig(Exception):
+        class _FakeOrigError(Exception):
             pgcode = "22P02"
 
-        raise DataError("stmt", {}, _Orig("invalid input syntax"))
+        raise DataError("stmt", {}, _FakeOrigError("invalid input syntax"))
 
     # raise_app_exceptions=False so the generic-Exception handler runs
     # instead of httpx surfacing the exception to the test caller.

@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
 
@@ -102,9 +102,7 @@ def _assert_validation_envelope(resp) -> dict:
 # ── (a) invoice line product overflow — the headline repro ──────────────
 
 
-def test_invoice_line_product_overflow_is_422(
-    http_client: TestClient, sync_engine: Engine
-) -> None:
+def test_invoice_line_product_overflow_is_422(http_client: TestClient, sync_engine: Engine) -> None:
     """qty=999999999 & price=999999999 each pass the ≤1e9 field cap, but the
     product (~1e18) overflows NUMERIC(18,2). Must be 422, not 500, with no
     partial sales_invoice row written."""
@@ -320,7 +318,7 @@ def test_boundary_amounts_still_accepted(http_client: TestClient, sync_engine: E
     org_id = uuid.UUID(me["org_id"])
     customer_id, supplier_id, item_id = _seed_customer_supplier_item(sync_engine, org_id=org_id)
 
-    # Invoice line qty 1e9 × price 1, gst 0 → total exactly ₹1e9 (le, inclusive).
+    # Invoice line qty 1e9 x price 1, gst 0 -> total exactly Rs 1e9 (le, inclusive).
     inv = http_client.post(
         "/invoices",
         headers=_auth(me["access_token"]),
@@ -350,7 +348,7 @@ def test_boundary_amounts_still_accepted(http_client: TestClient, sync_engine: E
     )
     assert rct.status_code == 201, rct.text
 
-    # PO qty 1e9 × rate 1 → line_amount exactly ₹1e9.
+    # PO qty 1e9 x rate 1 -> line_amount exactly Rs 1e9.
     po = http_client.post(
         "/purchase-orders",
         headers=_auth(me["access_token"]),
