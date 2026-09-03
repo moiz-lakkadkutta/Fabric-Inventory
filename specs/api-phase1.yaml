@@ -5185,6 +5185,20 @@ paths:
             `format=xlsx` returns a multi-sheet workbook (B2B / B2CL /
             B2CS / Export / HSN as separate sheets). With `format=csv`
             flattens the B2B bucket only (use xlsx for the full filing).
+
+            RATE-WISE (BREAKING SHAPE CHANGE, #195): the return is
+            statutory rate-wise. b2b / b2cl / export emit ONE ROW PER
+            (invoice, slab rate) — a mixed-rate invoice yields several
+            rows, each with `gst_rate` a real slab (0 / 0.25 / 3 / 5 /
+            12 / 18 / 28, never a blended per-invoice rate), `taxable_value`
+            the taxable amount AT THAT RATE, and `invoice_value` the header
+            total repeated on every row. `Gstr1InvoiceRow.gst_rate` is now
+            non-nullable. b2cs groups by (state, slab rate); its
+            `invoice_count` counts DISTINCT invoices, not rate-rows. The
+            hsn rows are rate-wise too and each carries a new `gst_rate`
+            field (added to the XLSX HSN sheet as a "GST rate %" column).
+            CGST == SGST on every intra-state row (each half =
+            round(taxable × rate / 200)).
           content:
             application/json:
               schema:

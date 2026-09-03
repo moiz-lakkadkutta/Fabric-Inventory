@@ -3859,6 +3859,8 @@ export interface components {
             total_value: string;
             /** Uom */
             uom: string;
+            /** Gst Rate */
+            gst_rate: string;
         };
         /**
          * Gstr1InvoiceRow
@@ -3872,7 +3874,7 @@ export interface components {
             /** Cgst */
             cgst: string;
             /** Gst Rate */
-            gst_rate: string | null;
+            gst_rate: string;
             /** Gstin */
             gstin: string | null;
             /** Igst */
