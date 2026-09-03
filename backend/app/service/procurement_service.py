@@ -37,6 +37,7 @@ from app.models import (
     Item,
     Lot,
     Party,
+    PaymentAllocation,
     PILine,
     POLine,
     PurchaseInvoice,
@@ -1218,6 +1219,34 @@ def void_pi(
         raise InvoiceStateError(
             f"Cannot void PI {pi_id}: status is RECONCILED (payment-allocated); "
             f"use a debit-note workflow instead"
+        )
+    # #191: a partially-paid PI stays POSTED/PARTIALLY_PAID (only a *full* payment
+    # flips it to RECONCILED), so the RECONCILED guard above misses it. Voiding it
+    # would reverse the full invoice in GL while the payment's DR AP leg stays,
+    # orphaning the cash and diverging AP control from supplier outstanding.
+    # Refuse — supplier refunds/debit notes are a follow-up workflow (TASK-049).
+    paid = Decimal(pi.paid_amount or 0)
+    if paid > 0:
+        raise InvoiceStateError(
+            f"Cannot void PI {pi_id}: ₹{paid} has already been paid/allocated against "
+            f"it (lifecycle {pi.lifecycle_status}). Unwind the payment first — supplier "
+            f"refunds/debit notes are a follow-up workflow (TASK-049)."
+        )
+    # Belt-and-suspenders: catch rows where paid_amount drifted from allocations.
+    has_live_alloc = session.execute(
+        select(PaymentAllocation.allocation_id)
+        .where(
+            PaymentAllocation.purchase_invoice_id == pi.purchase_invoice_id,
+            PaymentAllocation.org_id == org_id,
+            PaymentAllocation.deleted_at.is_(None),
+            PaymentAllocation.reversed_by_allocation_id.is_(None),
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if has_live_alloc is not None:
+        raise InvoiceStateError(
+            f"Cannot void PI {pi_id}: a live payment allocation references it. "
+            f"Unwind the payment first."
         )
     # B1: if the PI is POSTED it already has a GL voucher (DR Inventory + DR
     # ITC / CR AP). Reverse it before flipping status so the trial balance
