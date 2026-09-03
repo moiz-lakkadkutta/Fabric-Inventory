@@ -64,7 +64,7 @@ _COGS_SERIES = "COGS"
 
 # #203: GRN-receipt accrual (GRNI) ledger codes + series.
 _GRNI_LEDGER_CODE = "2010"  # GRN Clearing (goods received, not invoiced)
-_PPV_LEDGER_CODE = "5360"  # Purchase Price Variance (PI net − GRN accrued)
+_PPV_LEDGER_CODE = "5360"  # Purchase Price Variance (PI net - GRN accrued)
 _GRNI_SERIES = "GRNI"
 
 # #203 concurrency backstop: partial-unique index guaranteeing at most one
@@ -441,18 +441,18 @@ def post_grn_accrual_voucher(
     """Create a balanced GRN-receipt accrual voucher (Option A, #203).
 
     Posts ONE balanced voucher recording goods received but not yet invoiced:
-      DR  1300 Inventory            Σ(qty_received × rate)
+      DR  1300 Inventory            sum(qty_received x rate)
       CR  2010 GRN Clearing (GRNI)  = total
 
     so a mid-cycle Balance Sheet shows the received stock (asset) AND the
     not-yet-billed obligation (liability). The accrual is later cleared by
     ``post_purchase_invoice_to_gl`` when the matching PI posts.
 
-    ``total`` sums ``qty_received × rate`` over non-deleted GRN lines, using
+    ``total`` sums ``qty_received x rate`` over non-deleted GRN lines, using
     the SAME GRN line rate that ``inventory_service.add_stock`` already fed the
-    moving-average — so 1300 tracks stock valuation exactly. Zero-rate / unpriced
-    lines contribute nothing; if the total is ≤ 0 (all free/zero-rate) → return
-    None, no voucher.
+    moving-average, so 1300 tracks stock valuation exactly. Zero-rate / unpriced
+    lines contribute nothing; if the total is <= 0 (all free/zero-rate) it
+    returns None, no voucher.
 
     Idempotency: if a non-deleted GRN_ACCRUAL voucher already references this
     ``grn_id``, return it rather than creating a duplicate — backed by the
@@ -464,7 +464,8 @@ def post_grn_accrual_voucher(
     """
     total = sum(
         (
-            Decimal(line.qty_received) * (Decimal(line.rate) if line.rate is not None else Decimal("0"))
+            Decimal(line.qty_received)
+            * (Decimal(line.rate) if line.rate is not None else Decimal("0"))
             for line in grn.lines
             if line.deleted_at is None
         ),
@@ -594,7 +595,7 @@ def post_purchase_invoice_to_gl(
 ) -> Voucher | None:
     """Create a balanced GL voucher for a Purchase Invoice.
 
-    Forward charge (rcm_applicable=False):
+    Forward charge (rcm_applicable=False), direct PI (no grn_id) or legacy GRN:
       DR  1300 Inventory            pi.invoice_amount  (net taxable value)
       DR  1400 ITC Receivable       pi.gst_amount      (skip if zero/None)
       CR  2000 Sundry Creditors (AP) invoice_amount + gst_amount  (gross payable)
@@ -604,6 +605,17 @@ def post_purchase_invoice_to_gl(
       invoice leg for RCM is out-of-scope here — deferred to finding F7.
       DR  1300 Inventory            pi.invoice_amount
       CR  2000 Sundry Creditors (AP) pi.invoice_amount
+
+    #203 — GRN-linked PI whose GRN carries a live GRN_ACCRUAL voucher: the
+    inventory-side legs CLEAR the receipt accrual instead of re-debiting 1300
+    (which was already debited at receipt), with any PI-vs-GRN price drift going
+    to Purchase Price Variance:
+      DR  2010 GRN Clearing         accrued value (the accrual's total_debit)
+      DR/CR 5360 Purchase Price Var |PI net - accrued|  (DR if PI dearer, else CR)
+      DR  1400 ITC Receivable       gst (forward charge only)
+      CR  2000 Sundry Creditors (AP) gross payable
+    A GRN received before #203 shipped has no accrual voucher → falls through to
+    the DR-1300 shape above so old in-flight cycles still close correctly.
 
     S2: Zero-amount PI (e.g. free samples, rate=0): returns None — no voucher
     is created. `post_pi` still advances the PI to POSTED; there is simply
@@ -666,7 +678,7 @@ def post_purchase_invoice_to_gl(
     )
     use_grni = grn_accrual is not None
     accrued = Decimal(grn_accrual.total_debit or 0) if grn_accrual is not None else Decimal("0")
-    # variance = PI net − GRN accrued. >0 unfavourable (DR PPV); <0 favourable
+    # variance = PI net - GRN accrued. >0 unfavourable (DR PPV); <0 favourable
     # (CR PPV). Inventory (1300) is left untouched so it stays equal to the
     # weighted-average valuation the GRN already set.
     variance = (net - accrued) if use_grni else Decimal("0")

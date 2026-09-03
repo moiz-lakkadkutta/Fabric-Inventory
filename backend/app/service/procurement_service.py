@@ -1184,14 +1184,13 @@ def post_pi(
         # Reject it (the minimal slice of #200's 3-way match this fix needs;
         # nothing else enforces one-PI-per-GRN today).
         other_posted = session.execute(
-            select(PurchaseInvoice.purchase_invoice_id).where(
+            select(PurchaseInvoice.purchase_invoice_id)
+            .where(
                 PurchaseInvoice.org_id == org_id,
                 PurchaseInvoice.grn_id == pi.grn_id,
                 PurchaseInvoice.purchase_invoice_id != pi.purchase_invoice_id,
                 PurchaseInvoice.deleted_at.is_(None),
-                PurchaseInvoice.status.in_(
-                    [VoucherStatus.POSTED, VoucherStatus.RECONCILED]
-                ),
+                PurchaseInvoice.status.in_([VoucherStatus.POSTED, VoucherStatus.RECONCILED]),
             )
             .limit(1)
         ).scalar_one_or_none()

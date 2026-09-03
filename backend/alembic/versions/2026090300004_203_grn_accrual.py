@@ -147,6 +147,4 @@ def downgrade() -> None:
             "first."
         )
 
-    conn.execute(
-        sa.text("DELETE FROM ledger WHERE code IN ('2010', '5360') AND firm_id IS NULL")
-    )
+    conn.execute(sa.text("DELETE FROM ledger WHERE code IN ('2010', '5360') AND firm_id IS NULL"))

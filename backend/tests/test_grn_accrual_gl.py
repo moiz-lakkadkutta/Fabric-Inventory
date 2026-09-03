@@ -26,8 +26,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import InvoiceStateError
-from app.models import Firm, Item, Party, Voucher, VoucherLine
-from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
+from app.models import Firm, Item, Party, Voucher
+from app.models.accounting import VoucherType
 from app.models.masters import ItemType, TrackingType, UomType
 from app.service import (
     accounting_service,
@@ -52,7 +52,9 @@ def setup(db_session: OrmSession, fresh_org_id: uuid.UUID) -> tuple[Firm, Party,
     _resolve_ledger for 1300/2010/5360/1400/2000/5350 works)."""
     seed_service.seed_coa(db_session, org_id=fresh_org_id)
 
-    firm = Firm(org_id=fresh_org_id, code=f"F-{uuid.uuid4().hex[:6]}", name="Test Firm", has_gst=True)
+    firm = Firm(
+        org_id=fresh_org_id, code=f"F-{uuid.uuid4().hex[:6]}", name="Test Firm", has_gst=True
+    )
     db_session.add(firm)
     db_session.flush()
 
@@ -179,7 +181,7 @@ def _lines_by_code(db_session: OrmSession, voucher: Voucher) -> dict[str, tuple[
 
 
 def _tb_balance(db_session: OrmSession, *, org_id: uuid.UUID, firm: Firm, code: str) -> Decimal:
-    """Net DR-positive balance for a ledger code in the TB (DR − CR)."""
+    """Net DR-positive balance for a ledger code in the TB (DR - CR)."""
     _, _, _, rows = reports_service.compute_tb(
         db_session, org_id=org_id, firm_id=firm.firm_id, as_of=datetime.date(2026, 12, 31)
     )
@@ -423,14 +425,26 @@ def test_second_pi_against_same_grn_rejected(
         db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="20", rate="200"
     )
     pi1 = _make_pi_for_grn(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        grn_id=grn_id, qty="20", rate="200",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="20",
+        rate="200",
     )
     procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi1)
 
     pi2 = _make_pi_for_grn(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        grn_id=grn_id, qty="20", rate="200",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="20",
+        rate="200",
     )
     with pytest.raises(InvoiceStateError):
         procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi2)
@@ -449,8 +463,15 @@ def test_void_pi_reopens_grni(
         db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="20", rate="200"
     )
     pi_id = _make_pi_for_grn(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item,
-        grn_id=grn_id, qty="20", rate="500", gst_rate="5",
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="20",
+        rate="500",
+        gst_rate="5",
     )
     procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi_id)
     # After post: 2010 cleared to 0.
@@ -503,7 +524,9 @@ def test_receive_replay_single_accrual(
                 Voucher.reference_id == grn_id,
                 Voucher.deleted_at.is_(None),
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     assert count == 1
 
@@ -527,7 +550,7 @@ def test_inventory_ledger_cannot_go_negative_in_normal_cycle(
         db_session, org_id=fresh_org_id, firm_id=firm.firm_id
     )
     # Adjustment DECREASE 4 @ WAC 100 → CR 1300 400 (this is the exact QA
-    # mechanism: outflows post at cost). Inventory now 6 units × 100 = 600.
+    # mechanism: outflows post at cost). Inventory now 6 units x 100 = 600.
     stock_service.create_adjustment(
         db_session,
         org_id=fresh_org_id,
