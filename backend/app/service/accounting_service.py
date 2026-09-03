@@ -29,7 +29,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError, InvoiceStateError
-from app.models import Firm, Ledger, Party, PurchaseInvoice, SalesInvoice, Voucher, VoucherLine
+from app.models import (
+    GRN,
+    Firm,
+    Ledger,
+    Party,
+    PurchaseInvoice,
+    SalesInvoice,
+    Voucher,
+    VoucherLine,
+)
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.service import audit_service
 
@@ -52,6 +61,17 @@ _AP_LEDGER_CODE = "2000"  # Sundry Creditors (AP credit — gross payable)
 # COGS-on-sale ledger codes.
 _COGS_LEDGER_CODE = "5000"  # Cost of Goods Sold (DR on sale)
 _COGS_SERIES = "COGS"
+
+# #203: GRN-receipt accrual (GRNI) ledger codes + series.
+_GRNI_LEDGER_CODE = "2010"  # GRN Clearing (goods received, not invoiced)
+_PPV_LEDGER_CODE = "5360"  # Purchase Price Variance (PI net − GRN accrued)
+_GRNI_SERIES = "GRNI"
+
+# #203 concurrency backstop: partial-unique index guaranteeing at most one
+# non-deleted GRN_ACCRUAL voucher per (org_id, reference_id=grn_id). If the
+# #190 GRN row lock is ever bypassed, the loser's INSERT trips this and we
+# translate it to InvoiceStateError (409).
+_GRN_ACCRUAL_INDEX = "uq_voucher_grn_accrual"
 
 # #190 concurrency backstop: partial-unique index guaranteeing at most one
 # non-deleted GL posting per (org, voucher_type, reference_type, reference_id)
@@ -408,6 +428,160 @@ def post_cogs_voucher(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# #203: GRN-receipt accrual (perpetual inventory / GRNI clearing).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def post_grn_accrual_voucher(
+    session: Session,
+    *,
+    grn: GRN,
+    posted_by: uuid.UUID | None = None,
+) -> Voucher | None:
+    """Create a balanced GRN-receipt accrual voucher (Option A, #203).
+
+    Posts ONE balanced voucher recording goods received but not yet invoiced:
+      DR  1300 Inventory            Σ(qty_received × rate)
+      CR  2010 GRN Clearing (GRNI)  = total
+
+    so a mid-cycle Balance Sheet shows the received stock (asset) AND the
+    not-yet-billed obligation (liability). The accrual is later cleared by
+    ``post_purchase_invoice_to_gl`` when the matching PI posts.
+
+    ``total`` sums ``qty_received × rate`` over non-deleted GRN lines, using
+    the SAME GRN line rate that ``inventory_service.add_stock`` already fed the
+    moving-average — so 1300 tracks stock valuation exactly. Zero-rate / unpriced
+    lines contribute nothing; if the total is ≤ 0 (all free/zero-rate) → return
+    None, no voucher.
+
+    Idempotency: if a non-deleted GRN_ACCRUAL voucher already references this
+    ``grn_id``, return it rather than creating a duplicate — backed by the
+    ``uq_voucher_grn_accrual`` partial-unique index, which also serialises the
+    #190 concurrent-receive race (the loser's INSERT trips it → 409).
+
+    Called from ``procurement_service.receive_grn`` on the already-locked
+    (#190), already-3-way-matched (#200), lot-minting (#202) receive path.
+    """
+    total = sum(
+        (
+            Decimal(line.qty_received) * (Decimal(line.rate) if line.rate is not None else Decimal("0"))
+            for line in grn.lines
+            if line.deleted_at is None
+        ),
+        Decimal("0"),
+    ).quantize(Decimal("0.01"))
+
+    if total <= Decimal("0"):
+        return None
+
+    # Defense-in-depth: idempotency guard (index is the DB backstop).
+    existing = session.execute(
+        select(Voucher).where(
+            Voucher.org_id == grn.org_id,
+            Voucher.voucher_type == VoucherType.GRN_ACCRUAL,
+            Voucher.reference_id == grn.grn_id,
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    inventory_ledger = _resolve_ledger(session, org_id=grn.org_id, code=_INVENTORY_LEDGER_CODE)
+    grni_ledger = _resolve_ledger(session, org_id=grn.org_id, code=_GRNI_LEDGER_CODE)
+
+    voucher_number = _allocate_voucher_number(
+        session,
+        org_id=grn.org_id,
+        firm_id=grn.firm_id,
+        voucher_type=VoucherType.GRN_ACCRUAL,
+        series=_GRNI_SERIES,
+    )
+
+    voucher = Voucher(
+        org_id=grn.org_id,
+        firm_id=grn.firm_id,
+        voucher_type=VoucherType.GRN_ACCRUAL,
+        series=_GRNI_SERIES,
+        number=voucher_number,
+        voucher_date=grn.grn_date,
+        reference_type="GRN",
+        reference_id=grn.grn_id,
+        narration=f"GRN accrual · {grn.series}/{grn.number}",
+        status=VoucherStatus.POSTED,
+        total_debit=total,
+        total_credit=total,
+        created_by=posted_by,
+    )
+    session.add(voucher)
+    try:
+        session.flush()  # mint voucher_id; may trip uq_voucher_grn_accrual
+    except IntegrityError as exc:
+        # #190/#203: DB backstop for the concurrent-receive race. A twin accrual
+        # for the same GRN surfaces as 409 (mirrors the COGS handling above).
+        if _GRN_ACCRUAL_INDEX in str(exc.orig):
+            raise InvoiceStateError(
+                f"GRN {grn.grn_id} accrual was posted concurrently; refresh and retry.",
+                title="GRN already received",
+            ) from exc
+        raise
+
+    session.add(
+        VoucherLine(
+            org_id=grn.org_id,
+            voucher_id=voucher.voucher_id,
+            ledger_id=inventory_ledger.ledger_id,
+            line_type=JournalLineType.DR,
+            amount=total,
+            description=f"Inventory · GRN {grn.series}/{grn.number}",
+            sequence=1,
+        )
+    )
+    session.add(
+        VoucherLine(
+            org_id=grn.org_id,
+            voucher_id=voucher.voucher_id,
+            ledger_id=grni_ledger.ledger_id,
+            line_type=JournalLineType.CR,
+            amount=total,
+            description=f"GRN clearing · GRN {grn.series}/{grn.number}",
+            sequence=2,
+        )
+    )
+    session.flush()
+
+    # Defense-in-depth: balanced bundle invariant.
+    debits = sum(
+        (Decimal(line.amount) for line in voucher.lines if line.line_type == JournalLineType.DR),
+        Decimal(0),
+    )
+    credits = sum(
+        (Decimal(line.amount) for line in voucher.lines if line.line_type == JournalLineType.CR),
+        Decimal(0),
+    )
+    if debits != credits:
+        raise AppValidationError(
+            f"GRN accrual voucher {voucher.voucher_id} unbalanced: DR={debits}, CR={credits}"
+        )
+
+    return voucher
+
+
+def _find_grn_accrual_voucher(
+    session: Session, *, org_id: uuid.UUID, grn_id: uuid.UUID
+) -> Voucher | None:
+    """Return the live GRN_ACCRUAL voucher for a GRN, or None (legacy GRN
+    received before #203 shipped → PI post falls through to the DR-1300 shape)."""
+    return session.execute(
+        select(Voucher).where(
+            Voucher.org_id == org_id,
+            Voucher.voucher_type == VoucherType.GRN_ACCRUAL,
+            Voucher.reference_id == grn_id,
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+
+
+# ──────────────────────────────────────────────────────────────────────
 # E1 (GL-1): Purchase Invoice GL posting.
 # ──────────────────────────────────────────────────────────────────────
 
@@ -478,13 +652,44 @@ def post_purchase_invoice_to_gl(
         ap_amount = net + gst_total
         include_itc = gst_total > 0
 
+    # #203: a GRN-linked PI clears the GRN-receipt accrual (GRNI) instead of
+    # re-debiting inventory — otherwise 1300 would be double-counted (once at
+    # receipt, once here). If the GRN carries a live GRN_ACCRUAL voucher, the
+    # inventory-side legs become DR 2010 (the accrued value) + DR/CR 5360 for
+    # any PI-vs-GRN price drift (PPV). A direct PI (no grn_id) — or a legacy
+    # GRN received before #203 shipped (no accrual voucher) — falls through to
+    # today's DR 1300 shape so old in-flight cycles still close correctly.
+    grn_accrual = (
+        _find_grn_accrual_voucher(session, org_id=pi.org_id, grn_id=pi.grn_id)
+        if pi.grn_id is not None
+        else None
+    )
+    use_grni = grn_accrual is not None
+    accrued = Decimal(grn_accrual.total_debit or 0) if grn_accrual is not None else Decimal("0")
+    # variance = PI net − GRN accrued. >0 unfavourable (DR PPV); <0 favourable
+    # (CR PPV). Inventory (1300) is left untouched so it stays equal to the
+    # weighted-average valuation the GRN already set.
+    variance = (net - accrued) if use_grni else Decimal("0")
+
     inventory_ledger = _resolve_ledger(session, org_id=pi.org_id, code=_INVENTORY_LEDGER_CODE)
+    grni_ledger = (
+        _resolve_ledger(session, org_id=pi.org_id, code=_GRNI_LEDGER_CODE) if use_grni else None
+    )
+    ppv_ledger = (
+        _resolve_ledger(session, org_id=pi.org_id, code=_PPV_LEDGER_CODE)
+        if use_grni and variance != 0
+        else None
+    )
     itc_ledger = (
         _resolve_ledger(session, org_id=pi.org_id, code=_ITC_RECEIVABLE_LEDGER_CODE)
         if include_itc
         else None
     )
     ap_ledger = _resolve_ledger(session, org_id=pi.org_id, code=_AP_LEDGER_CODE)
+
+    # Voucher totals: AP (credit) plus a favourable-variance credit to PPV when
+    # the PI costs LESS than accrued. Debits mirror this (asserted post-flush).
+    bundle_total = ap_amount + (abs(variance) if (use_grni and variance < 0) else Decimal("0"))
 
     voucher_number = _allocate_voucher_number(
         session,
@@ -514,25 +719,55 @@ def post_purchase_invoice_to_gl(
         reference_id=pi.purchase_invoice_id,
         narration=f"Purchase from {party_display}",
         status=VoucherStatus.POSTED,
-        total_debit=ap_amount,
-        total_credit=ap_amount,
+        total_debit=bundle_total,
+        total_credit=bundle_total,
         created_by=posted_by,
     )
     session.add(voucher)
     session.flush()
 
     seq = 1
-    session.add(
-        VoucherLine(
-            org_id=pi.org_id,
-            voucher_id=voucher.voucher_id,
-            ledger_id=inventory_ledger.ledger_id,
-            line_type=JournalLineType.DR,
-            amount=net,
-            description=f"Inventory · PI {pi.series}/{pi.number}",
-            sequence=seq,
+    if use_grni:
+        # DR 2010 GRN Clearing — clears the accrual posted at receipt.
+        session.add(
+            VoucherLine(
+                org_id=pi.org_id,
+                voucher_id=voucher.voucher_id,
+                ledger_id=grni_ledger.ledger_id,  # type: ignore[union-attr]
+                line_type=JournalLineType.DR,
+                amount=accrued,
+                description=f"GRN clearing · PI {pi.series}/{pi.number}",
+                sequence=seq,
+            )
         )
-    )
+        if ppv_ledger is not None and variance != 0:
+            seq += 1
+            session.add(
+                VoucherLine(
+                    org_id=pi.org_id,
+                    voucher_id=voucher.voucher_id,
+                    ledger_id=ppv_ledger.ledger_id,
+                    # variance>0 (PI dearer than GRN): DR PPV (expense up);
+                    # variance<0 (PI cheaper): CR PPV (expense down / gain).
+                    line_type=JournalLineType.DR if variance > 0 else JournalLineType.CR,
+                    amount=abs(variance),
+                    description=f"Purchase price variance · PI {pi.series}/{pi.number}",
+                    sequence=seq,
+                )
+            )
+    else:
+        # Direct PI or legacy pre-#203 GRN: DR 1300 Inventory (net taxable value).
+        session.add(
+            VoucherLine(
+                org_id=pi.org_id,
+                voucher_id=voucher.voucher_id,
+                ledger_id=inventory_ledger.ledger_id,
+                line_type=JournalLineType.DR,
+                amount=net,
+                description=f"Inventory · PI {pi.series}/{pi.number}",
+                sequence=seq,
+            )
+        )
     if itc_ledger is not None:
         seq += 1
         session.add(
