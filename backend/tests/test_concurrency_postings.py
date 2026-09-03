@@ -129,7 +129,9 @@ def _drop_org(admin_engine: Engine, org_id: uuid.UUID) -> None:
         session.commit()
 
 
-def _race(engine: Engine, org_id: uuid.UUID, n: int, fn: Callable[[OrmSession], object]) -> list[str]:
+def _race(
+    engine: Engine, org_id: uuid.UUID, n: int, fn: Callable[[OrmSession], object]
+) -> list[str]:
     """Run ``fn`` on ``n`` threads, each on its own committed session, all
     released from a barrier at once. Returns one label per worker:
     "OK", the caught exception's class name, or "UNEXPECTED:<repr>".
@@ -481,7 +483,9 @@ def test_cancel_reverses_duplicate_finalize_vouchers(
                 ),
                 {"o": str(org_id)},
             ).scalar()
-            assert Decimal(str(ar_net)) == Decimal("0"), f"AR not netted after dup reversal: {ar_net}"
+            assert Decimal(str(ar_net)) == Decimal("0"), (
+                f"AR not netted after dup reversal: {ar_net}"
+            )
     finally:
         _drop_org(admin_engine, org_id)
         # Restore #190's index (org is wiped, so no duplicates remain to trip it).
@@ -606,7 +610,9 @@ def test_concurrent_full_receipts_never_over_allocate(
                 ),
                 {"inv": str(inv_id)},
             ).scalar()
-            assert Decimal(str(allocated)) == Decimal("10000.00"), f"invoice over-allocated: {allocated}"
+            assert Decimal(str(allocated)) == Decimal("10000.00"), (
+                f"invoice over-allocated: {allocated}"
+            )
 
             paid = s.execute(
                 text("SELECT paid_amount FROM sales_invoice WHERE sales_invoice_id = :inv"),
@@ -804,7 +810,9 @@ def test_parallel_issues_cannot_exceed_ordered(sync_engine: Engine, admin_engine
                 text("SELECT qty_dispatched FROM so_line WHERE so_line_id = :sl"),
                 {"sl": str(so_line_id)},
             ).scalar()
-            assert Decimal(str(qty_dispatched)) <= Decimal("10"), f"SO over-dispatched: {qty_dispatched}"
+            assert Decimal(str(qty_dispatched)) <= Decimal("10"), (
+                f"SO over-dispatched: {qty_dispatched}"
+            )
 
             total_out = s.execute(
                 text(

@@ -33,6 +33,7 @@ Vertical tracer bullets — one test, one assertion family:
 from __future__ import annotations
 
 import uuid
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1018,7 +1019,6 @@ def test_create_mo_translates_number_race_to_422(
     Mirrors the JV pattern at ``accounting_service.post_journal_voucher``
     (C01 hardening, commit 63cec7b)."""
     me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
-    from typing import Any
 
     from sqlalchemy.exc import IntegrityError
 
@@ -1074,7 +1074,6 @@ def test_create_mo_does_not_swallow_unrelated_integrity_errors(
     re-raise the 500 instead of returning the global handler's envelope.
     """
     _ = sync_engine  # ensure the test DB is reachable; mirrors http_client fixture
-    from typing import Any
 
     from sqlalchemy.exc import IntegrityError
 
@@ -1933,9 +1932,9 @@ def _create_plain_party(client: TestClient, owner: dict[str, str]) -> str:
 def _op_ids_from_routing(routing: dict[str, object]) -> list[str]:
     """Recover the linear-chain operation_master_id order from a routing's
     edges (from-of-edge[0], then to-of-each-edge)."""
-    edges = routing["edges"]  # type: ignore[index]
-    ordered = [str(edges[0]["from_operation_id"])]  # type: ignore[index]
-    for e in edges:  # type: ignore[union-attr]
+    edges = cast(list[dict[str, Any]], routing["edges"])
+    ordered = [str(edges[0]["from_operation_id"])]
+    for e in edges:
         ordered.append(str(e["to_operation_id"]))
     return ordered
 

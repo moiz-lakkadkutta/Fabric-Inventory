@@ -173,8 +173,8 @@ def test_cancel_finalized_invoice_posts_reversing_voucher(
         price="1000",
         gst_rate="5",
     )
-    assert Decimal(invoice.gst_amount) == Decimal("50.00"), "fixture must produce ₹50 GST"
-    assert Decimal(invoice.invoice_amount) == Decimal("1050.00")
+    assert Decimal(str(invoice.gst_amount)) == Decimal("50.00"), "fixture must produce ₹50 GST"
+    assert Decimal(str(invoice.invoice_amount)) == Decimal("1050.00")
 
     # Original SALES_INVOICE voucher exists.
     orig = db_session.execute(
@@ -193,7 +193,7 @@ def test_cancel_finalized_invoice_posts_reversing_voucher(
         reason="fat-finger duplicate",
     )
     assert cancelled.lifecycle_status == InvoiceLifecycleStatus.CANCELLED
-    assert cancelled.status == VoucherStatus.VOIDED
+    assert cancelled.status == VoucherStatus.VOIDED  # type: ignore[comparison-overlap]
     assert cancelled.cancelled_at is not None
     assert cancelled.cancel_reason == "fat-finger duplicate"
 
@@ -298,6 +298,7 @@ def test_cancel_reverses_cogs_and_restores_stock(
         item_id=item.item_id,
         location_id=location.location_id,
     )
+    assert pos is not None
     assert Decimal(pos.on_hand_qty) == Decimal("6"), "10 - 4 relieved at finalize"
 
     sales_service.cancel_invoice(
@@ -337,6 +338,7 @@ def test_cancel_reverses_cogs_and_restores_stock(
         item_id=item.item_id,
         location_id=location.location_id,
     )
+    assert pos2 is not None
     assert Decimal(pos2.on_hand_qty) == Decimal("10")
     cancel_rows = (
         db_session.execute(
@@ -350,8 +352,8 @@ def test_cancel_reverses_cogs_and_restores_stock(
         .all()
     )
     assert len(cancel_rows) == 1
-    assert Decimal(cancel_rows[0].qty_in) == Decimal("4")
-    assert Decimal(cancel_rows[0].unit_cost) == Decimal("50")
+    assert Decimal(str(cancel_rows[0].qty_in)) == Decimal("4")
+    assert Decimal(str(cancel_rows[0].unit_cost)) == Decimal("50")
 
     # TB: 5000 and 1300 net to zero for the cancelled invoice's cost.
     assert _tb_net(db_session, org_id=fresh_org_id, firm_id=firm.firm_id, code="5000") == Decimal(
@@ -398,6 +400,7 @@ def test_cancel_blocked_when_paid(db_session: OrmSession, fresh_org_id: uuid.UUI
     )
     assert rev == []
     inv = db_session.get(SalesInvoice, invoice.sales_invoice_id)
+    assert inv is not None
     assert inv.lifecycle_status != InvoiceLifecycleStatus.CANCELLED
 
 
@@ -596,7 +599,7 @@ def test_zero_gst_invoice_reverses_two_lines(
         price="1000",
         gst_rate="0",
     )
-    assert Decimal(invoice.gst_amount) == Decimal("0.00")
+    assert Decimal(str(invoice.gst_amount)) == Decimal("0.00")
     orig = db_session.execute(
         select(Voucher).where(
             Voucher.voucher_type == VoucherType.SALES_INVOICE,
@@ -640,7 +643,8 @@ def _signup_owner(client: TestClient) -> dict[str, str]:
         },
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()
+    body: dict[str, str] = resp.json()
+    return body
 
 
 def _auth(token: str) -> dict[str, str]:
@@ -692,7 +696,7 @@ def _create_finalized_via_api(
         },
     )
     assert create.status_code == 201, create.text
-    invoice_id = create.json()["sales_invoice_id"]
+    invoice_id: str = create.json()["sales_invoice_id"]
     fin = client.post(f"/invoices/{invoice_id}/finalize", headers=_auth(me["access_token"]))
     assert fin.status_code == 200, fin.text
     return invoice_id

@@ -376,7 +376,7 @@ def test_create_draft_invoice_branch_transfer_same_gstin_is_not_a_supply(
         .scalars()
         .all()
     )
-    assert all(Decimal(line.gst_amount) == Decimal("0.00") for line in branch_lines)
+    assert all(Decimal(str(line.gst_amount)) == Decimal("0.00") for line in branch_lines)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -524,9 +524,9 @@ def test_nil_not_a_supply_invoice_has_zero_gst(db_session: OrmSession) -> None:
         .all()
     )
     assert len(lines) == 1
-    assert Decimal(lines[0].gst_amount) == Decimal("0.00")
+    assert Decimal(str(lines[0].gst_amount)) == Decimal("0.00")
     # gst_rate is retained (decision 3 in the plan): zero-rated value at a rate.
-    assert Decimal(lines[0].gst_rate) == Decimal("5")
+    assert Decimal(str(lines[0].gst_rate)) == Decimal("5")
 
 
 def test_nil_invoice_finalize_posts_two_line_voucher_no_2100(
@@ -575,7 +575,9 @@ def test_nil_invoice_finalize_posts_two_line_voucher_no_2100(
     assert amounts[("1200", JournalLineType.DR)] == Decimal("500.00")
     assert amounts[("4000", JournalLineType.CR)] == Decimal("500.00")
     assert not any(code == "2100" for code, _ in codes), "no GST Payable line on a NIL invoice"
-    assert Decimal(voucher.total_debit) == Decimal(voucher.total_credit) == Decimal("500.00")
+    assert (
+        Decimal(str(voucher.total_debit)) == Decimal(str(voucher.total_credit)) == Decimal("500.00")
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -754,7 +756,11 @@ def test_non_gst_firm_finalize_posts_no_2100(db_session: OrmSession) -> None:
     assert amounts[("1200", JournalLineType.DR)] == Decimal("1000.00")
     assert amounts[("4000", JournalLineType.CR)] == Decimal("1000.00")
     assert not any(code == "2100" for code, _ in codes), "no GST Payable line on a Bill of Supply"
-    assert Decimal(voucher.total_debit) == Decimal(voucher.total_credit) == Decimal("1000.00")
+    assert (
+        Decimal(str(voucher.total_debit))
+        == Decimal(str(voucher.total_credit))
+        == Decimal("1000.00")
+    )
 
 
 def test_gst_firm_unaffected_by_194(db_session: OrmSession) -> None:
@@ -895,14 +901,14 @@ def test_mixed_rate_invoice_line_gst_uses_half_rate_method(db_session: OrmSessio
     }
     total = Decimal("0.00")
     for line in lines:
-        rate = Decimal(line.gst_rate)
-        gst = Decimal(line.gst_amount)
-        half = (Decimal(line.line_amount) * rate / Decimal("200")).quantize(Decimal("0.01"))
+        rate = Decimal(str(line.gst_rate))
+        gst = Decimal(str(line.gst_amount))
+        half = (Decimal(str(line.line_amount)) * rate / Decimal("200")).quantize(Decimal("0.01"))
         assert gst == 2 * half, f"line @ {rate}%: {gst} != 2x{half}"
         assert (gst * 100) % 2 == 0, f"line @ {rate}% gst {gst} is not even-paisa"
         assert gst == expected[rate]
         total += gst
-    assert Decimal(invoice.gst_amount) == total == Decimal("44.18")
+    assert Decimal(str(invoice.gst_amount)) == total == Decimal("44.18")
 
 
 def test_finalize_gl_2100_equals_header_gst(db_session: OrmSession) -> None:
@@ -943,4 +949,4 @@ def test_finalize_gl_2100_equals_header_gst(db_session: OrmSession) -> None:
         ).scalars()
         if vl.ledger_id == led_2100 and vl.line_type == JournalLineType.CR
     )
-    assert cr_2100 == Decimal(invoice.gst_amount) == Decimal("44.18")
+    assert cr_2100 == Decimal(str(invoice.gst_amount)) == Decimal("44.18")

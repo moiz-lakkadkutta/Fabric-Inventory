@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1021,7 +1022,7 @@ def test_unmatched_as_voucher_control_account_counter_ledger_returns_422(
 # ══════════════════════════════════════════════════════════════════════
 
 
-def _seed_recon_env(db):  # type: ignore[no-untyped-def]
+def _seed_recon_env(db: Any) -> dict[str, Any]:
     """Seed org + COA + firm + supplier + posted PI + a bank account on a
     non-control sub-ledger. Returns a dict of the ids under test.
     """
