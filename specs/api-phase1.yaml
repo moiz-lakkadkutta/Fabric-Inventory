@@ -4091,6 +4091,13 @@ paths:
 
     post:
       summary: Create delivery challan
+      description: >
+        Creates a DC in DRAFT state. When `sales_order_id` is set the linked SO
+        must be CONFIRMED+ and the cumulative dispatch (this DC plus prior
+        non-DRAFT DCs on the SO) must not exceed each SO line's ordered qty,
+        aggregated per item; over-dispatch or an item not on the SO is rejected
+        422 VALIDATION_ERROR (#206). This is early UX validation — the
+        authoritative cap is enforced again at issue time under a row lock.
       operationId: createDeliveryChallan
       tags:
         - sales
@@ -4124,7 +4131,51 @@ paths:
             application/json:
               schema:
                 type: object
+        '422':
+          description: >
+            Validation error — e.g. over-dispatch beyond the SO's ordered qty,
+            or a line item not on the linked SO (#206).
       x-permission: sales.challan.create
+
+  /delivery-challans/{dc_id}/issue:
+    post:
+      summary: Issue a delivery challan (DRAFT -> ISSUED)
+      description: >
+        Posts each line's stock removal and, when linked to a SO, advances the
+        SO status to PARTIAL_DC / FULLY_DISPATCHED. The linked SO row is locked
+        FOR UPDATE and re-validated (#206): issuing against a CANCELLED (or
+        DRAFT) SO is rejected 409 INVOICE_STATE_ERROR and the SO is never
+        resurrected; cumulative dispatch exceeding the SO's ordered qty (per
+        item) is rejected 422 VALIDATION_ERROR before any stock moves.
+      operationId: issueDeliveryChallan
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: dc_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Delivery challan issued
+          content:
+            application/json:
+              schema:
+                type: object
+        '409':
+          description: >
+            Invalid state transition — DC not DRAFT, or the linked SO is
+            CANCELLED/DRAFT (#206).
+        '422':
+          description: >
+            Over-dispatch beyond the SO's ordered qty, or a line item not on
+            the linked SO (#206).
+      x-permission: sales.dc.approve
 
   /invoices:
     get:

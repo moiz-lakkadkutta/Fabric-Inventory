@@ -507,3 +507,89 @@ def test_delete_issued_dc_returns_409(http_client: TestClient, sync_engine: Engi
         headers=_auth(me["access_token"]),
     )
     assert resp.status_code == 409
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #206 — over-dispatch cap (422) + issue-against-CANCELLED-SO (409)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_create_dc_over_dispatch_returns_422(http_client: TestClient, sync_engine: Engine) -> None:
+    """SO of 10; DC of 20 against it is rejected 422 VALIDATION_ERROR."""
+    me = _signup_owner(http_client)
+    customer = _create_customer(http_client, me["access_token"])
+    item = _create_item(http_client, me["access_token"])
+    _seed_stock_via_service(
+        sync_engine, org_id=me["org_id"], item_id=item["item_id"], firm_id=me["firm_id"], qty="100"
+    )
+    so = _create_confirmed_so(
+        http_client,
+        me["access_token"],
+        party_id=customer["party_id"],
+        firm_id=me["firm_id"],
+        item_id=item["item_id"],
+        qty_ordered="10",
+    )
+    resp = http_client.post(
+        "/delivery-challans",
+        headers=_auth(me["access_token"]),
+        json=_dc_payload(
+            party_id=customer["party_id"],
+            firm_id=me["firm_id"],
+            item_id=item["item_id"],
+            sales_order_id=str(so["sales_order_id"]),
+            qty_dispatched="20",
+        ),
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "VALIDATION_ERROR"
+    assert "Over-dispatch" in resp.json()["detail"]
+
+
+def test_issue_dc_against_cancelled_so_returns_409(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """create DC (DRAFT) → cancel the SO → issue DC returns 409
+    INVOICE_STATE_ERROR and the SO stays CANCELLED (not PARTIAL_DC)."""
+    me = _signup_owner(http_client)
+    customer = _create_customer(http_client, me["access_token"])
+    item = _create_item(http_client, me["access_token"])
+    _seed_stock_via_service(
+        sync_engine, org_id=me["org_id"], item_id=item["item_id"], firm_id=me["firm_id"], qty="100"
+    )
+    so = _create_confirmed_so(
+        http_client,
+        me["access_token"],
+        party_id=customer["party_id"],
+        firm_id=me["firm_id"],
+        item_id=item["item_id"],
+        qty_ordered="10",
+    )
+    so_id = str(so["sales_order_id"])
+    dc = http_client.post(
+        "/delivery-challans",
+        headers=_auth(me["access_token"]),
+        json=_dc_payload(
+            party_id=customer["party_id"],
+            firm_id=me["firm_id"],
+            item_id=item["item_id"],
+            sales_order_id=so_id,
+            qty_dispatched="5",
+        ),
+    ).json()
+    dc_id = dc["delivery_challan_id"]
+
+    cancel_resp = http_client.post(
+        f"/sales-orders/{so_id}/cancel", headers=_auth(me["access_token"])
+    )
+    assert cancel_resp.status_code == 200, cancel_resp.text
+    assert cancel_resp.json()["status"] == "CANCELLED"
+
+    issue_resp = http_client.post(
+        f"/delivery-challans/{dc_id}/issue", headers=_auth(me["access_token"])
+    )
+    assert issue_resp.status_code == 409, issue_resp.text
+    assert issue_resp.json()["code"] == "INVOICE_STATE_ERROR"
+
+    so_after = http_client.get(f"/sales-orders/{so_id}", headers=_auth(me["access_token"]))
+    assert so_after.json()["status"] == "CANCELLED"
