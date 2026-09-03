@@ -50,13 +50,14 @@ from app.models import (
 )
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.sales import InvoiceLifecycleStatus
-from app.service import audit_service, dashboard_service
+from app.service import audit_service, banking_service, dashboard_service
 
 DEFAULT_RECEIPT_SERIES = "RCT/2526"
 
 _AR_LEDGER_CODE = "1200"
-_CASH_LEDGER_CODE = "1000"
-_BANK_LEDGER_CODE = "1100"
+# #201: the DR cash/bank ledger is resolved by
+# `banking_service.resolve_settlement_ledger` — CASH → 1000, BANK/UPI →
+# the bank account's own sub-ledger (or the 1100 legacy fallback).
 _ADVANCES_LEDGER_CODE = "2500"
 
 _OPEN_AR_LIFECYCLES = (
@@ -159,6 +160,7 @@ def post_receipt(
     amount: Decimal,
     receipt_date: datetime.date,
     mode: str = "CASH",
+    bank_account_id: uuid.UUID | None = None,
     series: str = DEFAULT_RECEIPT_SERIES,
     reference: str | None = None,
     posted_by: uuid.UUID | None = None,
@@ -208,6 +210,18 @@ def post_receipt(
     if party is None:
         raise AppValidationError(f"Party {party_id} not found in org {org_id}")
     party_display = party.name
+
+    # #201: resolve the DR settlement ledger up front (before the FIFO row
+    # locks / any writes) so an invalid mode/bank_account_id combination
+    # fails cleanly. BANK/UPI receipts now debit the bank account's own
+    # sub-ledger, which makes them reconcilable against a bank statement.
+    cash_ledger = banking_service.resolve_settlement_ledger(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        mode=mode,
+        bank_account_id=bank_account_id,
+    )
 
     open_invoices = _list_open_invoices_fifo(
         session, org_id=org_id, firm_id=firm_id, party_id=party_id
@@ -293,10 +307,8 @@ def post_receipt(
         f"FIFO split does not sum to amount: {allocated} + {remaining} != {amount}"
     )
 
-    # GL postings: DR Cash/Bank, CR Sundry Debtors (allocated), CR Customer Advances (remaining).
-    cash_or_bank_code = _CASH_LEDGER_CODE if mode == "CASH" else _BANK_LEDGER_CODE
-    cash_ledger = _resolve_ledger(session, org_id=org_id, code=cash_or_bank_code)
-
+    # GL postings: DR Cash/Bank (resolved above via #201), CR Sundry Debtors
+    # (allocated), CR Customer Advances (remaining).
     seq = 1
     session.add(
         VoucherLine(
@@ -379,6 +391,8 @@ def post_receipt(
                 "voucher_number": f"{series}/{voucher_number}",
                 "amount": str(amount),
                 "mode": mode,
+                "bank_account_id": (str(bank_account_id) if bank_account_id is not None else None),
+                "settlement_ledger_id": str(cash_ledger.ledger_id),
                 "party_id": str(party_id),
                 "allocations": [
                     {"sales_invoice_id": str(sid), "amount": str(amt)} for sid, amt in allocations

@@ -78,6 +78,7 @@ def post_payment(
         amount=body.amount,
         payment_date=body.payment_date,
         mode=body.mode,
+        bank_account_id=body.bank_account_id,
         series=body.series,
         reference=body.reference,
         posted_by=current_user.user_id,
