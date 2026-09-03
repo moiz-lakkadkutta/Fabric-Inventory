@@ -28,10 +28,21 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 
 from app.exceptions import AppValidationError
 from app.utils.gst_states import normalize_state_code
+
+# ── Money rounding (single source of truth for all GST math) ────────────────
+# TWOPLACES = paise precision. GST_ROUNDING is made EXPLICIT here (finding
+# P3-4: the default Decimal-context ROUND_HALF_EVEN was undocumented). It is
+# applied uniformly to per-line GST, the CGST/SGST halves, and IGST so every
+# path rounds the same way.
+# CA-VALIDATED-PENDING (#195, decision 2): keep ROUND_HALF_EVEN for this PR;
+# a switch to ROUND_HALF_UP (common in Indian tax software) is a one-line
+# change here once the CA rules — do NOT scatter rounding modes elsewhere.
+TWOPLACES = Decimal("0.01")
+GST_ROUNDING = ROUND_HALF_EVEN
 
 
 class TaxType(enum.StrEnum):
@@ -244,10 +255,13 @@ def determine_place_of_supply(
 
 @dataclass(frozen=True)
 class GstSplit:
-    """Money split per line. Sum of components equals total tax.
+    """Money split per line/group.
 
-    For CGST_SGST, `cgst` and `sgst` are equal halves. For IGST, the full
-    amount sits on `igst`. For NIL_* and NIL, every component is zero.
+    For CGST_SGST, `cgst` and `sgst` are EQUAL halves (#195). For IGST, the
+    full amount sits on `igst`. For NIL_* and NIL, every component is zero.
+    When produced by `compute_line_gst` the components sum exactly to the
+    line tax; when produced by `split_tax` on a legacy odd-paise total the
+    equal halves may differ from that total by ≤1 paisa (see `split_tax`).
     """
 
     cgst: Decimal
@@ -255,17 +269,66 @@ class GstSplit:
     igst: Decimal
 
 
-def split_tax(*, tax_type: TaxType, gst_amount: Decimal) -> GstSplit:
-    """Split `gst_amount` between CGST/SGST/IGST per the tax_type.
+def compute_line_gst(
+    *, line_amount: Decimal, gst_rate: Decimal, tax_type: TaxType
+) -> GstSplit:
+    """Statutory per-line GST split — the single source of truth (#195).
 
-    Halves are computed via `quantize(Decimal('0.01'))` so the split
-    sums exactly to the input even when the input is odd-paise.
+    The GSTN portal validates CGST and SGST *independently*, each as
+    ``round(taxable × rate / 2)`` — NOT as a halved full-rate total (which
+    dumped the odd paisa onto CGST and made CGST ≠ SGST). This helper
+    computes each component directly from the taxable amount so the two
+    halves are always exactly equal and the line total is always even to
+    the paisa.
+
+      - CGST_SGST: cgst = sgst = quantize(line_amount × rate / 200); the
+        line's gst_amount is ``cgst + sgst`` (always even).
+      - IGST: igst = quantize(line_amount × rate / 100); cgst = sgst = 0.
+      - NIL / NIL_LUT / NIL_NOT_A_SUPPLY: every component is zero (a
+        zero-rated / not-a-supply line carries value but no tax — #193).
+
+    Rounding uses the explicit module constant GST_ROUNDING (decision 2,
+    #195). ``line_amount`` and ``gst_rate`` must be non-negative; a
+    negative line has no meaning here (use a credit note to reverse tax).
+    """
+    if line_amount < Decimal("0"):
+        raise AppValidationError(
+            f"line_amount cannot be negative (got {line_amount}); "
+            "use a credit note to reverse a prior sale"
+        )
+    if gst_rate < Decimal("0"):
+        raise AppValidationError(f"gst_rate cannot be negative (got {gst_rate})")
+
+    if tax_type == TaxType.IGST:
+        igst = (line_amount * gst_rate / Decimal("100")).quantize(TWOPLACES, GST_ROUNDING)
+        return GstSplit(cgst=Decimal("0.00"), sgst=Decimal("0.00"), igst=igst)
+    if tax_type == TaxType.CGST_SGST:
+        half = (line_amount * gst_rate / Decimal("200")).quantize(TWOPLACES, GST_ROUNDING)
+        return GstSplit(cgst=half, sgst=half, igst=Decimal("0.00"))
+    # NIL family: zero-rated / not-a-supply — no tax.
+    return GstSplit(cgst=Decimal("0.00"), sgst=Decimal("0.00"), igst=Decimal("0.00"))
+
+
+def split_tax(*, tax_type: TaxType, gst_amount: Decimal) -> GstSplit:
+    """Split an ALREADY-COMPUTED ``gst_amount`` between CGST/SGST/IGST.
+
+    Used by the PDF renderer and GSTR-1 to split a per-line / per-group
+    total tax back into components. For CGST_SGST the halves are EQUAL:
+    ``cgst = sgst = quantize(gst_amount / 2, GST_ROUNDING)`` (#195). The
+    write path now produces even per-line totals via ``compute_line_gst``,
+    so for all post-fix rows the two halves sum back to the input exactly.
+
+    LEGACY behaviour (deliberate): a pre-#195 FINALIZED line may carry an
+    odd-paise ``gst_amount`` (e.g. 11.67) whose GL voucher is already
+    posted. Splitting it here yields equal halves (5.84 / 5.84 → sum 11.68,
+    or 5.83 / 5.83 → sum 11.66) that can differ from the stored total by ≤1
+    paisa. That is intentional: the return must show CGST == SGST; the
+    paisa remains in the GL until the row is repaired (see
+    scripts/repair_gst_line_amounts.py). Do NOT "fix" this by dumping the
+    remainder on one side — that re-introduces CGST ≠ SGST.
 
     Raises `AppValidationError` if `gst_amount` is negative — tax can never
     be negative (GST-7 fix).
-
-    Both cgst and sgst are re-quantized to 2dp to prevent sub-paise
-    remainder when the input itself has more than 2 decimal places (GST-7).
     """
     if gst_amount < Decimal("0"):
         raise AppValidationError(
@@ -275,22 +338,22 @@ def split_tax(*, tax_type: TaxType, gst_amount: Decimal) -> GstSplit:
     if tax_type == TaxType.IGST:
         return GstSplit(cgst=Decimal("0"), sgst=Decimal("0"), igst=gst_amount)
     if tax_type == TaxType.CGST_SGST:
-        half = (gst_amount / 2).quantize(Decimal("0.01"))
-        # Re-quantize sgst so a 3-dp input (e.g. 100.005) doesn't leak
-        # sub-paise into the DB (GST-7: sgst = 100.005 - 50.00 = 50.005).
-        sgst = (gst_amount - half).quantize(Decimal("0.01"))
-        return GstSplit(cgst=half, sgst=sgst, igst=Decimal("0"))
+        half = (gst_amount / 2).quantize(TWOPLACES, GST_ROUNDING)
+        return GstSplit(cgst=half, sgst=half, igst=Decimal("0"))
     return GstSplit(cgst=Decimal("0"), sgst=Decimal("0"), igst=Decimal("0"))
 
 
 __all__ = [
     "B2C_INTER_STATE_THRESHOLD",
     "VALID_GST_SLAB_RATES",
+    "GST_ROUNDING",
+    "TWOPLACES",
     "BuyerStatus",
     "DocumentType",
     "GstSplit",
     "PlaceOfSupply",
     "TaxType",
+    "compute_line_gst",
     "determine_place_of_supply",
     "is_valid_gst_rate",
     "split_tax",
