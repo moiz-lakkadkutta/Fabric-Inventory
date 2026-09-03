@@ -131,6 +131,9 @@ class StockSummaryRow(BaseModel):
     uom: str
     avg_cost: Decimal
     valuation: Decimal
+    # #202: count of distinct non-empty lots for this item. Default 0 keeps
+    # older API consumers / spec back-compat.
+    lot_count: int = 0
 
 
 class StockSummaryResponse(BaseModel):

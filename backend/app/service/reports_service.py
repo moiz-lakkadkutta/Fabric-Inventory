@@ -516,6 +516,7 @@ class _StockSummaryRow:
     uom: str
     avg_cost: Decimal
     valuation: Decimal
+    lot_count: int
 
 
 def compute_stock_summary(
@@ -567,6 +568,13 @@ def compute_stock_summary(
     # by every add_stock call and is always in sync with the ledger.
     pos_cost = func.coalesce(StockPosition.current_cost, 0)
     weighted_value = func.coalesce(func.sum(StockPosition.on_hand_qty * pos_cost), 0)
+    # #202: count distinct non-empty lots per item so the FE InventoryList can
+    # show a real "N active lots" figure instead of a hardcoded 0. Emptied lots
+    # (on_hand 0) drop out; NULL-lot (commodity) positions don't count.
+    lot_count = func.count(func.distinct(StockPosition.lot_id)).filter(
+        StockPosition.lot_id.is_not(None),
+        StockPosition.on_hand_qty > 0,
+    )
 
     stmt = (
         select(
@@ -576,6 +584,7 @@ def compute_stock_summary(
             Item.primary_uom.label("uom"),
             sum_qty.label("on_hand_qty"),
             weighted_value.label("weighted_value"),
+            lot_count.label("lot_count"),
         )
         .select_from(Item)
         .outerjoin(
@@ -611,6 +620,7 @@ def compute_stock_summary(
                 uom=str(r.uom.value if hasattr(r.uom, "value") else r.uom),
                 avg_cost=avg_cost,
                 valuation=valuation,
+                lot_count=int(r.lot_count or 0),
             )
         )
     return as_of, total_value, rows

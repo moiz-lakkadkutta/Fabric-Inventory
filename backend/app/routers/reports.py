@@ -397,6 +397,7 @@ def get_stock_summary(
                 uom=r.uom,
                 avg_cost=r.avg_cost,
                 valuation=r.valuation,
+                lot_count=r.lot_count,
             )
             for r in rows
         ],
