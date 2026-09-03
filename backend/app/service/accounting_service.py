@@ -679,6 +679,232 @@ def reverse_purchase_invoice_gl(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# #199: Sales invoice cancel — reversing vouchers.
+#
+# Cancelling a FINALIZED sales invoice must undo its GL footprint so that
+# voucher-driven reports (TB, P&L, party statement, daybook) agree with
+# status-driven reports (GSTR-1, ageing) which already drop CANCELLED
+# invoices. We do this the same way PI-void does — post a mirror voucher
+# with every DR/CR swapped — but with three deliberate differences:
+#
+#   1. reference_type = "sales_invoice_reversal", reference_id = the ORIGINAL
+#      voucher's id (a POSITIVE "already reversed" marker, not PI-void's
+#      fragile `narration NOT LIKE 'Reversal of%'`). The partial-unique index
+#      `uq_voucher_sales_invoice_reversal (org_id, reference_id) WHERE
+#      reference_type='sales_invoice_reversal'` (migration 199) makes at most
+#      one reversal per original voucher — the concurrency backstop.
+#
+#   2. The sales-GL reversal is posted as a CREDIT_NOTE voucher_type with
+#      `party_id` set, NOT as a second SALES_INVOICE. Two reasons:
+#        (a) it dodges #190's `uq_voucher_one_posting_per_ref`, whose
+#            predicate is `voucher_type IN ('SALES_INVOICE','COGS_SALE')` —
+#            a CREDIT_NOTE is simply not covered, so no collision is even
+#            possible (belt to the reference_type/reference_id suspenders);
+#        (b) `reports_service.compute_party_statement` classifies a voucher's
+#            party contribution BY voucher_type — SALES_INVOICE counts as a
+#            party DEBIT, CREDIT_NOTE as a party CREDIT. A SALES_INVOICE-typed
+#            reversal would ADD to the party balance instead of clearing it,
+#            and (lacking reference_type='sales_invoice') wouldn't even be
+#            tied to the party. CREDIT_NOTE + party_id nets the statement to
+#            zero, matching ageing.
+#
+#   3. The COGS reversal keeps voucher_type COGS_SALE (it has no party and is
+#      irrelevant to the party statement); its distinct reference_type +
+#      reference_id keep it clear of #190's index too.
+# ──────────────────────────────────────────────────────────────────────
+
+_SALES_REVERSAL_REF_TYPE = "sales_invoice_reversal"
+_REVERSAL_INDEX = "uq_voucher_sales_invoice_reversal"
+_SWAP = {JournalLineType.DR: JournalLineType.CR, JournalLineType.CR: JournalLineType.DR}
+
+
+def _find_existing_reversal(
+    session: Session, *, org_id: uuid.UUID, original_voucher_id: uuid.UUID
+) -> Voucher | None:
+    """Return the non-deleted reversal already posted for ``original_voucher_id``,
+    or None. Backs the idempotent no-op on a repeated cancel."""
+    return session.execute(
+        select(Voucher).where(
+            Voucher.org_id == org_id,
+            Voucher.reference_type == _SALES_REVERSAL_REF_TYPE,
+            Voucher.reference_id == original_voucher_id,
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+
+
+def _post_reversal_of(
+    session: Session,
+    *,
+    original: Voucher,
+    voucher_type: VoucherType,
+    series: str,
+    party_id: uuid.UUID | None,
+    narration: str,
+    posted_by: uuid.UUID | None,
+) -> Voucher:
+    """Post one mirror voucher of ``original`` (every leg DR/CR swapped).
+
+    Idempotent: if a reversal already references ``original`` it is returned
+    unchanged. Concurrency: a racing second reversal trips the reversal
+    unique index and is surfaced as InvoiceStateError (409), mirroring the
+    finalize-race translation above.
+    """
+    existing = _find_existing_reversal(
+        session, org_id=original.org_id, original_voucher_id=original.voucher_id
+    )
+    if existing is not None:
+        return existing
+
+    number = _allocate_voucher_number(
+        session,
+        org_id=original.org_id,
+        firm_id=original.firm_id,
+        voucher_type=voucher_type,
+        series=series,
+    )
+    reversal = Voucher(
+        org_id=original.org_id,
+        firm_id=original.firm_id,
+        voucher_type=voucher_type,
+        series=series,
+        number=number,
+        voucher_date=datetime.datetime.now(tz=datetime.UTC).date(),
+        reference_type=_SALES_REVERSAL_REF_TYPE,
+        reference_id=original.voucher_id,
+        party_id=party_id,
+        narration=narration,
+        status=VoucherStatus.POSTED,
+        total_debit=Decimal(original.total_debit or 0),
+        total_credit=Decimal(original.total_credit or 0),
+        created_by=posted_by,
+    )
+    session.add(reversal)
+    try:
+        session.flush()  # mint voucher_id; may trip uq_voucher_sales_invoice_reversal
+    except IntegrityError as exc:
+        # Concurrency backstop: two cancels raced; the loser's reversal INSERT
+        # collides on the reversal unique index. Translate to the same 409 a
+        # sequential loser gets rather than bubbling a 500.
+        if _REVERSAL_INDEX in str(exc.orig):
+            raise InvoiceStateError(
+                f"Invoice voucher {original.voucher_id} was cancelled concurrently; "
+                "refresh and retry.",
+                title="Invoice already cancelled",
+            ) from exc
+        raise
+
+    for seq, orig_line in enumerate(
+        sorted(original.lines, key=lambda ln: ln.sequence or 0), start=1
+    ):
+        session.add(
+            VoucherLine(
+                org_id=original.org_id,
+                voucher_id=reversal.voucher_id,
+                ledger_id=orig_line.ledger_id,
+                line_type=_SWAP[orig_line.line_type],
+                amount=Decimal(orig_line.amount),
+                description=f"Reversal · {orig_line.description or ''}",
+                sequence=seq,
+            )
+        )
+    session.flush()
+
+    debits = sum(
+        (Decimal(line.amount) for line in reversal.lines if line.line_type == JournalLineType.DR),
+        Decimal(0),
+    )
+    credits = sum(
+        (Decimal(line.amount) for line in reversal.lines if line.line_type == JournalLineType.CR),
+        Decimal(0),
+    )
+    if debits != credits:
+        raise AppValidationError(
+            f"Reversal voucher {reversal.voucher_id} unbalanced: DR={debits}, CR={credits}"
+        )
+    return reversal
+
+
+def reverse_sales_invoice_gl(
+    session: Session,
+    *,
+    invoice: SalesInvoice,
+    reason: str,
+    posted_by: uuid.UUID | None = None,
+) -> list[Voucher]:
+    """Reverse EVERY non-deleted SALES_INVOICE voucher for ``invoice``.
+
+    Normally one voucher exists; a pre-#190 finalize race could have left
+    two or three duplicates, and cancel is the in-app remedy — so we reverse
+    them all. Each reversal is a CREDIT_NOTE (party_id set) mirroring the
+    original's legs (CR AR / DR Sales / DR GST). Returns the reversal
+    vouchers (existing ones are returned unchanged — idempotent).
+    """
+    originals = list(
+        session.execute(
+            select(Voucher).where(
+                Voucher.org_id == invoice.org_id,
+                Voucher.voucher_type == VoucherType.SALES_INVOICE,
+                Voucher.reference_type == "sales_invoice",
+                Voucher.reference_id == invoice.sales_invoice_id,
+                Voucher.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    reversals: list[Voucher] = []
+    for original in originals:
+        reversals.append(
+            _post_reversal_of(
+                session,
+                original=original,
+                voucher_type=VoucherType.CREDIT_NOTE,
+                series=original.series,
+                party_id=invoice.party_id,
+                narration=f"Reversal of invoice {original.series}/{original.number} · {reason}",
+                posted_by=posted_by,
+            )
+        )
+    return reversals
+
+
+def reverse_cogs_sale_gl(
+    session: Session,
+    *,
+    invoice: SalesInvoice,
+    reason: str,
+    posted_by: uuid.UUID | None = None,
+) -> Voucher | None:
+    """Reverse the COGS_SALE voucher for ``invoice`` if one exists.
+
+    Mirror of the COGS posting (CR 5000 / DR 1300), restoring inventory
+    value to match the physical stock restored by the caller. Returns None
+    when the invoice never posted COGS (services-only, or oversold-and-
+    skipped lines). Reverse-if-present — never fail on a missing COGS
+    voucher.
+    """
+    original = session.execute(
+        select(Voucher).where(
+            Voucher.org_id == invoice.org_id,
+            Voucher.voucher_type == VoucherType.COGS_SALE,
+            Voucher.reference_type == "sales_invoice",
+            Voucher.reference_id == invoice.sales_invoice_id,
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if original is None:
+        return None
+    return _post_reversal_of(
+        session,
+        original=original,
+        voucher_type=VoucherType.COGS_SALE,
+        series=original.series,
+        party_id=None,
+        narration=f"Reversal of COGS for invoice {invoice.series}/{invoice.number} · {reason}",
+        posted_by=posted_by,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Manual journal voucher posting (TASK-TR-C01).
 #
 # A "journal voucher" is a user-authored balanced bundle: at least two

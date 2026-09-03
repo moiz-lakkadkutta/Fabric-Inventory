@@ -425,6 +425,11 @@ class SalesInvoice(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     finalized_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # #199: cancellation of a finalized invoice. NULL ⇒ never cancelled.
+    cancelled_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     paid_amount: Mapped[Any] = mapped_column(
         Numeric(18, 2), server_default=text("0"), nullable=False
     )

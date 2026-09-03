@@ -4278,6 +4278,55 @@ paths:
           $ref: '#/components/responses/NotFound'
       x-permission: sales.invoice.finalize
 
+  /invoices/{invoice_id}/cancel:
+    post:
+      summary: Cancel a finalized invoice (posts a reversing GL voucher)
+      description: >-
+        Cancels a FINALIZED (unpaid, non-DC-linked) sales invoice. Posts a
+        reversing CREDIT_NOTE voucher (and reverses the COGS voucher +
+        restores stock when present) so voucher-driven reports (TB, P&L,
+        party statement, daybook) stay consistent with status-driven reports
+        (GSTR-1, ageing), which exclude CANCELLED invoices. Idempotent.
+      operationId: cancelInvoice
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                  description: Why the invoice is being cancelled (required).
+      responses:
+        '200':
+          description: Invoice cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            Invoice cannot be cancelled — not finalized, already paid, or
+            linked to a delivery challan.
+      x-permission: sales.invoice.cancel
+
   /invoices/{invoice_id}/send-whatsapp:
     post:
       summary: Send invoice via WhatsApp
