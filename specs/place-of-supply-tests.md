@@ -46,7 +46,8 @@
 > - **3a. Unregistered buyer, no state and no ship-to recorded** → CGST+SGST, PoS = **seller's** state,
 >   Tax Invoice, GSTR-1 B2CS under the seller's state. Basis: IGST Act §10(1)(ca) — for goods supplied to an
 >   unregistered person the PoS is the address recorded on the invoice, else the location of the supplier
->   (#193; previously NIL_NOT_A_SUPPLY with ₹0 GST). A *registered* buyer with no state still falls back to NIL.
+>   (#193; previously NIL_NOT_A_SUPPLY with ₹0 GST). A *registered* buyer with no state takes its state
+>   from the GSTIN prefix; `is_export` / `is_sez` parties go to the EXPORT / SEZ branches (IGST, or NIL_LUT with LUT) — never 3a.
 > - **Rows 4/5:** inter-state B2C is always IGST (INT-11); the value threshold only picks the GSTR-1 bucket.
 >   B2CL = invoice value **strictly greater than** ₹2,50,000 for invoices dated before 01-Aug-2024, and
 >   ₹1,00,000 on/after (Notification 12/2024-Central Tax). See `gst_service.b2cl_threshold`.
