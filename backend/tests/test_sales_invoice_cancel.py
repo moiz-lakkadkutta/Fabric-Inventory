@@ -42,6 +42,20 @@ from app.models.sales import DCStatus, InvoiceLifecycleStatus
 from app.service import inventory_service, reports_service, sales_service
 from app.service.seed_service import seed_coa
 
+# Every invoice in this file is dated 2026-05-01. Pin the cancel clock to the
+# SAME GST period (20-May-2026 11:30 IST) so these tests exercise a true
+# same-period cancellation deterministically, independent of the wall clock.
+# Cross-period (§34 credit note) semantics live in
+# ``test_sales_invoice_cancel_gst_period.py``.
+_CANCEL_AT = datetime.datetime(2026, 5, 20, 6, 0, tzinfo=datetime.UTC)
+_CANCEL_DAY = datetime.date(2026, 5, 20)
+
+
+@pytest.fixture(autouse=True)
+def _pin_cancel_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sales_service, "_utcnow", lambda: _CANCEL_AT)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Service-test helpers (transactional db_session)
 # ──────────────────────────────────────────────────────────────────────
@@ -230,7 +244,7 @@ def test_cancel_finalized_invoice_posts_reversing_voucher(
             "0"
         ), code
 
-    # GSTR-1 for the invoice's period excludes it.
+    # GSTR-1 for the invoice's period excludes it (same-period cancel).
     g = reports_service.compute_gstr1(
         db_session, org_id=fresh_org_id, firm_id=firm.firm_id, period="2026-05"
     )
@@ -571,12 +585,11 @@ def test_cancelled_present_in_daybook_but_excluded_from_status_reports(
         sales_invoice_id=invoice.sales_invoice_id,
         reason="void",
     )
-    today = datetime.datetime.now(tz=datetime.UTC).date()
     _, vouchers = reports_service.compute_daybook(
         db_session,
         org_id=fresh_org_id,
         firm_id=firm.firm_id,
-        on_date=today,
+        on_date=_CANCEL_DAY,  # reversal is dated on the cancel day (IST)
     )
     assert any(v.voucher_type == VoucherType.CREDIT_NOTE.value for v in vouchers), (
         "reversal (CREDIT_NOTE) must appear in the cancel-day daybook"

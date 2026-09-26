@@ -505,6 +505,37 @@ GSTR1_HSN_COLUMNS: Sequence[Column] = (
 )
 
 
+# #199: credit notes (cross-period cancels, CGST Act §34). Amounts positive;
+# "Note type" = C carries the sign (GSTN portal convention).
+_GSTR1_CDN_COMMON: tuple[Column, ...] = (
+    Column("note_number", "Note #"),
+    Column("note_date", "Note date", "date"),
+    Column("note_type", "Note type"),
+    Column("invoice_number", "Original invoice #"),
+    Column("invoice_date", "Original invoice date", "date"),
+    Column("party_name", "Party"),
+)
+_GSTR1_CDN_AMOUNTS: tuple[Column, ...] = (
+    Column("place_of_supply_state", "POS"),
+    Column("note_value", "Note value", "money"),
+    Column("taxable_value", "Taxable", "money"),
+    Column("igst", "IGST", "money"),
+    Column("cgst", "CGST", "money"),
+    Column("sgst", "SGST", "money"),
+    Column("gst_rate", "GST rate %", "number"),
+)
+GSTR1_CDNR_COLUMNS: Sequence[Column] = (
+    *_GSTR1_CDN_COMMON,
+    Column("gstin", "GSTIN"),
+    *_GSTR1_CDN_AMOUNTS,
+)
+GSTR1_CDNUR_COLUMNS: Sequence[Column] = (
+    *_GSTR1_CDN_COMMON,
+    Column("ur_type", "UR type"),
+    *_GSTR1_CDN_AMOUNTS,
+)
+
+
 @dataclass(frozen=True, slots=True)
 class _Gstr1Row:
     """Adapter so the export can read both attribute- and key-style
@@ -522,10 +553,11 @@ def _as_dict(row: Any, keys: Sequence[Column]) -> dict[str, Any]:
 
 
 def gstr1_sheets(result: Any) -> list[Sheet]:
-    """Build the 5-sheet workbook spec from compute_gstr1's result.
+    """Build the 7-sheet workbook spec from compute_gstr1's result.
 
     Order matches the FE tab + government schedule order: B2B, B2CL,
-    B2CS, Export, HSN.
+    B2CS, Export, HSN, then the credit-note sections CDNR, CDNUR (#199).
+    B2B stays at index 0 — the CSV export flattens ``sheets[0]``.
     """
     return [
         Sheet(
@@ -552,5 +584,15 @@ def gstr1_sheets(result: Any) -> list[Sheet]:
             name="HSN",
             columns=GSTR1_HSN_COLUMNS,
             rows=[_as_dict(row, GSTR1_HSN_COLUMNS) for row in result.hsn],
+        ),
+        Sheet(
+            name="CDNR",
+            columns=GSTR1_CDNR_COLUMNS,
+            rows=[_as_dict(n, GSTR1_CDNR_COLUMNS) for n in result.cdnr],
+        ),
+        Sheet(
+            name="CDNUR",
+            columns=GSTR1_CDNUR_COLUMNS,
+            rows=[_as_dict(n, GSTR1_CDNUR_COLUMNS) for n in result.cdnur],
         ),
     ]

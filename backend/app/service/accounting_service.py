@@ -1182,8 +1182,12 @@ def _post_reversal_of(
     party_id: uuid.UUID | None,
     narration: str,
     posted_by: uuid.UUID | None,
+    voucher_date: datetime.date | None = None,
 ) -> Voucher:
     """Post one mirror voucher of ``original`` (every leg DR/CR swapped).
+
+    ``voucher_date`` defaults to today (UTC); #199 cancel passes the cancel
+    date in Asia/Kolkata so the reversal lands in the correct GST period.
 
     Idempotent: if a reversal already references ``original`` it is returned
     unchanged. Concurrency: a racing second reversal trips the reversal
@@ -1209,7 +1213,7 @@ def _post_reversal_of(
         voucher_type=voucher_type,
         series=series,
         number=number,
-        voucher_date=datetime.datetime.now(tz=datetime.UTC).date(),
+        voucher_date=voucher_date or datetime.datetime.now(tz=datetime.UTC).date(),
         reference_type=_SALES_REVERSAL_REF_TYPE,
         reference_id=original.voucher_id,
         party_id=party_id,
@@ -1271,6 +1275,7 @@ def reverse_sales_invoice_gl(
     invoice: SalesInvoice,
     reason: str,
     posted_by: uuid.UUID | None = None,
+    voucher_date: datetime.date | None = None,
 ) -> list[Voucher]:
     """Reverse EVERY non-deleted SALES_INVOICE voucher for ``invoice``.
 
@@ -1302,6 +1307,7 @@ def reverse_sales_invoice_gl(
                 party_id=invoice.party_id,
                 narration=f"Reversal of invoice {original.series}/{original.number} · {reason}",
                 posted_by=posted_by,
+                voucher_date=voucher_date,
             )
         )
     return reversals
@@ -1313,6 +1319,7 @@ def reverse_cogs_sale_gl(
     invoice: SalesInvoice,
     reason: str,
     posted_by: uuid.UUID | None = None,
+    voucher_date: datetime.date | None = None,
 ) -> Voucher | None:
     """Reverse the COGS_SALE voucher for ``invoice`` if one exists.
 
@@ -1341,6 +1348,7 @@ def reverse_cogs_sale_gl(
         party_id=None,
         narration=f"Reversal of COGS for invoice {invoice.series}/{invoice.number} · {reason}",
         posted_by=posted_by,
+        voucher_date=voucher_date,
     )
 
 

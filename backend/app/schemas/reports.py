@@ -326,6 +326,52 @@ class Gstr1HsnRow(BaseModel):
     total_value: Decimal
 
 
+class _Gstr1CreditNoteRowBase(BaseModel):
+    """Common fields of a GSTR-1 credit-note row (#199).
+
+    One row per (credit note, slab rate). A cross-period cancel of a
+    finalized invoice is a CGST Act §34 credit note for the full value,
+    reported in the month the note is dated. Amounts are POSITIVE; the sign
+    is carried by ``note_type`` ("C" = credit), matching the GSTN portal.
+    ``note_series`` / ``note_number`` / ``note_date`` are the CREDIT_NOTE
+    voucher's; ``invoice_*`` identify the original invoice."""
+
+    note_voucher_id: uuid.UUID
+    note_series: str
+    note_number: str
+    note_date: datetime.date
+    note_type: str  # "C"
+    sales_invoice_id: uuid.UUID
+    invoice_series: str
+    invoice_number: str
+    invoice_date: datetime.date
+    party_id: uuid.UUID
+    party_name: str
+    place_of_supply_state: str | None
+    note_value: Decimal  # note total, repeated across its rate rows
+    taxable_value: Decimal  # taxable value AT THIS RATE
+    gst_rate: Decimal
+    cgst: Decimal
+    sgst: Decimal
+    igst: Decimal
+
+
+class Gstr1CdnrRow(_Gstr1CreditNoteRowBase):
+    """GSTR-1 Table 9B CDNR — credit note to a REGISTERED recipient (the
+    original invoice was B2B). ``gstin`` is plaintext, or masked to last-3
+    when the caller lacks masters.party.pii.read (same rule as B2B)."""
+
+    gstin: str | None
+
+
+class Gstr1CdnurRow(_Gstr1CreditNoteRowBase):
+    """GSTR-1 Table 9B CDNUR — credit note to an UNREGISTERED recipient
+    (original was B2CL or export). ``ur_type`` is "B2CL", "EXPWP" (export
+    with IGST paid) or "EXPWOP" (export under LUT / without payment)."""
+
+    ur_type: str
+
+
 class Gstr1Response(BaseModel):
     """GSTR-1 envelope for ``period`` = YYYY-MM. Buckets:
     b2b:    Registered (GSTIN-present) sales (intra + inter state).
@@ -337,7 +383,14 @@ class Gstr1Response(BaseModel):
     export: Zero-rated overseas / SEZ / EOU sales (party.is_export
             / party.is_sez set; or place_of_supply is one of
             'SEZ', 'EXPORT', 'EOU', or no Indian state code).
-    hsn:    Per-HSN aggregation across every taxable line.
+    hsn:    Per-HSN aggregation across every taxable line, NET of the
+            period's credit notes (Table 12).
+    cdnr:   Credit notes issued this period against B2B invoices of an
+            earlier period (cross-period cancel, CGST Act §34).
+    cdnur:  Same, against B2CL / export invoices. Credit notes against
+            B2CS invoices are not listed — they are netted off this
+            period's b2cs rows (which may therefore be negative).
+    A same-period cancel is excluded from every section.
     """
 
     period: str  # "YYYY-MM"
@@ -348,6 +401,8 @@ class Gstr1Response(BaseModel):
     b2cs: list[Gstr1B2csRow]
     export: list[Gstr1InvoiceRow]
     hsn: list[Gstr1HsnRow]
+    cdnr: list[Gstr1CdnrRow]
+    cdnur: list[Gstr1CdnurRow]
 
 
 __all__ = [
@@ -356,6 +411,8 @@ __all__ = [
     "DaybookResponse",
     "DaybookVoucher",
     "Gstr1B2csRow",
+    "Gstr1CdnrRow",
+    "Gstr1CdnurRow",
     "Gstr1HsnRow",
     "Gstr1InvoiceRow",
     "Gstr1Response",

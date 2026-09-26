@@ -1321,6 +1321,12 @@ _CANCELLABLE_LIFECYCLE = frozenset(
 )
 
 
+def _utcnow() -> datetime.datetime:
+    """Clock seam for ``cancel_invoice`` (tests monkeypatch this to pin the
+    GST period of a cancel)."""
+    return datetime.datetime.now(tz=datetime.UTC)
+
+
 def cancel_invoice(
     session: Session,
     *,
@@ -1328,13 +1334,29 @@ def cancel_invoice(
     sales_invoice_id: uuid.UUID,
     reason: str,
     cancelled_by: uuid.UUID | None = None,
+    now: datetime.datetime | None = None,
 ) -> SalesInvoice:
     """Cancel a FINALIZED sales invoice: post reversing GL vouchers, restore
     stock, and move the invoice to CANCELLED.
 
+    GST-period semantics (#199 CA-review correction; periods are calendar
+    months in Asia/Kolkata):
+      - SAME-PERIOD cancel (cancel date IST in the invoice's month): a true
+        cancellation before that month's GSTR-1 could be filed. GSTR-1
+        excludes the invoice; the reversal is dated in the same month.
+      - CROSS-PERIOD cancel: a CGST Act §34 credit note for the full value.
+        The original month's GSTR-1 keeps the invoice; the reversal
+        (CREDIT_NOTE) is dated on the cancel date and reported in that
+        month's GSTR-1 (CDNR / CDNUR / B2CS net-off) — see
+        ``reports_service.compute_gstr1``. Refused after 30-Nov following
+        the end of the invoice's financial year (§34(2) time limit).
+
+    The reversal / stock-restore date is the cancel date in IST, floored at
+    the invoice date (a reversal never predates the document it reverses).
+    ``now`` is an injectable clock (UTC-aware); defaults to the current time.
+
     The reversal is what keeps voucher-driven reports (TB, P&L, party
-    statement, daybook) consistent with status-driven ones (GSTR-1, ageing),
-    which already drop CANCELLED invoices. See
+    statement, daybook) consistent with status-driven ones (GSTR-1, ageing). See
     ``accounting_service.reverse_sales_invoice_gl`` for why the sales-GL
     reversal is a CREDIT_NOTE and how it avoids #190's posting index.
 
@@ -1400,22 +1422,48 @@ def cancel_invoice(
             title="Invoice cannot be cancelled",
         )
 
+    # #199: GST period of the cancel is its calendar month in IST, not UTC.
+    now = now if now is not None else _utcnow()
+    cancel_date_ist = gst_service.gst_local_date(now)
+    cross_period = gst_service.is_later_gst_period(cancel_date_ist, invoice.invoice_date)
+    if cross_period:
+        deadline = gst_service.credit_note_deadline(invoice.invoice_date)
+        if cancel_date_ist > deadline:
+            raise InvoiceStateError(
+                f"Cannot cancel invoice {invoice.series}/{invoice.number} dated "
+                f"{invoice.invoice_date:%d-%b-%Y}: it was reported in an earlier GST "
+                "period, so cancelling it means issuing a credit note under CGST Act "
+                f"§34, and the time limit for that was {deadline:%d-%b-%Y} (30 November "
+                "after the end of the invoice's financial year). A credit note issued "
+                "now cannot reduce your GST liability. Please consult your CA before "
+                "making any adjustment.",
+                title="Credit-note time limit (§34) has passed",
+            )
+    reversal_date = max(cancel_date_ist, invoice.invoice_date)
+
     # Reverse ALL sales-GL vouchers (usually one; duplicates from a pre-#190
     # race are all reversed) and the COGS voucher if present.
     reversals = accounting_service.reverse_sales_invoice_gl(
-        session, invoice=invoice, reason=reason, posted_by=cancelled_by
+        session,
+        invoice=invoice,
+        reason=reason,
+        posted_by=cancelled_by,
+        voucher_date=reversal_date,
     )
     cogs_reversal = accounting_service.reverse_cogs_sale_gl(
-        session, invoice=invoice, reason=reason, posted_by=cancelled_by
+        session,
+        invoice=invoice,
+        reason=reason,
+        posted_by=cancelled_by,
+        voucher_date=reversal_date,
     )
 
     # Restore stock relieved at finalize (direct invoices only — DC-linked is
     # blocked above). Keeps GL-1300 (restored by the COGS reversal) and the
     # physical stock position moving together.
-    _restore_stock_for_cancel(session, invoice=invoice, org_id=org_id)
+    _restore_stock_for_cancel(session, invoice=invoice, org_id=org_id, txn_date=reversal_date)
 
     before_status = invoice.lifecycle_status.value
-    now = datetime.datetime.now(tz=datetime.UTC)
     invoice.lifecycle_status = InvoiceLifecycleStatus.CANCELLED
     invoice.status = VoucherStatus.VOIDED
     invoice.cancelled_at = now
@@ -1443,6 +1491,10 @@ def cancel_invoice(
                 "cancelled_at": now.isoformat(),
                 "cancel_reason": reason,
                 "reversal_voucher_ids": reversal_ids,
+                "reversal_date": reversal_date.isoformat(),
+                "gst_treatment": (
+                    "CREDIT_NOTE_S34" if cross_period else "SAME_PERIOD_CANCELLATION"
+                ),
             },
         },
     )
@@ -1457,6 +1509,7 @@ def _restore_stock_for_cancel(
     *,
     invoice: SalesInvoice,
     org_id: uuid.UUID,
+    txn_date: datetime.date,
 ) -> None:
     """Add back the stock relieved at finalize for a direct invoice.
 
@@ -1487,7 +1540,7 @@ def _restore_stock_for_cancel(
             lot_id=row.lot_id,
             reference_type="sales_invoice_cancel",
             reference_id=invoice.sales_invoice_id,
-            txn_date=datetime.datetime.now(tz=datetime.UTC).date(),
+            txn_date=txn_date,
         )
 
 

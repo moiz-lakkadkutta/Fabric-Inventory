@@ -30,8 +30,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import case, func, literal, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, case, exists, func, literal, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.exceptions import AppValidationError
 from app.models import (
@@ -1309,8 +1309,10 @@ def compute_party_statement(
 
 
 # Invoices in these lifecycle states are billed to the customer and
-# therefore appear on GSTR-1. DRAFT / CANCELLED / DISCARDED are
-# excluded — they never made it to a customer.
+# therefore appear on GSTR-1. DRAFT / DISCARDED are excluded — they never
+# made it to a customer. CANCELLED is excluded ONLY for a same-period
+# cancel; a cross-period cancel is a §34 credit note and the original stays
+# in its own month's return (#199, see ``_cross_period_credit_note_exists``).
 _GSTR1_LIFECYCLE = (
     InvoiceLifecycleStatus.FINALIZED,
     InvoiceLifecycleStatus.POSTED,
@@ -1337,6 +1339,39 @@ class _Gstr1InvoiceRow:
     invoice_value: Decimal
     taxable_value: Decimal
     gst_rate: Decimal  # #195: real slab rate (0/5/12/18/28) — one row per rate
+    cgst: Decimal
+    sgst: Decimal
+    igst: Decimal
+
+
+@dataclass(frozen=True)
+class _Gstr1CdnRow:
+    """One (credit note, rate) row in the CDNR / CDNUR sections (#199).
+
+    A cross-period cancel of a B2B / B2CL / export invoice is a CGST Act §34
+    credit note for the full value, reported in the month the note is
+    issued. Amounts are POSITIVE with ``note_type == "C"`` (GSTN portal
+    convention: the note type carries the sign). ``ur_type`` is set only on
+    CDNUR rows ("B2CL" / "EXPWP" / "EXPWOP"); ``gstin`` only on CDNR rows.
+    """
+
+    note_voucher_id: uuid.UUID
+    note_series: str
+    note_number: str
+    note_date: datetime.date
+    note_type: str  # "C" (credit) — debit notes are out of scope
+    ur_type: str | None
+    sales_invoice_id: uuid.UUID
+    invoice_series: str
+    invoice_number: str
+    invoice_date: datetime.date
+    party_id: uuid.UUID
+    party_name: str
+    gstin: str | None
+    place_of_supply_state: str | None
+    note_value: Decimal  # note header total (== original invoice total), repeated per rate row
+    taxable_value: Decimal
+    gst_rate: Decimal
     cgst: Decimal
     sgst: Decimal
     igst: Decimal
@@ -1377,6 +1412,8 @@ class _Gstr1Result:
     b2cs: list[_Gstr1B2csRow]
     export: list[_Gstr1InvoiceRow]
     hsn: list[_Gstr1HsnRow]
+    cdnr: list[_Gstr1CdnRow]
+    cdnur: list[_Gstr1CdnRow]
 
 
 def _parse_period(period: str) -> tuple[datetime.date, datetime.date]:
@@ -1436,6 +1473,72 @@ def _bucket_for_invoice(
     return "b2cs"
 
 
+# reference_type stamped on the CREDIT_NOTE reversal of a SALES_INVOICE
+# voucher by ``accounting_service._post_reversal_of`` (#199 cancel).
+_SALES_REVERSAL_REF_TYPE = "sales_invoice_reversal"
+
+
+def _sales_credit_note_join() -> tuple[Any, Any, Any]:
+    """(credit_note, original_voucher, join-condition) aliases linking a
+    cancel's CREDIT_NOTE reversal to the SALES_INVOICE voucher it reverses."""
+    cn = aliased(Voucher)
+    orig = aliased(Voucher)
+    cond = and_(
+        cn.voucher_type == VoucherType.CREDIT_NOTE,
+        cn.reference_type == _SALES_REVERSAL_REF_TYPE,
+        cn.deleted_at.is_(None),
+        orig.voucher_id == cn.reference_id,
+        orig.voucher_type == VoucherType.SALES_INVOICE,
+        orig.reference_type == "sales_invoice",
+        orig.deleted_at.is_(None),
+    )
+    return cn, orig, cond
+
+
+def _cross_period_credit_note_exists() -> Any:
+    """Correlated EXISTS: this (CANCELLED) invoice's reversal is dated in a
+    LATER GST month than the invoice — i.e. the cancel was a §34 credit note,
+    so the original invoice stays in its own month's GSTR-1 (#199).
+
+    The credit note's voucher_date is the single source of truth for the
+    period (cancel_invoice dates it on the cancel date in IST), so books
+    and return always agree on which month the reduction falls in.
+    """
+    cn, orig, cond = _sales_credit_note_join()
+    return exists(
+        select(literal(1))
+        .select_from(cn)
+        .join(orig, orig.voucher_id == cn.reference_id)
+        .where(
+            cond,
+            orig.org_id == SalesInvoice.org_id,
+            orig.reference_id == SalesInvoice.sales_invoice_id,
+            func.date_trunc("month", cn.voucher_date)
+            > func.date_trunc("month", SalesInvoice.invoice_date),
+        )
+    )
+
+
+def _gstr1_invoice_filter() -> Any:
+    """Lifecycle predicate for invoices reported in their own month: billed
+    states, plus CANCELLED invoices whose cancel was cross-period."""
+    return or_(
+        SalesInvoice.lifecycle_status.in_(_GSTR1_LIFECYCLE),
+        and_(
+            SalesInvoice.lifecycle_status == InvoiceLifecycleStatus.CANCELLED,
+            _cross_period_credit_note_exists(),
+        ),
+    )
+
+
+def _cdnur_type(bucket: str, *, igst: Decimal) -> str:
+    """GSTR-1 CDNUR 'UR type' for an unregistered original: B2CL, or
+    EXPWP / EXPWOP for an export with / without IGST paid."""
+    if bucket == "b2cl":
+        return "B2CL"
+    return "EXPWP" if igst != 0 else "EXPWOP"
+
+
 def _tax_type_for_invoice(*, raw_tax_type: str | None) -> TaxType:
     """Map the stored ``sales_invoice.tax_type`` string to ``TaxType``.
 
@@ -1472,7 +1575,10 @@ def compute_gstr1(
 ) -> _Gstr1Result:
     """GSTR-1 buckets for a period (``YYYY-MM``).
 
-    Returns five buckets (b2b / b2cl / b2cs / export / hsn). All money is
+    Returns b2b / b2cl / b2cs / export / hsn plus the credit-note sections
+    cdnr / cdnur (#199: cross-period cancels are CGST Act §34 credit notes,
+    reported in the month the CREDIT_NOTE is dated; B2CS-original notes are
+    netted off b2cs, and hsn is net of every note). All money is
     Decimal end-to-end. Reuses `gst_service.split_tax` for the
     CGST/SGST/IGST split per invoice.
 
@@ -1501,6 +1607,8 @@ def compute_gstr1(
             b2cs=[],
             export=[],
             hsn=[],
+            cdnr=[],
+            cdnur=[],
         )
     # #194: a non-GST-registered firm has no GST return to file — GSTR-1 is
     # not applicable. Refuse with an actionable 422 rather than returning an
@@ -1556,7 +1664,7 @@ def compute_gstr1(
             SiLine.deleted_at.is_(None),
             SalesInvoice.invoice_date >= from_date,
             SalesInvoice.invoice_date <= to_date,
-            SalesInvoice.lifecycle_status.in_(_GSTR1_LIFECYCLE),
+            _gstr1_invoice_filter(),
         )
         .group_by(
             SalesInvoice.sales_invoice_id,
@@ -1679,6 +1787,155 @@ def compute_gstr1(
     for key, inv_ids in b2cs_invoices.items():
         b2cs_agg[key]["invoice_count"] = len(inv_ids)
 
+    # ── #199: §34 credit notes issued this period (cross-period cancels) ──
+    # A CANCELLED invoice whose CREDIT_NOTE reversal is dated in a LATER month
+    # than the invoice is reported (a) in its own month via the invoice query
+    # above, and (b) here, in the month the note is dated. The ORIGINAL is
+    # classified with the same ``_bucket_for_invoice`` (its own date for the
+    # B2CL threshold): B2B → CDNR, B2CL / export → CDNUR, B2CS → netted off
+    # this month's B2CS (state + rate) with negative amounts.
+    cn, orig, cn_cond = _sales_credit_note_join()
+    cn_stmt = (
+        select(
+            cn.voucher_id.label("note_voucher_id"),
+            cn.series.label("note_series"),
+            cn.number.label("note_number"),
+            cn.voucher_date.label("note_date"),
+            SalesInvoice.sales_invoice_id,
+            SalesInvoice.invoice_date,
+            SalesInvoice.series,
+            SalesInvoice.number,
+            SalesInvoice.party_id,
+            SalesInvoice.place_of_supply_state,
+            SalesInvoice.invoice_amount,
+            SalesInvoice.tax_type,
+            Party.name.label("party_name"),
+            Party.gstin.label("party_gstin"),
+            Party.is_export.label("party_is_export"),
+            Party.is_sez.label("party_is_sez"),
+            line_rate.label("gst_rate"),
+            func.coalesce(func.sum(SiLine.line_amount), 0).label("taxable_value"),
+            func.coalesce(func.sum(SiLine.gst_amount), 0).label("gst_amount"),
+        )
+        .select_from(cn)
+        .join(orig, orig.voucher_id == cn.reference_id)
+        .join(SalesInvoice, SalesInvoice.sales_invoice_id == orig.reference_id)
+        .join(Party, Party.party_id == SalesInvoice.party_id)
+        .join(SiLine, SiLine.sales_invoice_id == SalesInvoice.sales_invoice_id)
+        .where(
+            cn_cond,
+            cn.org_id == org_id,
+            cn.firm_id == firm_id,
+            cn.voucher_date >= from_date,
+            cn.voucher_date <= to_date,
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.firm_id == firm_id,
+            SalesInvoice.deleted_at.is_(None),
+            SiLine.deleted_at.is_(None),
+            SalesInvoice.lifecycle_status == InvoiceLifecycleStatus.CANCELLED,
+            func.date_trunc("month", cn.voucher_date)
+            > func.date_trunc("month", SalesInvoice.invoice_date),
+        )
+        .group_by(
+            cn.voucher_id,
+            cn.series,
+            cn.number,
+            cn.voucher_date,
+            SalesInvoice.sales_invoice_id,
+            SalesInvoice.invoice_date,
+            SalesInvoice.series,
+            SalesInvoice.number,
+            SalesInvoice.party_id,
+            SalesInvoice.place_of_supply_state,
+            SalesInvoice.invoice_amount,
+            SalesInvoice.tax_type,
+            Party.name,
+            Party.gstin,
+            Party.is_export,
+            Party.is_sez,
+            line_rate,
+        )
+        .order_by(cn.voucher_date.asc(), cn.number.asc(), cn.voucher_id.asc(), line_rate.asc())
+    )
+
+    cdnr: list[_Gstr1CdnRow] = []
+    cdnur: list[_Gstr1CdnRow] = []
+    # One credit note per invoice: a pre-#190 finalize race could have left
+    # duplicate SALES_INVOICE vouchers (each reversed by its own CREDIT_NOTE);
+    # the return carries the invoice once, so it carries ONE note too.
+    note_for_invoice: dict[uuid.UUID, uuid.UUID] = {}
+    for r in session.execute(cn_stmt):
+        chosen = note_for_invoice.setdefault(r.sales_invoice_id, r.note_voucher_id)
+        if chosen != r.note_voucher_id:
+            continue
+        rate = Decimal(r.gst_rate or 0)
+        taxable_value = Decimal(r.taxable_value or 0)
+        split = gst_service.split_tax(
+            tax_type=_tax_type_for_invoice(raw_tax_type=r.tax_type),
+            gst_amount=Decimal(r.gst_amount or 0),
+        )
+        bucket = _bucket_for_invoice(
+            seller_state=seller_state,
+            party_gstin=r.party_gstin,
+            party_is_export=bool(r.party_is_export),
+            party_is_sez=bool(r.party_is_sez),
+            place_of_supply_state=r.place_of_supply_state,
+            invoice_value=Decimal(r.invoice_amount or 0),
+            invoice_date=r.invoice_date,
+        )
+        if bucket == "b2cs":
+            state = (
+                normalize_state_code(r.place_of_supply_state)
+                or r.place_of_supply_state
+                or seller_state
+            )
+            neg = b2cs_agg.setdefault(
+                (state, rate),
+                {
+                    "place_of_supply_state": state,
+                    "gst_rate": rate,
+                    "taxable_value": Decimal("0"),
+                    "cgst": Decimal("0"),
+                    "sgst": Decimal("0"),
+                    "igst": Decimal("0"),
+                    "invoice_count": 0,  # a credit note is not an invoice
+                },
+            )
+            neg["taxable_value"] -= taxable_value
+            neg["cgst"] -= split.cgst
+            neg["sgst"] -= split.sgst
+            neg["igst"] -= split.igst
+            continue
+
+        note_gstin: str | None = None
+        if bucket == "b2b" and r.party_gstin is not None:
+            plain = crypto.decrypt_pii(r.party_gstin, dek=dek, org_id=org_id)
+            if plain is not None:
+                note_gstin = plain if can_view_pii else _mask_gstin(plain)
+        note = _Gstr1CdnRow(
+            note_voucher_id=r.note_voucher_id,
+            note_series=r.note_series,
+            note_number=r.note_number,
+            note_date=r.note_date,
+            note_type="C",
+            ur_type=None if bucket == "b2b" else _cdnur_type(bucket, igst=split.igst),
+            sales_invoice_id=r.sales_invoice_id,
+            invoice_series=r.series,
+            invoice_number=r.number,
+            invoice_date=r.invoice_date,
+            party_id=r.party_id,
+            party_name=r.party_name,
+            gstin=note_gstin,
+            place_of_supply_state=r.place_of_supply_state,
+            note_value=Decimal(r.invoice_amount or 0),
+            taxable_value=taxable_value,
+            gst_rate=rate,
+            cgst=split.cgst,
+            sgst=split.sgst,
+            igst=split.igst,
+        )
+        (cdnr if bucket == "b2b" else cdnur).append(note)
+
     # HSN summary — sum every taxable line in the period by item.hsn_code.
     # Re-uses the same lifecycle filter. NULL HSN → empty-string bucket so
     # FE can flag "missing HSN" without a separate code path.
@@ -1703,7 +1960,7 @@ def compute_gstr1(
             SiLine.deleted_at.is_(None),
             SalesInvoice.invoice_date >= from_date,
             SalesInvoice.invoice_date <= to_date,
-            SalesInvoice.lifecycle_status.in_(_GSTR1_LIFECYCLE),
+            _gstr1_invoice_filter(),
         )
         # #195: group by hsn + uom + RATE (portal HSN summary is rate-wise);
         # tax_type stays in the key so IGST vs CGST/SGST split honestly across
@@ -1752,6 +2009,70 @@ def compute_gstr1(
         agg["igst"] += split.igst
         agg["total_value"] += taxable + gst_amt
 
+    # #199: the HSN summary (GSTR-1 Table 12) is net of credit notes — reduce
+    # it by the lines of every credit note reported this period (all note
+    # types: CDNR, CDNUR and B2CS net-offs alike).
+    if note_for_invoice:
+        cn_h, orig_h, cn_h_cond = _sales_credit_note_join()
+        cn_hsn_stmt = (
+            select(
+                func.coalesce(Item.hsn_code, "").label("hsn_code"),
+                Item.primary_uom.label("uom"),
+                hsn_rate.label("gst_rate"),
+                func.coalesce(func.sum(SiLine.qty), 0).label("total_qty"),
+                func.coalesce(func.sum(SiLine.line_amount), 0).label("taxable_value"),
+                func.coalesce(func.sum(SiLine.gst_amount), 0).label("gst_amount"),
+                SalesInvoice.tax_type,
+            )
+            .select_from(cn_h)
+            .join(orig_h, orig_h.voucher_id == cn_h.reference_id)
+            .join(SalesInvoice, SalesInvoice.sales_invoice_id == orig_h.reference_id)
+            .join(SiLine, SiLine.sales_invoice_id == SalesInvoice.sales_invoice_id)
+            .join(Item, Item.item_id == SiLine.item_id)
+            .where(
+                cn_h_cond,
+                cn_h.org_id == org_id,
+                cn_h.voucher_id.in_(list(note_for_invoice.values())),
+                SiLine.deleted_at.is_(None),
+            )
+            .group_by(
+                func.coalesce(Item.hsn_code, ""),
+                Item.primary_uom,
+                hsn_rate,
+                SalesInvoice.tax_type,
+            )
+        )
+        for r in session.execute(cn_hsn_stmt):
+            hsn_code = r.hsn_code or ""
+            uom = r.uom.value if hasattr(r.uom, "value") else str(r.uom)
+            rate = Decimal(r.gst_rate or 0)
+            taxable = Decimal(r.taxable_value or 0)
+            gst_amt = Decimal(r.gst_amount or 0)
+            split = gst_service.split_tax(
+                tax_type=_tax_type_for_invoice(raw_tax_type=r.tax_type), gst_amount=gst_amt
+            )
+            agg = hsn_agg.setdefault(
+                (hsn_code, uom, rate),
+                {
+                    "hsn_code": hsn_code,
+                    "description": None,
+                    "uom": uom,
+                    "gst_rate": rate,
+                    "total_qty": Decimal("0"),
+                    "taxable_value": Decimal("0"),
+                    "cgst": Decimal("0"),
+                    "sgst": Decimal("0"),
+                    "igst": Decimal("0"),
+                    "total_value": Decimal("0"),
+                },
+            )
+            agg["total_qty"] -= Decimal(r.total_qty or 0)
+            agg["taxable_value"] -= taxable
+            agg["cgst"] -= split.cgst
+            agg["sgst"] -= split.sgst
+            agg["igst"] -= split.igst
+            agg["total_value"] -= taxable + gst_amt
+
     hsn_rows = [
         _Gstr1HsnRow(
             hsn_code=r["hsn_code"],
@@ -1792,6 +2113,8 @@ def compute_gstr1(
         b2cs=b2cs_rows,
         export=export,
         hsn=hsn_rows,
+        cdnr=cdnr,
+        cdnur=cdnur,
     )
 
 

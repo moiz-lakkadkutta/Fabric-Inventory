@@ -3280,6 +3280,257 @@
         "title": "Gstr1B2csRow",
         "type": "object"
       },
+      "Gstr1CdnrRow": {
+        "description": "GSTR-1 Table 9B CDNR \u2014 credit note to a REGISTERED recipient (the\noriginal invoice was B2B). ``gstin`` is plaintext, or masked to last-3\nwhen the caller lacks masters.party.pii.read (same rule as B2B).",
+        "properties": {
+          "cgst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cgst",
+            "type": "string"
+          },
+          "gst_rate": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Gst Rate",
+            "type": "string"
+          },
+          "gstin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gstin"
+          },
+          "igst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Igst",
+            "type": "string"
+          },
+          "invoice_date": {
+            "format": "date",
+            "title": "Invoice Date",
+            "type": "string"
+          },
+          "invoice_number": {
+            "title": "Invoice Number",
+            "type": "string"
+          },
+          "invoice_series": {
+            "title": "Invoice Series",
+            "type": "string"
+          },
+          "note_date": {
+            "format": "date",
+            "title": "Note Date",
+            "type": "string"
+          },
+          "note_number": {
+            "title": "Note Number",
+            "type": "string"
+          },
+          "note_series": {
+            "title": "Note Series",
+            "type": "string"
+          },
+          "note_type": {
+            "title": "Note Type",
+            "type": "string"
+          },
+          "note_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Note Value",
+            "type": "string"
+          },
+          "note_voucher_id": {
+            "format": "uuid",
+            "title": "Note Voucher Id",
+            "type": "string"
+          },
+          "party_id": {
+            "format": "uuid",
+            "title": "Party Id",
+            "type": "string"
+          },
+          "party_name": {
+            "title": "Party Name",
+            "type": "string"
+          },
+          "place_of_supply_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Of Supply State"
+          },
+          "sales_invoice_id": {
+            "format": "uuid",
+            "title": "Sales Invoice Id",
+            "type": "string"
+          },
+          "sgst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Sgst",
+            "type": "string"
+          },
+          "taxable_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Taxable Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note_voucher_id",
+          "note_series",
+          "note_number",
+          "note_date",
+          "note_type",
+          "sales_invoice_id",
+          "invoice_series",
+          "invoice_number",
+          "invoice_date",
+          "party_id",
+          "party_name",
+          "place_of_supply_state",
+          "note_value",
+          "taxable_value",
+          "gst_rate",
+          "cgst",
+          "sgst",
+          "igst",
+          "gstin"
+        ],
+        "title": "Gstr1CdnrRow",
+        "type": "object"
+      },
+      "Gstr1CdnurRow": {
+        "description": "GSTR-1 Table 9B CDNUR \u2014 credit note to an UNREGISTERED recipient\n(original was B2CL or export). ``ur_type`` is \"B2CL\", \"EXPWP\" (export\nwith IGST paid) or \"EXPWOP\" (export under LUT / without payment).",
+        "properties": {
+          "cgst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cgst",
+            "type": "string"
+          },
+          "gst_rate": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Gst Rate",
+            "type": "string"
+          },
+          "igst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Igst",
+            "type": "string"
+          },
+          "invoice_date": {
+            "format": "date",
+            "title": "Invoice Date",
+            "type": "string"
+          },
+          "invoice_number": {
+            "title": "Invoice Number",
+            "type": "string"
+          },
+          "invoice_series": {
+            "title": "Invoice Series",
+            "type": "string"
+          },
+          "note_date": {
+            "format": "date",
+            "title": "Note Date",
+            "type": "string"
+          },
+          "note_number": {
+            "title": "Note Number",
+            "type": "string"
+          },
+          "note_series": {
+            "title": "Note Series",
+            "type": "string"
+          },
+          "note_type": {
+            "title": "Note Type",
+            "type": "string"
+          },
+          "note_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Note Value",
+            "type": "string"
+          },
+          "note_voucher_id": {
+            "format": "uuid",
+            "title": "Note Voucher Id",
+            "type": "string"
+          },
+          "party_id": {
+            "format": "uuid",
+            "title": "Party Id",
+            "type": "string"
+          },
+          "party_name": {
+            "title": "Party Name",
+            "type": "string"
+          },
+          "place_of_supply_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Place Of Supply State"
+          },
+          "sales_invoice_id": {
+            "format": "uuid",
+            "title": "Sales Invoice Id",
+            "type": "string"
+          },
+          "sgst": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Sgst",
+            "type": "string"
+          },
+          "taxable_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Taxable Value",
+            "type": "string"
+          },
+          "ur_type": {
+            "title": "Ur Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note_voucher_id",
+          "note_series",
+          "note_number",
+          "note_date",
+          "note_type",
+          "sales_invoice_id",
+          "invoice_series",
+          "invoice_number",
+          "invoice_date",
+          "party_id",
+          "party_name",
+          "place_of_supply_state",
+          "note_value",
+          "taxable_value",
+          "gst_rate",
+          "cgst",
+          "sgst",
+          "igst",
+          "ur_type"
+        ],
+        "title": "Gstr1CdnurRow",
+        "type": "object"
+      },
       "Gstr1HsnRow": {
         "description": "One HSN summary row, rate-wise (#195). The GSTR-1 HSN section\naggregates invoice lines by ``(HSN code, UQC/UOM, gst_rate)``. Items\nwithout an HSN set surface as empty-string ``hsn_code``; the FE\nflags them as data-quality issues.",
         "properties": {
@@ -3456,7 +3707,7 @@
         "type": "object"
       },
       "Gstr1Response": {
-        "description": "GSTR-1 envelope for ``period`` = YYYY-MM. Buckets:\nb2b:    Registered (GSTIN-present) sales (intra + inter state).\nb2cl:   Inter-state B2C invoices with invoice value > \u20b92.5L (dated\n        before 01-Aug-2024) or > \u20b91L (on/after; Notif. 12/2024-CT),\n        invoice-wise.\nb2cs:   Aggregated B2C below threshold or intra-state, by\n        (state, rate).\nexport: Zero-rated overseas / SEZ / EOU sales (party.is_export\n        / party.is_sez set; or place_of_supply is one of\n        'SEZ', 'EXPORT', 'EOU', or no Indian state code).\nhsn:    Per-HSN aggregation across every taxable line.",
+        "description": "GSTR-1 envelope for ``period`` = YYYY-MM. Buckets:\nb2b:    Registered (GSTIN-present) sales (intra + inter state).\nb2cl:   Inter-state B2C invoices with invoice value > \u20b92.5L (dated\n        before 01-Aug-2024) or > \u20b91L (on/after; Notif. 12/2024-CT),\n        invoice-wise.\nb2cs:   Aggregated B2C below threshold or intra-state, by\n        (state, rate).\nexport: Zero-rated overseas / SEZ / EOU sales (party.is_export\n        / party.is_sez set; or place_of_supply is one of\n        'SEZ', 'EXPORT', 'EOU', or no Indian state code).\nhsn:    Per-HSN aggregation across every taxable line, NET of the\n        period's credit notes (Table 12).\ncdnr:   Credit notes issued this period against B2B invoices of an\n        earlier period (cross-period cancel, CGST Act \u00a734).\ncdnur:  Same, against B2CL / export invoices. Credit notes against\n        B2CS invoices are not listed \u2014 they are netted off this\n        period's b2cs rows (which may therefore be negative).\nA same-period cancel is excluded from every section.",
         "properties": {
           "b2b": {
             "items": {
@@ -3477,6 +3728,20 @@
               "$ref": "#/components/schemas/Gstr1B2csRow"
             },
             "title": "B2Cs",
+            "type": "array"
+          },
+          "cdnr": {
+            "items": {
+              "$ref": "#/components/schemas/Gstr1CdnrRow"
+            },
+            "title": "Cdnr",
+            "type": "array"
+          },
+          "cdnur": {
+            "items": {
+              "$ref": "#/components/schemas/Gstr1CdnurRow"
+            },
+            "title": "Cdnur",
             "type": "array"
           },
           "export": {
@@ -3516,7 +3781,9 @@
           "b2cl",
           "b2cs",
           "export",
-          "hsn"
+          "hsn",
+          "cdnr",
+          "cdnur"
         ],
         "title": "Gstr1Response",
         "type": "object"
@@ -24239,7 +24506,7 @@
             }
           },
           {
-            "description": "`xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / Export / HSN); `csv` flattens the B2B sheet (use xlsx for the full filing).",
+            "description": "`xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / Export / HSN / CDNR / CDNUR); `csv` flattens the B2B sheet (use xlsx for the full filing).",
             "in": "query",
             "name": "format",
             "required": false,
@@ -24253,7 +24520,7 @@
                   "type": "null"
                 }
               ],
-              "description": "`xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / Export / HSN); `csv` flattens the B2B sheet (use xlsx for the full filing).",
+              "description": "`xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / Export / HSN / CDNR / CDNUR); `csv` flattens the B2B sheet (use xlsx for the full filing).",
               "title": "Format"
             }
           }
@@ -24280,7 +24547,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period",
+        "summary": "GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN / CDNR / CDNUR) for a period",
         "tags": [
           "reports"
         ]
