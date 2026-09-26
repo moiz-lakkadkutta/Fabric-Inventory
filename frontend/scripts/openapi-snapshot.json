@@ -2935,6 +2935,7 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
@@ -2947,6 +2948,7 @@
           "rate": {
             "anyOf": [
               {
+                "maximum": 1000000000.0,
                 "minimum": 0.0,
                 "type": "number"
               },
@@ -7646,6 +7648,13 @@
             ],
             "title": "Narration"
           },
+          "operation_overrides": {
+            "items": {
+              "$ref": "#/components/schemas/MoOperationExecutorOverride"
+            },
+            "title": "Operation Overrides",
+            "type": "array"
+          },
           "planned_end_date": {
             "anyOf": [
               {
@@ -7897,6 +7906,90 @@
           "is_optional"
         ],
         "title": "MoMaterialLineResponse",
+        "type": "object"
+      },
+      "MoOperationExecutorOverride": {
+        "description": "Per-operation executor override supplied at MO-create time (#204).\n\nLets the caller mark one (or more) of the routing's operations as a\n``KARIGAR`` (job-work) operation so the karigar send-out flow is\nreachable on a freshly-created MO \u2014 without it every op materialises\nas ``IN_HOUSE`` and ``dispatch-karigar`` 422s.\n\n``operation_master_id`` MUST be one of the routing's operations; the\nservice validates membership and rejects duplicates / foreign masters\nwith a 422. ``karigar_party_id`` is optional at create time (the\ndispatch step sets it if omitted) but, when provided, the party must\nbe an org-scoped, non-deleted ``is_karigar`` party. Supplying a\n``karigar_party_id`` with ``executor=\"IN_HOUSE\"`` is a 422.",
+        "properties": {
+          "executor": {
+            "enum": [
+              "IN_HOUSE",
+              "KARIGAR"
+            ],
+            "title": "Executor",
+            "type": "string"
+          },
+          "karigar_party_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Karigar Party Id"
+          },
+          "operation_master_id": {
+            "format": "uuid",
+            "title": "Operation Master Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_master_id",
+          "executor"
+        ],
+        "title": "MoOperationExecutorOverride",
+        "type": "object"
+      },
+      "MoOperationExecutorRequest": {
+        "description": "Body for ``PATCH /manufacturing/mo-operations/{id}/executor`` (#204).\n\nFlips a PENDING operation between ``IN_HOUSE`` and ``KARIGAR`` after\nthe MO already exists (mind-changes, or MOs created before the caller\nknew a step would be outsourced). Only PENDING ops with no recorded\nwork may be flipped \u2014 the service 422s otherwise.\n\n``firm_id`` is defence-in-depth on top of RLS (must match the\nsession's firm scope when set). ``karigar_party_id`` is required-shape\nidentical to the create-time override: allowed only with\n``executor=\"KARIGAR\"`` and only for an ``is_karigar`` org party.",
+        "properties": {
+          "executor": {
+            "enum": [
+              "IN_HOUSE",
+              "KARIGAR"
+            ],
+            "title": "Executor",
+            "type": "string"
+          },
+          "firm_id": {
+            "format": "uuid",
+            "title": "Firm Id",
+            "type": "string"
+          },
+          "karigar_party_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Karigar Party Id"
+          },
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          }
+        },
+        "required": [
+          "firm_id",
+          "executor"
+        ],
+        "title": "MoOperationExecutorRequest",
         "type": "object"
       },
       "MoOperationListItem": {
@@ -9103,6 +9196,7 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
@@ -9115,6 +9209,7 @@
           "rate": {
             "anyOf": [
               {
+                "maximum": 1000000000.0,
                 "minimum": 0.0,
                 "type": "number"
               },
@@ -9538,6 +9633,7 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
@@ -9550,6 +9646,7 @@
           "rate": {
             "anyOf": [
               {
+                "maximum": 1000000000.0,
                 "minimum": 0.0,
                 "type": "number"
               },
@@ -10656,6 +10753,7 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
@@ -10664,6 +10762,18 @@
               }
             ],
             "title": "Amount"
+          },
+          "bank_account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account Id"
           },
           "mode": {
             "default": "CASH",
@@ -11589,14 +11699,27 @@
             "anyOf": [
               {
                 "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
                 "type": "number"
               },
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d{0,2}0*$",
                 "type": "string"
               }
             ],
             "title": "Amount"
+          },
+          "bank_account_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account Id"
           },
           "mode": {
             "default": "CASH",
@@ -14058,6 +14181,11 @@
           "item_name": {
             "title": "Item Name",
             "type": "string"
+          },
+          "lot_count": {
+            "default": 0,
+            "title": "Lot Count",
+            "type": "integer"
           },
           "on_hand_qty": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -20860,6 +20988,77 @@
         "tags": [
           "manufacturing",
           "karigar"
+        ]
+      }
+    },
+    "/manufacturing/mo-operations/{mo_operation_id}/executor": {
+      "patch": {
+        "description": "#204 \u2014 make the karigar (job-work) flow reachable on any MO.\n\nFlips a PENDING operation between IN_HOUSE and KARIGAR so\n``dispatch-karigar`` no longer 422s on API-created MOs. Guarded to\nPENDING ops with no recorded work; advisory-locked against a\nconcurrent dispatch. Idempotency-Key flows via the global middleware.",
+        "operationId": "set_mo_operation_executor_manufacturing_mo_operations__mo_operation_id__executor_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mo_operation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mo Operation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoOperationExecutorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationProgressResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set an MO operation's executor (IN_HOUSE \u21c4 KARIGAR) \u2014 PENDING ops only (#204)",
+        "tags": [
+          "manufacturing",
+          "operation_progress"
         ]
       }
     },
