@@ -26,7 +26,7 @@ because Alembic runs migrations inside a transaction.
 Backward-compatible: no column changes, index-only. Downgrade drops the index.
 
 Revision ID: 201_bank_account_ledger_unique
-Revises: 198a_cogs_coa_group
+Revises: t208_email_lowercase
 Create Date: 2026-09-03
 """
 
@@ -37,7 +37,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "201_bank_account_ledger_unique"
-down_revision: str = "198a_cogs_coa_group"
+down_revision: str = "t208_email_lowercase"
 branch_labels = None
 depends_on = None
 
