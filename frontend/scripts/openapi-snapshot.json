@@ -1566,6 +1566,7 @@
                   "LIABILITY",
                   "EQUITY",
                   "REVENUE",
+                  "COGS",
                   "EXPENSE"
                 ],
                 "type": "string"
@@ -3280,7 +3281,7 @@
         "type": "object"
       },
       "Gstr1HsnRow": {
-        "description": "One HSN summary row. The GSTR-1 HSN section aggregates all\ninvoice lines by HSN code (with UQC/UOM and rate alongside). Items\nwithout an HSN set surface as empty-string ``hsn_code``; the FE\nflags them as data-quality issues.",
+        "description": "One HSN summary row, rate-wise (#195). The GSTR-1 HSN section\naggregates invoice lines by ``(HSN code, UQC/UOM, gst_rate)``. Items\nwithout an HSN set surface as empty-string ``hsn_code``; the FE\nflags them as data-quality issues.",
         "properties": {
           "cgst": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -3297,6 +3298,11 @@
               }
             ],
             "title": "Description"
+          },
+          "gst_rate": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Gst Rate",
+            "type": "string"
           },
           "hsn_code": {
             "title": "Hsn Code",
@@ -3336,6 +3342,7 @@
           "hsn_code",
           "description",
           "uom",
+          "gst_rate",
           "total_qty",
           "taxable_value",
           "cgst",
@@ -3347,7 +3354,7 @@
         "type": "object"
       },
       "Gstr1InvoiceRow": {
-        "description": "One invoice row in the B2B / B2CL / EXPORT buckets. Tax split\nmatches CGST/SGST/IGST per the invoice's tax_type. ``gstin`` is\nmasked-but-printable (hex of the encrypted blob is opaque; the FE\ncan render \"GSTIN on file\" without the value). Future Wave-5\nrefinement will decrypt for filing-XML generation.",
+        "description": "One (invoice, rate) row in the B2B / B2CL / EXPORT buckets (#195).\n\nGSTR-1 is rate-wise: a mixed-rate invoice emits ONE ROW PER SLAB RATE\n(0/5/12/18/28), each with that rate's taxable_value and tax; the header\n``invoice_value`` is repeated on every row (portal convention). CGST ==\nSGST on every intra-state row. ``gstin`` is the plaintext GSTIN (or\nmasked to last-3 when the caller lacks masters.party.pii.read).",
         "properties": {
           "cgst": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -3355,16 +3362,9 @@
             "type": "string"
           },
           "gst_rate": {
-            "anyOf": [
-              {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gst Rate"
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Gst Rate",
+            "type": "string"
           },
           "gstin": {
             "anyOf": [
@@ -3925,6 +3925,22 @@
           "expires_at"
         ],
         "title": "InviteCreateResponse",
+        "type": "object"
+      },
+      "InvoiceCancelRequest": {
+        "description": "Body for POST /invoices/{id}/cancel \u2014 a mandatory reason (spec \u00a77).",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "InvoiceCancelRequest",
         "type": "object"
       },
       "InvoiceLifecycleStatus": {
@@ -14780,7 +14796,8 @@
           "MATERIAL_ISSUE",
           "MANUFACTURING_COMPLETION",
           "STOCK_ADJUSTMENT",
-          "COGS_SALE"
+          "COGS_SALE",
+          "GRN_ACCRUAL"
         ],
         "title": "VoucherType",
         "type": "string"
@@ -19015,6 +19032,76 @@
           }
         },
         "summary": "Get one sales invoice by id, with lines",
+        "tags": [
+          "sales",
+          "invoices"
+        ]
+      }
+    },
+    "/invoices/{sales_invoice_id}/cancel": {
+      "post": {
+        "operationId": "cancel_invoice_invoices__sales_invoice_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sales_invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Sales Invoice Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvoiceCancelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesInvoiceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel a finalized invoice (posts a reversing GL voucher)",
         "tags": [
           "sales",
           "invoices"

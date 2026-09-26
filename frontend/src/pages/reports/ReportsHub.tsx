@@ -737,6 +737,7 @@ function Gstr1B2BSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
                 <Th>Counterparty</Th>
                 <Th>Invoice</Th>
                 <Th>Date</Th>
+                <Th align="right">GST %</Th>
                 <Th align="right">Taxable</Th>
                 <Th align="right">CGST</Th>
                 <Th align="right">SGST</Th>
@@ -747,7 +748,7 @@ function Gstr1B2BSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
             <tbody>
               {rows.map((r) => (
                 <tr
-                  key={r.sales_invoice_id}
+                  key={`${r.sales_invoice_id}-${r.gst_rate}`}
                   style={{ borderTop: '1px solid var(--border-subtle)' }}
                 >
                   <td
@@ -767,6 +768,9 @@ function Gstr1B2BSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
                     style={{ fontSize: 12, color: 'var(--text-secondary)' }}
                   >
                     {r.invoice_date}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.gst_rate}%
                   </td>
                   <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
                     {formatINRCompact(r.taxable_value)}
@@ -801,6 +805,7 @@ function Gstr1B2CLSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
                 <Th>Counterparty</Th>
                 <Th>Invoice</Th>
                 <Th>Date</Th>
+                <Th align="right">GST %</Th>
                 <Th align="right">Taxable</Th>
                 <Th align="right">IGST</Th>
                 <Th align="right">Total</Th>
@@ -809,7 +814,7 @@ function Gstr1B2CLSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
             <tbody>
               {rows.map((r) => (
                 <tr
-                  key={r.sales_invoice_id}
+                  key={`${r.sales_invoice_id}-${r.gst_rate}`}
                   style={{ borderTop: '1px solid var(--border-subtle)' }}
                 >
                   <td
@@ -829,6 +834,9 @@ function Gstr1B2CLSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
                     style={{ fontSize: 12, color: 'var(--text-secondary)' }}
                   >
                     {r.invoice_date}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.gst_rate}%
                   </td>
                   <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
                     {formatINRCompact(r.taxable_value)}
@@ -916,6 +924,7 @@ function Gstr1HsnSection({ rows }: { rows: Gstr1HsnVM[] }) {
                 <Th>HSN</Th>
                 <Th>Description</Th>
                 <Th>UQC</Th>
+                <Th align="right">GST %</Th>
                 <Th align="right">Qty</Th>
                 <Th align="right">Taxable</Th>
                 <Th align="right">CGST</Th>
@@ -927,7 +936,7 @@ function Gstr1HsnSection({ rows }: { rows: Gstr1HsnVM[] }) {
             <tbody>
               {rows.map((r, i) => (
                 <tr
-                  key={`${r.hsn_code}-${i}`}
+                  key={`${r.hsn_code}-${r.gst_rate}-${i}`}
                   style={{
                     borderTop: '1px solid var(--border-subtle)',
                     background: r.hsn_code === '' ? 'var(--warning-subtle)' : 'transparent',
@@ -944,6 +953,9 @@ function Gstr1HsnSection({ rows }: { rows: Gstr1HsnVM[] }) {
                     style={{ fontSize: 12, color: 'var(--text-tertiary)' }}
                   >
                     {r.uom.toLowerCase()}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.gst_rate}%
                   </td>
                   <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
                     {r.total_qty.toLocaleString('en-IN')}

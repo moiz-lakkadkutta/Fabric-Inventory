@@ -106,6 +106,7 @@ const sampleGstr1Body = {
       hsn_code: '5407',
       description: 'Woven fabrics of synthetic filament yarn',
       uom: 'METER',
+      gst_rate: '5',
       total_qty: '120.500',
       total_value: '60000.00',
       taxable_value: '57000.00',

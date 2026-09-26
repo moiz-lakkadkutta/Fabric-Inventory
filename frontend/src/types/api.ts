@@ -1008,6 +1008,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/invoices/{sales_invoice_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel a finalized invoice (posts a reversing GL voucher) */
+        post: operations["cancel_invoice_invoices__sales_invoice_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/invoices/{sales_invoice_id}/finalize": {
         parameters: {
             query?: never;
@@ -3221,7 +3238,7 @@ export interface components {
             /** Code */
             code: string;
             /** Group Type */
-            group_type?: ("ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE") | null;
+            group_type?: ("ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "COGS" | "EXPENSE") | null;
             /** Name */
             name: string;
             /** Parent Group Id */
@@ -3865,8 +3882,8 @@ export interface components {
         };
         /**
          * Gstr1HsnRow
-         * @description One HSN summary row. The GSTR-1 HSN section aggregates all
-         *     invoice lines by HSN code (with UQC/UOM and rate alongside). Items
+         * @description One HSN summary row, rate-wise (#195). The GSTR-1 HSN section
+         *     aggregates invoice lines by ``(HSN code, UQC/UOM, gst_rate)``. Items
          *     without an HSN set surface as empty-string ``hsn_code``; the FE
          *     flags them as data-quality issues.
          */
@@ -3875,6 +3892,8 @@ export interface components {
             cgst: string;
             /** Description */
             description: string | null;
+            /** Gst Rate */
+            gst_rate: string;
             /** Hsn Code */
             hsn_code: string;
             /** Igst */
@@ -3892,17 +3911,19 @@ export interface components {
         };
         /**
          * Gstr1InvoiceRow
-         * @description One invoice row in the B2B / B2CL / EXPORT buckets. Tax split
-         *     matches CGST/SGST/IGST per the invoice's tax_type. ``gstin`` is
-         *     masked-but-printable (hex of the encrypted blob is opaque; the FE
-         *     can render "GSTIN on file" without the value). Future Wave-5
-         *     refinement will decrypt for filing-XML generation.
+         * @description One (invoice, rate) row in the B2B / B2CL / EXPORT buckets (#195).
+         *
+         *     GSTR-1 is rate-wise: a mixed-rate invoice emits ONE ROW PER SLAB RATE
+         *     (0/5/12/18/28), each with that rate's taxable_value and tax; the header
+         *     ``invoice_value`` is repeated on every row (portal convention). CGST ==
+         *     SGST on every intra-state row. ``gstin`` is the plaintext GSTIN (or
+         *     masked to last-3 when the caller lacks masters.party.pii.read).
          */
         Gstr1InvoiceRow: {
             /** Cgst */
             cgst: string;
             /** Gst Rate */
-            gst_rate: string | null;
+            gst_rate: string;
             /** Gstin */
             gstin: string | null;
             /** Igst */
@@ -4179,6 +4200,14 @@ export interface components {
             invite_id: string;
             /** Invite Link */
             invite_link?: string | null;
+        };
+        /**
+         * InvoiceCancelRequest
+         * @description Body for POST /invoices/{id}/cancel — a mandatory reason (spec §7).
+         */
+        InvoiceCancelRequest: {
+            /** Reason */
+            reason: string;
         };
         /**
          * InvoiceLifecycleStatus
@@ -8550,7 +8579,7 @@ export interface components {
          * VoucherType
          * @enum {string}
          */
-        VoucherType: "SALES_INVOICE" | "PURCHASE_INVOICE" | "PAYMENT" | "RECEIPT" | "JOURNAL" | "CONTRA" | "DEBIT_NOTE" | "CREDIT_NOTE" | "OPENING_BAL" | "MATERIAL_ISSUE" | "MANUFACTURING_COMPLETION" | "STOCK_ADJUSTMENT" | "COGS_SALE";
+        VoucherType: "SALES_INVOICE" | "PURCHASE_INVOICE" | "PAYMENT" | "RECEIPT" | "JOURNAL" | "CONTRA" | "DEBIT_NOTE" | "CREDIT_NOTE" | "OPENING_BAL" | "MATERIAL_ISSUE" | "MANUFACTURING_COMPLETION" | "STOCK_ADJUSTMENT" | "COGS_SALE" | "GRN_ACCRUAL";
     };
     responses: never;
     parameters: never;
@@ -10855,6 +10884,43 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SalesInvoiceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_invoice_invoices__sales_invoice_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                sales_invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvoiceCancelRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

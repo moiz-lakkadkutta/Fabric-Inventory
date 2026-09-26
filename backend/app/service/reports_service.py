@@ -1335,7 +1335,7 @@ class _Gstr1InvoiceRow:
     place_of_supply_state: str | None
     invoice_value: Decimal
     taxable_value: Decimal
-    gst_rate: Decimal | None
+    gst_rate: Decimal  # #195: real slab rate (0/5/12/18/28) — one row per rate
     cgst: Decimal
     sgst: Decimal
     igst: Decimal
@@ -1357,6 +1357,7 @@ class _Gstr1HsnRow:
     hsn_code: str
     description: str | None
     uom: str
+    gst_rate: Decimal  # #195: HSN summary is rate-wise per the portal schema
     total_qty: Decimal
     taxable_value: Decimal
     cgst: Decimal
@@ -1478,7 +1479,9 @@ def compute_gstr1(
     from_date, to_date = _parse_period(period)
 
     firm = session.execute(
-        select(Firm.firm_id, Firm.state_code).where(Firm.firm_id == firm_id, Firm.org_id == org_id)
+        select(Firm.firm_id, Firm.state_code, Firm.has_gst).where(
+            Firm.firm_id == firm_id, Firm.org_id == org_id
+        )
     ).one_or_none()
     if firm is None:
         # firm not visible — treat as empty bucket result (RLS-default).
@@ -1492,6 +1495,11 @@ def compute_gstr1(
             export=[],
             hsn=[],
         )
+    # #194: a non-GST-registered firm has no GST return to file — GSTR-1 is
+    # not applicable. Refuse with an actionable 422 rather than returning an
+    # empty/misleading dataset that could be mistaken for a filed nil return.
+    if not firm.has_gst:
+        raise AppValidationError("Firm is not GST-registered; GSTR-1 is not applicable.")
     seller_state = firm.state_code or ""
 
     # B2 fix: GSTR-1 must surface the *plaintext* GSTIN — the value
@@ -1502,6 +1510,13 @@ def compute_gstr1(
     # + memoised) and decrypt each row below.
     dek = crypto.get_org_dek(session, org_id=org_id)
 
+    # #195: query at the LINE level and group by (invoice, gst_rate) so the
+    # return carries ONE ROW PER RATE — the portal only accepts slab rates
+    # (0/0.25/3/5/12/18/28), never a blended per-invoice rate (e.g. 10.34).
+    # Taxable value and tax per rate come straight from the correct, even
+    # per-line si_line.gst_amount (post-#195). A NULL line rate (legacy P1-6)
+    # is coalesced to 0.
+    line_rate = func.coalesce(SiLine.gst_rate, Decimal("0"))
     inv_stmt = (
         select(
             SalesInvoice.sales_invoice_id,
@@ -1511,36 +1526,65 @@ def compute_gstr1(
             SalesInvoice.party_id,
             SalesInvoice.place_of_supply_state,
             SalesInvoice.invoice_amount,
-            SalesInvoice.gst_amount,
             SalesInvoice.tax_type,
             Party.name.label("party_name"),
             Party.gstin.label("party_gstin"),
             Party.is_export.label("party_is_export"),
             Party.is_sez.label("party_is_sez"),
+            line_rate.label("gst_rate"),
+            func.coalesce(func.sum(SiLine.line_amount), 0).label("taxable_value"),
+            func.coalesce(func.sum(SiLine.gst_amount), 0).label("gst_amount"),
         )
         .join(Party, Party.party_id == SalesInvoice.party_id)
+        .join(SiLine, SiLine.sales_invoice_id == SalesInvoice.sales_invoice_id)
         .where(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
+            SiLine.deleted_at.is_(None),
             SalesInvoice.invoice_date >= from_date,
             SalesInvoice.invoice_date <= to_date,
             SalesInvoice.lifecycle_status.in_(_GSTR1_LIFECYCLE),
         )
-        .order_by(SalesInvoice.invoice_date.asc(), SalesInvoice.number.asc())
+        .group_by(
+            SalesInvoice.sales_invoice_id,
+            SalesInvoice.invoice_date,
+            SalesInvoice.series,
+            SalesInvoice.number,
+            SalesInvoice.party_id,
+            SalesInvoice.place_of_supply_state,
+            SalesInvoice.invoice_amount,
+            SalesInvoice.tax_type,
+            Party.name,
+            Party.gstin,
+            Party.is_export,
+            Party.is_sez,
+            line_rate,
+        )
+        .order_by(
+            SalesInvoice.invoice_date.asc(),
+            SalesInvoice.number.asc(),
+            line_rate.asc(),
+        )
     )
 
     b2b: list[_Gstr1InvoiceRow] = []
     b2cl: list[_Gstr1InvoiceRow] = []
     export: list[_Gstr1InvoiceRow] = []
     b2cs_agg: dict[tuple[str, Decimal], dict[str, Any]] = {}
+    # b2cs invoice_count must count DISTINCT invoices per (state, rate), not
+    # rate-rows — keep a set of invoice ids per group key.
+    b2cs_invoices: dict[tuple[str, Decimal], set[uuid.UUID]] = {}
+    # Decrypt each invoice's GSTIN ONCE and reuse across its per-rate rows.
+    gstin_cache: dict[uuid.UUID, str | None] = {}
 
     for r in session.execute(inv_stmt):
         invoice_total = Decimal(r.invoice_amount or 0)
-        gst_total = Decimal(r.gst_amount or 0)
-        taxable_value = invoice_total - gst_total
+        rate = Decimal(r.gst_rate or 0)
+        taxable_value = Decimal(r.taxable_value or 0)
+        line_gst = Decimal(r.gst_amount or 0)
         tax_type = _tax_type_for_invoice(raw_tax_type=r.tax_type)
-        split = gst_service.split_tax(tax_type=tax_type, gst_amount=gst_total)
+        split = gst_service.split_tax(tax_type=tax_type, gst_amount=line_gst)
         bucket = _bucket_for_invoice(
             seller_state=seller_state,
             party_gstin=r.party_gstin,
@@ -1551,17 +1595,8 @@ def compute_gstr1(
         )
 
         if bucket == "b2cs":
-            # Aggregate by (state, representative-rate). Rate comes from
-            # the predominant line; for v1 we derive a single rate when
-            # all lines share one — otherwise we sum at the invoice's
-            # effective rate. Simpler approach: use total_gst/taxable as
-            # a derived rate, quantized to 2 decimals.
+            # Aggregate by (state, slab-rate) — real slab rates now (#195).
             state = r.place_of_supply_state or seller_state
-            rate = (
-                (gst_total / taxable_value * Decimal("100")).quantize(Decimal("0.01"))
-                if taxable_value > 0
-                else Decimal("0")
-            )
             b2cs_key: tuple[str, Decimal] = (state, rate)
             bucket_row = b2cs_agg.setdefault(
                 b2cs_key,
@@ -1579,27 +1614,27 @@ def compute_gstr1(
             bucket_row["cgst"] += split.cgst
             bucket_row["sgst"] += split.sgst
             bucket_row["igst"] += split.igst
-            bucket_row["invoice_count"] += 1
+            b2cs_invoices.setdefault(b2cs_key, set()).add(r.sales_invoice_id)
             continue
 
-        # B2 fix: decrypt the stored GSTIN ciphertext back to its
-        # plaintext form. GSTR-1 filings + B2B aggregation both depend
-        # on the real GSTIN; hex(ciphertext) was breaking both. The DEK
-        # was resolved once above for the whole period.
-        # RPT-02: mask to last-3 chars when caller lacks masters.party.read.
-        if r.party_gstin is not None:
-            plaintext_gstin = crypto.decrypt_pii(r.party_gstin, dek=dek, org_id=org_id)
-            if plaintext_gstin is not None:
-                gstin_str = plaintext_gstin if can_view_pii else _mask_gstin(plaintext_gstin)
+        # B2 fix: decrypt the stored GSTIN ciphertext back to its plaintext
+        # form (GSTR-1 filings + B2B aggregation both depend on the real
+        # GSTIN). Cache per invoice so a mixed-rate invoice with N rate-rows
+        # decrypts only ONCE. RPT-02: mask to last-3 chars when the caller
+        # lacks masters.party.pii.read.
+        if r.sales_invoice_id not in gstin_cache:
+            if r.party_gstin is not None:
+                plaintext_gstin = crypto.decrypt_pii(r.party_gstin, dek=dek, org_id=org_id)
+                if plaintext_gstin is not None:
+                    gstin_cache[r.sales_invoice_id] = (
+                        plaintext_gstin if can_view_pii else _mask_gstin(plaintext_gstin)
+                    )
+                else:
+                    gstin_cache[r.sales_invoice_id] = None
             else:
-                gstin_str = None
-        else:
-            gstin_str = None
-        derived_rate = (
-            (gst_total / taxable_value * Decimal("100")).quantize(Decimal("0.01"))
-            if taxable_value > 0
-            else None
-        )
+                gstin_cache[r.sales_invoice_id] = None
+        gstin_str = gstin_cache[r.sales_invoice_id]
+
         row = _Gstr1InvoiceRow(
             sales_invoice_id=r.sales_invoice_id,
             invoice_date=r.invoice_date,
@@ -1609,9 +1644,9 @@ def compute_gstr1(
             party_name=r.party_name,
             gstin=gstin_str,
             place_of_supply_state=r.place_of_supply_state,
-            invoice_value=invoice_total,
+            invoice_value=invoice_total,  # header total, repeated per rate row
             taxable_value=taxable_value,
-            gst_rate=derived_rate,
+            gst_rate=rate,
             cgst=split.cgst,
             sgst=split.sgst,
             igst=split.igst,
@@ -1623,13 +1658,18 @@ def compute_gstr1(
         elif bucket == "export":
             export.append(row)
 
+    for key, inv_ids in b2cs_invoices.items():
+        b2cs_agg[key]["invoice_count"] = len(inv_ids)
+
     # HSN summary — sum every taxable line in the period by item.hsn_code.
     # Re-uses the same lifecycle filter. NULL HSN → empty-string bucket so
     # FE can flag "missing HSN" without a separate code path.
+    hsn_rate = func.coalesce(SiLine.gst_rate, Decimal("0"))
     hsn_stmt = (
         select(
             func.coalesce(Item.hsn_code, "").label("hsn_code"),
             Item.primary_uom.label("uom"),
+            hsn_rate.label("gst_rate"),
             func.coalesce(func.sum(SiLine.qty), 0).label("total_qty"),
             func.coalesce(func.sum(SiLine.line_amount), 0).label("taxable_value"),
             func.coalesce(func.sum(SiLine.gst_amount), 0).label("gst_amount"),
@@ -1642,38 +1682,43 @@ def compute_gstr1(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
+            SiLine.deleted_at.is_(None),
             SalesInvoice.invoice_date >= from_date,
             SalesInvoice.invoice_date <= to_date,
             SalesInvoice.lifecycle_status.in_(_GSTR1_LIFECYCLE),
         )
-        # Group by hsn + uom + tax_type so the split is honest across mixed
-        # invoices. Most small businesses have a single HSN per item-class
-        # so this is one row per HSN in practice.
+        # #195: group by hsn + uom + RATE (portal HSN summary is rate-wise);
+        # tax_type stays in the key so IGST vs CGST/SGST split honestly across
+        # mixed intra/inter-state sales of the same HSN+rate, then folds into
+        # one output row per (hsn, uom, rate).
         .group_by(
             func.coalesce(Item.hsn_code, ""),
             Item.primary_uom,
+            hsn_rate,
             SalesInvoice.tax_type,
         )
-        .order_by(func.coalesce(Item.hsn_code, ""))
+        .order_by(func.coalesce(Item.hsn_code, ""), hsn_rate)
     )
 
-    hsn_agg: dict[tuple[str, str], dict[str, Any]] = {}
+    hsn_agg: dict[tuple[str, str, Decimal], dict[str, Any]] = {}
     for r in session.execute(hsn_stmt):
         hsn_code = r.hsn_code or ""
         uom: str = r.uom.value if hasattr(r.uom, "value") else str(r.uom)
+        rate = Decimal(r.gst_rate or 0)
         qty = Decimal(r.total_qty or 0)
         taxable = Decimal(r.taxable_value or 0)
         gst_amt = Decimal(r.gst_amount or 0)
         split = gst_service.split_tax(
             tax_type=_tax_type_for_invoice(raw_tax_type=r.tax_type), gst_amount=gst_amt
         )
-        hsn_key: tuple[str, str] = (hsn_code, uom)
+        hsn_key: tuple[str, str, Decimal] = (hsn_code, uom, rate)
         agg = hsn_agg.setdefault(
             hsn_key,
             {
                 "hsn_code": hsn_code,
                 "description": None,
                 "uom": uom,
+                "gst_rate": rate,
                 "total_qty": Decimal("0"),
                 "taxable_value": Decimal("0"),
                 "cgst": Decimal("0"),
@@ -1694,6 +1739,7 @@ def compute_gstr1(
             hsn_code=r["hsn_code"],
             description=r["description"],
             uom=r["uom"],
+            gst_rate=r["gst_rate"],
             total_qty=r["total_qty"],
             taxable_value=r["taxable_value"],
             cgst=r["cgst"],
@@ -1701,7 +1747,7 @@ def compute_gstr1(
             igst=r["igst"],
             total_value=r["total_value"],
         )
-        for r in sorted(hsn_agg.values(), key=lambda r: (r["hsn_code"], r["uom"]))
+        for r in sorted(hsn_agg.values(), key=lambda r: (r["hsn_code"], r["uom"], r["gst_rate"]))
     ]
 
     b2cs_rows = [

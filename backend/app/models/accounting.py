@@ -74,13 +74,24 @@ class VoucherType(enum.StrEnum):
     # write-downs). Added via the ``c3_stock_adj_gl`` migration;
     # same forward-only caveat as MATERIAL_ISSUE.
     STOCK_ADJUSTMENT = "STOCK_ADJUSTMENT"
-    # COGS-on-sale: cost of goods sold recognition at stock-out point.
+    # COGS-on-sale: cost of goods sold recognition at invoice finalize.
     # DR 5000 Cost of Goods Sold / CR 1300 Inventory.  Posted by
-    # ``accounting_service.post_cogs_voucher`` when a direct sales invoice
-    # is finalized, or when a delivery challan is issued.  Added via the
+    # ``accounting_service.post_cogs_voucher`` when a sales invoice is
+    # finalized — for direct invoices on the stock relief, and for DC-linked
+    # invoices from the DC's already-relieved outbound stock (#198).  The
+    # voucher is dated invoice_date (matching principle).  Added via the
     # ``cogs_sale_voucher_type`` migration; same forward-only caveat as
     # MATERIAL_ISSUE.
     COGS_SALE = "COGS_SALE"
+    # #203: GRN-receipt accrual (perpetual inventory). DR 1300 Inventory /
+    # CR 2010 GRN Clearing (GRNI) at goods-receipt time, so a mid-cycle
+    # Balance Sheet shows received-but-unbilled stock as both an asset and a
+    # liability. Cleared at PI post (DR 2010 / … CR 2000 AP), with any
+    # PI-vs-GRN price drift landing in 5360 Purchase Price Variance. Posted by
+    # ``accounting_service.post_grn_accrual_voucher`` from ``receive_grn``.
+    # Added via the ``203_grn_accrual`` migration; same forward-only caveat as
+    # MATERIAL_ISSUE (``ADD VALUE`` cannot be dropped).
+    GRN_ACCRUAL = "GRN_ACCRUAL"
 
 
 class JournalLineType(enum.StrEnum):

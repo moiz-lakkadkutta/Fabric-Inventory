@@ -319,6 +319,82 @@ def _seed_world_with_qc(
     return me, mo_id, finished, [up, qc, down]
 
 
+def _seed_world_with_optional_line(
+    http_client: TestClient,
+    sync_engine: Engine,
+    *,
+    planned_qty: str = "10.0000",
+) -> tuple[dict[str, str], str, str, list[str]]:
+    """Like ``_seed_world_basic`` but the BOM has 2 required lines + 1
+    OPTIONAL line (never issued). Verifies optional lines don't block
+    completion. Returns ``(owner, mo_id, finished_item_id, op_masters)``.
+    """
+    me = _signup_owner(http_client)
+    design_id = _create_design(http_client, me, code=f"D-{uuid.uuid4().hex[:6]}")
+    finished = _create_item(http_client, me, code=f"F-{uuid.uuid4().hex[:6]}", item_type="FINISHED")
+    raws = [_create_item(http_client, me, code=f"R{i}-{uuid.uuid4().hex[:5]}") for i in range(3)]
+    payload = {
+        "firm_id": me["firm_id"],
+        "design_id": design_id,
+        "finished_item_id": finished,
+        "lines": [
+            {
+                "item_id": raws[0],
+                "qty_required": "2.0000",
+                "uom": "METER",
+                "is_optional": False,
+                "part_role": "SHELL",
+                "sequence": 1,
+            },
+            {
+                "item_id": raws[1],
+                "qty_required": "1.5000",
+                "uom": "METER",
+                "is_optional": False,
+                "part_role": "SHELL",
+                "sequence": 2,
+            },
+            {
+                "item_id": raws[2],
+                "qty_required": "0.5000",
+                "uom": "METER",
+                "is_optional": True,
+                "part_role": "TRIM",
+                "sequence": 3,
+            },
+        ],
+    }
+    r_bom = http_client.post("/boms", headers=_auth(me["access_token"]), json=payload)
+    assert r_bom.status_code == 201, r_bom.text
+    bom = r_bom.json()
+    ops = [
+        _create_op(
+            http_client, me, code=f"OP{i}-{uuid.uuid4().hex[:4]}", operation_type="STITCHING"
+        )
+        for i in range(3)
+    ]
+    routing = _create_routing(http_client, me, design_id=design_id, ops=ops)
+    _pre_stock_items(
+        sync_engine,
+        org_id=uuid.UUID(me["org_id"]),
+        firm_id=uuid.UUID(me["firm_id"]),
+        item_ids=[uuid.UUID(r) for r in raws],
+    )
+    mo_payload = {
+        "firm_id": me["firm_id"],
+        "design_id": design_id,
+        "finished_item_id": finished,
+        "bom_id": bom["bom_id"],
+        "routing_id": routing["routing_id"],
+        "qty_to_produce": planned_qty,
+        "planned_start_date": "2026-06-01",
+    }
+    r = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=mo_payload)
+    assert r.status_code == 201, r.text
+    mo_id = str(r.json()["manufacturing_order_id"])
+    return me, mo_id, finished, ops
+
+
 def _release_mo(http_client: TestClient, *, owner: dict[str, str], mo_id: str) -> None:
     r = http_client.post(f"/manufacturing/mo/{mo_id}/release", headers=_auth(owner["access_token"]))
     assert r.status_code == 200, r.text
@@ -341,6 +417,50 @@ def _issue_all_materials(http_client: TestClient, *, owner: dict[str, str], mo_i
         json={"firm_id": owner["firm_id"], "lines": issue_lines},
     )
     assert r.status_code == 201, r.text
+
+
+def _issue_materials_partial(
+    http_client: TestClient,
+    *,
+    owner: dict[str, str],
+    mo_id: str,
+    underissue_first_by: Decimal,
+) -> tuple[str, Decimal, Decimal]:
+    """Issue every required material line in full EXCEPT the first, which
+    is short-issued by ``underissue_first_by`` metres.
+
+    Returns ``(short_item_id, qty_required, qty_issued)`` for the
+    short-issued line so the caller can assert the completion 422 quotes
+    it.
+    """
+    mo_resp = http_client.get(f"/manufacturing/mo/{mo_id}", headers=_auth(owner["access_token"]))
+    assert mo_resp.status_code == 200, mo_resp.text
+    lines = mo_resp.json()["material_lines"]
+    assert lines, "expected material lines to issue"
+    issue_lines: list[dict[str, object]] = []
+    short_item_id = ""
+    short_required = Decimal("0")
+    short_issued = Decimal("0")
+    for i, ln in enumerate(lines):
+        required = Decimal(str(ln["qty_required"]))
+        to_issue = required - underissue_first_by if i == 0 else required
+        if i == 0:
+            short_item_id = str(ln["item_id"])
+            short_required = required
+            short_issued = to_issue
+        issue_lines.append(
+            {
+                "mo_material_line_id": ln["mo_material_line_id"],
+                "qty_to_issue": f"{to_issue:.4f}",
+            }
+        )
+    r = http_client.post(
+        f"/manufacturing/mo/{mo_id}/issue-materials",
+        headers=_auth(owner["access_token"]),
+        json={"firm_id": owner["firm_id"], "lines": issue_lines},
+    )
+    assert r.status_code == 201, r.text
+    return short_item_id, short_required, short_issued
 
 
 def _get_mo(http_client: TestClient, *, owner: dict[str, str], mo_id: str) -> dict[str, object]:
@@ -393,6 +513,77 @@ def _close_inhouse_op(
         json={"firm_id": owner["firm_id"]},
     )
     assert r_done.status_code == 200, r_done.text
+
+
+def _close_final_op_with_scrap(
+    http_client: TestClient,
+    *,
+    owner: dict[str, str],
+    op_id: str,
+    qty_in: str,
+    qty_out: str,
+    qty_scrap: str,
+) -> None:
+    """Drive an in-house op start → qty_in → qty_out(+scrap) → complete.
+
+    Used to simulate a terminal op that produced fewer good units than
+    went in (real scrap), so ``qty_out`` < the plan.
+    """
+    h = _auth(owner["access_token"])
+    r_start = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/start",
+        headers=h,
+        json={"firm_id": owner["firm_id"]},
+    )
+    assert r_start.status_code == 200, r_start.text
+    r_in = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/qty-in",
+        headers=h,
+        json={"firm_id": owner["firm_id"], "qty_in": qty_in},
+    )
+    assert r_in.status_code == 200, r_in.text
+    r_out = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/qty-out",
+        headers=h,
+        json={"firm_id": owner["firm_id"], "qty_out": qty_out, "qty_scrap": qty_scrap},
+    )
+    assert r_out.status_code == 200, r_out.text
+    r_done = http_client.post(
+        f"/manufacturing/mo-operations/{op_id}/complete",
+        headers=h,
+        json={"firm_id": owner["firm_id"]},
+    )
+    assert r_done.status_code == 200, r_done.text
+
+
+def _drive_chain_final_scrap(
+    http_client: TestClient,
+    *,
+    owner: dict[str, str],
+    mo_id: str,
+    good_qty: str,
+    scrap_qty: str,
+    total_qty: str,
+) -> None:
+    """Drive a 3-op FINISH_TO_START chain to CLOSED where the FINAL op
+    scraps ``scrap_qty`` units: upstream ops pass ``total_qty`` clean,
+    the terminal op takes ``total_qty`` in and emits ``good_qty`` good +
+    ``scrap_qty`` rejected.
+    """
+    ops = sorted(
+        _list_ops(http_client, owner=owner, mo_id=mo_id),
+        key=lambda o: (o.get("operation_sequence") or 0, str(o["mo_operation_id"])),
+    )
+    for op in ops[:-1]:
+        _close_inhouse_op(http_client, owner=owner, op_id=str(op["mo_operation_id"]), qty=total_qty)
+    _close_final_op_with_scrap(
+        http_client,
+        owner=owner,
+        op_id=str(ops[-1]["mo_operation_id"]),
+        qty_in=total_qty,
+        qty_out=good_qty,
+        qty_scrap=scrap_qty,
+    )
 
 
 def _drive_all_inhouse_ops(
@@ -574,8 +765,10 @@ def test_complete_mo_happy_path(http_client: TestClient, sync_engine: Engine) ->
 def test_complete_mo_rejects_partial_produced_qty(
     http_client: TestClient, sync_engine: Engine
 ) -> None:
-    """ALL_OR_NONE (default policy): produced_qty must equal
-    planned_qty. produced_qty=9.0000 against planned 10.0000 → 422.
+    """#192 D1: produced_qty must equal the VERIFIED final-operation
+    output. All 3 ops closed clean at qty_out=10, so completing with
+    produced_qty=9.0000 (which matches neither the plan nor the actual
+    output of 10) → 422.
     """
     me, mo_id, _f, _ops = _seed_world_basic(http_client, sync_engine)
     _release_mo(http_client, owner=me, mo_id=mo_id)
@@ -589,7 +782,7 @@ def test_complete_mo_rejects_partial_produced_qty(
     )
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"].lower()
-    assert "all_or_none" in detail or "does not equal" in detail
+    assert "does not match" in detail and "output" in detail
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1126,3 +1319,301 @@ def test_mo_completed_production_event(http_client: TestClient, sync_engine: Eng
         assert payload["unit_cost"] == "200.000000"
         assert payload["completion_policy"] == "ALL_OR_NONE"
         assert payload["completion_voucher_id"] is not None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #192 — actual-output reconciliation (no phantom finished-goods stock)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_complete_mo_rejects_produced_qty_above_final_op_output(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """QA repro (#192): the terminal op really scrapped 2 of 10 units
+    (qty_out=8), yet the operator tries to complete claiming produced_qty
+    =10. Must 422 quoting the verified output (8), and MUST NOT book a
+    MANUFACTURING_COMPLETION voucher or any finished-goods stock.
+    """
+    me, mo_id, finished_item_id, _ops = _seed_world_basic(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+    _drive_chain_final_scrap(
+        http_client,
+        owner=me,
+        mo_id=mo_id,
+        good_qty="8.0000",
+        scrap_qty="2.0000",
+        total_qty="10.0000",
+    )
+
+    resp = http_client.post(
+        f"/manufacturing/mo/{mo_id}/complete",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "produced_qty": "10.0000"},
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "8" in detail and "output" in detail.lower()
+
+    from app.models import StockPosition, Voucher
+    from app.models.accounting import VoucherType
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        from sqlalchemy import func
+
+        n_vouchers = session.execute(
+            select(func.count(Voucher.voucher_id)).where(
+                Voucher.voucher_type == VoucherType.MANUFACTURING_COMPLETION,
+                Voucher.reference_id == uuid.UUID(mo_id),
+            )
+        ).scalar_one()
+        assert n_vouchers == 0
+        # No finished-goods stock booked at all.
+        fg = session.execute(
+            select(StockPosition).where(
+                StockPosition.firm_id == uuid.UUID(me["firm_id"]),
+                StockPosition.item_id == uuid.UUID(finished_item_id),
+            )
+        ).scalar_one_or_none()
+        assert fg is None or Decimal(str(fg.on_hand_qty)) == Decimal("0")
+
+
+def test_complete_mo_accepts_actual_output_with_scrap(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Same world as the QA repro: terminal op qty_out=8, scrap=2.
+    Completing with the HONEST produced_qty=8 succeeds; the full WIP
+    cost pool (₹2000) absorbs into the 8 good units (unit_cost = 250),
+    mo.produced_qty=8, mo.scrap_qty=2, voucher DR==CR==pool, WIP zeroed.
+    """
+    me, mo_id, finished_item_id, _ops = _seed_world_basic(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+    _drive_chain_final_scrap(
+        http_client,
+        owner=me,
+        mo_id=mo_id,
+        good_qty="8.0000",
+        scrap_qty="2.0000",
+        total_qty="10.0000",
+    )
+
+    resp = http_client.post(
+        f"/manufacturing/mo/{mo_id}/complete",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "produced_qty": "8.0000"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "COMPLETED"
+    assert Decimal(str(body["produced_qty"])) == Decimal("8.0000")
+    assert Decimal(str(body["scrap_qty"])) == Decimal("2.0000")
+
+    from app.models import StockPosition, Voucher, VoucherLine
+    from app.models.accounting import JournalLineType, VoucherType
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        fg = session.execute(
+            select(StockPosition).where(
+                StockPosition.firm_id == uuid.UUID(me["firm_id"]),
+                StockPosition.item_id == uuid.UUID(finished_item_id),
+            )
+        ).scalar_one()
+        # +8 (the verified output), NOT +10.
+        assert Decimal(str(fg.on_hand_qty)) == Decimal("8.0000")
+        # unit_cost = 2000 / 8 = 250.
+        assert Decimal(str(fg.current_cost)) == Decimal("250.000000")
+
+        voucher = session.execute(
+            select(Voucher).where(
+                Voucher.voucher_type == VoucherType.MANUFACTURING_COMPLETION,
+                Voucher.reference_id == uuid.UUID(mo_id),
+            )
+        ).scalar_one()
+        assert Decimal(str(voucher.total_debit)) == Decimal("2000.00")
+        assert Decimal(str(voucher.total_credit)) == Decimal("2000.00")
+        lines = list(
+            session.execute(
+                select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id)
+            ).scalars()
+        )
+        drs = sum(
+            (Decimal(ln.amount) for ln in lines if ln.line_type == JournalLineType.DR), Decimal(0)
+        )
+        crs = sum(
+            (Decimal(ln.amount) for ln in lines if ln.line_type == JournalLineType.CR), Decimal(0)
+        )
+        assert drs == crs == Decimal("2000.00")
+
+    # WIP net balance returns to zero (issue DR drained by completion CR).
+    assert _wip_balance(
+        sync_engine, org_id=uuid.UUID(me["org_id"]), firm_id=uuid.UUID(me["firm_id"])
+    ) == Decimal("0")
+
+
+def test_complete_mo_rejects_more_than_qc_passed(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """QC repro (#192): 3-op routing UP → QC → DN, planned 5. QC passes
+    3, rejects 2. Terminal op DN outputs 3. Completing with produced=5 →
+    422; completing with produced=3 → 200 with FG +3.
+    """
+    me, mo_id, finished_item_id, masters = _seed_world_with_qc(
+        http_client, sync_engine, planned_qty="5.0000"
+    )
+    up_master, qc_master, down_master = masters
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+
+    ops = _list_ops(http_client, owner=me, mo_id=mo_id)
+    by_master = {str(o["operation_master_id"]): str(o["mo_operation_id"]) for o in ops}
+    _close_inhouse_op(http_client, owner=me, op_id=by_master[up_master], qty="5.0000")
+
+    qc_op_id = by_master[qc_master]
+    http_client.post(
+        f"/manufacturing/mo-operations/{qc_op_id}/start-qc",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"]},
+    )
+    r_res = http_client.post(
+        f"/manufacturing/mo-operations/{qc_op_id}/record-qc-result",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "qty_passed": "3.0000", "qty_rejected": "2.0000"},
+    )
+    assert r_res.status_code == 200, r_res.text
+    assert r_res.json()["state"] == "CLOSED"
+
+    # DN takes the 3 good units through.
+    _close_inhouse_op(http_client, owner=me, op_id=by_master[down_master], qty="3.0000")
+
+    # Claim 5 → rejected (verified output is 3).
+    r_bad = http_client.post(
+        f"/manufacturing/mo/{mo_id}/complete",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "produced_qty": "5.0000"},
+    )
+    assert r_bad.status_code == 422, r_bad.text
+    assert "3" in r_bad.json()["detail"]
+
+    # Claim 3 → accepted.
+    r_ok = http_client.post(
+        f"/manufacturing/mo/{mo_id}/complete",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "produced_qty": "3.0000"},
+    )
+    assert r_ok.status_code == 200, r_ok.text
+    assert Decimal(str(r_ok.json()["produced_qty"])) == Decimal("3.0000")
+
+    from app.models import StockPosition
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        fg = session.execute(
+            select(StockPosition).where(
+                StockPosition.firm_id == uuid.UUID(me["firm_id"]),
+                StockPosition.item_id == uuid.UUID(finished_item_id),
+            )
+        ).scalar_one()
+        assert Decimal(str(fg.on_hand_qty)) == Decimal("3.0000")
+
+
+def test_complete_mo_rejects_when_required_materials_under_issued(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A required material line is only half-issued. Even with all ops
+    CLOSED at the planned qty (so the output gate passes), completion
+    must 422 with an itemised shortfall and book nothing.
+    """
+    me, mo_id, _finished_item_id, _ops = _seed_world_basic(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    short_item, required, issued = _issue_materials_partial(
+        http_client, owner=me, mo_id=mo_id, underissue_first_by=Decimal("10.0000")
+    )
+    _drive_all_inhouse_ops(http_client, owner=me, mo_id=mo_id, qty="10.0000")
+
+    resp = http_client.post(
+        f"/manufacturing/mo/{mo_id}/complete",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "produced_qty": "10.0000"},
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert short_item in detail
+    assert f"{issued}" in detail and f"{required}" in detail
+
+    from app.models import Voucher
+    from app.models.accounting import VoucherType
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        from sqlalchemy import func
+
+        n = session.execute(
+            select(func.count(Voucher.voucher_id)).where(
+                Voucher.voucher_type == VoucherType.MANUFACTURING_COMPLETION,
+                Voucher.reference_id == uuid.UUID(mo_id),
+            )
+        ).scalar_one()
+        assert n == 0
+
+
+def test_complete_mo_optional_lines_do_not_block(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A BOM with one OPTIONAL line that is never issued: as long as the
+    required lines are fully issued and output reconciles, completion
+    succeeds (optional lines never block).
+    """
+    me, mo_id, _finished_item_id, _ops = _seed_world_with_optional_line(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+
+    # Issue only the REQUIRED lines; leave the optional one untouched.
+    mo_body = _get_mo(http_client, owner=me, mo_id=mo_id)
+    lines = mo_body["material_lines"]
+    assert isinstance(lines, list)
+    issue_lines = [
+        {"mo_material_line_id": ln["mo_material_line_id"], "qty_to_issue": ln["qty_required"]}
+        for ln in lines
+        if isinstance(ln, dict) and not ln["is_optional"]
+    ]
+    assert any(ln["is_optional"] for ln in lines if isinstance(ln, dict)), (
+        "expected an optional line"
+    )
+    r_issue = http_client.post(
+        f"/manufacturing/mo/{mo_id}/issue-materials",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "lines": issue_lines},
+    )
+    assert r_issue.status_code == 201, r_issue.text
+
+    _drive_all_inhouse_ops(http_client, owner=me, mo_id=mo_id, qty="10.0000")
+    resp = http_client.post(
+        f"/manufacturing/mo/{mo_id}/complete",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "produced_qty": "10.0000"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "COMPLETED"
+
+
+def test_complete_mo_rejects_produced_above_planned(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """Planned ceiling: even if the terminal op somehow shows the planned
+    output, a produced_qty > planned_qty is rejected up-front.
+    """
+    me, mo_id, _f, _ops = _seed_world_basic(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+    _drive_all_inhouse_ops(http_client, owner=me, mo_id=mo_id, qty="10.0000")
+
+    resp = http_client.post(
+        f"/manufacturing/mo/{mo_id}/complete",
+        headers=_auth(me["access_token"]),
+        json={"firm_id": me["firm_id"], "produced_qty": "11.0000"},
+    )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"].lower()
+    assert "exceeds planned_qty" in detail or "more than planned" in detail

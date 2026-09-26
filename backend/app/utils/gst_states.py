@@ -139,8 +139,36 @@ def is_valid_state_code(code: str) -> bool:
     return normalize_state_code(code) is not None
 
 
+def validate_state_code(v: str | None) -> str | None:
+    """Canonicalize an Indian GST state code, or raise ``ValueError``.
+
+    The single shared validator used by every request schema and the
+    service layer so that a party's ``state_code`` is held to the exact
+    same rule as an invoice's ``ship_to_state`` (#193). ``None`` and the
+    empty string are treated as "field absent" and return ``None`` (the
+    field is optional / PATCH-clearable). Any non-empty value that does
+    not normalise to a recognised code raises ``ValueError`` — Pydantic
+    converts this to a 422 at the HTTP boundary; the service layer wraps
+    it in ``AppValidationError``.
+    """
+    if v is None:
+        return None
+    if isinstance(v, str) and not v.strip():
+        # Empty / whitespace-only → treat as absent (supports PATCH-clear).
+        return None
+    normalised = normalize_state_code(v)
+    if normalised is None:
+        raise ValueError(
+            f"Invalid Indian GST state code {v!r}. "
+            "Must be a 2-character numeric code (e.g. '27') or a valid "
+            "2-character alphabetic abbreviation (e.g. 'MH')."
+        )
+    return normalised
+
+
 __all__ = [
     "VALID_GST_STATE_CODES",
     "is_valid_state_code",
     "normalize_state_code",
+    "validate_state_code",
 ]

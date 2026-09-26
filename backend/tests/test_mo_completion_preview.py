@@ -526,7 +526,8 @@ def test_preview_blocked_when_qty_does_not_match_planned(
     # Cost pool + unit_cost still computed for the FE display.
     assert Decimal(body["cost_pool"]) == Decimal("2000.00")
     reasons = " ".join(body["blocking_reasons"]).lower()
-    assert "all_or_none" in reasons or "planned_qty" in reasons
+    # #192 D1: target 9 matches neither plan nor the verified output (10).
+    assert "does not match" in reasons and "output" in reasons
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -607,3 +608,126 @@ def test_salesperson_403_on_completion_preview(
         params={"firm_id": me["firm_id"], "produced_qty_target": "10.0000"},
     )
     assert resp.status_code == 403, resp.text
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #192 — preview surfaces the output-mismatch + materials blockers
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _close_final_op_with_scrap(
+    http_client: TestClient,
+    *,
+    owner: dict[str, str],
+    op_id: str,
+    qty_in: str,
+    qty_out: str,
+    qty_scrap: str,
+) -> None:
+    h = _auth(owner["access_token"])
+    assert (
+        http_client.post(
+            f"/manufacturing/mo-operations/{op_id}/start",
+            headers=h,
+            json={"firm_id": owner["firm_id"]},
+        ).status_code
+        == 200
+    )
+    assert (
+        http_client.post(
+            f"/manufacturing/mo-operations/{op_id}/qty-in",
+            headers=h,
+            json={"firm_id": owner["firm_id"], "qty_in": qty_in},
+        ).status_code
+        == 200
+    )
+    assert (
+        http_client.post(
+            f"/manufacturing/mo-operations/{op_id}/qty-out",
+            headers=h,
+            json={"firm_id": owner["firm_id"], "qty_out": qty_out, "qty_scrap": qty_scrap},
+        ).status_code
+        == 200
+    )
+    assert (
+        http_client.post(
+            f"/manufacturing/mo-operations/{op_id}/complete",
+            headers=h,
+            json={"firm_id": owner["firm_id"]},
+        ).status_code
+        == 200
+    )
+
+
+def test_completion_preview_reports_output_and_issuance_blockers(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """#192 second-half repro: the preview MUST report can_complete=false
+    with the output-mismatch reason when the operator targets a qty above
+    the verified terminal output (8), and the materials reason when a
+    required line is under-issued.
+    """
+    # (a) Output-mismatch blocker: terminal op qty_out=8, target 10.
+    me, mo_id, _f, _ops = _seed_world_basic(http_client, sync_engine)
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+    ops = sorted(
+        _list_ops(http_client, owner=me, mo_id=mo_id),
+        key=lambda o: (o.get("operation_sequence") or 0, str(o["mo_operation_id"])),
+    )
+    for op in ops[:-1]:
+        _close_inhouse_op(http_client, owner=me, op_id=str(op["mo_operation_id"]), qty="10.0000")
+    _close_final_op_with_scrap(
+        http_client,
+        owner=me,
+        op_id=str(ops[-1]["mo_operation_id"]),
+        qty_in="10.0000",
+        qty_out="8.0000",
+        qty_scrap="2.0000",
+    )
+
+    resp = http_client.get(
+        f"/manufacturing/mo/{mo_id}/completion-preview",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"], "produced_qty_target": "10.0000"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["can_complete"] is False
+    reasons = " ".join(body["blocking_reasons"]).lower()
+    assert "does not match" in reasons and "output" in reasons
+    assert "8" in " ".join(body["blocking_reasons"])
+
+    # (b) Materials blocker: a required line half-issued.
+    me2, mo2, _f2, _ops2 = _seed_world_basic(http_client, sync_engine)
+    _release_mo(http_client, owner=me2, mo_id=mo2)
+    mo2_lines = http_client.get(
+        f"/manufacturing/mo/{mo2}", headers=_auth(me2["access_token"])
+    ).json()["material_lines"]
+    issue_lines = []
+    for i, ln in enumerate(mo2_lines):
+        required = Decimal(str(ln["qty_required"]))
+        to_issue = (required / 2) if i == 0 else required
+        issue_lines.append(
+            {"mo_material_line_id": ln["mo_material_line_id"], "qty_to_issue": f"{to_issue:.4f}"}
+        )
+    assert (
+        http_client.post(
+            f"/manufacturing/mo/{mo2}/issue-materials",
+            headers=_auth(me2["access_token"]),
+            json={"firm_id": me2["firm_id"], "lines": issue_lines},
+        ).status_code
+        == 201
+    )
+    _drive_all_inhouse_ops(http_client, owner=me2, mo_id=mo2, qty="10.0000")
+
+    resp2 = http_client.get(
+        f"/manufacturing/mo/{mo2}/completion-preview",
+        headers=_auth(me2["access_token"]),
+        params={"firm_id": me2["firm_id"], "produced_qty_target": "10.0000"},
+    )
+    assert resp2.status_code == 200, resp2.text
+    body2 = resp2.json()
+    assert body2["can_complete"] is False
+    reasons2 = " ".join(body2["blocking_reasons"]).lower()
+    assert "required materials not fully issued" in reasons2

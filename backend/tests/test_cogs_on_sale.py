@@ -18,7 +18,18 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session as OrmSession
 
-from app.models import Firm, Item, Ledger, Party, SalesInvoice, SiLine, Voucher, VoucherLine
+from app.exceptions import InvoiceStateError
+from app.models import (
+    DeliveryChallan,
+    Firm,
+    Item,
+    Ledger,
+    Party,
+    SalesInvoice,
+    SiLine,
+    Voucher,
+    VoucherLine,
+)
 from app.models.accounting import JournalLineType, VoucherType
 from app.models.masters import ItemType, TrackingType, UomType
 from app.models.sales import InvoiceLifecycleStatus
@@ -251,6 +262,62 @@ def test_finalize_direct_invoice_posts_cogs_and_relieves_stock(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# #198 Part 2 — COGS voucher dated to invoice_date (matching principle)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_cogs_voucher_dated_invoice_date(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
+    """#198 Part 2: finalizing an invoice dated 2020-01-15 produces a
+    COGS_SALE voucher dated 2020-01-15 (before the fix it was dated today).
+    """
+    firm, party, item = _seed_cogs_org(db_session, fresh_org_id)
+    _seed_stock(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="10", unit_cost="100")
+
+    backdated = datetime.date(2020, 1, 15)
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        invoice_date=backdated,
+        lines=[
+            {
+                "item_id": item.item_id,
+                "qty": Decimal("3"),
+                "price": Decimal("500"),
+                "gst_rate": Decimal("0"),
+                "sequence": 1,
+            }
+        ],
+    )
+    sales_service.finalize_invoice(
+        db_session, org_id=fresh_org_id, sales_invoice_id=invoice.sales_invoice_id
+    )
+
+    cogs_v = db_session.execute(
+        select(Voucher).where(
+            Voucher.org_id == fresh_org_id,
+            Voucher.voucher_type == VoucherType.COGS_SALE,
+            Voucher.reference_id == invoice.sales_invoice_id,
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one()
+    assert cogs_v.voucher_date == backdated, (
+        f"COGS voucher must be dated invoice_date {backdated}, got {cogs_v.voucher_date}"
+    )
+    # The sales voucher is likewise dated invoice_date — they must agree.
+    sales_v = db_session.execute(
+        select(Voucher).where(
+            Voucher.org_id == fresh_org_id,
+            Voucher.voucher_type == VoucherType.SALES_INVOICE,
+            Voucher.reference_id == invoice.sales_invoice_id,
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one()
+    assert cogs_v.voucher_date == sales_v.voucher_date, "COGS + sales voucher dates must match"
+
+
+# ──────────────────────────────────────────────────────────────────────
 # AC3 — SERVICE item: no COGS, no stock movement
 # ──────────────────────────────────────────────────────────────────────
 
@@ -264,11 +331,14 @@ def test_finalize_service_item_no_cogs_no_stock(
     from app.models import StockLedger
 
     seed_coa(db_session, org_id=fresh_org_id)
+    # has_gst=True: this test is about SERVICE items not producing COGS, not
+    # about non-GST firms. Since #194 a non-GST firm rejects gst_rate>0, so a
+    # GST-registered firm is used here to keep the 18% line valid.
     firm = Firm(
         org_id=fresh_org_id,
         code=f"F-{uuid.uuid4().hex[:6]}",
         name="Svc Firm",
-        has_gst=False,
+        has_gst=True,
         state_code="MH",
     )
     db_session.add(firm)
@@ -397,30 +467,74 @@ def test_issue_dc_does_not_post_cogs(db_session: OrmSession, fresh_org_id: uuid.
 
 
 # ──────────────────────────────────────────────────────────────────────
-# SF2 — DC-linked invoice guard: finalize skips COGS when delivery_challan_id is set
+# #198 Part 2 — DC-linked invoice DOES post COGS at finalize (relief on the
+# DC's outbound stock; dated to invoice_date; no second stock decrement)
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_finalize_skips_cogs_when_dc_linked(
+def _build_dc_linked_invoice(
+    db_session: OrmSession,
+    *,
+    org_id: uuid.UUID,
+    firm: Firm,
+    party: Party,
+    item: Item,
+    dc: DeliveryChallan,
+    qty: str = "5",
+    price: str = "200",
+    number: str = "9001",
+    invoice_date: datetime.date = datetime.date(2026, 5, 3),
+) -> SalesInvoice:
+    """Hand-build a DRAFT invoice linked to an issued DC (the production
+    SO→DC→Invoice linkage path is wired in a future PR)."""
+    line_amount = Decimal(qty) * Decimal(price)
+    invoice = SalesInvoice(
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        series="RT/2526",
+        number=number,
+        party_id=party.party_id,
+        invoice_date=invoice_date,
+        invoice_amount=line_amount,
+        gst_amount=Decimal("0"),
+        lifecycle_status=InvoiceLifecycleStatus.DRAFT,
+        delivery_challan_id=dc.delivery_challan_id,
+    )
+    db_session.add(invoice)
+    db_session.flush()
+    db_session.add(
+        SiLine(
+            org_id=org_id,
+            sales_invoice_id=invoice.sales_invoice_id,
+            item_id=item.item_id,
+            qty=Decimal(qty),
+            price=Decimal(price),
+            line_amount=line_amount,
+            gst_rate=Decimal("0"),
+            gst_amount=Decimal("0"),
+            sequence=1,
+        )
+    )
+    db_session.flush()
+    return invoice
+
+
+def test_dc_linked_invoice_posts_cogs_at_finalize(
     db_session: OrmSession, fresh_org_id: uuid.UUID
 ) -> None:
-    """When delivery_challan_id is set on an invoice, finalize must NOT
-    post a COGS_SALE voucher (forward-ready guard for DC→invoice linkage).
-
-    A DC-linked invoice is constructed via ORM (hand-built) to prove the
-    guard fires; the production path that sets delivery_challan_id via
-    SO→DC→Invoice linkage is wired in a future PR.
+    """#198 Part 2: a DC-linked invoice posts exactly one COGS_SALE voucher
+    at finalize (DR 5000 = CR 1300 at the DC's WAC), dated invoice_date,
+    WITHOUT decrementing stock again (the DC already relieved it).
     """
     from app.models import StockLedger
 
     firm, party, item = _seed_cogs_org(db_session, fresh_org_id)
-    _seed_stock(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="20", unit_cost="60")
+    _seed_stock(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="10", unit_cost="50")
 
     location = inventory_service.get_or_create_default_location(
         db_session, org_id=fresh_org_id, firm_id=firm.firm_id
     )
 
-    # Step 1: Create DC and issue it (relieves stock, but posts NO COGS per SF2).
     dc = sales_service.create_dc(
         db_session,
         org_id=fresh_org_id,
@@ -428,7 +542,7 @@ def test_finalize_skips_cogs_when_dc_linked(
         party_id=party.party_id,
         dispatch_date=datetime.date(2026, 5, 3),
         series="DC/2526",
-        lines=[{"item_id": item.item_id, "qty_dispatched": "5", "price": "200"}],
+        lines=[{"item_id": item.item_id, "qty_dispatched": "10", "price": "200"}],
     )
     sales_service.issue_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
 
@@ -441,37 +555,19 @@ def test_finalize_skips_cogs_when_dc_linked(
     )
     assert pos_after_dc is not None
     on_hand_after_dc = Decimal(pos_after_dc.on_hand_qty or 0)
-    assert on_hand_after_dc == Decimal("15"), "after DC issue, on_hand should be 15"
+    assert on_hand_after_dc == Decimal("0"), "after DC issue of 10, on_hand should be 0"
 
-    # Step 2: Hand-build a DC-linked invoice and finalize it.
-    invoice = SalesInvoice(
+    invoice = _build_dc_linked_invoice(
+        db_session,
         org_id=fresh_org_id,
-        firm_id=firm.firm_id,
-        series="RT/2526",
-        number="9001",
-        party_id=party.party_id,
+        firm=firm,
+        party=party,
+        item=item,
+        dc=dc,
+        qty="10",
+        price="200",
         invoice_date=datetime.date(2026, 5, 3),
-        invoice_amount=Decimal("1000.00"),
-        gst_amount=Decimal("0"),
-        lifecycle_status=InvoiceLifecycleStatus.DRAFT,
-        delivery_challan_id=dc.delivery_challan_id,  # DC-linked!
     )
-    db_session.add(invoice)
-    db_session.flush()
-    db_session.add(
-        SiLine(
-            org_id=fresh_org_id,
-            sales_invoice_id=invoice.sales_invoice_id,
-            item_id=item.item_id,
-            qty=Decimal("5"),
-            price=Decimal("200"),
-            line_amount=Decimal("1000.00"),
-            gst_rate=Decimal("0"),
-            gst_amount=Decimal("0"),
-            sequence=1,
-        )
-    )
-    db_session.flush()
 
     sales_service.finalize_invoice(
         db_session,
@@ -479,33 +575,40 @@ def test_finalize_skips_cogs_when_dc_linked(
         sales_invoice_id=invoice.sales_invoice_id,
     )
 
-    # No COGS_SALE voucher for the invoice — guard correctly skips COGS.
-    inv_cogs = db_session.execute(
-        select(Voucher).where(
-            Voucher.org_id == fresh_org_id,
-            Voucher.voucher_type == VoucherType.COGS_SALE,
-            Voucher.reference_id == invoice.sales_invoice_id,
-            Voucher.deleted_at.is_(None),
-        )
-    ).scalar_one_or_none()
-    assert inv_cogs is None, "DC-linked invoice finalize must NOT post a COGS voucher"
-
-    # on_hand unchanged after invoice finalize (no second stock decrement).
-    db_session.expire(pos_after_dc)
-    pos_after_inv = inventory_service.get_position(
-        db_session,
-        org_id=fresh_org_id,
-        firm_id=firm.firm_id,
-        item_id=item.item_id,
-        location_id=location.location_id,
+    # Exactly one COGS_SALE voucher, referencing the INVOICE.
+    cogs_vouchers = list(
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.voucher_type == VoucherType.COGS_SALE,
+                Voucher.reference_id == invoice.sales_invoice_id,
+                Voucher.deleted_at.is_(None),
+            )
+        ).scalars()
     )
-    assert pos_after_inv is not None
-    on_hand_after_inv = Decimal(pos_after_inv.on_hand_qty or 0)
-    assert on_hand_after_inv == on_hand_after_dc, (
-        "DC-linked invoice finalize must NOT decrement stock again"
+    assert len(cogs_vouchers) == 1, (
+        f"DC-linked invoice must post exactly 1 COGS voucher, got {len(cogs_vouchers)}"
+    )
+    cogs_v = cogs_vouchers[0]
+    # 10 units @ WAC 50 = 500.
+    assert Decimal(cogs_v.total_debit or 0) == Decimal("500.00")
+    assert Decimal(cogs_v.total_credit or 0) == Decimal("500.00")
+    # Dated to invoice_date, NOT today (#198 Part 2).
+    assert cogs_v.voucher_date == datetime.date(2026, 5, 3), (
+        f"COGS voucher must be dated invoice_date, got {cogs_v.voucher_date}"
     )
 
-    # Exactly ONE StockLedger OUT row (from DC issue, not from invoice finalize).
+    lines = list(
+        db_session.execute(
+            select(VoucherLine).where(VoucherLine.voucher_id == cogs_v.voucher_id)
+        ).scalars()
+    )
+    dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
+    cr_lines = [ln for ln in lines if ln.line_type == JournalLineType.CR]
+    assert _resolve_ledger_code(db_session, dr_lines[0].ledger_id) == "5000"
+    assert _resolve_ledger_code(db_session, cr_lines[0].ledger_id) == "1300"
+
+    # Stock NOT decremented again: exactly one OUT row (from the DC).
     out_rows = list(
         db_session.execute(
             select(StockLedger).where(
@@ -515,7 +618,105 @@ def test_finalize_skips_cogs_when_dc_linked(
             )
         ).scalars()
     )
-    assert len(out_rows) == 1, f"expected 1 OUT row (DC), got {len(out_rows)}"
+    assert len(out_rows) == 1, f"expected 1 OUT row (DC only), got {len(out_rows)}"
+    assert out_rows[0].reference_id == dc.delivery_challan_id
+    assert out_rows[0].reference_type == "DC"
+
+    db_session.expire(pos_after_dc)
+    pos_after_inv = inventory_service.get_position(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+    )
+    assert pos_after_inv is not None
+    assert Decimal(pos_after_inv.on_hand_qty or 0) == on_hand_after_dc, (
+        "DC-linked invoice finalize must NOT decrement stock a second time"
+    )
+
+
+def test_second_invoice_on_same_dc_rejected(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """Two invoices sharing one DC would double-count COGS — the second
+    finalize must be rejected (InvoiceStateError → 409)."""
+    firm, party, item = _seed_cogs_org(db_session, fresh_org_id)
+    _seed_stock(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="10", unit_cost="50")
+
+    dc = sales_service.create_dc(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        dispatch_date=datetime.date(2026, 5, 3),
+        series="DC/2526",
+        lines=[{"item_id": item.item_id, "qty_dispatched": "10", "price": "200"}],
+    )
+    sales_service.issue_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
+
+    inv1 = _build_dc_linked_invoice(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        dc=dc,
+        qty="10",
+        number="9001",
+    )
+    inv2 = _build_dc_linked_invoice(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        dc=dc,
+        qty="10",
+        number="9002",
+    )
+
+    sales_service.finalize_invoice(
+        db_session, org_id=fresh_org_id, sales_invoice_id=inv1.sales_invoice_id
+    )
+    with pytest.raises(InvoiceStateError, match="already"):
+        sales_service.finalize_invoice(
+            db_session, org_id=fresh_org_id, sales_invoice_id=inv2.sales_invoice_id
+        )
+
+
+def test_dc_linked_zero_cost_stock_no_empty_voucher(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """A DC of zero-cost stock must not create an empty COGS voucher."""
+    firm, party, item = _seed_cogs_org(db_session, fresh_org_id)
+    _seed_stock(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="10", unit_cost="0")
+
+    dc = sales_service.create_dc(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        dispatch_date=datetime.date(2026, 5, 3),
+        series="DC/2526",
+        lines=[{"item_id": item.item_id, "qty_dispatched": "5", "price": "200"}],
+    )
+    sales_service.issue_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
+    invoice = _build_dc_linked_invoice(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, dc=dc, qty="5"
+    )
+    sales_service.finalize_invoice(
+        db_session, org_id=fresh_org_id, sales_invoice_id=invoice.sales_invoice_id
+    )
+    cogs_v = db_session.execute(
+        select(Voucher).where(
+            Voucher.org_id == fresh_org_id,
+            Voucher.voucher_type == VoucherType.COGS_SALE,
+            Voucher.reference_id == invoice.sales_invoice_id,
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    assert cogs_v is None, "zero-cost DC stock must not create a COGS voucher"
 
 
 # ──────────────────────────────────────────────────────────────────────

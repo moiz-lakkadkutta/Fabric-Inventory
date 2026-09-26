@@ -13,9 +13,10 @@ import uuid
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models.masters import ItemType, TaxStatus, TrackingType, UomType
+from app.utils.gst_states import validate_state_code
 
 PartyTypeFlag = Annotated[bool, Field(description="One of supplier/customer/karigar/transporter")]
 
@@ -39,6 +40,15 @@ class PartyCreateRequest(BaseModel):
     credit_limit: Decimal | None = None
     notes: str | None = None
 
+    @field_validator("state_code", mode="before")
+    @classmethod
+    def _validate_state_code(cls, v: object) -> object:
+        """#193: hold party state_code to the same GST-state rule invoices
+        use for ship_to_state. Junk ("XX") → 422; numeric ("27") → "MH"."""
+        if v is None:
+            return v
+        return validate_state_code(str(v))
+
 
 class PartyUpdateRequest(BaseModel):
     """All fields optional. PATCH semantics."""
@@ -59,6 +69,19 @@ class PartyUpdateRequest(BaseModel):
     credit_limit: Decimal | None = None
     notes: str | None = None
     is_active: bool | None = None
+
+    @field_validator("state_code", mode="before")
+    @classmethod
+    def _validate_state_code(cls, v: object) -> object:
+        """#193: same GST-state rule on PATCH. Junk → 422; numeric ("27")
+        canonicalised to alpha. An explicit empty string is passed through
+        so the service layer still treats it as a PATCH-clear (→ NULL); a
+        distinct value from field-absent (None), which leaves it unchanged."""
+        if v is None:
+            return v
+        if isinstance(v, str) and not v.strip():
+            return ""
+        return validate_state_code(str(v))
 
 
 class PartyResponse(BaseModel):
