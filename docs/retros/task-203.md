@@ -225,6 +225,8 @@ WHERE EXISTS (SELECT 1 FROM voucher v
 ORDER BY r.org_id, r.grn_date, grn_no;
 ```
 
+Known false positive: a GRN whose priced items are fully billed but which still has an unbilled **zero-rate** (free) line also appears, because its open 2010 is 0 while billed qty < received qty. Ignore rows where the only unbilled lines are at rate 0.
+
 **Open CA question (unchanged here).** PIs carry no separate freight / other
 charges fields; any freight billed inside line rates lands in 5360 PPV as price
 variance, as before.
