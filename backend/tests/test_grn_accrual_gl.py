@@ -25,7 +25,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session as OrmSession
 
-from app.exceptions import InvoiceStateError
+from app.exceptions import AppValidationError, InvoiceStateError
 from app.models import Firm, Item, Party, Voucher
 from app.models.accounting import VoucherType
 from app.models.masters import ItemType, TrackingType, UomType
@@ -413,30 +413,307 @@ def test_legacy_grn_without_accrual_falls_through(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 6. One PI per GRN — second GRN-linked PI rejected
+# 6. CA correction (2026-09-26): partial billing — clear only what is billed
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_second_pi_against_same_grn_rejected(
+def _post_pi(
+    db_session: OrmSession,
+    *,
+    org_id: uuid.UUID,
+    firm: Firm,
+    party: Party,
+    item: Item,
+    grn_id: uuid.UUID,
+    qty: str,
+    rate: str,
+) -> tuple[uuid.UUID, dict[str, tuple[str, Decimal]]]:
+    pi_id = _make_pi_for_grn(
+        db_session,
+        org_id=org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty=qty,
+        rate=rate,
+    )
+    procurement_service.post_pi(db_session, org_id=org_id, pi_id=pi_id)
+    voucher = _voucher_of_type(
+        db_session, org_id=org_id, vtype=VoucherType.PURCHASE_INVOICE, reference_id=pi_id
+    )
+    assert voucher is not None
+    assert Decimal(voucher.total_debit) == Decimal(voucher.total_credit)
+    return pi_id, _lines_by_code(db_session, voucher)
+
+
+def _assert_tb_balanced(db_session: OrmSession, *, org_id: uuid.UUID, firm: Firm) -> None:
+    _, total_dr, total_cr, _ = reports_service.compute_tb(
+        db_session, org_id=org_id, firm_id=firm.firm_id, as_of=datetime.date(2026, 12, 31)
+    )
+    assert total_dr == total_cr
+
+
+def test_short_bill_clears_only_billed_qty_then_second_bill_closes_grni(
+    db_session: OrmSession, fresh_org_id: uuid.UUID, setup: tuple[Firm, Party, Item]
+) -> None:
+    """100 m received @ 200; bill 80 m @ 200 → DR 2010 16,000, NO PPV, 4,000
+    stays accrued. Then bill 20 m @ 210 → DR 2010 4,000 + DR 5360 200, and
+    2010 for the GRN is 0. (Before the fix: bill 1 cleared all 20,000 and
+    booked a false CR 5360 4,000; bill 2 was refused.)"""
+    firm, party, item = setup
+    _, grn_id = _po_grn_received(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="200"
+    )
+
+    _, codes1 = _post_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="80",
+        rate="200",
+    )
+    assert codes1["2010"] == ("DR", Decimal("16000.00"))
+    assert "5360" not in codes1, "billing at the GRN rate must not book PPV"
+    assert codes1["2000"] == ("CR", Decimal("16000.00"))
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("-4000")
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="5360") == Decimal("0")
+
+    _, codes2 = _post_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="20",
+        rate="210",
+    )
+    assert codes2["2010"] == ("DR", Decimal("4000.00"))
+    assert codes2["5360"] == ("DR", Decimal("200.00"))
+    assert codes2["2000"] == ("CR", Decimal("4200.00"))
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("0")
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="5360") == Decimal("200")
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="1300") == Decimal("20000")
+    _assert_tb_balanced(db_session, org_id=fresh_org_id, firm=firm)
+
+
+def test_short_bill_cheaper_credits_ppv_on_billed_qty_only(
     db_session: OrmSession, fresh_org_id: uuid.UUID, setup: tuple[Firm, Party, Item]
 ) -> None:
     firm, party, item = setup
     _, grn_id = _po_grn_received(
-        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="20", rate="200"
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="200"
     )
-    pi1 = _make_pi_for_grn(
+    _, codes = _post_pi(
         db_session,
         org_id=fresh_org_id,
         firm=firm,
         party=party,
         item=item,
         grn_id=grn_id,
-        qty="20",
-        rate="200",
+        qty="80",
+        rate="190",
     )
-    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi1)
+    # PPV = 80 x (190 - 200) = -800 → CR 5360 800. 2010 cleared 80 x 200.
+    assert codes["2010"] == ("DR", Decimal("16000.00"))
+    assert codes["5360"] == ("CR", Decimal("800.00"))
+    assert codes["2000"] == ("CR", Decimal("15200.00"))
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("-4000")
 
-    pi2 = _make_pi_for_grn(
+
+def test_dearer_full_bill_ppv_on_full_qty(
+    db_session: OrmSession, fresh_org_id: uuid.UUID, setup: tuple[Firm, Party, Item]
+) -> None:
+    firm, party, item = setup
+    _, grn_id = _po_grn_received(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="200"
+    )
+    _, codes = _post_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="100",
+        rate="210",
+    )
+    assert codes["2010"] == ("DR", Decimal("20000.00"))
+    assert codes["5360"] == ("DR", Decimal("1000.00"))
+    assert codes["2000"] == ("CR", Decimal("21000.00"))
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("0")
+
+
+def test_over_billing_across_pis_refused_at_create(
+    db_session: OrmSession, fresh_org_id: uuid.UUID, setup: tuple[Firm, Party, Item]
+) -> None:
+    """60 m + 60 m against 100 m received: the second PI is refused."""
+    firm, party, item = setup
+    _, grn_id = _po_grn_received(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="200"
+    )
+    _post_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="60",
+        rate="200",
+    )
+    with pytest.raises(AppValidationError, match=r"60 already billed"):
+        _make_pi_for_grn(
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=item,
+            grn_id=grn_id,
+            qty="60",
+            rate="200",
+        )
+    # Exactly the remaining 40 is still billable.
+    _post_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="40",
+        rate="200",
+    )
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("0")
+
+
+def test_open_draft_counts_toward_create_time_cap(
+    db_session: OrmSession, fresh_org_id: uuid.UUID, setup: tuple[Firm, Party, Item]
+) -> None:
+    """A live DRAFT PI reserves its qty at create time (conservative): a second
+    draft that would push the GRN over-billed is refused."""
+    firm, party, item = setup
+    _, grn_id = _po_grn_received(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="200"
+    )
+    _make_pi_for_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="60",
+        rate="200",
+    )
+    with pytest.raises(AppValidationError, match=r"received only 100"):
+        _make_pi_for_grn(
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=item,
+            grn_id=grn_id,
+            qty="60",
+            rate="200",
+        )
+
+
+def test_over_billing_refused_at_post_even_if_create_bypassed(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    setup: tuple[Firm, Party, Item],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-time (authoritative, under the GRN lock) cumulative guard: two
+    drafts of 60 against 100 (create guard bypassed, as for legacy drafts) —
+    the first posts, the second is refused and stays DRAFT with no voucher."""
+    firm, party, item = setup
+    _, grn_id = _po_grn_received(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="200"
+    )
+    monkeypatch.setattr(procurement_service, "_validate_pi_lines_against_grn", lambda *a, **k: None)
+    pi_a = _make_pi_for_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="60",
+        rate="200",
+    )
+    pi_b = _make_pi_for_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="60",
+        rate="200",
+    )
+    monkeypatch.undo()
+
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi_a)
+    with pytest.raises(AppValidationError, match=r"bills 60.*received only 100"):
+        procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi_b)
+    assert (
+        _voucher_of_type(
+            db_session, org_id=fresh_org_id, vtype=VoucherType.PURCHASE_INVOICE, reference_id=pi_b
+        )
+        is None
+    )
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("-8000")
+
+
+def test_void_short_bill_reopens_its_accrual_and_qty(
+    db_session: OrmSession, fresh_org_id: uuid.UUID, setup: tuple[Firm, Party, Item]
+) -> None:
+    """Void the 80 m bill → 2010 for the GRN back to CR 20,000 and 80 m is
+    billable again."""
+    firm, party, item = setup
+    _, grn_id = _po_grn_received(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="100", rate="200"
+    )
+    pi_80, _ = _post_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="80",
+        rate="200",
+    )
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("-4000")
+
+    procurement_service.void_pi(db_session, org_id=fresh_org_id, pi_id=pi_80)
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal(
+        "-20000"
+    )
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="5360") == Decimal("0")
+
+    # 80 m billable again (the voided PI no longer counts), at a new price.
+    _, codes = _post_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn_id,
+        qty="80",
+        rate="205",
+    )
+    assert codes["2010"] == ("DR", Decimal("16000.00"))
+    assert codes["5360"] == ("DR", Decimal("400.00"))
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("-4000")
+    # And the last 20 m closes it; 100 m total is the cap (voided excluded).
+    _post_pi(
         db_session,
         org_id=fresh_org_id,
         firm=firm,
@@ -446,8 +723,81 @@ def test_second_pi_against_same_grn_rejected(
         qty="20",
         rate="200",
     )
-    with pytest.raises(InvoiceStateError):
-        procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi2)
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("0")
+    _assert_tb_balanced(db_session, org_id=fresh_org_id, firm=firm)
+
+
+def test_rounding_residue_trued_up_on_final_bill(
+    db_session: OrmSession, fresh_org_id: uuid.UUID, setup: tuple[Firm, Party, Item]
+) -> None:
+    """3 m @ 33.3333 accrues 100.00 (99.9999 rounded). Three 1 m bills clear
+    33.33, 33.33 and — as the final bill — the exact 33.34 remainder, so 2010
+    lands on exactly 0.00 for the GRN; every voucher balances."""
+    firm, party, item = setup
+    _, grn_id = _po_grn_received(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="3",
+        rate="33.3333",
+    )
+    cleared = []
+    for _ in range(3):
+        _, codes = _post_pi(
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=item,
+            grn_id=grn_id,
+            qty="1",
+            rate="33.33",
+        )
+        cleared.append(codes["2010"][1])
+    assert cleared == [Decimal("33.33"), Decimal("33.33"), Decimal("33.34")]
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("0")
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="5360") == Decimal("-0.01")
+    _assert_tb_balanced(db_session, org_id=fresh_org_id, firm=firm)
+
+
+def test_item_on_two_grn_lines_clears_at_weighted_average_rate(
+    db_session: OrmSession, fresh_org_id: uuid.UUID, setup: tuple[Firm, Party, Item]
+) -> None:
+    """Line-matching rule: PI lines match GRN lines by item; when an item sits
+    on several GRN lines at different rates, billed qty clears at the item's
+    weighted-average GRN rate (= accrued value / received qty). 50 @ 200 +
+    50 @ 220 → avg 210; billing 50 clears 10,500."""
+    firm, party, item = setup
+    grn = procurement_service.create_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        grn_date=INVOICE_DATE,
+        series="GRN/2025-26",
+        lines=[
+            {"item_id": item.item_id, "qty_received": "50", "rate": "200"},
+            {"item_id": item.item_id, "qty_received": "50", "rate": "220"},
+        ],
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
+    _, codes = _post_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        grn_id=grn.grn_id,
+        qty="50",
+        rate="210",
+    )
+    assert codes["2010"] == ("DR", Decimal("10500.00"))
+    assert "5360" not in codes
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal(
+        "-10500"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────

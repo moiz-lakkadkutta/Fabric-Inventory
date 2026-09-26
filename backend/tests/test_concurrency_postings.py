@@ -830,3 +830,100 @@ def test_parallel_issues_cannot_exceed_ordered(sync_engine: Engine, admin_engine
             assert so_status == "PARTIAL_DC", f"unexpected SO status: {so_status}"
     finally:
         _drop_org(admin_engine, org_id)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #203 CA correction — parallel PI posts cannot over-bill one GRN
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_parallel_pi_posts_cannot_over_bill_grn(
+    sync_engine: Engine, admin_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GRN of 100 received @ 200 with two DRAFT PIs of 60 each (create-time
+    guard bypassed, as for legacy drafts). Two parallel post_pi calls: exactly
+    one succeeds; the loser is refused under the GRN row lock (cumulative
+    billed 120 > 100). GRNI (2010) for the GRN ends at CR 8,000 — only the
+    winner's 60 m cleared — and exactly one PURCHASE_INVOICE voucher exists.
+    """
+    org_id, firm_id, party_id, item_id = _seed_org_firm_party_item(sync_engine)
+    try:
+        with _new_session(sync_engine, org_id) as s:
+            grn = procurement_service.create_grn(
+                s,
+                org_id=org_id,
+                firm_id=firm_id,
+                party_id=party_id,
+                grn_date=datetime.date(2026, 4, 15),
+                series="GRN",
+                lines=[{"item_id": item_id, "qty_received": "100", "rate": "200"}],
+            )
+            grn_id = grn.grn_id
+            procurement_service.receive_grn(s, org_id=org_id, grn_id=grn_id)
+            monkeypatch.setattr(
+                procurement_service, "_validate_pi_lines_against_grn", lambda *a, **k: None
+            )
+            pi_ids = [
+                procurement_service.create_pi(
+                    s,
+                    org_id=org_id,
+                    firm_id=firm_id,
+                    party_id=party_id,
+                    invoice_date=datetime.date(2026, 4, 20),
+                    series="PI",
+                    lines=[{"item_id": item_id, "qty": "60", "rate": "200"}],
+                    grn_id=grn_id,
+                ).purchase_invoice_id
+                for _ in range(2)
+            ]
+            monkeypatch.undo()
+            s.commit()
+
+        counter = {"i": 0}
+        counter_lock = threading.Lock()
+
+        def _post(s: OrmSession) -> None:
+            with counter_lock:
+                idx = counter["i"]
+                counter["i"] += 1
+            procurement_service.post_pi(s, org_id=org_id, pi_id=pi_ids[idx])
+
+        results = _race(sync_engine, org_id, 2, _post)
+
+        assert results.count("OK") == 1, f"expected exactly one winner, got {results}"
+        assert all(r in ("OK", "AppValidationError", "InvoiceStateError") for r in results), (
+            f"unexpected results: {results}"
+        )
+
+        with _new_session(sync_engine, org_id) as s:
+            posted = s.execute(
+                text(
+                    "SELECT count(*) FROM purchase_invoice "
+                    "WHERE grn_id = :g AND status = 'POSTED' AND deleted_at IS NULL"
+                ),
+                {"g": str(grn_id)},
+            ).scalar()
+            assert posted == 1, f"expected one POSTED PI, got {posted}"
+
+            pi_vouchers = s.execute(
+                text(
+                    "SELECT count(*) FROM voucher WHERE voucher_type = 'PURCHASE_INVOICE' "
+                    "AND reference_id::text = ANY(:p) AND deleted_at IS NULL"
+                ),
+                {"p": [str(p) for p in pi_ids]},
+            ).scalar()
+            assert pi_vouchers == 1, f"expected one PI voucher, got {pi_vouchers}"
+
+            grni = s.execute(
+                text(
+                    "SELECT coalesce(sum(CASE WHEN vl.line_type = 'CR' THEN vl.amount "
+                    "ELSE -vl.amount END), 0) FROM voucher_line vl "
+                    "JOIN ledger l ON l.ledger_id = vl.ledger_id "
+                    "JOIN voucher v ON v.voucher_id = vl.voucher_id "
+                    "WHERE l.code = '2010' AND vl.org_id = :o AND v.deleted_at IS NULL"
+                ),
+                {"o": str(org_id)},
+            ).scalar()
+            assert Decimal(str(grni)) == Decimal("8000.00"), f"GRNI balance wrong: {grni}"
+    finally:
+        _drop_org(admin_engine, org_id)

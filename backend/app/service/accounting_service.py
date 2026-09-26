@@ -22,9 +22,9 @@ from __future__ import annotations
 import datetime
 import uuid
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import Integer, func, select
+from sqlalchemy import Integer, case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -32,8 +32,10 @@ from app.exceptions import AppValidationError, InvoiceStateError
 from app.models import (
     GRN,
     Firm,
+    GRNLine,
     Ledger,
     Party,
+    PILine,
     PurchaseInvoice,
     SalesInvoice,
     Voucher,
@@ -582,6 +584,169 @@ def _find_grn_accrual_voucher(
     ).scalar_one_or_none()
 
 
+# #203 CA correction (2026-09-26): partial billing against a GRN.
+#
+# Standard GRNI practice: a GRN-linked PI clears GRNI only for the quantity it
+# BILLS, valued at the GRN receipt rate; PPV is booked on that billed quantity
+# only; received-but-unbilled quantity stays accrued in 2010 until a later PI
+# bills it. Several POSTED PIs may bill one GRN as long as cumulative billed qty
+# per item never exceeds received qty (guarded in procurement_service under the
+# GRN row lock).
+#
+# Line-matching rule (PI lines carry no GRN-line reference — only item_id):
+# PI lines match GRN lines BY ITEM. When an item sits on several GRN lines at
+# different rates, the billed qty clears at that item's WEIGHTED-AVERAGE GRN
+# rate (sum(qty_received x rate) / sum(qty_received) over the item's live GRN
+# lines). Chosen over FIFO because it is order-independent: voiding a PI and
+# re-billing the same qty always clears the same value, so 2010 can never be
+# mis-allocated between GRN lines by a void. For the common one-line-per-item
+# GRN it is exactly the GRN line rate.
+#
+# Rounding: each PI's clearing is quantized to the paisa (ROUND_HALF_UP) and
+# capped at the GRN's still-open 2010 balance (read from the GL itself). The
+# PI that completes the GRN (every item fully billed) clears EXACTLY the open
+# balance, so paisa residue from per-bill rounding never strands in 2010.
+_GRN_BILLING_STATUSES = (VoucherStatus.POSTED, VoucherStatus.RECONCILED)
+_PAISA = Decimal("0.01")
+
+
+def grn_billed_qty_by_item(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    grn_id: uuid.UUID,
+    exclude_pi_id: uuid.UUID | None = None,
+    include_drafts: bool = False,
+) -> dict[uuid.UUID, Decimal]:
+    """Cumulative qty already billed per item against ``grn_id`` by live PIs.
+
+    Counts non-deleted PIs in POSTED/RECONCILED (plus DRAFT when
+    ``include_drafts``). VOIDED PIs are excluded — their GL was reversed, so
+    their qty is billable again. ``exclude_pi_id`` drops the PI being
+    created/posted so it never counts itself.
+    """
+    statuses: list[VoucherStatus] = list(_GRN_BILLING_STATUSES)
+    if include_drafts:
+        statuses.append(VoucherStatus.DRAFT)
+    stmt = (
+        select(PILine.item_id, func.coalesce(func.sum(PILine.qty), 0))
+        .join(PurchaseInvoice, PILine.purchase_invoice_id == PurchaseInvoice.purchase_invoice_id)
+        .where(
+            PurchaseInvoice.org_id == org_id,
+            PurchaseInvoice.grn_id == grn_id,
+            PurchaseInvoice.deleted_at.is_(None),
+            PurchaseInvoice.status.in_(statuses),
+            PILine.deleted_at.is_(None),
+        )
+        .group_by(PILine.item_id)
+    )
+    if exclude_pi_id is not None:
+        stmt = stmt.where(PurchaseInvoice.purchase_invoice_id != exclude_pi_id)
+    return {item_id: Decimal(qty) for item_id, qty in session.execute(stmt).all()}
+
+
+def grn_receipt_by_item(
+    session: Session, *, org_id: uuid.UUID, grn_id: uuid.UUID
+) -> dict[uuid.UUID, tuple[Decimal, Decimal]]:
+    """Per item on the GRN: (received qty, accrued value = sum(qty x rate)),
+    over live GRN lines. Value is unquantized (the accrual quantizes the
+    GRN total once)."""
+    out: dict[uuid.UUID, tuple[Decimal, Decimal]] = {}
+    rows = session.execute(
+        select(GRNLine.item_id, GRNLine.qty_received, GRNLine.rate).where(
+            GRNLine.org_id == org_id,
+            GRNLine.grn_id == grn_id,
+            GRNLine.deleted_at.is_(None),
+        )
+    ).all()
+    for item_id, qty, rate in rows:
+        q = Decimal(qty)
+        v = q * (Decimal(rate) if rate is not None else Decimal("0"))
+        prev_q, prev_v = out.get(item_id, (Decimal("0"), Decimal("0")))
+        out[item_id] = (prev_q + q, prev_v + v)
+    return out
+
+
+def grn_value_of_billed_qty(
+    receipt: dict[uuid.UUID, tuple[Decimal, Decimal]],
+    billed: dict[uuid.UUID, Decimal],
+) -> Decimal:
+    """sum(billed qty x item's weighted-average GRN rate), quantized to paisa."""
+    total = Decimal("0")
+    for item_id, qty in billed.items():
+        recv_qty, recv_value = receipt.get(item_id, (Decimal("0"), Decimal("0")))
+        if recv_qty > 0:
+            total += qty * recv_value / recv_qty
+    return total.quantize(_PAISA, rounding=ROUND_HALF_UP)
+
+
+def _grn_open_grni_balance(
+    session: Session, *, org_id: uuid.UUID, grn_id: uuid.UUID, grni_ledger_id: uuid.UUID
+) -> Decimal:
+    """Open (credit) 2010 balance attributable to ``grn_id``, read from the GL:
+    the GRN's accrual voucher plus every PURCHASE_INVOICE voucher (original or
+    void-reversal) referencing a PI of this GRN. CR positive."""
+    pi_ids = select(PurchaseInvoice.purchase_invoice_id).where(
+        PurchaseInvoice.org_id == org_id, PurchaseInvoice.grn_id == grn_id
+    )
+    signed = case(
+        (VoucherLine.line_type == JournalLineType.CR, VoucherLine.amount),
+        else_=-VoucherLine.amount,
+    )
+    total = session.execute(
+        select(func.coalesce(func.sum(signed), 0))
+        .join(Voucher, VoucherLine.voucher_id == Voucher.voucher_id)
+        .where(
+            VoucherLine.org_id == org_id,
+            VoucherLine.ledger_id == grni_ledger_id,
+            Voucher.org_id == org_id,
+            Voucher.deleted_at.is_(None),
+            (
+                (Voucher.voucher_type == VoucherType.GRN_ACCRUAL)
+                & (Voucher.reference_id == grn_id)
+            )
+            | (
+                (Voucher.voucher_type == VoucherType.PURCHASE_INVOICE)
+                & Voucher.reference_id.in_(pi_ids)
+            ),
+        )
+    ).scalar_one()
+    return Decimal(total)
+
+
+def _grni_clearing_amount(
+    session: Session, *, pi: PurchaseInvoice, grni_ledger_id: uuid.UUID
+) -> Decimal:
+    """DR 2010 amount for a GRN-linked PI: billed qty x GRN (weighted-avg)
+    rate, capped at the GRN's open 2010 balance; the PI that completes the
+    GRN clears the open balance exactly (paisa true-up)."""
+    assert pi.grn_id is not None
+    receipt = grn_receipt_by_item(session, org_id=pi.org_id, grn_id=pi.grn_id)
+    this_billed: dict[uuid.UUID, Decimal] = {}
+    for line in pi.lines:
+        if line.deleted_at is None and line.qty is not None:
+            this_billed[line.item_id] = this_billed.get(line.item_id, Decimal("0")) + Decimal(
+                line.qty
+            )
+    prior = grn_billed_qty_by_item(
+        session, org_id=pi.org_id, grn_id=pi.grn_id, exclude_pi_id=pi.purchase_invoice_id
+    )
+    open_balance = max(
+        _grn_open_grni_balance(
+            session, org_id=pi.org_id, grn_id=pi.grn_id, grni_ledger_id=grni_ledger_id
+        ),
+        Decimal("0"),
+    )
+    completes_grn = all(
+        prior.get(item_id, Decimal("0")) + this_billed.get(item_id, Decimal("0")) >= recv_qty
+        for item_id, (recv_qty, _) in receipt.items()
+        if recv_qty > 0
+    )
+    if completes_grn:
+        return open_balance
+    return min(grn_value_of_billed_qty(receipt, this_billed), open_balance)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # E1 (GL-1): Purchase Invoice GL posting.
 # ──────────────────────────────────────────────────────────────────────
@@ -610,12 +775,19 @@ def post_purchase_invoice_to_gl(
     inventory-side legs CLEAR the receipt accrual instead of re-debiting 1300
     (which was already debited at receipt), with any PI-vs-GRN price drift going
     to Purchase Price Variance:
-      DR  2010 GRN Clearing         accrued value (the accrual's total_debit)
-      DR/CR 5360 Purchase Price Var |PI net - accrued|  (DR if PI dearer, else CR)
+      DR  2010 GRN Clearing         billed qty x GRN rate (NOT the whole accrual)
+      DR/CR 5360 Purchase Price Var |PI net - cleared|  (DR if PI dearer, else CR)
       DR  1400 ITC Receivable       gst (forward charge only)
       CR  2000 Sundry Creditors (AP) gross payable
     A GRN received before #203 shipped has no accrual voucher → falls through to
     the DR-1300 shape above so old in-flight cycles still close correctly.
+
+    #203 CA correction (2026-09-26): only the BILLED qty is cleared (see
+    ``_grni_clearing_amount``: weighted-average GRN rate per item, capped at the
+    GRN's open 2010 balance, exact true-up on the PI that completes the GRN).
+    Received-but-unbilled qty stays accrued in 2010 for a later PI. Void
+    (``reverse_purchase_invoice_gl``) mirrors every leg, so it re-opens exactly
+    what this PI cleared.
 
     S2: Zero-amount PI (e.g. free samples, rate=0): returns None — no voucher
     is created. `post_pi` still advances the PI to POSTED; there is simply
@@ -625,7 +797,9 @@ def post_purchase_invoice_to_gl(
     references this pi_id (e.g. a retry of post_pi after a flush error),
     return it rather than creating a duplicate.
     """
-    net = Decimal(pi.invoice_amount or 0)
+    # #203 CA correction: quantize to the paisa as the DB column stores it, so
+    # PPV (net - cleared) and the balance check are computed on stored values.
+    net = Decimal(pi.invoice_amount or 0).quantize(_PAISA, rounding=ROUND_HALF_UP)
     if net <= 0:
         # S2: zero-amount PI (free samples, zero-rate lines). No GL entry needed.
         return None
@@ -677,16 +851,22 @@ def post_purchase_invoice_to_gl(
         else None
     )
     use_grni = grn_accrual is not None
-    accrued = Decimal(grn_accrual.total_debit or 0) if grn_accrual is not None else Decimal("0")
-    # variance = PI net - GRN accrued. >0 unfavourable (DR PPV); <0 favourable
-    # (CR PPV). Inventory (1300) is left untouched so it stays equal to the
-    # weighted-average valuation the GRN already set.
-    variance = (net - accrued) if use_grni else Decimal("0")
-
-    inventory_ledger = _resolve_ledger(session, org_id=pi.org_id, code=_INVENTORY_LEDGER_CODE)
     grni_ledger = (
         _resolve_ledger(session, org_id=pi.org_id, code=_GRNI_LEDGER_CODE) if use_grni else None
     )
+    # #203 CA correction: clear only what THIS PI bills (billed qty x GRN
+    # rate), not the whole accrual — unbilled qty stays accrued in 2010.
+    accrued = (
+        _grni_clearing_amount(session, pi=pi, grni_ledger_id=grni_ledger.ledger_id)
+        if grni_ledger is not None
+        else Decimal("0")
+    )
+    # variance = PI net - GRN value of the billed qty. >0 unfavourable (DR
+    # PPV); <0 favourable (CR PPV). Inventory (1300) is left untouched so it
+    # stays equal to the weighted-average valuation the GRN already set.
+    variance = (net - accrued) if use_grni else Decimal("0")
+
+    inventory_ledger = _resolve_ledger(session, org_id=pi.org_id, code=_INVENTORY_LEDGER_CODE)
     ppv_ledger = (
         _resolve_ledger(session, org_id=pi.org_id, code=_PPV_LEDGER_CODE)
         if use_grni and variance != 0
@@ -740,20 +920,24 @@ def post_purchase_invoice_to_gl(
 
     seq = 1
     if use_grni:
-        # DR 2010 GRN Clearing — clears the accrual posted at receipt.
-        session.add(
-            VoucherLine(
-                org_id=pi.org_id,
-                voucher_id=voucher.voucher_id,
-                ledger_id=grni_ledger.ledger_id,  # type: ignore[union-attr]
-                line_type=JournalLineType.DR,
-                amount=accrued,
-                description=f"GRN clearing · PI {pi.series}/{pi.number}",
-                sequence=seq,
+        # DR 2010 GRN Clearing — clears the billed qty's share of the accrual.
+        # (Zero only when nothing is left open / the billed item was received
+        # at rate 0 — then the whole net is price variance.)
+        if accrued > 0:
+            session.add(
+                VoucherLine(
+                    org_id=pi.org_id,
+                    voucher_id=voucher.voucher_id,
+                    ledger_id=grni_ledger.ledger_id,  # type: ignore[union-attr]
+                    line_type=JournalLineType.DR,
+                    amount=accrued,
+                    description=f"GRN clearing · PI {pi.series}/{pi.number}",
+                    sequence=seq,
+                )
             )
-        )
         if ppv_ledger is not None and variance != 0:
-            seq += 1
+            if accrued > 0:
+                seq += 1
             session.add(
                 VoucherLine(
                     org_id=pi.org_id,
