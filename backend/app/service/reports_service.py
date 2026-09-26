@@ -50,6 +50,7 @@ from app.models.sales import InvoiceLifecycleStatus, SiLine
 from app.service import gst_service
 from app.service.gst_service import TaxType
 from app.utils import crypto
+from app.utils.gst_states import normalize_state_code
 
 # Indian fiscal year starts April 1.
 _FY_START_MONTH = 4
@@ -1426,7 +1427,10 @@ def _bucket_for_invoice(
         return "export"
     if party_gstin is not None:
         return "b2b"
-    is_inter_state = place_of_supply_state is not None and place_of_supply_state != seller_state
+    # Compare canonical forms: a legacy row may hold a numeric PoS ("27").
+    pos_canonical = normalize_state_code(place_of_supply_state) or place_of_supply_state
+    seller_canonical = normalize_state_code(seller_state) or seller_state
+    is_inter_state = pos_canonical is not None and pos_canonical != seller_canonical
     if is_inter_state and gst_service.is_b2cl_value(invoice_value, invoice_date):
         return "b2cl"
     return "b2cs"
@@ -1503,7 +1507,12 @@ def compute_gstr1(
     # empty/misleading dataset that could be mistaken for a filed nil return.
     if not firm.has_gst:
         raise AppValidationError("Firm is not GST-registered; GSTR-1 is not applicable.")
-    seller_state = firm.state_code or ""
+    # Verifier follow-up (#193/#195): canonicalise the firm state before any
+    # comparison — sales_service stores place_of_supply_state in canonical
+    # alpha form ("MH"), but legacy firms may hold the numeric form ("27")
+    # from the pre-fix signup path. Comparing "MH" != "27" would misfile
+    # intra-state B2C invoices as inter-state (B2CL).
+    seller_state = normalize_state_code(firm.state_code) or firm.state_code or ""
 
     # B2 fix: GSTR-1 must surface the *plaintext* GSTIN — the value
     # GSTN expects on the filed return and the key downstream B2B

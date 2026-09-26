@@ -16,7 +16,9 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from app.utils.gst_states import validate_state_code
 
 
 class SignupRequest(BaseModel):
@@ -39,6 +41,18 @@ class SignupRequest(BaseModel):
     firm_name: str = Field(min_length=1, max_length=255)
     state_code: str = Field(min_length=2, max_length=2)
     gstin: str | None = Field(default=None, min_length=15, max_length=15)
+
+    @field_validator("state_code", mode="before")
+    @classmethod
+    def _validate_state_code(cls, v: object) -> object:
+        """Verifier follow-up to #193: canonicalise the firm state code to the
+        same alpha form party.state_code uses ("27" → "MH", "mh" → "MH").
+        Onboarding auto-fills the numeric GSTIN prefix, so numeric must be
+        accepted; junk ("XX") → 422. Empty is left for the required-field /
+        min_length check to reject."""
+        if not isinstance(v, str) or not v.strip():
+            return v
+        return validate_state_code(v)
 
 
 class TokenPairResponse(BaseModel):

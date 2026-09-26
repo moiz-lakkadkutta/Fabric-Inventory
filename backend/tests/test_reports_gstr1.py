@@ -1558,3 +1558,71 @@ def test_gstr1_b2cl_threshold_tests_invoice_value_including_tax(
         )
         == "b2cl"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Verifier follow-up: a firm whose state_code was stored NUMERIC ("27", the
+# pre-fix signup path) must classify GSTR-1 buckets against the canonical
+# alpha PoS ("MH") — intra-state B2C ≥ ₹1L is B2CS, never B2CL.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _bucket_with_numeric_firm_state(
+    session: OrmSession, *, party_state: str | None, ship_to_state: str | None
+) -> tuple[str, list[str]]:
+    from app.models import Firm
+    from app.service import reports_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(session)
+    firm = session.execute(select(Firm).where(Firm.firm_id == firm_id)).scalar_one()
+    firm.state_code = "27"  # legacy numeric form
+    session.flush()
+    party_id = _recon_party(session, org_id, party_state)
+    _finalized_invoice(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        price=Decimal("150000"),
+        gst_rate=Decimal("0"),
+        ship_to_state=ship_to_state,
+    )
+    result = reports_service.compute_gstr1(
+        session, org_id=org_id, firm_id=firm_id, period="2026-09"
+    )
+    buckets = [
+        name
+        for name, rows in (
+            ("b2b", result.b2b),
+            ("b2cl", result.b2cl),
+            ("b2cs", result.b2cs),
+            ("export", result.export),
+        )
+        if rows
+    ]
+    assert len(buckets) == 1, buckets
+    states = [r.place_of_supply_state for r in result.b2cs]
+    return buckets[0], states
+
+
+def test_gstr1_numeric_firm_state_intra_mh_customer_is_b2cs(db_session: OrmSession) -> None:
+    bucket, states = _bucket_with_numeric_firm_state(
+        db_session, party_state="MH", ship_to_state="MH"
+    )
+    assert bucket == "b2cs"
+    assert states == ["MH"]
+
+
+def test_gstr1_numeric_firm_state_no_state_walk_in_is_b2cs(db_session: OrmSession) -> None:
+    bucket, states = _bucket_with_numeric_firm_state(
+        db_session, party_state=None, ship_to_state=None
+    )
+    assert bucket == "b2cs"
+    assert states == ["MH"]
+
+
+def test_gstr1_numeric_firm_state_inter_state_ka_is_b2cl(db_session: OrmSession) -> None:
+    bucket, _ = _bucket_with_numeric_firm_state(db_session, party_state="KA", ship_to_state="KA")
+    assert bucket == "b2cl"

@@ -920,3 +920,17 @@ def test_pos_b2cl_section_uses_invoice_date_threshold(
     )
     assert out.tax_type == TaxType.IGST  # reporting bucket only; tax unchanged
     assert out.gstr1_section == expected_section
+
+
+def test_pdf_state_name_lookup_is_format_agnostic() -> None:
+    """Verifier follow-up: the PDF state-name lookup must resolve numeric,
+    alpha and lowercase codes to the same name (firm.state_code may be the
+    legacy numeric form)."""
+    from app.service.pdf_service import _state_name
+
+    assert _state_name("27") == "Maharashtra"
+    assert _state_name("MH") == "Maharashtra"
+    assert _state_name("mh") == "Maharashtra"
+    assert _state_name("WB") == "West Bengal"
+    assert _state_name("XX") == ""
+    assert _state_name(None) == ""

@@ -984,3 +984,98 @@ def test_finalize_gl_2100_equals_header_gst(db_session: OrmSession) -> None:
         if vl.ledger_id == led_2100 and vl.line_type == JournalLineType.CR
     )
     assert cr_2100 == Decimal(str(invoice.gst_amount)) == Decimal("44.18")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CA-review follow-up (2026-09-26, verifier findings):
+#   - export / SEZ parties must never fall into the §10(1)(ca) intra-state
+#     fallback (they are zero-rated destinations → NIL_LUT with LUT, else
+#     IGST; this codebase has no LUT flag yet, so IGST);
+#   - a REGISTERED buyer with no state_code takes its state from the GSTIN
+#     prefix (first two digits).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _invoice_for_party(
+    session: OrmSession, *, gstin: str | None, state_code: str | None, **party_flags: bool
+) -> SalesInvoice:
+    from app.utils.crypto import encrypt_pii, get_org_dek
+
+    org_id, firm_id, _, item_id = _seed_org_with_coa(session)
+    dek = get_org_dek(session, org_id=org_id)
+    party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="Flagged Party",
+        is_customer=True,
+        state_code=state_code,
+        gstin=encrypt_pii(gstin, dek=dek, org_id=org_id) if gstin else None,
+        **party_flags,
+    )
+    session.add(party)
+    session.flush()
+    return sales_service.create_draft_invoice(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party.party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        lines=[
+            {
+                "item_id": item_id,
+                "qty": Decimal("10"),
+                "price": Decimal("50"),
+                "gst_rate": Decimal("5"),
+                "sequence": 1,
+            }
+        ],
+    )
+
+
+def test_export_party_no_state_is_igst_never_cgst_sgst(db_session: OrmSession) -> None:
+    from app.service.gst_service import TaxType
+
+    invoice = _invoice_for_party(db_session, gstin=None, state_code=None, is_export=True)
+    assert invoice.tax_type != TaxType.CGST_SGST.value
+    # No LUT flag exists in the schema → export with payment of IGST.
+    assert invoice.tax_type == TaxType.IGST.value
+    # VARCHAR(2) column: overseas buyer has no Indian state → NULL.
+    assert invoice.place_of_supply_state is None
+    assert invoice.gst_amount == Decimal("25.00")
+
+
+def test_sez_party_no_state_is_igst_never_cgst_sgst(db_session: OrmSession) -> None:
+    from app.service.gst_service import TaxType
+
+    invoice = _invoice_for_party(db_session, gstin=None, state_code=None, is_sez=True)
+    assert invoice.tax_type == TaxType.IGST.value
+    assert invoice.place_of_supply_state is None  # no state recorded
+
+
+def test_sez_party_with_gstin_in_same_state_is_igst(db_session: OrmSession) -> None:
+    """An SEZ unit carries a GSTIN of the seller's own state; supply to SEZ
+    is still inter-state (IGST Act §7(5)(b)) — never CGST+SGST."""
+    from app.service.gst_service import TaxType
+
+    invoice = _invoice_for_party(db_session, gstin="27SEZUN1234A1Z5", state_code="MH", is_sez=True)
+    assert invoice.tax_type == TaxType.IGST.value
+    # Stored PoS = the SEZ unit's state (GSTR-1 SEZ PoS); tax stays IGST.
+    assert invoice.place_of_supply_state == "MH"
+
+
+def test_registered_buyer_no_state_derives_state_from_gstin(db_session: OrmSession) -> None:
+    """GSTIN "24…" (Gujarat), no state_code, MH seller → IGST, PoS GJ."""
+    from app.service.gst_service import TaxType
+
+    invoice = _invoice_for_party(db_session, gstin="24AABCG1234C1Z9", state_code=None)
+    assert invoice.tax_type == TaxType.IGST.value
+    assert invoice.place_of_supply_state == "GJ"
+    assert invoice.gst_amount == Decimal("25.00")
+
+
+def test_registered_buyer_gstin_in_seller_state_no_state_is_intra(db_session: OrmSession) -> None:
+    from app.service.gst_service import TaxType
+
+    invoice = _invoice_for_party(db_session, gstin="27AABCM1234C1Z9", state_code=None)
+    assert invoice.tax_type == TaxType.CGST_SGST.value
+    assert invoice.place_of_supply_state == "MH"
