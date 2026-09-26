@@ -52,6 +52,8 @@ type BackendGstr1Response = components['schemas']['Gstr1Response'];
 type BackendGstr1InvoiceRow = components['schemas']['Gstr1InvoiceRow'];
 type BackendGstr1B2csRow = components['schemas']['Gstr1B2csRow'];
 type BackendGstr1HsnRow = components['schemas']['Gstr1HsnRow'];
+type BackendGstr1CdnrRow = components['schemas']['Gstr1CdnrRow'];
+type BackendGstr1CdnurRow = components['schemas']['Gstr1CdnurRow'];
 type BackendAgeingResponse = components['schemas']['AgeingResponse'];
 type BackendAgeingRow = components['schemas']['AgeingRow'];
 type BackendLedgerStatementResponse = components['schemas']['LedgerStatementResponse'];
@@ -225,7 +227,12 @@ export function useTrialBalance() {
 //   b2cl:   inter-state B2C invoices > ₹2.5L (before 01-Aug-2024) / > ₹1L (on/after)
 //   b2cs:   aggregated B2C below threshold, grouped by (state, gst_rate)
 //   export: zero-rated overseas / SEZ / EOU sales
-//   hsn:    per-HSN aggregation across taxable lines
+//   hsn:    per-HSN aggregation across taxable lines, net of credit notes
+//   cdnr:   #199 credit notes (cross-period cancels, CGST Act §34) against
+//           B2B invoices of an earlier month
+//   cdnur:  same, against B2CL / export invoices (ur_type B2CL/EXPWP/EXPWOP)
+//   (credit notes against B2CS invoices are netted off b2cs — rows there
+//   may be negative)
 //
 // Money is rupees-decimal-string on the wire; we convert to integer
 // paise here so the panel formats with `formatINRCompact` like the
@@ -272,6 +279,33 @@ export interface Gstr1HsnVM {
   igst: number; // paise
 }
 
+/**
+ * #199: one (credit note, rate) row. Amounts are POSITIVE (the GSTN portal
+ * carries the sign in `note_type` = "C"); totals subtract them.
+ */
+export interface Gstr1CreditNoteVM {
+  note_voucher_id: string;
+  note_series: string;
+  note_number: string;
+  note_date: string;
+  note_type: string;
+  ur_type: string | null; // CDNUR only
+  gstin: string | null; // CDNR only
+  sales_invoice_id: string;
+  invoice_series: string;
+  invoice_number: string;
+  invoice_date: string;
+  party_id: string;
+  party_name: string;
+  place_of_supply_state: string | null;
+  gst_rate: string;
+  note_value: number; // paise
+  taxable_value: number; // paise
+  cgst: number; // paise
+  sgst: number; // paise
+  igst: number; // paise
+}
+
 export interface Gstr1VM {
   period: string;
   from_date: string;
@@ -281,6 +315,8 @@ export interface Gstr1VM {
   b2cs: Gstr1B2csVM[];
   export: Gstr1InvoiceVM[];
   hsn: Gstr1HsnVM[];
+  cdnr: Gstr1CreditNoteVM[];
+  cdnur: Gstr1CreditNoteVM[];
 }
 
 function mapGstr1Invoice(b: BackendGstr1InvoiceRow): Gstr1InvoiceVM {
@@ -329,6 +365,31 @@ function mapGstr1Hsn(b: BackendGstr1HsnRow): Gstr1HsnVM {
   };
 }
 
+function mapGstr1CreditNote(b: BackendGstr1CdnrRow | BackendGstr1CdnurRow): Gstr1CreditNoteVM {
+  return {
+    note_voucher_id: b.note_voucher_id,
+    note_series: b.note_series,
+    note_number: b.note_number,
+    note_date: b.note_date,
+    note_type: b.note_type,
+    ur_type: 'ur_type' in b ? b.ur_type : null,
+    gstin: 'gstin' in b ? b.gstin : null,
+    sales_invoice_id: b.sales_invoice_id,
+    invoice_series: b.invoice_series,
+    invoice_number: b.invoice_number,
+    invoice_date: b.invoice_date,
+    party_id: b.party_id,
+    party_name: b.party_name,
+    place_of_supply_state: b.place_of_supply_state,
+    gst_rate: b.gst_rate,
+    note_value: rupeesToPaise(b.note_value),
+    taxable_value: rupeesToPaise(b.taxable_value),
+    cgst: rupeesToPaise(b.cgst),
+    sgst: rupeesToPaise(b.sgst),
+    igst: rupeesToPaise(b.igst),
+  };
+}
+
 function mapGstr1Response(r: BackendGstr1Response): Gstr1VM {
   return {
     period: r.period,
@@ -339,6 +400,9 @@ function mapGstr1Response(r: BackendGstr1Response): Gstr1VM {
     b2cs: r.b2cs.map(mapGstr1B2cs),
     export: r.export.map(mapGstr1Invoice),
     hsn: r.hsn.map(mapGstr1Hsn),
+    // Tolerate an older BE that predates #199 (no credit-note sections).
+    cdnr: (r.cdnr ?? []).map(mapGstr1CreditNote),
+    cdnur: (r.cdnur ?? []).map(mapGstr1CreditNote),
   };
 }
 
@@ -380,6 +444,8 @@ function mockGstr1ViewModel(period: string): Gstr1VM {
     b2cs: [],
     export: [],
     hsn: [],
+    cdnr: [],
+    cdnur: [],
   };
 }
 

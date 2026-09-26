@@ -253,6 +253,80 @@ describe('ReportsHub GSTR-1 — live-mode integration', () => {
     expect(xlsxBtn).not.toBeDisabled();
   });
 
+  it('#199: renders CDNR / CDNUR credit-note sections and nets them off the header totals', async () => {
+    const creditNote = {
+      note_voucher_id: 'c1111111-1111-1111-1111-111111111111',
+      note_series: 'RT/2526',
+      note_number: 'CN-0007',
+      note_date: '2026-04-10',
+      note_type: 'C',
+      sales_invoice_id: 'a9999999-9999-9999-9999-999999999999',
+      invoice_series: 'RT/2526',
+      invoice_number: 'INV-0042',
+      invoice_date: '2026-03-25',
+      party_id: 'b9999999-9999-9999-9999-999999999999',
+      party_name: 'Returned Goods Buyer LIVE',
+      place_of_supply_state: 'MH',
+      note_value: '1050.00',
+      taxable_value: '1000.00',
+      gst_rate: '5',
+      cgst: '25.00',
+      sgst: '25.00',
+      igst: '0',
+    };
+    mockEndpoints({
+      ...sampleGstr1Body,
+      cdnr: [{ ...creditNote, gstin: '27ABCDE1234F1Z5' }],
+      cdnur: [
+        {
+          ...creditNote,
+          note_voucher_id: 'c2222222-2222-2222-2222-222222222222',
+          note_number: 'CN-0008',
+          invoice_number: 'INV-0050',
+          party_name: 'Unregistered Bulk Buyer LIVE',
+          place_of_supply_state: 'GJ',
+          note_value: '210000.00',
+          taxable_value: '200000.00',
+          cgst: '0',
+          sgst: '0',
+          igst: '10000.00',
+          ur_type: 'B2CL',
+        },
+      ],
+    });
+    renderReports();
+    fireEvent.click(screen.getByRole('tab', { name: /GSTR-1/i }));
+
+    await waitFor(() => expect(screen.getByText(/Returned Goods Buyer LIVE/i)).toBeInTheDocument());
+    const cdnr = screen.getByRole('heading', { name: /CDNR/i }).closest('section')!;
+    expect(within(cdnr as HTMLElement).getByText('RT/2526/CN-0007')).toBeInTheDocument();
+    expect(within(cdnr as HTMLElement).getByText(/RT\/2526\/INV-0042/)).toBeInTheDocument();
+    expect(within(cdnr as HTMLElement).getByText('27ABCDE1234F1Z5')).toBeInTheDocument();
+
+    const cdnur = screen.getByRole('heading', { name: /CDNUR/i }).closest('section')!;
+    expect(within(cdnur as HTMLElement).getByText('B2CL')).toBeInTheDocument();
+    expect(
+      within(cdnur as HTMLElement).getByText(/Unregistered Bulk Buyer LIVE/),
+    ).toBeInTheDocument();
+
+    // Tax: 1860 (B2B) + 13750 (B2CL) + 635 (B2CS) − 50 (CDNR) − 10000 (CDNUR) = 6195.
+    expect(screen.getByText('₹6,195.00')).toBeInTheDocument();
+  });
+
+  it('#199: empty credit-note sections render empty-state copy (and tolerate an old BE without them)', async () => {
+    mockEndpoints(sampleGstr1Body); // no cdnr / cdnur keys at all
+    renderReports();
+    fireEvent.click(screen.getByRole('tab', { name: /GSTR-1/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/No credit notes to registered buyers in this period/i),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(/No credit notes to unregistered buyers in this period/i),
+    ).toBeInTheDocument();
+  });
+
   it('uses paise-converted totals — taxable values from the BE render as compact INR', async () => {
     mockEndpoints();
     renderReports();
