@@ -472,7 +472,9 @@ def post_grn_accrual_voucher(
             if line.deleted_at is None
         ),
         Decimal("0"),
-    ).quantize(Decimal("0.01"))
+        # #203 CA correction: ROUND_HALF_UP, same as the PI-side clearing and
+        # Postgres NUMERIC rounding (was the default HALF_EVEN).
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     if total <= Decimal("0"):
         return None
@@ -797,9 +799,6 @@ def post_purchase_invoice_to_gl(
     # #203 CA correction: quantize to the paisa as the DB column stores it, so
     # PPV (net - cleared) and the balance check are computed on stored values.
     net = Decimal(pi.invoice_amount or 0).quantize(_PAISA, rounding=ROUND_HALF_UP)
-    if net <= 0:
-        # S2: zero-amount PI (free samples, zero-rate lines). No GL entry needed.
-        return None
 
     # Defense-in-depth: idempotency guard.
     existing = session.execute(
@@ -812,6 +811,39 @@ def post_purchase_invoice_to_gl(
     ).scalar_one_or_none()
     if existing is not None:
         return existing
+
+    # #203: a GRN-linked PI clears the GRN-receipt accrual (GRNI) instead of
+    # re-debiting inventory — otherwise 1300 would be double-counted (once at
+    # receipt, once here). If the GRN carries a live GRN_ACCRUAL voucher, the
+    # inventory-side legs become DR 2010 (the billed qty's GRN value) + DR/CR
+    # 5360 for any PI-vs-GRN price drift (PPV). A direct PI (no grn_id) — or a
+    # legacy GRN received before #203 shipped (no accrual voucher) — falls
+    # through to today's DR 1300 shape so old in-flight cycles still close.
+    grn_accrual = (
+        _find_grn_accrual_voucher(session, org_id=pi.org_id, grn_id=pi.grn_id)
+        if pi.grn_id is not None
+        else None
+    )
+    use_grni = grn_accrual is not None
+    grni_ledger = (
+        _resolve_ledger(session, org_id=pi.org_id, code=_GRNI_LEDGER_CODE) if use_grni else None
+    )
+    # #203 CA correction: clear only what THIS PI bills (billed qty x GRN
+    # rate), not the whole accrual — unbilled qty stays accrued in 2010.
+    # Computed BEFORE the zero-amount early return: a ₹0 PI (free goods)
+    # against an accrued GRN still consumes billable qty, so it must still
+    # clear that qty's accrual (DR 2010 / CR 5360, no AP leg) — otherwise the
+    # balance would strand in 2010 while the qty cap blocks any further PI.
+    accrued = (
+        _grni_clearing_amount(session, pi=pi, grni_ledger_id=grni_ledger.ledger_id)
+        if grni_ledger is not None
+        else Decimal("0")
+    )
+
+    if net <= 0 and accrued <= 0:
+        # S2: zero-amount PI (free samples, zero-rate lines) with nothing to
+        # clear. No GL entry needed.
+        return None
 
     gst_total = Decimal(pi.gst_amount or 0)
     rcm = bool(pi.rcm_applicable)
@@ -835,29 +867,6 @@ def post_purchase_invoice_to_gl(
         ap_amount = net + gst_total
         include_itc = gst_total > 0
 
-    # #203: a GRN-linked PI clears the GRN-receipt accrual (GRNI) instead of
-    # re-debiting inventory — otherwise 1300 would be double-counted (once at
-    # receipt, once here). If the GRN carries a live GRN_ACCRUAL voucher, the
-    # inventory-side legs become DR 2010 (the accrued value) + DR/CR 5360 for
-    # any PI-vs-GRN price drift (PPV). A direct PI (no grn_id) — or a legacy
-    # GRN received before #203 shipped (no accrual voucher) — falls through to
-    # today's DR 1300 shape so old in-flight cycles still close correctly.
-    grn_accrual = (
-        _find_grn_accrual_voucher(session, org_id=pi.org_id, grn_id=pi.grn_id)
-        if pi.grn_id is not None
-        else None
-    )
-    use_grni = grn_accrual is not None
-    grni_ledger = (
-        _resolve_ledger(session, org_id=pi.org_id, code=_GRNI_LEDGER_CODE) if use_grni else None
-    )
-    # #203 CA correction: clear only what THIS PI bills (billed qty x GRN
-    # rate), not the whole accrual — unbilled qty stays accrued in 2010.
-    accrued = (
-        _grni_clearing_amount(session, pi=pi, grni_ledger_id=grni_ledger.ledger_id)
-        if grni_ledger is not None
-        else Decimal("0")
-    )
     # variance = PI net - GRN value of the billed qty. >0 unfavourable (DR
     # PPV); <0 favourable (CR PPV). Inventory (1300) is left untouched so it
     # stays equal to the weighted-average valuation the GRN already set.
@@ -974,18 +983,21 @@ def post_purchase_invoice_to_gl(
                 sequence=seq,
             )
         )
-    seq += 1
-    session.add(
-        VoucherLine(
-            org_id=pi.org_id,
-            voucher_id=voucher.voucher_id,
-            ledger_id=ap_ledger.ledger_id,
-            line_type=JournalLineType.CR,
-            amount=ap_amount,
-            description=f"AP · PI {pi.series}/{pi.number}",
-            sequence=seq,
+    if ap_amount > 0:
+        # A ₹0 GRN-linked PI (free goods) owes the supplier nothing: its
+        # voucher is DR 2010 / CR 5360 only, no zero-amount AP line.
+        seq += 1
+        session.add(
+            VoucherLine(
+                org_id=pi.org_id,
+                voucher_id=voucher.voucher_id,
+                ledger_id=ap_ledger.ledger_id,
+                line_type=JournalLineType.CR,
+                amount=ap_amount,
+                description=f"AP · PI {pi.series}/{pi.number}",
+                sequence=seq,
+            )
         )
-    )
     session.flush()
 
     # Defense-in-depth: balanced bundle invariant.

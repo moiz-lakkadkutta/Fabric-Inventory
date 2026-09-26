@@ -957,6 +957,24 @@ def _allocate_pi_number(
     return f"{last_int + 1:04d}"
 
 
+def _ensure_grn_matches_pi(*, grn: GRN, firm_id: uuid.UUID, party_id: uuid.UUID) -> None:
+    """#203 CA follow-up: a PI may only bill a GRN of the SAME firm and the
+    SAME supplier. Otherwise it would clear another firm's GRNI accrual in
+    this firm's books (or settle one supplier's receipt against another's
+    bill)."""
+    if grn.firm_id != firm_id:
+        raise AppValidationError(
+            f"GRN {grn.series}/{grn.number} belongs to a different firm than this "
+            f"purchase invoice; link a GRN received by the same firm, or create "
+            f"the invoice in the GRN's firm."
+        )
+    if grn.party_id != party_id:
+        raise AppValidationError(
+            f"GRN {grn.series}/{grn.number} was received from a different supplier "
+            f"than this purchase invoice's party; link a GRN from the same supplier."
+        )
+
+
 def _fmt_qty(qty: Decimal) -> str:
     """Human-readable qty for error messages: 100.0000 → "100", 2.5000 → "2.5"."""
     return f"{qty.normalize():f}"
@@ -1051,6 +1069,7 @@ def create_pi(
                 f"Cannot invoice against GRN {grn_id} in status {grn.status}: "
                 f"GRN must be ACKNOWLEDGED first"
             )
+        _ensure_grn_matches_pi(grn=grn, firm_id=firm_id, party_id=party_id)
         # #200 guard 5 + #203 CA correction: block billing more qty than the
         # GRN received, CUMULATIVE across this GRN's live PIs. Create-time is
         # conservative — open DRAFTs reserve their qty too; the authoritative
@@ -1186,14 +1205,27 @@ def list_pis(
     return list(session.execute(stmt).scalars())
 
 
-def _lock_grn(session: Session, *, org_id: uuid.UUID, grn_id: uuid.UUID) -> GRN:
-    """SELECT ... FOR UPDATE the GRN header row (lines eager-loaded, fresh)."""
-    grn = session.execute(
+def _lock_grn(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    grn_id: uuid.UUID,
+    include_deleted: bool = False,
+) -> GRN:
+    """SELECT ... FOR UPDATE the GRN header row (lines eager-loaded, fresh).
+
+    ``include_deleted`` (void path only): still lock a soft-deleted GRN so a
+    legacy PI whose GRN was later soft-deleted can be voided. Always
+    org-scoped."""
+    stmt = (
         select(GRN)
         .options(selectinload(GRN.lines))
-        .where(GRN.grn_id == grn_id, GRN.org_id == org_id, GRN.deleted_at.is_(None))
-        .with_for_update(of=GRN)
-        .execution_options(populate_existing=True)
+        .where(GRN.grn_id == grn_id, GRN.org_id == org_id)
+    )
+    if not include_deleted:
+        stmt = stmt.where(GRN.deleted_at.is_(None))
+    grn = session.execute(
+        stmt.with_for_update(of=GRN).execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if grn is None:
         raise AppValidationError(f"GRN {grn_id} not found")
@@ -1251,6 +1283,8 @@ def post_pi(
             f"Cannot post PI {pi_id}: current status is {pi.status}, expected DRAFT"
         )
     if grn is not None:
+        # Defense-in-depth for drafts created before the create-time check.
+        _ensure_grn_matches_pi(grn=grn, firm_id=pi.firm_id, party_id=pi.party_id)
         pi_line_pairs = [
             (line.item_id, Decimal(line.qty))
             for line in pi.lines
@@ -1318,7 +1352,7 @@ def void_pi(
         # #203 CA correction: voiding re-opens this PI's billed qty + GRNI
         # clearing; serialize with concurrent posts against the same GRN
         # (same GRN → PI lock order as post_pi).
-        _lock_grn(session, org_id=org_id, grn_id=pi.grn_id)
+        _lock_grn(session, org_id=org_id, grn_id=pi.grn_id, include_deleted=True)
     pi = _lock_pi(session, org_id=org_id, pi_id=pi_id)
     if pi.status == VoucherStatus.VOIDED:
         return pi

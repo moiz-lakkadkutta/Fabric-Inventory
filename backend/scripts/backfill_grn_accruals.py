@@ -64,7 +64,7 @@ import argparse
 import os
 import sys
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
@@ -122,7 +122,7 @@ def run(engine: Engine, *, apply: bool, org_id: uuid.UUID | None) -> tuple[int, 
                     if ln.deleted_at is None
                 ),
                 Decimal("0"),
-            ).quantize(Decimal("0.01"))
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             status = (
                 "already-accrued"
                 if existing is not None
