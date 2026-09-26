@@ -467,7 +467,7 @@ def test_draft_and_cancelled_still_excluded(http_client: TestClient, sync_engine
         inv = session.execute(
             select(SalesInvoice).where(SalesInvoice.sales_invoice_id == uuid.UUID(cancelled_id))
         ).scalar_one()
-        inv.lifecycle_status = "CANCELLED"
+        inv.lifecycle_status = "CANCELLED"  # type: ignore[assignment]
         session.commit()
 
     resp = http_client.get("/reports/ageing?as_of=2026-05-31", headers=_auth(me["access_token"]))
