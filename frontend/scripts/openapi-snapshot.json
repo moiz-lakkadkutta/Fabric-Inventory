@@ -255,7 +255,7 @@
         "type": "object"
       },
       "AgeingRow": {
-        "description": "One party row in the AR ageing report.\n\nBuckets are computed from each open invoice's ``invoice_date`` to\n``as_of`` (days), then summed per party. ``outstanding`` is the\nsum of ``invoice_amount - paid_amount`` for the party's\nnon-cancelled invoices as of the report date. The five buckets\nmust sum exactly to ``outstanding``.",
+        "description": "One party row in the AR ageing report.\n\nBuckets are computed from days past each open invoice's ``due_date``\n(``as_of - due_date``; ``invoice_date`` is used when no due date is\nset), then summed per party. ``outstanding`` is the balance\nreconstructed as of the report date \u2014 ``invoice_amount`` minus\nreceipts allocated on or before ``as_of`` (not the live paid amount)\n\u2014 over the party's billed, non-cancelled invoices. The five buckets\nmust sum exactly to ``outstanding``.",
         "properties": {
           "bucket_1_30": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -23819,6 +23819,7 @@
     },
     "/reports/ageing": {
       "get": {
+        "description": "AR ageing as of `as_of` (defaults to today). Buckets age from days past each invoice's due date (falling back to the invoice date when no due date is set), so invoices still within their credit terms land in `current`. Balances are reconstructed as of the report date from receipts posted on or before `as_of`, so a backdated `as_of` reflects the historical outstanding and is not reduced by later receipts.",
         "operationId": "get_ageing_reports_ageing_get",
         "parameters": [
           {
