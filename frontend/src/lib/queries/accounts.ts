@@ -469,6 +469,8 @@ export interface PostReceiptInput {
   amountPaise: number;
   receiptDate: string;
   mode: ReceiptMode;
+  /** #201: required for BANK/UPI once the firm has a bank account. */
+  bankAccountId?: string;
   reference?: string;
   idempotencyKey: string;
 }
@@ -484,6 +486,7 @@ async function livePostReceipt(input: PostReceiptInput): Promise<Receipt> {
       amount: paiseToRupees(input.amountPaise),
       receipt_date: input.receiptDate,
       mode: input.mode,
+      bank_account_id: input.bankAccountId ?? null,
       reference: input.reference ?? null,
     },
   });
