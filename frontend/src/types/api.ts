@@ -2049,7 +2049,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** AR ageing buckets per party (current, 1-30, 31-60, 61-90, >90) */
+        /**
+         * AR ageing buckets per party (current, 1-30, 31-60, 61-90, >90)
+         * @description AR ageing as of `as_of` (defaults to today). Buckets age from days past each invoice's due date (falling back to the invoice date when no due date is set), so invoices still within their credit terms land in `current`. Balances are reconstructed as of the report date from receipts posted on or before `as_of`, so a backdated `as_of` reflects the historical outstanding and is not reduced by later receipts.
+         */
         get: operations["get_ageing_reports_ageing_get"];
         put?: never;
         post?: never;
@@ -2635,10 +2638,12 @@ export interface components {
          * AgeingRow
          * @description One party row in the AR ageing report.
          *
-         *     Buckets are computed from each open invoice's ``invoice_date`` to
-         *     ``as_of`` (days), then summed per party. ``outstanding`` is the
-         *     sum of ``invoice_amount - paid_amount`` for the party's
-         *     non-cancelled invoices as of the report date. The five buckets
+         *     Buckets are computed from days past each open invoice's ``due_date``
+         *     (``as_of - due_date``; ``invoice_date`` is used when no due date is
+         *     set), then summed per party. ``outstanding`` is the balance
+         *     reconstructed as of the report date — ``invoice_amount`` minus
+         *     receipts allocated on or before ``as_of`` (not the live paid amount)
+         *     — over the party's billed, non-cancelled invoices. The five buckets
          *     must sum exactly to ``outstanding``.
          */
         AgeingRow: {

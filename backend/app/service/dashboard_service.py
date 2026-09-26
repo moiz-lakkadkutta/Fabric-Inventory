@@ -5,7 +5,8 @@ Six KPIs scoped to the current (org, firm):
                         FINALIZED/POSTED/PARTIALLY_PAID/OVERDUE invoices.
   2. overdue_ar      -- same set, filtered to due_date < today.
   3. sales_today     -- sum(invoice_amount) where invoice_date == today,
-                        lifecycle is not CANCELLED/DISCARDED.
+                        lifecycle billed (FINALIZED/POSTED/PARTIALLY_PAID/
+                        PAID/OVERDUE); DRAFT/CONFIRMED never hit the GL.
   4. sales_mtd       -- same, month-to-date.
   5. low_stock_skus  -- count of items where on-hand quantity <= 0
                         (proxy until per-item reorder thresholds land).
@@ -141,10 +142,17 @@ _OPEN_AP_LIFECYCLES = (
     PurchaseInvoiceLifecycleStatus.PARTIALLY_PAID,
     PurchaseInvoiceLifecycleStatus.OVERDUE,
 )
-_NON_CANCELLED_LIFECYCLES = tuple(
-    s
-    for s in InvoiceLifecycleStatus
-    if s not in {InvoiceLifecycleStatus.CANCELLED, InvoiceLifecycleStatus.DISCARDED}
+# Invoices that are billed into the ledger. Mirrors
+# reports_service._GSTR1_LIFECYCLE — DRAFT/CONFIRMED never hit the GL, and
+# CANCELLED/DISCARDED were never billed (or were reversed). Only these
+# statuses may count toward sales/GST KPIs, matching how _OPEN_AR_LIFECYCLES
+# (correctly) drives outstanding_ar/overdue_ar.
+_BILLED_LIFECYCLES = (
+    InvoiceLifecycleStatus.FINALIZED,
+    InvoiceLifecycleStatus.POSTED,
+    InvoiceLifecycleStatus.PARTIALLY_PAID,
+    InvoiceLifecycleStatus.PAID,
+    InvoiceLifecycleStatus.OVERDUE,
 )
 
 
@@ -188,15 +196,17 @@ def _sales_in_range(
     start: datetime.date,
     end: datetime.date,
 ) -> Decimal:
-    """Sum of invoice_amount for invoices in [start, end], excluding
-    cancelled / discarded.
+    """Sum of invoice_amount for billed invoices in [start, end].
+
+    Only FINALIZED+ invoices count (see `_BILLED_LIFECYCLES`); DRAFT and
+    CONFIRMED never hit the GL, and CANCELLED/DISCARDED were never billed.
     """
     total: Decimal | None = session.execute(
         select(func.coalesce(func.sum(SalesInvoice.invoice_amount), 0)).where(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
-            SalesInvoice.lifecycle_status.in_(_NON_CANCELLED_LIFECYCLES),
+            SalesInvoice.lifecycle_status.in_(_BILLED_LIFECYCLES),
             SalesInvoice.invoice_date >= start,
             SalesInvoice.invoice_date <= end,
         )
@@ -212,7 +222,11 @@ def _gst_collected_in_range(
     start: datetime.date,
     end: datetime.date,
 ) -> Decimal:
-    """Sum of `gst_amount` for finalized invoices in [start, end].
+    """Sum of `gst_amount` for billed invoices in [start, end].
+
+    Only FINALIZED+ invoices count (see `_BILLED_LIFECYCLES`) — DRAFT/
+    CONFIRMED invoices never posted GST to the ledger, so they must not
+    inflate this number.
 
     Why this matters: textile firms watch GST-collected MTD because it
     foreshadows their GSTR-3B liability for the month. Without it on
@@ -224,7 +238,7 @@ def _gst_collected_in_range(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
-            SalesInvoice.lifecycle_status.in_(_NON_CANCELLED_LIFECYCLES),
+            SalesInvoice.lifecycle_status.in_(_BILLED_LIFECYCLES),
             SalesInvoice.invoice_date >= start,
             SalesInvoice.invoice_date <= end,
         )

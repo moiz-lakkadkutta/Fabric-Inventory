@@ -49,6 +49,27 @@ from app.models.procurement import (
 from app.service import accounting_service, gst_service, inventory_service
 
 # ──────────────────────────────────────────────────────────────────────
+# 3-way-match policy constants (#200)
+# ──────────────────────────────────────────────────────────────────────
+
+# Over-receipt tolerance as a percentage of the ordered qty. Default 0 → a
+# hard cap (cumulative received across received-state GRNs + this GRN must be
+# <= qty_ordered per PO line). Textile trade sometimes allows a small
+# over-supply ("+2% fent/rag"); flip this one constant to permit it.
+# PENDING MOIZ SIGN-OFF (money-adjacent product policy).
+PO_OVER_RECEIPT_TOLERANCE_PCT = Decimal("0")
+
+# GRN statuses whose lines count as "physically received" toward a PO line's
+# cumulative qty_received. DRAFT (not yet posted to stock) and RETURNED
+# (returned to supplier) are excluded.
+_RECEIVED_GRN_STATUSES = (
+    GRNStatus.ACKNOWLEDGED.value,
+    GRNStatus.IN_PROCESS.value,
+    GRNStatus.CLOSED.value,
+)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Document numbering
 # ──────────────────────────────────────────────────────────────────────
 
@@ -382,22 +403,112 @@ def _allocate_grn_number(
     return f"{last_int + 1:04d}"
 
 
+def _sum_received_by_po_line(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    po_line_ids: list[uuid.UUID],
+    exclude_grn_id: uuid.UUID | None = None,
+) -> dict[uuid.UUID, Decimal]:
+    """Cumulative qty_received per po_line_id, counting ONLY non-deleted lines
+    of received-state (ACKNOWLEDGED/IN_PROCESS/CLOSED), non-deleted GRNs.
+
+    This is the join-filtered aggregate the whole 3-way match relies on (#200):
+    a DRAFT (un-received) or soft-deleted GRN's lines must never count toward a
+    PO line's received qty. `exclude_grn_id` drops one GRN from the sum (used at
+    receive-time so a GRN doesn't count itself when re-checking its own cap).
+    """
+    if not po_line_ids:
+        return {}
+    stmt = (
+        select(GRNLine.po_line_id, func.sum(GRNLine.qty_received))
+        .join(GRN, GRNLine.grn_id == GRN.grn_id)
+        .where(
+            GRNLine.po_line_id.in_(po_line_ids),
+            GRN.org_id == org_id,
+            GRN.status.in_(_RECEIVED_GRN_STATUSES),
+            GRN.deleted_at.is_(None),
+            GRNLine.deleted_at.is_(None),
+        )
+        .group_by(GRNLine.po_line_id)
+    )
+    if exclude_grn_id is not None:
+        stmt = stmt.where(GRNLine.grn_id != exclude_grn_id)
+    rows = session.execute(stmt).all()
+    return {plid: Decimal(total or 0) for plid, total in rows if plid is not None}
+
+
+def _validate_grn_lines_against_po(
+    session: Session,
+    *,
+    po: PurchaseOrder,
+    line_triples: list[tuple[uuid.UUID | None, uuid.UUID, Decimal]],
+    exclude_grn_id: uuid.UUID | None = None,
+) -> None:
+    """3-way match guard for GRN → PO lines (#200 guards 1 & 4).
+
+    `line_triples` is `[(po_line_id | None, item_id, qty), ...]`. For each line
+    that references a PO line:
+      * the po_line_id must belong to THIS PO (no cross-PO absorption);
+      * the item_id must match the PO line's item;
+      * cumulative received (received-state GRNs, excluding `exclude_grn_id`)
+        plus this GRN's qty must not exceed `qty_ordered * (1 + tolerance)`.
+    Lines with a NULL po_line_id are direct extra receipts and are not capped.
+    """
+    po_line_by_id = {line.po_line_id: line for line in po.lines}
+    this_grn_by_po_line: dict[uuid.UUID, Decimal] = {}
+    for po_line_id, item_id, qty in line_triples:
+        if po_line_id is None:
+            continue
+        po_line = po_line_by_id.get(po_line_id)
+        if po_line is None:
+            raise AppValidationError(
+                f"GRN line po_line_id {po_line_id} does not belong to PO {po.series}/{po.number}"
+            )
+        if item_id != po_line.item_id:
+            raise AppValidationError(
+                f"GRN line item {item_id} does not match PO line item {po_line.item_id}"
+            )
+        this_grn_by_po_line[po_line_id] = this_grn_by_po_line.get(po_line_id, Decimal("0")) + qty
+
+    if not this_grn_by_po_line:
+        return
+
+    already = _sum_received_by_po_line(
+        session,
+        org_id=po.org_id,
+        po_line_ids=list(this_grn_by_po_line),
+        exclude_grn_id=exclude_grn_id,
+    )
+    tolerance = Decimal("1") + PO_OVER_RECEIPT_TOLERANCE_PCT / Decimal("100")
+    for po_line_id, this_qty in this_grn_by_po_line.items():
+        po_line = po_line_by_id[po_line_id]
+        ordered = Decimal(po_line.qty_ordered)
+        prev = already.get(po_line_id, Decimal("0"))
+        cap = ordered * tolerance
+        if prev + this_qty > cap:
+            raise AppValidationError(
+                f"Over-receipt on PO {po.series}/{po.number} line "
+                f"{po_line.line_sequence}: ordered {ordered}, already received "
+                f"{prev}, this GRN {this_qty}"
+            )
+
+
 def _advance_po_status_after_grn(session: Session, *, po: PurchaseOrder) -> None:
     """Recompute PO status from cumulative qty_received vs qty_ordered.
 
-    Walks every po_line; sums grn_line.qty_received per po_line. If all
-    lines are fully received → FULLY_RECEIVED; if any is partially
-    received → PARTIAL_GRN; else no change.
+    Walks every po_line; sums grn_line.qty_received per po_line over
+    received-state, non-deleted GRNs only (#200 guard 2 — a DRAFT or
+    soft-deleted GRN must not advance the PO). If all lines are fully
+    received → FULLY_RECEIVED; if any is partially received → PARTIAL_GRN;
+    if none is received, walk the PO back to CONFIRMED (recovers from a
+    later GRN soft-delete / data repair).
     """
-    line_received: dict[uuid.UUID, Decimal] = {}
-    rows = session.execute(
-        select(GRNLine.po_line_id, func.sum(GRNLine.qty_received))
-        .where(GRNLine.po_line_id.in_([line.po_line_id for line in po.lines]))
-        .group_by(GRNLine.po_line_id)
-    ).all()
-    for po_line_id, total in rows:
-        if po_line_id is not None:
-            line_received[po_line_id] = Decimal(total or 0)
+    line_received = _sum_received_by_po_line(
+        session,
+        org_id=po.org_id,
+        po_line_ids=[line.po_line_id for line in po.lines],
+    )
 
     any_received = False
     fully_received = True
@@ -413,6 +524,11 @@ def _advance_po_status_after_grn(session: Session, *, po: PurchaseOrder) -> None
         po.status = PurchaseOrderStatus.FULLY_RECEIVED
     elif any_received:
         po.status = PurchaseOrderStatus.PARTIAL_GRN
+    elif po.status in {
+        PurchaseOrderStatus.PARTIAL_GRN,
+        PurchaseOrderStatus.FULLY_RECEIVED,
+    }:
+        po.status = PurchaseOrderStatus.CONFIRMED
     po.updated_at = datetime.datetime.now(tz=datetime.UTC)
 
 
@@ -453,6 +569,23 @@ def create_grn(
             raise InvoiceStateError(
                 f"Cannot GRN against PO in status {po.status}: must be CONFIRMED+"
             )
+        # #200 guards 1 & 4: reject cross-PO po_line_ids, item mismatches, and
+        # cumulative over-receipt at create time.
+        triples: list[tuple[uuid.UUID | None, uuid.UUID, Decimal]] = [
+            (
+                line.get("po_line_id"),
+                line["item_id"],  # type: ignore[misc]
+                Decimal(str(line["qty_received"])),
+            )
+            for line in lines
+        ]
+        _validate_grn_lines_against_po(session, po=po, line_triples=triples)
+    else:
+        # #200 guard 4: a po_line_id without a PO makes no sense and would
+        # otherwise silently attach the qty to a foreign PO on recompute.
+        for line in lines:
+            if line.get("po_line_id") is not None:
+                raise AppValidationError("po_line_id given but the GRN has no purchase_order_id")
 
     number = _allocate_grn_number(session, org_id=org_id, firm_id=firm_id, series=series)
 
@@ -561,6 +694,46 @@ def receive_grn(
             f"Cannot receive GRN {grn_id}: current status is {grn.status}, expected DRAFT"
         )
 
+    # #200: authoritative 3-way-match enforcement at receive time (create-time
+    # validation alone is insufficient for legacy/edited DRAFT GRNs).
+    po: PurchaseOrder | None = None
+    if grn.purchase_order_id is not None:
+        # Lock the PO row so concurrent receives against the same PO serialize
+        # and the cumulative over-receipt cap can't be raced. Lock order is
+        # GRN-then-PO (#190 adds the GRN header row lock above this one);
+        # keep that order everywhere to avoid deadlock.
+        po = session.execute(
+            select(PurchaseOrder)
+            .options(selectinload(PurchaseOrder.lines))
+            .where(
+                PurchaseOrder.purchase_order_id == grn.purchase_order_id,
+                PurchaseOrder.org_id == org_id,
+                PurchaseOrder.deleted_at.is_(None),
+            )
+            .with_for_update(of=PurchaseOrder)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        # Guard 3: never post stock against a PO that was cancelled (or reverted
+        # to DRAFT) after this GRN was drafted.
+        if po is None or po.status in {
+            PurchaseOrderStatus.CANCELLED,
+            PurchaseOrderStatus.DRAFT,
+        }:
+            state = po.status if po is not None else "missing"
+            raise InvoiceStateError(
+                f"Cannot receive GRN {grn_id}: linked PO is {state}; must be CONFIRMED+"
+            )
+        # Guards 1 & 4 re-checked under the PO lock (excluding this GRN so it
+        # doesn't count itself once it flips to ACKNOWLEDGED).
+        _validate_grn_lines_against_po(
+            session,
+            po=po,
+            line_triples=[
+                (line.po_line_id, line.item_id, Decimal(line.qty_received)) for line in grn.lines
+            ],
+            exclude_grn_id=grn.grn_id,
+        )
+
     location = inventory_service.get_or_create_default_location(
         session, org_id=org_id, firm_id=grn.firm_id
     )
@@ -584,8 +757,7 @@ def receive_grn(
     if updated_by is not None:
         grn.updated_by = updated_by
 
-    if grn.purchase_order_id is not None:
-        po = get_po(session, org_id=org_id, po_id=grn.purchase_order_id)
+    if po is not None:
         _advance_po_status_after_grn(session, po=po)
 
     session.flush()
@@ -645,6 +817,44 @@ def _allocate_pi_number(
     return f"{last_int + 1:04d}"
 
 
+def _validate_pi_lines_against_grn(
+    *,
+    grn: GRN,
+    pi_line_pairs: list[tuple[uuid.UUID, Decimal]],
+) -> None:
+    """3-way match guard for PI → GRN quantities (#200 guard 5).
+
+    Aggregates billed qty per item and requires (a) every billed item exists
+    on the GRN and (b) billed qty per item does not exceed the GRN's received
+    qty for that item. Amount/rate drift stays a loose warning elsewhere —
+    freight/surcharge shows up as amount, not phantom quantity — but a 10x
+    quantity over-bill is a hard reject.
+    """
+    grn_qty_by_item: dict[uuid.UUID, Decimal] = {}
+    for gl in grn.lines:
+        if gl.deleted_at is not None:
+            continue
+        grn_qty_by_item[gl.item_id] = grn_qty_by_item.get(gl.item_id, Decimal("0")) + Decimal(
+            gl.qty_received
+        )
+
+    pi_qty_by_item: dict[uuid.UUID, Decimal] = {}
+    for item_id, qty in pi_line_pairs:
+        pi_qty_by_item[item_id] = pi_qty_by_item.get(item_id, Decimal("0")) + qty
+
+    for item_id, pi_qty in pi_qty_by_item.items():
+        grn_qty = grn_qty_by_item.get(item_id)
+        if grn_qty is None:
+            raise AppValidationError(
+                f"PI line item {item_id} is not on GRN {grn.series}/{grn.number}"
+            )
+        if pi_qty > grn_qty:
+            raise AppValidationError(
+                f"PI bills {pi_qty} of item {item_id} but GRN "
+                f"{grn.series}/{grn.number} received only {grn_qty}"
+            )
+
+
 def create_pi(
     session: Session,
     *,
@@ -688,6 +898,14 @@ def create_pi(
                 f"Cannot invoice against GRN {grn_id} in status {grn.status}: "
                 f"GRN must be ACKNOWLEDGED first"
             )
+        # #200 guard 5: block billing more qty than the GRN received.
+        _validate_pi_lines_against_grn(
+            grn=grn,
+            pi_line_pairs=[
+                (line["item_id"], Decimal(str(line["qty"])))  # type: ignore[misc]
+                for line in lines
+            ],
+        )
 
     number = _allocate_pi_number(session, org_id=org_id, firm_id=firm_id, series=series)
 
@@ -825,9 +1043,19 @@ def post_pi(
         raise InvoiceStateError(
             f"Cannot post PI {pi_id}: current status is {pi.status}, expected DRAFT"
         )
-    if pi.grn_id is not None and pi.invoice_amount is not None:
+    if pi.grn_id is not None:
         grn = get_grn(session, org_id=org_id, grn_id=pi.grn_id)
-        if grn.total_amount is not None and grn.total_amount > 0:
+        # #200 guard 5 (defense-in-depth): re-check qty over-billing for DRAFT
+        # PIs created before this guard existed, before the state flip / GL post.
+        _validate_pi_lines_against_grn(
+            grn=grn,
+            pi_line_pairs=[
+                (line.item_id, Decimal(line.qty)) for line in pi.lines if line.qty is not None
+            ],
+        )
+        # Loose AMOUNT-drift match stays a non-blocking warning (rounding /
+        # freight / surcharge flexibility — Moiz's decision, unchanged).
+        if pi.invoice_amount is not None and grn.total_amount is not None and grn.total_amount > 0:
             invoice_amount = Decimal(pi.invoice_amount)
             grn_amount = Decimal(grn.total_amount)
             drift_pct = abs(invoice_amount - grn_amount) / grn_amount * Decimal("100")

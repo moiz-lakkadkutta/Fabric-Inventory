@@ -73,6 +73,7 @@ def _add_invoice(
     number: str,
     invoice_date: datetime.date,
     invoice_amount: Decimal,
+    gst_amount: Decimal = Decimal("0"),
     paid_amount: Decimal = Decimal("0"),
     due_date: datetime.date | None = None,
     lifecycle: InvoiceLifecycleStatus = InvoiceLifecycleStatus.FINALIZED,
@@ -85,7 +86,7 @@ def _add_invoice(
         party_id=party_id,
         invoice_date=invoice_date,
         invoice_amount=invoice_amount,
-        gst_amount=Decimal("0"),
+        gst_amount=gst_amount,
         paid_amount=paid_amount,
         due_date=due_date,
         lifecycle_status=lifecycle,
@@ -232,6 +233,236 @@ def test_sales_today_and_mtd(db_session: OrmSession) -> None:
     kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
     assert _kpi_by_key(kpis, "sales_today").value == Decimal("3000")
     assert _kpi_by_key(kpis, "sales_mtd").value == Decimal("10500")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #196 — sales/GST KPIs must count only billed (FINALIZED+) invoices,
+# never DRAFT/CONFIRMED (never GL-posted) or CANCELLED/DISCARDED.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_draft_invoice_does_not_move_sales_kpis(db_session: OrmSession) -> None:
+    """#196 repro: a DRAFT invoice dated today must NOT move
+    sales_today / sales_mtd / gst_collected_mtd. Before the fix a draft
+    inflated all three by its full amount.
+    """
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    # One genuinely billed (FINALIZED) invoice — the only thing that should count.
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="0001",
+        invoice_date=today,
+        invoice_amount=Decimal("1000.00"),
+        gst_amount=Decimal("47.50"),
+        lifecycle=InvoiceLifecycleStatus.FINALIZED,
+    )
+    # A DRAFT dated today — the exact repro (never posted to GL).
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="0002",
+        invoice_date=today,
+        invoice_amount=Decimal("10498.95"),
+        gst_amount=Decimal("499.95"),
+        lifecycle=InvoiceLifecycleStatus.DRAFT,
+    )
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(kpis, "sales_today").value == Decimal("1000.00")
+    assert _kpi_by_key(kpis, "sales_mtd").value == Decimal("1000.00")
+    assert _kpi_by_key(kpis, "gst_collected_mtd").value == Decimal("47.50")
+
+
+def test_confirmed_invoice_excluded_from_sales_kpis(db_session: OrmSession) -> None:
+    """CONFIRMED invoices exist in the enum but never hit the GL — they
+    must be excluded from sales/GST KPIs just like DRAFT."""
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="0001",
+        invoice_date=today,
+        invoice_amount=Decimal("5000.00"),
+        gst_amount=Decimal("250.00"),
+        lifecycle=InvoiceLifecycleStatus.CONFIRMED,
+    )
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(kpis, "sales_today").value == Decimal("0")
+    assert _kpi_by_key(kpis, "sales_mtd").value == Decimal("0")
+    assert _kpi_by_key(kpis, "gst_collected_mtd").value == Decimal("0")
+
+
+def test_finalized_invoice_moves_sales_kpis(db_session: OrmSession) -> None:
+    """Happy path: a FINALIZED invoice DOES move all three sales/GST KPIs
+    by exactly its invoice_amount / gst_amount."""
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    # Start with a draft only — nothing should count.
+    inv_id = _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="0001",
+        invoice_date=today,
+        invoice_amount=Decimal("2000.00"),
+        gst_amount=Decimal("100.00"),
+        lifecycle=InvoiceLifecycleStatus.DRAFT,
+    )
+    before = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(before, "sales_today").value == Decimal("0")
+    assert _kpi_by_key(before, "gst_collected_mtd").value == Decimal("0")
+
+    # Promote to FINALIZED and re-read (bust the cache first).
+    db_session.query(SalesInvoice).filter_by(sales_invoice_id=inv_id).update(
+        {"lifecycle_status": InvoiceLifecycleStatus.FINALIZED}
+    )
+    db_session.flush()
+    dashboard_service.clear_cache()
+
+    after = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(after, "sales_today").value == Decimal("2000.00")
+    assert _kpi_by_key(after, "sales_mtd").value == Decimal("2000.00")
+    assert _kpi_by_key(after, "gst_collected_mtd").value == Decimal("100.00")
+
+
+def test_paid_and_partially_paid_still_count_in_sales(db_session: OrmSession) -> None:
+    """Regression guard: PAID and PARTIALLY_PAID invoices are billed and
+    must remain counted in sales/GST KPIs. (PAID is deliberately absent
+    from _OPEN_AR_LIFECYCLES, so copying that tuple by mistake would drop
+    PAID here — this test catches that.)"""
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="0001",
+        invoice_date=today,
+        invoice_amount=Decimal("3000.00"),
+        gst_amount=Decimal("150.00"),
+        paid_amount=Decimal("3000.00"),
+        lifecycle=InvoiceLifecycleStatus.PAID,
+    )
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="0002",
+        invoice_date=today,
+        invoice_amount=Decimal("4000.00"),
+        gst_amount=Decimal("200.00"),
+        paid_amount=Decimal("1000.00"),
+        lifecycle=InvoiceLifecycleStatus.PARTIALLY_PAID,
+    )
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(kpis, "sales_today").value == Decimal("7000.00")
+    assert _kpi_by_key(kpis, "sales_mtd").value == Decimal("7000.00")
+    assert _kpi_by_key(kpis, "gst_collected_mtd").value == Decimal("350.00")
+
+
+def test_cancelled_invoice_excluded_from_sales_kpis(db_session: OrmSession) -> None:
+    """Regression guard: CANCELLED invoices are excluded from sales/GST KPIs."""
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="0001",
+        invoice_date=today,
+        invoice_amount=Decimal("1000.00"),
+        gst_amount=Decimal("50.00"),
+        lifecycle=InvoiceLifecycleStatus.FINALIZED,
+    )
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="0002",
+        invoice_date=today,
+        invoice_amount=Decimal("9999.00"),
+        gst_amount=Decimal("500.00"),
+        lifecycle=InvoiceLifecycleStatus.CANCELLED,
+    )
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(kpis, "sales_today").value == Decimal("1000.00")
+    assert _kpi_by_key(kpis, "sales_mtd").value == Decimal("1000.00")
+    assert _kpi_by_key(kpis, "gst_collected_mtd").value == Decimal("50.00")
+
+
+def test_outstanding_ar_unchanged_by_draft(db_session: OrmSession) -> None:
+    """Regression guard: outstanding_ar / overdue_ar already exclude
+    DRAFT correctly — the #196 fix must not disturb them."""
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    # A billed, partially-paid, overdue invoice → drives outstanding + overdue.
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="0001",
+        invoice_date=datetime.date(2026, 4, 1),
+        invoice_amount=Decimal("8000.00"),
+        paid_amount=Decimal("3000.00"),
+        due_date=datetime.date(2026, 4, 15),
+        lifecycle=InvoiceLifecycleStatus.POSTED,
+    )
+    # A DRAFT with a due date in the past — must NOT show up in AR.
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="0002",
+        invoice_date=today,
+        invoice_amount=Decimal("50000.00"),
+        due_date=datetime.date(2026, 4, 10),
+        lifecycle=InvoiceLifecycleStatus.DRAFT,
+    )
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(kpis, "outstanding_ar").value == Decimal("5000.00")
+    assert _kpi_by_key(kpis, "overdue_ar").value == Decimal("5000.00")
 
 
 def test_kpis_isolated_by_firm(db_session: OrmSession) -> None:

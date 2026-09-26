@@ -45,7 +45,7 @@ from app.models import (
     Voucher,
     VoucherLine,
 )
-from app.models.accounting import JournalLineType, VoucherStatus
+from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.sales import InvoiceLifecycleStatus, SiLine
 from app.service import gst_service
 from app.service.gst_service import TaxType
@@ -829,6 +829,21 @@ _AGEING_OPEN_LIFECYCLE = (
     "OVERDUE",
 )
 
+# Lifecycle states that were *billed* into the ledger (whatever their
+# current payment state). Used by compute_ageing, whose balance is now
+# reconstructed from receipts <= as_of rather than the live paid_amount:
+# an invoice fully PAID *today* may still have carried a balance at a
+# historical as_of, so PAID must be in scope. At as_of=today a PAID
+# invoice's balance nets to 0 and the `> 0` filter drops it, so today's
+# output is unchanged. CANCELLED/DISCARDED are still excluded.
+_AGEING_BILLED_LIFECYCLE = (
+    "FINALIZED",
+    "POSTED",
+    "PARTIALLY_PAID",
+    "PAID",
+    "OVERDUE",
+)
+
 
 @dataclass(frozen=True)
 class _AgeingRow:
@@ -842,20 +857,22 @@ class _AgeingRow:
     bucket_over_90: Decimal
 
 
-def _ageing_bucket(days_old: int) -> str:
-    """Pick the bucket name for an invoice ``days_old`` from as_of.
+def _ageing_bucket(days_past_due: int) -> str:
+    """Pick the bucket name for an invoice ``days_past_due`` days past its
+    due date (``as_of - due_date``, falling back to ``invoice_date`` when
+    no due date is set).
 
-    Convention: ``current`` covers days_old <= 0 (issued today or
-    future-dated — defensive). 1-30 covers 1..30, 31-60 covers 31..60,
-    61-90 covers 61..90, anything older lands in over_90.
+    Convention: ``current`` covers days_past_due <= 0 (not yet due, due
+    today, or — defensively — future-dated). 1-30 covers 1..30, 31-60
+    covers 31..60, 61-90 covers 61..90, anything older lands in over_90.
     """
-    if days_old <= 0:
+    if days_past_due <= 0:
         return "current"
-    if days_old <= 30:
+    if days_past_due <= 30:
         return "bucket_1_30"
-    if days_old <= 60:
+    if days_past_due <= 60:
         return "bucket_31_60"
-    if days_old <= 90:
+    if days_past_due <= 90:
         return "bucket_61_90"
     return "bucket_over_90"
 
@@ -870,39 +887,70 @@ def compute_ageing(
 ) -> tuple[datetime.date, Decimal, list[_AgeingRow]]:
     """AR ageing per party as of ``as_of``.
 
-    For each non-cancelled, non-discarded, non-draft sales invoice
-    whose ``paid_amount < invoice_amount``, bucket the unpaid balance
-    by the age of the invoice (``as_of - invoice_date``, days). Parties
-    with zero outstanding are excluded.
+    For each billed (non-cancelled, non-discarded, non-draft) sales
+    invoice, the outstanding balance is reconstructed *as of the report
+    date*: ``invoice_amount`` minus the receipts allocated to it on or
+    before ``as_of`` (not the live ``paid_amount``, which would deduct
+    receipts that happened after a backdated ``as_of`` — issue #197a).
+    Invoices with a positive balance are bucketed by how many days past
+    their ``due_date`` they are (``as_of - due_date``, falling back to
+    ``invoice_date`` when no due date is set — issue #197b), so a
+    customer on credit terms is not counted delinquent before the due
+    date. Parties with zero outstanding are excluded.
     """
     if today is None:
         today = datetime.datetime.now(tz=datetime.UTC).date()
     if as_of is None:
         as_of = today
 
+    # Paid-as-of: Σ receipt allocations posted on/before as_of, per invoice.
+    # Reversed and soft-deleted allocations, and non-POSTED / non-RECEIPT
+    # vouchers, are excluded. Allocations with a NULL sales_invoice_id
+    # (pure customer advances) never match an invoice and so cannot reduce
+    # ageing. This single code path serves both as_of=today and historical
+    # dates; at as_of=today it equals the live paid_amount (kept in sync by
+    # receipt_service), which the parity test guards.
+    paid_asof = (
+        select(
+            PaymentAllocation.sales_invoice_id.label("inv_id"),
+            func.coalesce(func.sum(PaymentAllocation.amount), 0).label("paid"),
+        )
+        .join(Voucher, Voucher.voucher_id == PaymentAllocation.voucher_id)
+        .where(
+            PaymentAllocation.org_id == org_id,
+            PaymentAllocation.firm_id == firm_id,
+            PaymentAllocation.deleted_at.is_(None),
+            PaymentAllocation.reversed_by_allocation_id.is_(None),
+            Voucher.voucher_type == VoucherType.RECEIPT,
+            Voucher.status == VoucherStatus.POSTED,
+            Voucher.deleted_at.is_(None),
+            Voucher.voucher_date <= as_of,
+        )
+        .group_by(PaymentAllocation.sales_invoice_id)
+        .subquery()
+    )
+
+    balance_expr = func.coalesce(SalesInvoice.invoice_amount, 0) - func.coalesce(
+        paid_asof.c.paid, 0
+    )
     stmt = (
         select(
             Party.party_id,
             Party.name,
             SalesInvoice.invoice_date,
-            (
-                func.coalesce(SalesInvoice.invoice_amount, 0)
-                - func.coalesce(SalesInvoice.paid_amount, 0)
-            ).label("balance"),
+            SalesInvoice.due_date,
+            balance_expr.label("balance"),
         )
         .select_from(SalesInvoice)
         .join(Party, Party.party_id == SalesInvoice.party_id)
+        .outerjoin(paid_asof, paid_asof.c.inv_id == SalesInvoice.sales_invoice_id)
         .where(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
             SalesInvoice.invoice_date <= as_of,
-            SalesInvoice.lifecycle_status.in_(_AGEING_OPEN_LIFECYCLE),
-            (
-                func.coalesce(SalesInvoice.invoice_amount, 0)
-                - func.coalesce(SalesInvoice.paid_amount, 0)
-            )
-            > 0,
+            SalesInvoice.lifecycle_status.in_(_AGEING_BILLED_LIFECYCLE),
+            balance_expr > 0,
         )
     )
 
@@ -911,8 +959,9 @@ def compute_ageing(
         balance = Decimal(r.balance or 0)
         if balance <= 0:
             continue
-        days_old = (as_of - r.invoice_date).days
-        bucket = _ageing_bucket(days_old)
+        age_from = r.due_date or r.invoice_date
+        days_past_due = (as_of - age_from).days
+        bucket = _ageing_bucket(days_past_due)
         row = agg.setdefault(
             r.party_id,
             {

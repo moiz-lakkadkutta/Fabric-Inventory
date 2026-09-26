@@ -657,3 +657,318 @@ def test_soft_delete_issued_dc_raises(
 
     with pytest.raises(InvoiceStateError, match="only DRAFT"):
         sales_service.soft_delete_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #206 — cumulative over-dispatch cap + no issue against a CANCELLED SO
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _issue_and_get_so(
+    db_session: OrmSession, *, org_id: uuid.UUID, dc_id: uuid.UUID, so_id: uuid.UUID
+) -> SalesOrder:
+    sales_service.issue_dc(db_session, org_id=org_id, dc_id=dc_id)
+    return sales_service.get_so(db_session, org_id=org_id, so_id=so_id)
+
+
+def test_issue_dc_rejects_cumulative_over_dispatch(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    dc_setup: tuple[Firm, Party, Item],
+) -> None:
+    """SO of 10; DC#1 of 5 issues (PARTIAL_DC). A second DC of 20 is rejected
+    422 at create-time (cumulative 5+20 > 10). A DC of 5 then completes the SO."""
+    firm, party, item = dc_setup
+    _add_stock_for_dc(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="30")
+    so = _make_confirmed_so(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="10", price="50"
+    )
+
+    dc1 = _make_dc(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="5",
+        sales_order_id=so.sales_order_id,
+    )
+    so = _issue_and_get_so(
+        db_session, org_id=fresh_org_id, dc_id=dc1.delivery_challan_id, so_id=so.sales_order_id
+    )
+    assert so.status == SalesOrderStatus.PARTIAL_DC
+    assert so.lines[0].qty_dispatched == Decimal("5")
+
+    with pytest.raises(AppValidationError, match="Over-dispatch"):
+        _make_dc(
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=item,
+            qty_dispatched="20",
+            sales_order_id=so.sales_order_id,
+            series="DC/2025-26",
+        )
+
+    dc3 = _make_dc(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="5",
+        sales_order_id=so.sales_order_id,
+        series="DC/2025-26",
+    )
+    so = _issue_and_get_so(
+        db_session, org_id=fresh_org_id, dc_id=dc3.delivery_challan_id, so_id=so.sales_order_id
+    )
+    assert so.status == SalesOrderStatus.FULLY_DISPATCHED
+    assert so.lines[0].qty_dispatched == Decimal("10")
+
+
+def test_issue_dc_over_dispatch_caught_at_issue_for_legacy_draft(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    dc_setup: tuple[Firm, Party, Item],
+) -> None:
+    """A DRAFT DC that exceeds the SO must be rejected at issue-time (the
+    authoritative guard) even if create-time validation were bypassed, with
+    zero stock_ledger rows written for the DC."""
+    from sqlalchemy import select as _select
+
+    from app.models import StockLedger
+
+    firm, party, item = dc_setup
+    _add_stock_for_dc(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="100")
+    so = _make_confirmed_so(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="10", price="50"
+    )
+    # Build an oversized DRAFT DC row directly (simulate a legacy row created
+    # before create-time validation existed).
+    from app.models.sales import DCLine, DeliveryChallan
+
+    dc = DeliveryChallan(
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        series="DC/LEGACY",
+        number="0001",
+        party_id=party.party_id,
+        sales_order_id=so.sales_order_id,
+        dispatch_date=datetime.date(2026, 4, 27),
+        status=DCStatus.DRAFT.value,
+    )
+    db_session.add(dc)
+    db_session.flush()
+    db_session.add(
+        DCLine(
+            org_id=fresh_org_id,
+            delivery_challan_id=dc.delivery_challan_id,
+            item_id=item.item_id,
+            qty_dispatched=Decimal("25"),
+            sequence=1,
+        )
+    )
+    db_session.flush()
+
+    with pytest.raises(AppValidationError, match="Over-dispatch"):
+        sales_service.issue_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
+
+    rows = list(
+        db_session.execute(
+            _select(StockLedger).where(StockLedger.reference_id == dc.delivery_challan_id)
+        ).scalars()
+    )
+    assert rows == []
+    db_session.refresh(dc)
+    assert dc.status == DCStatus.DRAFT.value
+
+
+def test_issue_dc_rejects_cancelled_so(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    dc_setup: tuple[Firm, Party, Item],
+) -> None:
+    """create DC (DRAFT) → cancel SO → issue DC must be rejected 409 and the
+    SO must stay CANCELLED (never resurrect to PARTIAL_DC), no stock moved."""
+    from sqlalchemy import select as _select
+
+    from app.models import StockLedger
+
+    firm, party, item = dc_setup
+    _add_stock_for_dc(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="100")
+    so = _make_confirmed_so(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="10", price="50"
+    )
+    dc = _make_dc(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="5",
+        sales_order_id=so.sales_order_id,
+    )
+    sales_service.cancel_so(db_session, org_id=fresh_org_id, so_id=so.sales_order_id)
+    db_session.refresh(so)
+    assert so.status == SalesOrderStatus.CANCELLED
+
+    with pytest.raises(InvoiceStateError, match="CANCELLED"):
+        sales_service.issue_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
+
+    db_session.refresh(so)
+    db_session.refresh(dc)
+    assert so.status == SalesOrderStatus.CANCELLED
+    assert dc.status == DCStatus.DRAFT.value
+    rows = list(
+        db_session.execute(
+            _select(StockLedger).where(StockLedger.reference_id == dc.delivery_challan_id)
+        ).scalars()
+    )
+    assert rows == []
+
+
+def test_advance_so_never_resurrects_cancelled(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    dc_setup: tuple[Firm, Party, Item],
+) -> None:
+    """_advance_so_status_after_dc must no-op on a CANCELLED SO even when
+    issued DC rows exist for it (defense-in-depth for (d))."""
+    firm, party, item = dc_setup
+    so = _make_confirmed_so(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="10", price="50"
+    )
+    so.status = SalesOrderStatus.CANCELLED
+    db_session.flush()
+    sales_service._advance_so_status_after_dc(db_session, so=so)
+    assert so.status == SalesOrderStatus.CANCELLED
+
+
+def test_issue_dc_rejects_item_not_on_so(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    dc_setup: tuple[Firm, Party, Item],
+) -> None:
+    """A DC linked to an SO but carrying an item that is not on the SO is
+    rejected 422 ('not on SO')."""
+    firm, party, item = dc_setup
+    other_item = Item(
+        org_id=fresh_org_id,
+        firm_id=None,
+        code=f"I-{uuid.uuid4().hex[:6]}",
+        name="Other Item",
+        item_type=ItemType.RAW,
+        primary_uom=UomType.METER,
+    )
+    db_session.add(other_item)
+    db_session.flush()
+    _add_stock_for_dc(db_session, org_id=fresh_org_id, firm=firm, item=other_item, qty="100")
+    so = _make_confirmed_so(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="10", price="50"
+    )
+    with pytest.raises(AppValidationError, match="not on SO"):
+        _make_dc(
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=other_item,
+            qty_dispatched="5",
+            sales_order_id=so.sales_order_id,
+        )
+
+
+def test_exact_fill_boundary(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    dc_setup: tuple[Firm, Party, Item],
+) -> None:
+    """SO 10, a single DC of exactly 10 issues (the <= boundary must pass)."""
+    firm, party, item = dc_setup
+    _add_stock_for_dc(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="10")
+    so = _make_confirmed_so(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty="10", price="50"
+    )
+    dc = _make_dc(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="10",
+        sales_order_id=so.sales_order_id,
+    )
+    so = _issue_and_get_so(
+        db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id, so_id=so.sales_order_id
+    )
+    assert so.status == SalesOrderStatus.FULLY_DISPATCHED
+
+
+def test_two_so_lines_same_item_aggregate(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    dc_setup: tuple[Firm, Party, Item],
+) -> None:
+    """An SO with two lines of the same item (4 + 6) accepts a DC of 10 but
+    rejects a DC of 11 — aggregation is per item, not per line."""
+    firm, party, item = dc_setup
+    _add_stock_for_dc(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="100")
+    so = sales_service.create_so(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        so_date=datetime.date(2026, 4, 27),
+        series="SO/2025-26",
+        lines=[
+            {"item_id": item.item_id, "qty_ordered": "4", "price": "50"},
+            {"item_id": item.item_id, "qty_ordered": "6", "price": "50"},
+        ],
+    )
+    sales_service.confirm_so(db_session, org_id=fresh_org_id, so_id=so.sales_order_id)
+
+    with pytest.raises(AppValidationError, match="Over-dispatch"):
+        _make_dc(
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=item,
+            qty_dispatched="11",
+            sales_order_id=so.sales_order_id,
+        )
+    dc = _make_dc(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="10",
+        sales_order_id=so.sales_order_id,
+        series="DC/2025-26",
+    )
+    issued = sales_service.issue_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
+    assert issued.status == DCStatus.ISSUED.value
+
+
+def test_direct_dc_unaffected(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    dc_setup: tuple[Firm, Party, Item],
+) -> None:
+    """A DC with sales_order_id=None issues exactly as before — no SO checks."""
+    firm, party, item = dc_setup
+    _add_stock_for_dc(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="100")
+    dc = _make_dc(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty_dispatched="90",
+        sales_order_id=None,
+    )
+    issued = sales_service.issue_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
+    assert issued.status == DCStatus.ISSUED.value

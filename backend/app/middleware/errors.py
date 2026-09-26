@@ -23,6 +23,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DataError
 
 from ..exceptions import AppError, ErrorCode
 
@@ -127,6 +128,49 @@ def register_error_handlers(app: FastAPI) -> None:
                 else "Request body is invalid.",
                 status=422,
                 field_errors=field_errors,
+                request_id=_request_id_for(request),
+            ),
+        )
+
+    @app.exception_handler(DataError)
+    async def _handle_data_error(request: Request, exc: DataError) -> JSONResponse:
+        """#207: last-resort net for a Postgres numeric overflow.
+
+        A ``NUMERIC`` column overflow raises SQLSTATE ``22003``
+        (numeric_value_out_of_range); SQLAlchemy surfaces it as
+        ``DataError``. This net guarantees NO numeric overflow can ever
+        500 — it maps 22003 to the 422 VALIDATION_ERROR envelope
+        (rolled back by ``get_db_sync``) and leaks no SQL. Any other
+        ``DataError`` (e.g. 22P02 invalid text) is a genuine bug → 500.
+
+        Relies on every write path flushing INSIDE the route handler (all
+        services call ``session.flush()``), so the exception is raised
+        during handler execution where FastAPI's handlers apply. Keep
+        flushing in services — a commit-time DataError would bypass this.
+        """
+        pgcode = getattr(exc.orig, "pgcode", None)
+        if pgcode == "22003":  # numeric_value_out_of_range
+            logger.warning("numeric_overflow_422", path=request.url.path)
+            return JSONResponse(
+                status_code=422,
+                content=_envelope(
+                    code=str(ErrorCode.VALIDATION_ERROR),
+                    title="Validation error",
+                    detail="A computed amount exceeds the supported numeric range.",
+                    status=422,
+                    field_errors={},
+                    request_id=_request_id_for(request),
+                ),
+            )
+        logger.exception("data_error", path=request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content=_envelope(
+                code=str(ErrorCode.UNKNOWN),
+                title="Internal server error",
+                detail="An unexpected error occurred.",
+                status=500,
+                field_errors={},
                 request_id=_request_id_for(request),
             ),
         )

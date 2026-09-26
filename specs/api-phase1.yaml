@@ -168,6 +168,13 @@ components:
           schema:
             $ref: '#/components/schemas/ProblemDetails'
 
+    UnprocessableEntity:
+      description: Validation error (e.g., over-receipt, cross-PO line, qty mismatch)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
     InternalServerError:
       description: Internal server error
       content:
@@ -2922,6 +2929,13 @@ paths:
 
     post:
       summary: Create goods receipt note
+      description: >
+        Creates a DRAFT GRN. When linked to a PO, 3-way-match guards (#200)
+        apply at create AND again at receive: a GRN line's po_line_id must
+        belong to that PO and its item must match the PO line, and cumulative
+        received (across received-state GRNs) plus this GRN must not exceed the
+        ordered qty (over-receipt tolerance 0% by default). Violations return
+        422; a po_line_id supplied without a purchase_order_id also returns 422.
       operationId: createGRN
       tags:
         - procurement
@@ -2972,7 +2986,46 @@ paths:
             application/json:
               schema:
                 type: object
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
       x-permission: procurement.grn.create
+
+  /grns/{grn_id}/receive:
+    post:
+      summary: Receive (acknowledge) a DRAFT GRN — posts stock, advances the PO
+      description: >
+        DRAFT → ACKNOWLEDGED. Posts each line to the stock ledger and, when
+        linked to a PO, advances the PO status. #200: the linked PO row is
+        locked (SELECT ... FOR UPDATE, after the GRN row lock from #190) so
+        concurrent receives serialize; the PO status and the over-receipt cap
+        are re-checked under the lock. Receiving against a CANCELLED/DRAFT (or
+        missing) PO returns 409; an over-receipt or cross-PO/item-mismatch line
+        returns 422. Already-ACKNOWLEDGED GRNs return 409.
+      operationId: receiveGRN
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: grn_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: GRN received (no content)
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+      x-permission: procurement.grn.approve
 
   /grns/{grn_id}:
     get:
@@ -3034,6 +3087,13 @@ paths:
 
     post:
       summary: Create purchase invoice
+      description: >
+        Creates a DRAFT PI. When linked to a GRN (#200): the GRN must be
+        ACKNOWLEDGED, every billed item must exist on the GRN, and billed qty
+        per item must not exceed the GRN's received qty for that item — else
+        422 (checked again at post, before GL). AMOUNT/rate drift stays a loose
+        non-blocking warning (rounding / freight / surcharge flexibility);
+        only quantity over-billing is blocked.
       operationId: createPurchaseInvoice
       tags:
         - procurement
@@ -3054,6 +3114,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PurchaseInvoice'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
       x-permission: procurement.purchase_invoice.create
 
   /purchase-invoices/{purchase_invoice_id}:
@@ -3973,6 +4037,13 @@ paths:
 
     post:
       summary: Create delivery challan
+      description: >
+        Creates a DC in DRAFT state. When `sales_order_id` is set the linked SO
+        must be CONFIRMED+ and the cumulative dispatch (this DC plus prior
+        non-DRAFT DCs on the SO) must not exceed each SO line's ordered qty,
+        aggregated per item; over-dispatch or an item not on the SO is rejected
+        422 VALIDATION_ERROR (#206). This is early UX validation — the
+        authoritative cap is enforced again at issue time under a row lock.
       operationId: createDeliveryChallan
       tags:
         - sales
@@ -4006,7 +4077,51 @@ paths:
             application/json:
               schema:
                 type: object
+        '422':
+          description: >
+            Validation error — e.g. over-dispatch beyond the SO's ordered qty,
+            or a line item not on the linked SO (#206).
       x-permission: sales.challan.create
+
+  /delivery-challans/{dc_id}/issue:
+    post:
+      summary: Issue a delivery challan (DRAFT -> ISSUED)
+      description: >
+        Posts each line's stock removal and, when linked to a SO, advances the
+        SO status to PARTIAL_DC / FULLY_DISPATCHED. The linked SO row is locked
+        FOR UPDATE and re-validated (#206): issuing against a CANCELLED (or
+        DRAFT) SO is rejected 409 INVOICE_STATE_ERROR and the SO is never
+        resurrected; cumulative dispatch exceeding the SO's ordered qty (per
+        item) is rejected 422 VALIDATION_ERROR before any stock moves.
+      operationId: issueDeliveryChallan
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: dc_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Delivery challan issued
+          content:
+            application/json:
+              schema:
+                type: object
+        '409':
+          description: >
+            Invalid state transition — DC not DRAFT, or the linked SO is
+            CANCELLED/DRAFT (#206).
+        '422':
+          description: >
+            Over-dispatch beyond the SO's ordered qty, or a line item not on
+            the linked SO (#206).
+      x-permission: sales.dc.approve
 
   /invoices:
     get:
@@ -4952,6 +5067,13 @@ paths:
   /reports/ageing:
     get:
       summary: Get receivables ageing report
+      description: >-
+        Buckets age from days past each invoice's due date (falling back to
+        the invoice date when no due date is set), so invoices still within
+        their credit terms are reported as `current`. Balances are
+        reconstructed as of the report date from receipts posted on or before
+        it, so a backdated as_of shows the historical outstanding and is not
+        reduced by later receipts (#197).
       operationId: getAgeing
       tags:
         - reports

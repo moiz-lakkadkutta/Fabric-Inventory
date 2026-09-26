@@ -1015,3 +1015,101 @@ def test_create_bom_owner_null_jwt_proves_router_bypass(http_client: TestClient)
     )
     assert resp.status_code == 422, resp.text
     assert "not found in this organization" in resp.json()["detail"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# In-use guard against active MOs (issue #205)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _insert_mo_for_bom(
+    sync_engine: Engine,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    design_id: uuid.UUID,
+    finished_item_id: uuid.UUID,
+    bom_id: uuid.UUID,
+    status: str = "RELEASED",
+) -> uuid.UUID:
+    """Raw-ish MO insert referencing ``bom_id`` (full MO lifecycle is out
+    of scope here — mirrors ``test_routing.py``)."""
+    from datetime import date
+
+    from app.models.manufacturing import ManufacturingOrder, MoStatus
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        mo = ManufacturingOrder(
+            org_id=org_id,
+            firm_id=firm_id,
+            series="MO",
+            number=uuid.uuid4().hex[:8],
+            design_id=design_id,
+            finished_item_id=finished_item_id,
+            bom_id=bom_id,
+            status=MoStatus(status),
+            mo_date=date.today(),
+            planned_qty=10,
+        )
+        session.add(mo)
+        session.commit()
+        return mo.manufacturing_order_id
+
+
+def test_delete_bom_refuses_when_active_mo_references_it(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """QA repro: a BOM referenced by a non-CLOSED MO cannot be soft-deleted."""
+    me, design_id, finished, raw = _seed_bom_world(http_client)
+    bom = http_client.post(
+        "/boms",
+        headers=_auth(me["access_token"]),
+        json=_bom_payload(
+            firm_id=me["firm_id"], design_id=design_id, finished_item_id=finished, raw_item_id=raw
+        ),
+    ).json()
+    _insert_mo_for_bom(
+        sync_engine,
+        org_id=uuid.UUID(me["org_id"]),
+        firm_id=uuid.UUID(me["firm_id"]),
+        design_id=uuid.UUID(design_id),
+        finished_item_id=uuid.UUID(finished),
+        bom_id=uuid.UUID(bom["bom_id"]),
+        status="DRAFT",
+    )
+
+    resp = http_client.delete(f"/boms/{bom['bom_id']}", headers=_auth(me["access_token"]))
+    assert resp.status_code == 422, resp.text
+    assert "in use by an active manufacturing order" in resp.json()["detail"].lower()
+
+    # BOM row is untouched (still active, not soft-deleted, still listed).
+    got = http_client.get(f"/boms/{bom['bom_id']}", headers=_auth(me["access_token"]))
+    assert got.status_code == 200
+    assert got.json()["is_active"] is True
+
+
+def test_delete_bom_allowed_when_only_closed_mo_references_it(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A CLOSED MO is historic and must not block deletion (Routing parity)."""
+    me, design_id, finished, raw = _seed_bom_world(http_client)
+    bom = http_client.post(
+        "/boms",
+        headers=_auth(me["access_token"]),
+        json=_bom_payload(
+            firm_id=me["firm_id"], design_id=design_id, finished_item_id=finished, raw_item_id=raw
+        ),
+    ).json()
+    _insert_mo_for_bom(
+        sync_engine,
+        org_id=uuid.UUID(me["org_id"]),
+        firm_id=uuid.UUID(me["firm_id"]),
+        design_id=uuid.UUID(design_id),
+        finished_item_id=uuid.UUID(finished),
+        bom_id=uuid.UUID(bom["bom_id"]),
+        status="CLOSED",
+    )
+
+    resp = http_client.delete(f"/boms/{bom['bom_id']}", headers=_auth(me["access_token"]))
+    assert resp.status_code == 204, resp.text
