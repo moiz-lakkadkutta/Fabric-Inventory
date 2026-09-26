@@ -3112,9 +3112,14 @@ paths:
         Creates a DRAFT PI. When linked to a GRN (#200): the GRN must be
         ACKNOWLEDGED, every billed item must exist on the GRN, and billed qty
         per item must not exceed the GRN's received qty for that item — else
-        422 (checked again at post, before GL). AMOUNT/rate drift stays a loose
-        non-blocking warning (rounding / freight / surcharge flexibility);
-        only quantity over-billing is blocked.
+        422 (checked again at post, before GL). #203 CA correction: several
+        PIs may bill one GRN (partial billing); the qty cap is CUMULATIVE
+        across the GRN's live PIs (create counts POSTED/RECONCILED + open
+        DRAFTs; post, under a GRN row lock, counts POSTED/RECONCILED; VOIDED
+        PIs are excluded). On post a GRN-linked PI clears GRN Clearing (2010)
+        only for the billed qty × GRN rate and books PPV (5360) on that qty.
+        AMOUNT/rate drift stays a loose non-blocking warning (rounding /
+        freight / surcharge flexibility); only quantity over-billing is blocked.
       operationId: createPurchaseInvoice
       tags:
         - procurement

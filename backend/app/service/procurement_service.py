@@ -1231,8 +1231,9 @@ def post_pi(
 
     Loose 3-way match: if the PI is linked to a GRN, log a warning when
     the PI total drifts from the GRN value of the qty it bills (billed qty x
-    GRN rate; #203 CA correction — was the whole GRN total) by more than 1%. We don't block — Moiz wants flexibility for
-    rounding / freight / surcharge differences.
+    GRN rate; #203 CA correction — was the whole GRN total) by more than 1%.
+    We don't block — Moiz wants flexibility for rounding / freight /
+    surcharge differences.
     """
     pi = get_pi(session, org_id=org_id, pi_id=pi_id)
     grn: GRN | None = None
@@ -1279,9 +1280,7 @@ def post_pi(
         )
         if pi.invoice_amount is not None and grn_billed_value > 0:
             invoice_amount = Decimal(pi.invoice_amount)
-            drift_pct = (
-                abs(invoice_amount - grn_billed_value) / grn_billed_value * Decimal("100")
-            )
+            drift_pct = abs(invoice_amount - grn_billed_value) / grn_billed_value * Decimal("100")
             if drift_pct > Decimal("1"):
                 # Loose match — log + carry forward in match_result; don't raise.
                 pi.match_result = {

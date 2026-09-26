@@ -103,3 +103,50 @@ COGS, so 5360 was parented under COGS for consistency.
 - New voucher type **GRN_ACCRUAL** (series "GRNI").
 - Migration head on `test_203` is `203_grn_accrual`.
 - New reference_type on vouchers: `"GRN"` (GRN accrual reference_id = grn_id).
+
+## CA-review correction (2026-09-26)
+
+**What was wrong.** A GRN-linked PI cleared the WHOLE GRN accrual (DR 2010 =
+accrual total) and booked `PI net − full accrual` to 5360 PPV. Billing fewer
+units than received therefore booked the unbilled goods as a false PPV gain
+(100 m received @ ₹200, bill 80 m @ ₹200 → CR 5360 ₹4,000), and the
+one-POSTED-PI-per-GRN guard made the remaining 20 m unbillable forever.
+
+**What changed.**
+- A GRN-linked PI clears 2010 only for the qty it **bills**: DR 2010 =
+  Σ(billed qty × GRN rate). PPV = PI net − that amount (DR if dearer, CR if
+  cheaper). Unbilled qty stays accrued in 2010 for a later bill.
+- Several POSTED PIs may bill one GRN. Cumulative billed qty per item across
+  the GRN's live PIs may never exceed received qty: checked at `create_pi`
+  (conservatively counting open DRAFTs too) and authoritatively at `post_pi`
+  (POSTED/RECONCILED only; VOIDED excluded) under `SELECT … FOR UPDATE` on the
+  GRN row, then the PI row (lock order GRN → PI → Firm; `void_pi` takes the
+  same order). The one-PI-per-GRN guard is removed.
+- **Line matching.** PI lines carry no GRN-line reference, so they match by
+  item. An item on several GRN lines clears at its **weighted-average GRN
+  rate** (Σ qty×rate / Σ qty). Chosen over FIFO because it is
+  order-independent: void-and-rebill always clears the same value, so a void
+  can never mis-allocate 2010 between GRN lines.
+- **Rounding.** Each clearing is quantized to the paisa (ROUND_HALF_UP) and
+  capped at the GRN's open 2010 balance read from the GL. The PI that completes
+  the GRN clears the open balance exactly, so paisa residue never strands in
+  2010 (e.g. 3 × ₹33.3333 accrues ₹100.00 → clears 33.33 + 33.33 + 33.34).
+- **Void** mirrors every leg of the PI voucher, so it re-opens exactly what the
+  PI cleared; its qty is billable again.
+- The loose amount-drift warning now compares the PI against the GRN value of
+  the qty it bills (a legitimate partial bill is not drift).
+- Direct PIs and legacy GRNs without an accrual voucher are unchanged.
+- `scripts/backfill_grn_accruals.py` needs no logic change (documented why:
+  all-or-nothing per GRN; a partially-billed legacy GRN keeps the legacy
+  DR-1300 path).
+
+**Basis.** Standard GRNI / accrued-purchases practice (Ind AS 2 cost of
+inventories; accrual basis under Ind AS 1 / AS 1): the GRNI liability equals
+goods received but not yet invoiced, and a purchase price variance only arises
+on quantity actually invoiced at a price different from the receipt cost.
+
+**Open CA question (unchanged here).** PIs carry no separate freight / other
+charges fields; any freight billed inside line rates lands in 5360 PPV as price
+variance, as before.
+
+PENDING MOIZ + CA SIGN-OFF.

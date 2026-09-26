@@ -701,10 +701,7 @@ def _grn_open_grni_balance(
             VoucherLine.ledger_id == grni_ledger_id,
             Voucher.org_id == org_id,
             Voucher.deleted_at.is_(None),
-            (
-                (Voucher.voucher_type == VoucherType.GRN_ACCRUAL)
-                & (Voucher.reference_id == grn_id)
-            )
+            ((Voucher.voucher_type == VoucherType.GRN_ACCRUAL) & (Voucher.reference_id == grn_id))
             | (
                 (Voucher.voucher_type == VoucherType.PURCHASE_INVOICE)
                 & Voucher.reference_id.in_(pi_ids)

@@ -443,7 +443,7 @@ def _post_pi(
         db_session, org_id=org_id, vtype=VoucherType.PURCHASE_INVOICE, reference_id=pi_id
     )
     assert voucher is not None
-    assert Decimal(voucher.total_debit) == Decimal(voucher.total_credit)
+    assert voucher.total_debit == voucher.total_credit
     return pi_id, _lines_by_code(db_session, voucher)
 
 
@@ -693,9 +693,7 @@ def test_void_short_bill_reopens_its_accrual_and_qty(
     assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("-4000")
 
     procurement_service.void_pi(db_session, org_id=fresh_org_id, pi_id=pi_80)
-    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal(
-        "-20000"
-    )
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("-20000")
     assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="5360") == Decimal("0")
 
     # 80 m billable again (the voided PI no longer counts), at a new price.
@@ -795,9 +793,7 @@ def test_item_on_two_grn_lines_clears_at_weighted_average_rate(
     )
     assert codes["2010"] == ("DR", Decimal("10500.00"))
     assert "5360" not in codes
-    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal(
-        "-10500"
-    )
+    assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("-10500")
 
 
 # ──────────────────────────────────────────────────────────────────────
