@@ -18,6 +18,8 @@ import { Input } from '@/components/ui/input';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { useCustomerParties, usePostReceipt, type ReceiptMode } from '@/lib/queries/accounts';
 
+import { ReceiptBankAccountField, useReceiptBankAccount } from './ReceiptBankAccountField';
+
 interface NewReceiptDialogProps {
   open: boolean;
   onClose: () => void;
@@ -32,6 +34,7 @@ export function NewReceiptDialog({ open, onClose }: NewReceiptDialogProps) {
   const [partyId, setPartyId] = React.useState('');
   const [amount, setAmount] = React.useState('');
   const [mode, setMode] = React.useState<ReceiptMode>('CASH');
+  const bank = useReceiptBankAccount(mode);
   const [reference, setReference] = React.useState('');
   const [date, setDate] = React.useState<string>(TODAY());
   const [error, setError] = React.useState<string | null>(null);
@@ -63,6 +66,10 @@ export function NewReceiptDialog({ open, onClose }: NewReceiptDialogProps) {
       setError('Enter a positive amount.');
       return;
     }
+    if (bank.required && !bank.bankAccountId) {
+      setError('Pick the bank account this payment came into.');
+      return;
+    }
     const partyName = customers.data?.find((c) => c.party_id === partyId)?.name ?? '';
     postReceipt.mutate(
       {
@@ -71,6 +78,7 @@ export function NewReceiptDialog({ open, onClose }: NewReceiptDialogProps) {
         amountPaise: Math.round(amountRupees * 100),
         receiptDate: date,
         mode,
+        bankAccountId: bank.payloadId,
         reference: reference || undefined,
         idempotencyKey: idem.key,
       },
@@ -157,6 +165,7 @@ export function NewReceiptDialog({ open, onClose }: NewReceiptDialogProps) {
             </select>
           </Field>
         </div>
+        <ReceiptBankAccountField state={bank} />
         <div className="grid grid-cols-2 gap-3">
           <Field label="Date" htmlFor="receipt-date" required>
             <Input

@@ -11,6 +11,10 @@ import { ApiError, apiBlob } from '@/lib/api/client';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { IS_LIVE } from '@/lib/api/mode';
 import { usePostReceipt, type ReceiptMode } from '@/lib/queries/accounts';
+import {
+  ReceiptBankAccountField,
+  useReceiptBankAccount,
+} from '@/pages/accounting/ReceiptBankAccountField';
 import { useFinalizeInvoice, useInvoice } from '@/lib/queries/invoices';
 import { formatDateShort, formatINRCompact } from '@/lib/format';
 import type { Invoice } from '@/lib/mock/types';
@@ -35,6 +39,7 @@ export default function InvoiceDetail() {
   const [recordOpen, setRecordOpen] = React.useState(false);
   const [recordAmount, setRecordAmount] = React.useState('');
   const [recordMode, setRecordMode] = React.useState<ReceiptMode>('CASH');
+  const recordBank = useReceiptBankAccount(recordMode);
   const [recordRef, setRecordRef] = React.useState('');
   const [recordError, setRecordError] = React.useState<string | null>(null);
   const [printError, setPrintError] = React.useState<string | null>(null);
@@ -140,6 +145,10 @@ export default function InvoiceDetail() {
       setRecordError('Enter a positive amount.');
       return;
     }
+    if (recordBank.required && !recordBank.bankAccountId) {
+      setRecordError('Pick the bank account this payment came into.');
+      return;
+    }
     postReceipt.mutate(
       {
         partyId: inv.party_id,
@@ -147,6 +156,7 @@ export default function InvoiceDetail() {
         amountPaise: Math.round(amountRupees * 100),
         receiptDate: new Date().toISOString().slice(0, 10),
         mode: recordMode,
+        bankAccountId: recordBank.payloadId,
         reference: recordRef || undefined,
         idempotencyKey: receiptKey.key,
       },
@@ -262,6 +272,11 @@ export default function InvoiceDetail() {
                 </select>
               </Field>
             </div>
+            {recordBank.required && (
+              <div style={{ flex: '1 1 180px' }}>
+                <ReceiptBankAccountField state={recordBank} height="h-9" />
+              </div>
+            )}
             <div style={{ flex: '2 1 200px' }}>
               <Field label="Reference (optional)" htmlFor="receipt-ref">
                 <Input
