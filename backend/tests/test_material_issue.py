@@ -987,4 +987,10 @@ def test_issue_materials_service_guard_rejects_firm_not_in_org(
         },
     )
     assert resp.status_code == 422, resp.text
-    assert "not found in this organization" in resp.json()["detail"].lower()
+    # Since #208 auto-selects the sole firm, a foreign firm_id is rejected by the
+    # session-firm-match guard (or assert_firm_in_org for a firm_id=None session).
+    detail = resp.json()["detail"].lower()
+    assert (
+        "not found in this organization" in detail
+        or "must match the current session firm" in detail
+    )

@@ -727,9 +727,16 @@ components:
         quantity:
           type: number
           format: double
+          maximum: 1000000000
+          description: >-
+            #207: capped at 1e9. The derived line_amount (quantity * unit_rate)
+            and the invoice total are additionally guarded server-side against
+            the ₹1e9 ceiling, so a product/sum that overflows NUMERIC(18,2)
+            returns 422 VALIDATION_ERROR, never 500.
         unit_rate:
           type: number
           format: double
+          maximum: 1000000000
         line_amount:
           type: number
           format: double
@@ -2797,9 +2804,15 @@ paths:
                       quantity:
                         type: number
                         format: double
+                        maximum: 1000000000
+                        description: >-
+                          #207: qty_ordered capped at 1e9; derived line_amount
+                          (qty * rate) guarded server-side so an overflow of
+                          NUMERIC(18,2) is 422, not 500.
                       unit_rate:
                         type: number
                         format: double
+                        maximum: 1000000000
       responses:
         '201':
           description: PO created
@@ -3177,6 +3190,52 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
       x-permission: procurement.purchase_invoice.update
+
+  /purchase-invoices/{purchase_invoice_id}/void:
+    post:
+      summary: Void a purchase invoice
+      description: >
+        Void a POSTED (or DRAFT) purchase invoice, reversing its GL postings.
+        Voiding an already-VOIDED PI is an idempotent no-op (200).
+
+        Refused with 409 INVOICE_STATE_ERROR when the PI is not safely
+        voidable: (a) status is RECONCILED (fully paid), or (b) paid_amount > 0
+        (partially paid), or (c) any live payment allocation still references
+        it. A paid/partially-paid PI must be unwound via the supplier
+        refund/debit-note workflow first — voiding it would reverse the full
+        invoice in GL while the payment's AP leg remained, orphaning the cash
+        and diverging AP control from supplier outstanding (see issue #191).
+      operationId: voidPurchaseInvoice
+      tags:
+        - procurement
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: purchase_invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Purchase invoice voided (or already void)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseInvoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >
+            Invalid state — the PI is RECONCILED, has paid_amount > 0, or has a
+            live payment allocation. Error code INVOICE_STATE_ERROR.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+      x-permission: purchase.invoice.void
 
   /landed-costs:
     get:
@@ -4177,6 +4236,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Invoice'
+        '422':
+          description: >-
+            Validation error. Also (#207): a computed line_amount or invoice
+            total exceeding the ₹1e9 ceiling — even when each qty/price passes
+            its own 1e9 cap — is rejected here (VALIDATION_ERROR) rather than
+            overflowing NUMERIC(18,2) into 500.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
       x-permission: sales.invoice.create
 
   /invoices/{invoice_id}:

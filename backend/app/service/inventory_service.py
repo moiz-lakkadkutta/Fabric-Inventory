@@ -41,7 +41,7 @@ import datetime
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -429,6 +429,144 @@ def remove_stock(
     session.add(ledger_row)
     session.flush()
     return ledger_row
+
+
+def get_total_on_hand(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    item_id: uuid.UUID,
+    location_id: uuid.UUID,
+) -> Decimal:
+    """Sum on_hand_qty across every lot (and the NULL-lot) position for an
+    (item, location). Used by lot-agnostic callers to decide whether any
+    stock exists before dispatching FIFO (#202).
+    """
+    total = session.execute(
+        select(func.coalesce(func.sum(StockPosition.on_hand_qty), 0)).where(
+            StockPosition.org_id == org_id,
+            StockPosition.firm_id == firm_id,
+            StockPosition.item_id == item_id,
+            StockPosition.location_id == location_id,
+        )
+    ).scalar_one()
+    return Decimal(total or 0)
+
+
+def remove_stock_fifo(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    item_id: uuid.UUID,
+    location_id: uuid.UUID,
+    qty: Decimal,
+    reference_type: str,
+    reference_id: uuid.UUID,
+    txn_date: datetime.date | None = None,
+    notes: str | None = None,
+) -> list[StockLedger]:
+    """Lot-agnostic outbound move (#202). Consumes ``qty`` across all lot
+    positions for the (item, location), oldest lot first, inserting **one**
+    ``stock_ledger`` OUT row per consumed position so the per-key invariant
+    ``position == Σ ledger`` holds for every lot.
+
+    Consumption order: the NULL-lot position first (legacy / commodity stock),
+    then lot positions by ``Lot.received_date ASC NULLS LAST, Lot.created_at
+    ASC`` — true FIFO by receipt date.
+
+    Refuses (``AppValidationError``, same message shape as ``remove_stock``) if
+    total on-hand across all lots is below ``qty``; nothing is consumed in that
+    case (the whole statement is one transaction).
+
+    Explicit-lot callers keep using ``remove_stock`` — this only replaces the
+    old ``lot_id=None`` calls that would otherwise miss lot-keyed stock.
+    """
+    _validate_qty(qty)
+    _ensure_item_in_org(session, org_id=org_id, item_id=item_id)
+    _ensure_location_in_firm(session, org_id=org_id, firm_id=firm_id, location_id=location_id)
+
+    txn_date = txn_date or datetime.date.today()
+
+    # Lock every position for this (item, location) in a deterministic order
+    # (by PK) so two overlapping FIFO calls can't deadlock.
+    positions = list(
+        session.execute(
+            select(StockPosition)
+            .where(
+                StockPosition.org_id == org_id,
+                StockPosition.firm_id == firm_id,
+                StockPosition.item_id == item_id,
+                StockPosition.location_id == location_id,
+            )
+            .order_by(StockPosition.stock_position_id)
+            .with_for_update()
+        ).scalars()
+    )
+
+    total_on_hand = sum((Decimal(p.on_hand_qty or 0) for p in positions), Decimal("0"))
+    if total_on_hand < qty:
+        raise AppValidationError(
+            f"Insufficient stock: on_hand={total_on_hand} < requested={qty} "
+            f"at item={item_id}, location={location_id}"
+        )
+
+    # Resolve received_date / created_at for the lot positions to order FIFO.
+    lot_ids = [p.lot_id for p in positions if p.lot_id is not None]
+    lot_order: dict[uuid.UUID, tuple[datetime.date, datetime.datetime]] = {}
+    if lot_ids:
+        for lot in session.execute(select(Lot).where(Lot.lot_id.in_(lot_ids))).scalars():
+            lot_order[lot.lot_id] = (
+                lot.received_date or datetime.date.max,
+                lot.created_at or datetime.datetime.max.replace(tzinfo=datetime.UTC),
+            )
+
+    def _sort_key(p: StockPosition) -> tuple[int, datetime.date, datetime.datetime]:
+        if p.lot_id is None:
+            # NULL-lot first.
+            return (0, datetime.date.min, datetime.datetime.min.replace(tzinfo=datetime.UTC))
+        recv, created = lot_order.get(
+            p.lot_id,
+            (datetime.date.max, datetime.datetime.max.replace(tzinfo=datetime.UTC)),
+        )
+        return (1, recv, created)
+
+    ordered = sorted(positions, key=_sort_key)
+
+    remaining = qty
+    ledger_rows: list[StockLedger] = []
+    for pos in ordered:
+        if remaining <= 0:
+            break
+        available = Decimal(pos.on_hand_qty or 0)
+        if available <= 0:
+            continue
+        take = min(available, remaining)
+        pos.on_hand_qty = available - take
+        pos.as_of_date = txn_date
+        pos.updated_at = datetime.datetime.now(tz=datetime.UTC)
+        ledger_row = StockLedger(
+            org_id=org_id,
+            firm_id=firm_id,
+            item_id=item_id,
+            lot_id=pos.lot_id,
+            location_id=location_id,
+            txn_type="OUT",
+            txn_date=txn_date,
+            reference_type=reference_type,
+            reference_id=reference_id,
+            qty_in=Decimal("0"),
+            qty_out=take,
+            unit_cost=pos.current_cost,
+            notes=notes,
+        )
+        session.add(ledger_row)
+        ledger_rows.append(ledger_row)
+        remaining -= take
+
+    session.flush()
+    return ledger_rows
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -48,7 +48,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Final
 
-from sqlalchemy import delete, or_, select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -102,10 +102,13 @@ def request_reset(session: Session, *, email: str, org_name: str) -> None:
     # (NOBYPASSRLS). Mirrors the pattern in routers/auth.py login.
     session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
 
+    # #208: email is case-insensitive for identity — normalize + compare on
+    # lower() so a mixed-case forgot-password request isn't a silent no-op.
+    email_norm = identity_service.normalize_email(email or "")
     user = session.execute(
         select(AppUser).where(
             AppUser.org_id == org.org_id,
-            AppUser.email == email,
+            func.lower(AppUser.email) == email_norm,
             AppUser.deleted_at.is_(None),
         )
     ).scalar_one_or_none()

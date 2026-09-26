@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+
+from app.exceptions import AppValidationError
 
 # ──────────────────────────────────────────────────────────────────────
 # Helpers
@@ -1011,3 +1014,282 @@ def test_unmatched_as_voucher_control_account_counter_ledger_returns_422(
     assert resp.status_code == 422, resp.text
     detail = resp.json().get("detail", "")
     assert "control account" in detail.lower(), detail
+
+
+# ══════════════════════════════════════════════════════════════════════
+# #201 — service-level: preview surfaces real bank payments; confirm
+# enforces the bank-ledger match and rejects duplicate statement rows.
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _seed_recon_env(db: Any) -> dict[str, Any]:
+    """Seed org + COA + firm + supplier + posted PI + a bank account on a
+    non-control sub-ledger. Returns a dict of the ids under test.
+    """
+    import datetime as _dt
+
+    from sqlalchemy import select as _select
+    from sqlalchemy import text as _text
+
+    from app.models import Firm, Item, Ledger, Organization, Party
+    from app.models.masters import ItemType, UomType
+    from app.service import banking_service, procurement_service, rbac_service, seed_service
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_id = uuid.uuid4()
+    db.execute(_text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+    org = Organization(
+        org_id=org_id,
+        name=f"recon-org-{uuid.uuid4().hex[:8]}",
+        admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
+    )
+    db.add(org)
+    db.flush()
+    rbac_service.seed_system_roles(db, org_id=org_id)
+    seed_service.seed_system_catalog(db, org_id=org_id)
+
+    firm = Firm(
+        org_id=org_id,
+        code=f"F-{uuid.uuid4().hex[:6].upper()}",
+        name="Recon Firm",
+        has_gst=True,
+        state_code="MH",
+    )
+    db.add(firm)
+    db.flush()
+
+    party = Party(
+        org_id=org_id,
+        firm_id=None,
+        code=f"SUP-{uuid.uuid4().hex[:6].upper()}",
+        name="Recon Supplier",
+        is_supplier=True,
+        state_code="MH",
+    )
+    db.add(party)
+    item = Item(
+        org_id=org_id,
+        firm_id=None,
+        code=f"I-{uuid.uuid4().hex[:6].upper()}",
+        name="Fabric",
+        item_type=ItemType.RAW,
+        primary_uom=UomType.METER,
+    )
+    db.add(item)
+    db.flush()
+
+    pi = procurement_service.create_pi(
+        db,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        invoice_date=_dt.date(2026, 1, 5),
+        series="PI/2526",
+        lines=[{"item_id": item.item_id, "qty": "1", "rate": "500.00"}],
+    )
+    pi.invoice_amount = Decimal("500.00")
+    pi.gst_amount = None
+    db.flush()
+    procurement_service.post_pi(db, org_id=org_id, pi_id=pi.purchase_invoice_id)
+    db.flush()
+
+    bank_control = db.execute(
+        _select(Ledger).where(
+            Ledger.org_id == org_id, Ledger.code == "1100", Ledger.firm_id.is_(None)
+        )
+    ).scalar_one()
+    sub = Ledger(
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        code=f"1101-{uuid.uuid4().hex[:6].upper()}",
+        name="HDFC sub",
+        coa_group_id=bank_control.coa_group_id,
+        ledger_type="BANK",
+        is_control_account=False,
+    )
+    db.add(sub)
+    db.flush()
+    account = banking_service.create_bank_account(
+        db,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        ledger_id=sub.ledger_id,
+        bank_name="HDFC",
+    )
+    return {
+        "org_id": org_id,
+        "firm": firm,
+        "party_id": party.party_id,
+        "account": account,
+        "sub_ledger_id": sub.ledger_id,
+    }
+
+
+def test_preview_matches_real_bank_payment(db_session) -> None:  # type: ignore[no-untyped-def]
+    """#201 repro (half 1, end-to-end): a BANK payment posted with a
+    bank_account_id must show up as a preview candidate for that account.
+    Before the fix the payment credited 1100, never the account's ledger,
+    so candidates was always []."""
+    import datetime as _dt
+
+    from app.service import bank_reconciliation_service as recon
+    from app.service import payment_service
+
+    env = _seed_recon_env(db_session)
+    voucher = payment_service.post_payment(
+        db_session,
+        org_id=env["org_id"],
+        firm_id=env["firm"].firm_id,
+        party_id=env["party_id"],
+        amount=Decimal("500.00"),
+        payment_date=_dt.date(2026, 1, 20),
+        mode="BANK",
+        bank_account_id=env["account"].bank_account_id,
+    )
+
+    rows = recon.preview_matches(
+        db_session,
+        org_id=env["org_id"],
+        firm_id=env["firm"].firm_id,
+        bank_account_id=env["account"].bank_account_id,
+        statement_rows=[
+            recon.StatementRow(
+                statement_date=_dt.date(2026, 1, 20),
+                description="NEFT payment",
+                amount=Decimal("-500.00"),
+            )
+        ],
+    )
+    assert len(rows) == 1
+    candidate_ids = {c.voucher_id for c in rows[0].candidates}
+    assert voucher.voucher_id in candidate_ids, (
+        "the real BANK payment must surface as a candidate for its own account"
+    )
+
+
+def test_confirm_rejects_voucher_without_bank_ledger_line(db_session) -> None:  # type: ignore[no-untyped-def]
+    """#201 repro (half 2): confirming a CASH voucher (CR 1000) against a
+    bank account on a 1101 sub-ledger must be rejected — it has no leg on
+    that ledger. bank_reconciled_at must stay NULL."""
+    import datetime as _dt
+
+    from app.service import bank_reconciliation_service as recon
+    from app.service import payment_service
+
+    env = _seed_recon_env(db_session)
+    cash_voucher = payment_service.post_payment(
+        db_session,
+        org_id=env["org_id"],
+        firm_id=env["firm"].firm_id,
+        party_id=env["party_id"],
+        amount=Decimal("500.00"),
+        payment_date=_dt.date(2026, 1, 20),
+        mode="CASH",
+    )
+
+    with pytest.raises(AppValidationError, match="no line on this bank account"):
+        recon.confirm_matches(
+            db_session,
+            org_id=env["org_id"],
+            firm_id=env["firm"].firm_id,
+            bank_account_id=env["account"].bank_account_id,
+            matches=[
+                recon.ConfirmedMatch(
+                    statement_row_idx=0,
+                    voucher_id=cash_voucher.voucher_id,
+                    statement_ref="CASH-AS-BANK",
+                    statement_amount=Decimal("-500.00"),
+                )
+            ],
+            confirmed_by=None,
+        )
+    db_session.refresh(cash_voucher)
+    assert cash_voucher.bank_reconciled_at is None
+
+
+def test_confirm_rejects_duplicate_voucher_in_batch(db_session) -> None:  # type: ignore[no-untyped-def]
+    """#201: two statement rows targeting the same voucher in one confirm
+    call must be rejected, and nothing stamped."""
+    import datetime as _dt
+
+    from app.service import bank_reconciliation_service as recon
+    from app.service import payment_service
+
+    env = _seed_recon_env(db_session)
+    voucher = payment_service.post_payment(
+        db_session,
+        org_id=env["org_id"],
+        firm_id=env["firm"].firm_id,
+        party_id=env["party_id"],
+        amount=Decimal("500.00"),
+        payment_date=_dt.date(2026, 1, 20),
+        mode="BANK",
+        bank_account_id=env["account"].bank_account_id,
+    )
+    m = recon.ConfirmedMatch(
+        statement_row_idx=0,
+        voucher_id=voucher.voucher_id,
+        statement_ref="DUP",
+        statement_amount=Decimal("-500.00"),
+    )
+    with pytest.raises(AppValidationError, match=r"(?i)duplicate|same voucher"):
+        recon.confirm_matches(
+            db_session,
+            org_id=env["org_id"],
+            firm_id=env["firm"].firm_id,
+            bank_account_id=env["account"].bank_account_id,
+            matches=[m, m],
+            confirmed_by=None,
+        )
+    db_session.refresh(voucher)
+    assert voucher.bank_reconciled_at is None
+
+
+def test_confirm_replay_still_idempotent(db_session) -> None:  # type: ignore[no-untyped-def]
+    """#201 regression: the deliberate idempotent-replay skip (voucher
+    reconciled in a PREVIOUS call) is preserved."""
+    import datetime as _dt
+
+    from app.service import bank_reconciliation_service as recon
+    from app.service import payment_service
+
+    env = _seed_recon_env(db_session)
+    voucher = payment_service.post_payment(
+        db_session,
+        org_id=env["org_id"],
+        firm_id=env["firm"].firm_id,
+        party_id=env["party_id"],
+        amount=Decimal("500.00"),
+        payment_date=_dt.date(2026, 1, 20),
+        mode="BANK",
+        bank_account_id=env["account"].bank_account_id,
+    )
+    match = recon.ConfirmedMatch(
+        statement_row_idx=0,
+        voucher_id=voucher.voucher_id,
+        statement_ref="REF-1",
+        statement_amount=Decimal("-500.00"),
+    )
+    stamped_1 = recon.confirm_matches(
+        db_session,
+        org_id=env["org_id"],
+        firm_id=env["firm"].firm_id,
+        bank_account_id=env["account"].bank_account_id,
+        matches=[match],
+        confirmed_by=None,
+    )
+    assert stamped_1 == [voucher.voucher_id]
+
+    # Second call with the same match — skipped, no error, still reconciled.
+    stamped_2 = recon.confirm_matches(
+        db_session,
+        org_id=env["org_id"],
+        firm_id=env["firm"].firm_id,
+        bank_account_id=env["account"].bank_account_id,
+        matches=[match],
+        confirmed_by=None,
+    )
+    assert stamped_2 == []
+    db_session.refresh(voucher)
+    assert voucher.bank_reconciled_at is not None

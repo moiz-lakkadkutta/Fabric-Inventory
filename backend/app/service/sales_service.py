@@ -50,6 +50,7 @@ from app.service import (
 from app.service.gst_service import BuyerStatus, TaxType
 from app.utils import crypto
 from app.utils.gst_states import normalize_state_code
+from app.utils.money import ensure_money_in_range
 
 # Stockable item types (all types except SERVICE).
 _STOCKABLE_ITEM_TYPES = frozenset(t for t in ItemType if t != ItemType.SERVICE)
@@ -699,18 +700,35 @@ def issue_dc(
         if dc_item is not None and dc_item.item_type == ItemType.SERVICE:
             continue  # Services have no inventory.
 
-        inventory_service.remove_stock(
-            session,
-            org_id=org_id,
-            firm_id=dc.firm_id,
-            item_id=line.item_id,
-            location_id=location.location_id,
-            qty=Decimal(line.qty_dispatched),
-            lot_id=line.lot_id,
-            reference_type="DC",
-            reference_id=dc.delivery_challan_id,
-            txn_date=dc.dispatch_date,
-        )
+        if line.lot_id is not None:
+            # Explicit lot chosen on the DC line — deplete exactly that lot.
+            inventory_service.remove_stock(
+                session,
+                org_id=org_id,
+                firm_id=dc.firm_id,
+                item_id=line.item_id,
+                location_id=location.location_id,
+                qty=Decimal(line.qty_dispatched),
+                lot_id=line.lot_id,
+                reference_type="DC",
+                reference_id=dc.delivery_challan_id,
+                txn_date=dc.dispatch_date,
+            )
+        else:
+            # #202: lot-agnostic dispatch — consume across lots FIFO so stock
+            # received under a lot number (which now lands in per-lot positions)
+            # is actually dispatchable instead of failing "Insufficient stock".
+            inventory_service.remove_stock_fifo(
+                session,
+                org_id=org_id,
+                firm_id=dc.firm_id,
+                item_id=line.item_id,
+                location_id=location.location_id,
+                qty=Decimal(line.qty_dispatched),
+                reference_type="DC",
+                reference_id=dc.delivery_challan_id,
+                txn_date=dc.dispatch_date,
+            )
 
     # COGS is recognized at invoice finalize (revenue-matching principle),
     # NOT at DC dispatch.  DC-linked invoices skip COGS in finalize_invoice
@@ -970,6 +988,10 @@ def create_draft_invoice(
                 "Valid rates: 0, 0.25, 3, 5, 12, 18, 28."
             )
         line_amount = (qty * price).quantize(Decimal("0.01"))
+        # #207: reject a derived product that overflows the money ceiling
+        # (each of qty/price passes its ≤1e9 field cap, but qty*price can be
+        # ~1e18) with a per-line 422 before it hits NUMERIC(18,2) at flush.
+        ensure_money_in_range(line_amount, field=f"lines.{idx}.line_amount")
         # GST-7: already quantized to 2dp in sales_service; kept here for clarity.
         gst_amount = (line_amount * gst_rate / Decimal("100")).quantize(Decimal("0.01"))
         total_subtotal += line_amount
@@ -987,6 +1009,10 @@ def create_draft_invoice(
         )
 
     invoice_total = total_subtotal + total_gst
+    # #207: guard the accumulated header total (subtotal + GST) — per-line
+    # amounts can each be ≤ ceiling yet sum past it — before it reaches the
+    # NUMERIC(18,2) invoice_amount column at flush.
+    ensure_money_in_range(invoice_total, field="invoice_amount")
 
     # B1 fix: decrypt both GSTINs back to plaintext before handing them
     # to the PoS engine. The previous code emitted `hex(ciphertext)`,
@@ -1106,7 +1132,28 @@ def finalize_invoice(
     Raises `InvoiceStateError` (mapped to 409 by the router) when the
     invoice has already moved past DRAFT.
     """
-    invoice = get_sales_invoice(session, org_id=org_id, sales_invoice_id=sales_invoice_id)
+    # #190 concurrency: lock the invoice header row BEFORE the DRAFT check so
+    # two overlapping finalize transactions serialize here instead of both
+    # observing the pre-state and each posting a voucher. The loser blocks on
+    # the row lock, wakes after the winner commits, and — under READ COMMITTED,
+    # `populate_existing=True` refreshing the identity-map copy — sees FINALIZED
+    # and raises InvoiceStateError (→ 409). `get_sales_invoice` itself must stay
+    # lock-free (it serves GET/PDF read paths), so we inline the locked read.
+    # Lock ordering (deadlock-avoidance): invoice row → stock positions → firm
+    # row (voucher numbering, last). See module note in accounting_service.
+    invoice = session.execute(
+        select(SalesInvoice)
+        .options(selectinload(SalesInvoice.lines))
+        .where(
+            SalesInvoice.sales_invoice_id == sales_invoice_id,
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.deleted_at.is_(None),
+        )
+        .with_for_update(of=SalesInvoice)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise NotFoundError(f"Sales invoice {sales_invoice_id} not found.")
 
     if invoice.lifecycle_status != InvoiceLifecycleStatus.DRAFT:
         raise InvoiceStateError(
@@ -1207,31 +1254,33 @@ def _post_cogs_for_invoice(
         if qty <= 0:
             continue
 
-        # SF1: check for a stock position first.
+        # SF1: check for any on-hand stock first (across all lots, #202).
         #
-        # Only the genuine "no position exists" case is silently skipped —
-        # i.e. the item was never received into this location (a legitimately
-        # non-inventory or never-stocked item).  If a position exists but
-        # on-hand is insufficient (oversell), remove_stock will raise an
+        # Only the genuine "no stock at all" case is silently skipped — i.e.
+        # the item was never received into this location (a legitimately
+        # non-inventory or never-stocked item).  If stock exists but on-hand is
+        # insufficient (oversell), remove_stock_fifo raises an
         # AppValidationError with "Insufficient stock" and finalize fails
         # loudly — silently swallowing that would re-introduce the
-        # revenue-without-cost bug.
-        position = inventory_service.get_position(
+        # revenue-without-cost bug.  We use the total across lots (not a
+        # NULL-lot get_position probe) because #202 GRN stock lands in per-lot
+        # positions — a NULL-lot probe would find nothing and wrongly skip COGS.
+        total_on_hand = inventory_service.get_total_on_hand(
             session,
             org_id=org_id,
             firm_id=invoice.firm_id,
             item_id=line.item_id,
             location_id=location.location_id,
         )
-        if position is None:
-            # Item has no stock position at this location — was never received
-            # here.  Skip COGS for this line; finalize still succeeds.
+        if total_on_hand <= 0:
+            # Item has no stock at this location — was never received here.
+            # Skip COGS for this line; finalize still succeeds.
             # (test: test_zero_cost_item_finalize_skips_cogs_voucher)
             continue
 
-        # Position exists — let remove_stock handle it; any insufficient-stock
+        # Stock exists — consume it FIFO across lots; any insufficient-stock
         # error propagates up and finalize fails with a clear message.
-        ledger_row = inventory_service.remove_stock(
+        ledger_rows = inventory_service.remove_stock_fifo(
             session,
             org_id=org_id,
             firm_id=invoice.firm_id,
@@ -1243,9 +1292,18 @@ def _post_cogs_for_invoice(
             txn_date=invoice.invoice_date,
         )
 
-        unit_cost = (
-            Decimal(ledger_row.unit_cost) if ledger_row.unit_cost is not None else Decimal("0")
+        # Qty-weighted average unit cost across the consumed lots so the COGS
+        # voucher amount equals the actual value relieved from stock.
+        total_qty_out = sum((Decimal(r.qty_out or 0) for r in ledger_rows), Decimal("0"))
+        total_cost = sum(
+            (
+                Decimal(r.qty_out or 0)
+                * (Decimal(r.unit_cost) if r.unit_cost is not None else Decimal("0"))
+                for r in ledger_rows
+            ),
+            Decimal("0"),
         )
+        unit_cost = (total_cost / total_qty_out) if total_qty_out > 0 else Decimal("0")
         consumed.append((line.item_id, qty, unit_cost))
 
     accounting_service.post_cogs_voucher(

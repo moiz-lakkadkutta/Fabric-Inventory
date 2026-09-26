@@ -1904,19 +1904,31 @@ def _seed_routings(
     return out
 
 
-def _set_op_executor_karigar(*, op: MoOperation, karigar_party_id: uuid.UUID) -> None:
-    """Flip an MoOperation's executor to KARIGAR in-place. ``mo_service``
-    seeds every op as IN_HOUSE; the seed script needs to demote one
-    embroidery op to KARIGAR so the dispatch demo MO can drive the
-    karigar_send_out_service path.
+def _set_op_executor_karigar(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    op: MoOperation,
+    karigar_party_id: uuid.UUID,
+) -> None:
+    """Flip an MoOperation's executor to KARIGAR so the dispatch demo MO
+    can drive the ``karigar_send_out_service`` path.
 
-    No dedicated service exists for this column flip (it's a planning-
-    time tweak, not a state-machine transition), so the seed mutates the
-    column directly. Matches the test fixtures' pattern in
-    ``test_qc_rework_clone.py``.
+    #204: the backdoor is retired — this now routes through the public
+    ``mo_service.set_operation_executor`` (PENDING-only, validated,
+    audited, advisory-locked) so the demo exercises the same code path a
+    real caller hits. The op is still PENDING here (flipped before
+    ``start_mo``), which the service requires.
     """
-    op.executor = "KARIGAR"
-    op.karigar_party_id = karigar_party_id
+    mo_service.set_operation_executor(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        mo_operation_id=op.mo_operation_id,
+        executor="KARIGAR",
+        karigar_party_id=karigar_party_id,
+    )
 
 
 def _find_op_by_code(
@@ -2107,7 +2119,13 @@ def _drive_mo_to_state(
             code="OP-EMB-ZRD",
         )
         if emb_op is not None:
-            _set_op_executor_karigar(op=emb_op, karigar_party_id=karigar_party_id)
+            _set_op_executor_karigar(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                op=emb_op,
+                karigar_party_id=karigar_party_id,
+            )
             session.flush()
         # Move MO to IN_PROGRESS without touching inventory.
         mo_service.start_mo(session, org_id=org_id, mo_id=mo.manufacturing_order_id)

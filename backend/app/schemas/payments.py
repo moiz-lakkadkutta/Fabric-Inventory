@@ -19,9 +19,15 @@ class PaymentCreateRequest(BaseModel):
     """
 
     party_id: uuid.UUID
-    amount: Annotated[Decimal, Field(gt=0, decimal_places=2)]
+    # #207: add the ₹1e9 magnitude cap to match ReceiptCreateRequest so an
+    # oversized payment is a 422 field error, never a NUMERIC(18,2) overflow.
+    amount: Annotated[Decimal, Field(gt=0, le=Decimal("1e9"), decimal_places=2)]
     payment_date: datetime.date
     mode: Literal["CASH", "BANK", "UPI"] = "CASH"
+    # #201: for BANK/UPI, the bank account whose sub-ledger the payment
+    # credits — required once the firm has ≥1 bank account so the movement
+    # is reconcilable. Must be omitted for CASH. The service enforces these.
+    bank_account_id: uuid.UUID | None = None
     reference: str | None = Field(default=None, max_length=255)
     series: str = Field(default="PMT/2526", min_length=1, max_length=50)
 

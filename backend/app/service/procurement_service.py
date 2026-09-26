@@ -26,6 +26,7 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError, InvoiceStateError
@@ -34,12 +35,15 @@ from app.models import (
     Firm,
     GRNLine,
     Item,
+    Lot,
     Party,
+    PaymentAllocation,
     PILine,
     POLine,
     PurchaseInvoice,
     PurchaseOrder,
 )
+from app.models.masters import TrackingType
 from app.models.procurement import (
     GRNStatus,
     PurchaseInvoiceLifecycleStatus,
@@ -47,6 +51,7 @@ from app.models.procurement import (
     VoucherStatus,
 )
 from app.service import accounting_service, gst_service, inventory_service
+from app.utils.money import ensure_money_in_range
 
 # ──────────────────────────────────────────────────────────────────────
 # 3-way-match policy constants (#200)
@@ -205,6 +210,9 @@ def create_po(
         qty = Decimal(str(line["qty_ordered"]))
         rate = Decimal(str(line["rate"]))
         line_amount = qty * rate
+        # #207: derived product can overflow NUMERIC(18,2) even when qty/rate
+        # each pass their ≤1e9 field caps — reject with a 422 per-line.
+        ensure_money_in_range(line_amount, field=f"lines.{idx}.line_amount")
         total += line_amount
         po_line = POLine(
             org_id=org_id,
@@ -221,6 +229,7 @@ def create_po(
             updated_by=created_by,
         )
         session.add(po_line)
+    ensure_money_in_range(total, field="total_amount")
     po.total_amount = total
     session.flush()
     return po
@@ -614,6 +623,8 @@ def create_grn(
         rate = Decimal(str(line["rate"])) if line.get("rate") is not None else None
         total_qty += qty
         if rate is not None:
+            # #207: guard the derived product before it reaches NUMERIC(18,2).
+            ensure_money_in_range(qty * rate, field=f"lines.{idx}.line_amount")
             total_amount += qty * rate
         grn_line = GRNLine(
             org_id=org_id,
@@ -628,6 +639,7 @@ def create_grn(
             updated_by=created_by,
         )
         session.add(grn_line)
+    ensure_money_in_range(total_amount, field="total_amount")
     grn.total_qty_received = total_qty
     grn.total_amount = total_amount if total_amount > 0 else None
     session.flush()
@@ -674,6 +686,85 @@ def list_grns(
     return list(session.execute(stmt).scalars())
 
 
+def _get_or_create_lot_for_grn_line(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    grn: GRN,
+    line: GRNLine,
+    tracking: TrackingType | None,
+    created_by: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """Resolve (get-or-create) the `lot_id` a GRN line's stock should key to.
+
+    #202 — lot traceability. Called once per line from `receive_grn`, inside
+    the #190 GRN row lock and after the #200 3-way-match guards, so the
+    minting happens on the already-serialized, already-validated receive path.
+
+    Rules:
+      * `line.lot_number` set → use it verbatim (any tracking type).
+      * else item ``tracking in (LOT, BATCH)`` → auto-generate
+        ``f"{grn.series}/{grn.number}-{seq}"`` so tracked items always get a
+        lot rather than silently landing in a NULL-lot position (which is the
+        exact bug #202 fixes).
+      * else (``NONE`` / ``SERIAL``) → return ``None`` (commodity items keep a
+        single NULL-lot position; SERIAL is Phase-3).
+
+    Get-or-create by the ``(org_id, firm_id, item_id, lot_number)`` unique key:
+    the same supplier lot received across two GRNs is one Lot, and the original
+    ``grn_id`` (first receipt) is preserved. A concurrent insert of the same
+    lot from two *different* GRNs surfaces as the unique-constraint
+    IntegrityError — caught and re-selected. Two receives of the *same* GRN
+    can't race here: the #190 GRN row lock serializes them.
+    """
+    lot_number = line.lot_number.strip() if line.lot_number else None
+    if not lot_number:
+        if tracking in {TrackingType.LOT, TrackingType.BATCH}:
+            lot_number = f"{grn.series}/{grn.number}-{line.line_sequence or 1}"
+        else:
+            return None
+
+    predicate = (
+        Lot.org_id == org_id,
+        Lot.firm_id == grn.firm_id,
+        Lot.item_id == line.item_id,
+        Lot.lot_number == lot_number,
+        Lot.deleted_at.is_(None),
+    )
+    existing = session.execute(select(Lot).where(*predicate)).scalar_one_or_none()
+    if existing is not None:
+        return existing.lot_id
+
+    lot = Lot(
+        org_id=org_id,
+        firm_id=grn.firm_id,
+        item_id=line.item_id,
+        lot_number=lot_number,
+        grn_id=grn.grn_id,
+        received_date=grn.grn_date,
+        primary_cost=Decimal(line.rate) if line.rate is not None else None,
+        cost_basis="GRN_RATE",
+        weight_kg=Decimal(line.weight_kg) if line.weight_kg is not None else None,
+        measured_length_m=(
+            Decimal(line.measured_length_m) if line.measured_length_m is not None else None
+        ),
+        created_by=created_by,
+        updated_by=created_by,
+    )
+    try:
+        # Nested savepoint so a cross-GRN unique-violation rolls back only the
+        # lot insert, not the whole receive transaction (GRN lock + stock).
+        with session.begin_nested():
+            session.add(lot)
+            session.flush()
+    except IntegrityError:
+        existing = session.execute(select(Lot).where(*predicate)).scalar_one_or_none()
+        if existing is None:  # pragma: no cover — defensive; the unique key won.
+            raise
+        return existing.lot_id
+    return lot.lot_id
+
+
 def receive_grn(
     session: Session,
     *,
@@ -688,7 +779,25 @@ def receive_grn(
     Idempotent in the sense that an already-ACKNOWLEDGED GRN raises an
     `InvoiceStateError` rather than double-posting stock.
     """
-    grn = get_grn(session, org_id=org_id, grn_id=grn_id)
+    # #190 concurrency: lock the GRN header row BEFORE the DRAFT check so two
+    # overlapping receive transactions serialize here instead of both posting
+    # stock. The loser blocks on the row lock, wakes after the winner commits,
+    # sees ACKNOWLEDGED (READ COMMITTED re-reads under the lock, aided by
+    # populate_existing) and raises InvoiceStateError (→ 409). `get_grn` stays
+    # lock-free for GET paths, so we inline the locked read here.
+    grn = session.execute(
+        select(GRN)
+        .options(selectinload(GRN.lines))
+        .where(
+            GRN.grn_id == grn_id,
+            GRN.org_id == org_id,
+            GRN.deleted_at.is_(None),
+        )
+        .with_for_update(of=GRN)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if grn is None:
+        raise AppValidationError(f"GRN {grn_id} not found")
     if grn.status != GRNStatus.DRAFT.value:
         raise InvoiceStateError(
             f"Cannot receive GRN {grn_id}: current status is {grn.status}, expected DRAFT"
@@ -737,8 +846,28 @@ def receive_grn(
     location = inventory_service.get_or_create_default_location(
         session, org_id=org_id, firm_id=grn.firm_id
     )
+    # #202: fetch each line's item tracking once so we know whether to mint a
+    # lot for lines that carry no explicit lot_number (LOT/BATCH auto-generate).
+    line_item_ids = {line.item_id for line in grn.lines}
+    tracking_by_item = {
+        row.item_id: row.tracking
+        for row in session.execute(
+            select(Item).where(Item.item_id.in_(line_item_ids), Item.org_id == org_id)
+        ).scalars()
+    }
     for line in grn.lines:
         unit_cost = Decimal(line.rate) if line.rate is not None else Decimal("0")
+        # #202: mint (or reuse) the lot this line's stock keys to, then thread
+        # its lot_id into add_stock so stock_ledger.lot_id + the per-lot
+        # stock_position are populated (was silently dropped before).
+        lot_id = _get_or_create_lot_for_grn_line(
+            session,
+            org_id=org_id,
+            grn=grn,
+            line=line,
+            tracking=tracking_by_item.get(line.item_id),
+            created_by=updated_by,
+        )
         inventory_service.add_stock(
             session,
             org_id=org_id,
@@ -747,6 +876,7 @@ def receive_grn(
             location_id=location.location_id,
             qty=Decimal(line.qty_received),
             unit_cost=unit_cost,
+            lot_id=lot_id,
             reference_type="GRN",
             reference_id=grn.grn_id,
             txn_date=grn.grn_date,
@@ -939,6 +1069,8 @@ def create_pi(
         if rate < 0:
             raise AppValidationError(f"PI line rate cannot be negative (got {rate})")
         line_amount = qty * rate
+        # #207: reject a derived product that overflows NUMERIC(18,2).
+        ensure_money_in_range(line_amount, field=f"lines.{idx}.line_amount")
         gst_rate = Decimal(str(line["gst_rate"])) if line.get("gst_rate") is not None else None
         # GST-2 belt-and-suspenders: validate rate against slab allow-list
         # even when called outside the HTTP/Pydantic path.
@@ -970,6 +1102,8 @@ def create_pi(
             updated_by=created_by,
         )
         session.add(pi_line)
+    ensure_money_in_range(invoice_total, field="invoice_amount")
+    ensure_money_in_range(gst_total, field="gst_amount")
     pi.invoice_amount = invoice_total
     pi.gst_amount = gst_total if gst_total > 0 else None
     session.flush()
@@ -1097,6 +1231,34 @@ def void_pi(
         raise InvoiceStateError(
             f"Cannot void PI {pi_id}: status is RECONCILED (payment-allocated); "
             f"use a debit-note workflow instead"
+        )
+    # #191: a partially-paid PI stays POSTED/PARTIALLY_PAID (only a *full* payment
+    # flips it to RECONCILED), so the RECONCILED guard above misses it. Voiding it
+    # would reverse the full invoice in GL while the payment's DR AP leg stays,
+    # orphaning the cash and diverging AP control from supplier outstanding.
+    # Refuse — supplier refunds/debit notes are a follow-up workflow (TASK-049).
+    paid = Decimal(pi.paid_amount or 0)
+    if paid > 0:
+        raise InvoiceStateError(
+            f"Cannot void PI {pi_id}: ₹{paid} has already been paid/allocated against "
+            f"it (lifecycle {pi.lifecycle_status}). Unwind the payment first — supplier "
+            f"refunds/debit notes are a follow-up workflow (TASK-049)."
+        )
+    # Belt-and-suspenders: catch rows where paid_amount drifted from allocations.
+    has_live_alloc = session.execute(
+        select(PaymentAllocation.allocation_id)
+        .where(
+            PaymentAllocation.purchase_invoice_id == pi.purchase_invoice_id,
+            PaymentAllocation.org_id == org_id,
+            PaymentAllocation.deleted_at.is_(None),
+            PaymentAllocation.reversed_by_allocation_id.is_(None),
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if has_live_alloc is not None:
+        raise InvoiceStateError(
+            f"Cannot void PI {pi_id}: a live payment allocation references it. "
+            f"Unwind the payment first."
         )
     # B1: if the PI is POSTED it already has a GL voucher (DR Inventory + DR
     # ITC / CR AP). Reverse it before flipping status so the trial balance

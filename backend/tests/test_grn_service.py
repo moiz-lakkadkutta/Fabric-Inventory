@@ -14,6 +14,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import AppValidationError, InvoiceStateError
@@ -1226,3 +1227,222 @@ def test_receive_grn_against_po_with_null_po_line_still_works(
     # No po_line advanced → PO stays CONFIRMED, line received 0.
     assert final_po.status == PurchaseOrderStatus.CONFIRMED
     assert final_po.lines[0].qty_received == Decimal("0")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #202 — lot traceability: receive_grn mints lot rows
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _lot_item(
+    db_session: OrmSession,
+    org_id: uuid.UUID,
+    *,
+    tracking: object | None = None,
+) -> Item:
+    """Create a fresh item, optionally lot-tracked."""
+    from app.models.masters import TrackingType
+
+    item = Item(
+        org_id=org_id,
+        firm_id=None,
+        code=f"I-{uuid.uuid4().hex[:6]}",
+        name="Lot Item",
+        item_type=ItemType.RAW,
+        primary_uom=UomType.METER,
+        tracking=tracking if tracking is not None else TrackingType.NONE,
+    )
+    db_session.add(item)
+    db_session.flush()
+    return item
+
+
+def test_receive_grn_creates_lot_row(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Repro for #202: receiving a GRN line with lot_number mints exactly
+    one Lot row (grn_id set) and stamps stock_ledger.lot_id + position."""
+    from app.models import Lot, StockLedger, StockPosition
+
+    firm, party, item = grn_setup
+    grn = procurement_service.create_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        grn_date=datetime.date(2026, 4, 27),
+        series="GRN/2025-26",
+        lines=[
+            {
+                "item_id": item.item_id,
+                "qty_received": "30",
+                "rate": "150.00",
+                "lot_number": "LOT-A1",
+            }
+        ],
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
+
+    lots = list(
+        db_session.execute(
+            select(Lot).where(Lot.org_id == fresh_org_id, Lot.lot_number == "LOT-A1")
+        ).scalars()
+    )
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.grn_id == grn.grn_id
+    assert lot.received_date == grn.grn_date
+    assert Decimal(str(lot.primary_cost)) == Decimal("150")
+    assert lot.firm_id == firm.firm_id
+
+    # Ledger IN row carries the lot_id.
+    ledger = db_session.execute(
+        select(StockLedger).where(
+            StockLedger.reference_type == "GRN", StockLedger.reference_id == grn.grn_id
+        )
+    ).scalar_one()
+    assert ledger.lot_id == lot.lot_id
+
+    # Position keyed by the lot carries the qty.
+    pos = db_session.execute(
+        select(StockPosition).where(StockPosition.lot_id == lot.lot_id)
+    ).scalar_one()
+    assert Decimal(pos.on_hand_qty) == Decimal("30")
+
+
+def test_receive_grn_reuses_existing_lot(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Same item + lot_number across two GRNs → one Lot; grn_id stays the
+    first GRN's; the lot position sums both quantities."""
+    from app.models import Lot, StockPosition
+
+    firm, party, item = grn_setup
+    grn1 = procurement_service.create_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        grn_date=datetime.date(2026, 4, 27),
+        series="GRN/2025-26",
+        lines=[{"item_id": item.item_id, "qty_received": "10", "rate": "50", "lot_number": "L-9"}],
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn1.grn_id)
+    grn2 = procurement_service.create_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        grn_date=datetime.date(2026, 5, 1),
+        series="GRN/2025-26",
+        lines=[{"item_id": item.item_id, "qty_received": "15", "rate": "60", "lot_number": "L-9"}],
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn2.grn_id)
+
+    lots = list(
+        db_session.execute(
+            select(Lot).where(Lot.org_id == fresh_org_id, Lot.lot_number == "L-9")
+        ).scalars()
+    )
+    assert len(lots) == 1
+    assert lots[0].grn_id == grn1.grn_id  # first receipt keeps ownership
+    pos = db_session.execute(
+        select(StockPosition).where(StockPosition.lot_id == lots[0].lot_id)
+    ).scalar_one()
+    assert Decimal(pos.on_hand_qty) == Decimal("25")
+
+
+def test_receive_grn_autogenerates_lot_for_tracked_item_without_number(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Item tracking=LOT, line with no lot_number → lot auto-generated as
+    f'{series}/{number}-{seq}'."""
+    from app.models import Lot
+    from app.models.masters import TrackingType
+
+    firm, party, _ = grn_setup
+    item = _lot_item(db_session, fresh_org_id, tracking=TrackingType.LOT)
+    grn = procurement_service.create_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        grn_date=datetime.date(2026, 4, 27),
+        series="GRN/2025-26",
+        lines=[{"item_id": item.item_id, "qty_received": "12", "rate": "20"}],
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
+
+    lot = db_session.execute(
+        select(Lot).where(Lot.org_id == fresh_org_id, Lot.item_id == item.item_id)
+    ).scalar_one()
+    assert lot.lot_number == f"{grn.series}/{grn.number}-1"
+    assert lot.grn_id == grn.grn_id
+
+
+def test_receive_grn_no_lot_for_untracked_item(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Item tracking=NONE, no lot_number → NO Lot row; ledger lot_id NULL
+    (regression pin for commodity items — don't explode per-lot positions)."""
+    from app.models import Lot, StockLedger
+
+    firm, party, item = grn_setup  # grn_setup item defaults to tracking NONE
+    grn = _make_grn(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty_received="40"
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
+
+    lots = list(
+        db_session.execute(
+            select(Lot).where(Lot.org_id == fresh_org_id, Lot.item_id == item.item_id)
+        ).scalars()
+    )
+    assert lots == []
+    ledger = db_session.execute(
+        select(StockLedger).where(
+            StockLedger.reference_type == "GRN", StockLedger.reference_id == grn.grn_id
+        )
+    ).scalar_one()
+    assert ledger.lot_id is None
+
+
+def test_grn_minted_lot_surfaces_via_list_lots(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    grn_setup: tuple[Firm, Party, Item],
+) -> None:
+    """After receiving a lot-numbered GRN, the read service backing GET /lots
+    returns the minted lot with its live qty_on_hand (repro: was empty)."""
+    from app.service import inventory_lots_service
+
+    firm, party, item = grn_setup
+    grn = procurement_service.create_grn(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        grn_date=datetime.date(2026, 4, 27),
+        series="GRN/2025-26",
+        lines=[
+            {"item_id": item.item_id, "qty_received": "30", "rate": "150", "lot_number": "LOT-A1"}
+        ],
+    )
+    procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
+
+    rows, total = inventory_lots_service.list_lots(
+        db_session, org_id=fresh_org_id, firm_id=firm.firm_id
+    )
+    assert total == 1
+    lot, lot_item, qty_on_hand = rows[0]
+    assert lot.lot_number == "LOT-A1"
+    assert lot_item.item_id == item.item_id
+    assert Decimal(qty_on_hand) == Decimal("30")

@@ -33,6 +33,7 @@ Vertical tracer bullets — one test, one assertion family:
 from __future__ import annotations
 
 import uuid
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1018,7 +1019,6 @@ def test_create_mo_translates_number_race_to_422(
     Mirrors the JV pattern at ``accounting_service.post_journal_voucher``
     (C01 hardening, commit 63cec7b)."""
     me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
-    from typing import Any
 
     from sqlalchemy.exc import IntegrityError
 
@@ -1074,7 +1074,6 @@ def test_create_mo_does_not_swallow_unrelated_integrity_errors(
     re-raise the 500 instead of returning the global handler's envelope.
     """
     _ = sync_engine  # ensure the test DB is reachable; mirrors http_client fixture
-    from typing import Any
 
     from sqlalchemy.exc import IntegrityError
 
@@ -1851,14 +1850,15 @@ def test_list_mos_exposes_planned_end_date(http_client: TestClient) -> None:
 def test_create_mo_service_guard_rejects_firm_not_in_org(
     http_client: TestClient,
 ) -> None:
-    """Bmo: assert_firm_in_org must fire at the service layer so that
-    a firm_id outside this org is rejected before any BOM / routing
-    cross-checks run.
+    """Bmo: a firm_id outside this org must be rejected before any
+    BOM / routing cross-checks run — firm-spoof writes are blocked.
 
-    The signup token has firm_id=None (OWNER JWT — see auth.py line 302:
-    ``issue_tokens(db, user=user, firm_id=None)``), so the router-partial
-    check (``if current_user.firm_id is not None ...``) is bypassed.
-    This confirms the guard lives in the *service*, not only the router.
+    Since #208, signup auto-selects the sole firm, so the OWNER token now
+    carries a real firm_id. A foreign firm_id in the body is therefore
+    rejected by the session-firm-match guard ("firm_id must match the
+    current session firm"); if a session ever had firm_id=None the
+    service-layer ``assert_firm_in_org`` ("not found in this organization")
+    would fire instead. Either way the cross-firm write is refused with 422.
 
     Positive case (valid in-org firm succeeds) is already covered by
     ``test_create_mo_materializes_material_lines_and_operations``.
@@ -1868,7 +1868,7 @@ def test_create_mo_service_guard_rejects_firm_not_in_org(
     foreign_firm_id = str(uuid.uuid4())
     resp = http_client.post(
         "/manufacturing/mo",
-        headers=_auth(me["access_token"]),  # firm_id=None in JWT → router check skips
+        headers=_auth(me["access_token"]),
         json={
             "firm_id": foreign_firm_id,
             "design_id": design_id,
@@ -1880,4 +1880,209 @@ def test_create_mo_service_guard_rejects_firm_not_in_org(
         },
     )
     assert resp.status_code == 422, resp.text
-    assert "not found in this organization" in resp.json()["detail"].lower()
+    detail = resp.json()["detail"].lower()
+    assert (
+        "not found in this organization" in detail
+        or "must match the current session firm" in detail
+    ), f"expected a cross-firm rejection, got: {detail}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #204 — per-operation executor overrides at MO-create time
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _create_karigar_party(
+    client: TestClient, owner: dict[str, str], *, label: str = "Imran"
+) -> str:
+    resp = client.post(
+        "/parties",
+        headers=_auth(owner["access_token"]),
+        json={
+            "firm_id": owner["firm_id"],
+            "code": f"K-{uuid.uuid4().hex[:6]}",
+            "name": f"{label} Karigar",
+            "is_karigar": True,
+            "state_code": "MH",
+            "tax_status": "UNREGISTERED",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["party_id"])
+
+
+def _create_plain_party(client: TestClient, owner: dict[str, str]) -> str:
+    resp = client.post(
+        "/parties",
+        headers=_auth(owner["access_token"]),
+        json={
+            "firm_id": owner["firm_id"],
+            "code": f"P-{uuid.uuid4().hex[:6]}",
+            "name": "Plain Vendor",
+            "is_supplier": True,
+            "is_karigar": False,
+            "state_code": "MH",
+            "tax_status": "UNREGISTERED",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return str(resp.json()["party_id"])
+
+
+def _op_ids_from_routing(routing: dict[str, object]) -> list[str]:
+    """Recover the linear-chain operation_master_id order from a routing's
+    edges (from-of-edge[0], then to-of-each-edge)."""
+    edges = cast(list[dict[str, Any]], routing["edges"])
+    ordered = [str(edges[0]["from_operation_id"])]
+    for e in edges:
+        ordered.append(str(e["to_operation_id"]))
+    return ordered
+
+
+def test_create_mo_with_karigar_override_sets_executor(
+    http_client: TestClient,
+) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    op_ids = _op_ids_from_routing(routing)
+    karigar = _create_karigar_party(http_client, me)
+    # Mark the SECOND op as KARIGAR via the override.
+    target_master = op_ids[1]
+
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {"operation_master_id": target_master, "executor": "KARIGAR", "karigar_party_id": karigar}
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 201, resp.text
+    ops = resp.json()["operations"]
+    by_master = {op["operation_master_id"]: op for op in ops}
+    assert by_master[target_master]["executor"] == "KARIGAR"
+    # Every other op stays IN_HOUSE (default path unchanged).
+    for master_id, op in by_master.items():
+        if master_id != target_master:
+            assert op["executor"] == "IN_HOUSE"
+
+
+def test_create_mo_empty_overrides_is_all_in_house(http_client: TestClient) -> None:
+    """Regression: passing an explicit empty overrides list is
+    byte-identical to omitting it — every op IN_HOUSE."""
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = []
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 201, resp.text
+    assert all(op["executor"] == "IN_HOUSE" for op in resp.json()["operations"])
+
+
+def test_create_mo_override_rejects_foreign_operation_master(
+    http_client: TestClient,
+) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    karigar = _create_karigar_party(http_client, me)
+    # An op master that exists but is NOT part of this routing.
+    foreign_master = _create_op(http_client, me, code=f"FOR-{uuid.uuid4().hex[:4]}")
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {"operation_master_id": foreign_master, "executor": "KARIGAR", "karigar_party_id": karigar}
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, resp.text
+    assert "not part of routing" in resp.json()["detail"].lower()
+
+
+def test_create_mo_override_rejects_non_karigar_party(http_client: TestClient) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    op_ids = _op_ids_from_routing(routing)
+    plain = _create_plain_party(http_client, me)
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {"operation_master_id": op_ids[0], "executor": "KARIGAR", "karigar_party_id": plain}
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, resp.text
+    assert "not flagged as a karigar" in resp.json()["detail"].lower()
+
+
+def test_create_mo_override_rejects_unknown_party(http_client: TestClient) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    op_ids = _op_ids_from_routing(routing)
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {
+            "operation_master_id": op_ids[0],
+            "executor": "KARIGAR",
+            "karigar_party_id": str(uuid.uuid4()),
+        }
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, resp.text
+    assert "not found" in resp.json()["detail"].lower()
+
+
+def test_create_mo_override_rejects_party_with_in_house(http_client: TestClient) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    op_ids = _op_ids_from_routing(routing)
+    karigar = _create_karigar_party(http_client, me)
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {"operation_master_id": op_ids[0], "executor": "IN_HOUSE", "karigar_party_id": karigar}
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, resp.text
+    assert "executor='karigar'" in resp.json()["detail"].lower()
+
+
+def test_create_mo_override_rejects_duplicate_master(http_client: TestClient) -> None:
+    me, design_id, finished, _raws, bom, routing = _seed_mo_world(http_client)
+    op_ids = _op_ids_from_routing(routing)
+    karigar = _create_karigar_party(http_client, me)
+    payload = _mo_payload(
+        me=me,
+        design_id=design_id,
+        finished_item_id=finished,
+        bom_id=str(bom["bom_id"]),
+        routing_id=str(routing["routing_id"]),
+    )
+    payload["operation_overrides"] = [
+        {"operation_master_id": op_ids[0], "executor": "KARIGAR", "karigar_party_id": karigar},
+        {"operation_master_id": op_ids[0], "executor": "IN_HOUSE"},
+    ]
+    resp = http_client.post("/manufacturing/mo", headers=_auth(me["access_token"]), json=payload)
+    assert resp.status_code == 422, resp.text
+    assert "duplicate" in resp.json()["detail"].lower()

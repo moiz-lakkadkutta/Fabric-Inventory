@@ -58,12 +58,15 @@ def test_me_with_valid_access_token_returns_payload(http_client: TestClient) -> 
     out = resp.json()
     assert out["user_id"] == body["user_id"]
     assert out["org_id"] == body["org_id"]
-    assert out["firm_id"] is None
+    # Since #208, signup auto-selects the sole firm, so the token/me now
+    # carry that firm_id rather than None.
+    assert out["firm_id"] == body["firm_id"]
     # Owner role → all 38 system permissions.
     assert "sales.invoice.finalize" in out["permissions"]
     assert "accounting.voucher.post" in out["permissions"]
-    # Q10c: flags map is part of the response; empty when no firm is active.
-    assert out["flags"] == {}
+    # flags map is part of the response; now that a firm is active it resolves
+    # to that firm's feature flags (a dict), rather than being empty.
+    assert isinstance(out["flags"], dict)
 
 
 def test_me_without_token_returns_401(http_client: TestClient) -> None:

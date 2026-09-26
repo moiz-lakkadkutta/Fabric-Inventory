@@ -1465,6 +1465,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/manufacturing/mo-operations/{mo_operation_id}/executor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Set an MO operation's executor (IN_HOUSE ⇄ KARIGAR) — PENDING ops only (#204)
+         * @description #204 — make the karigar (job-work) flow reachable on any MO.
+         *
+         *     Flips a PENDING operation between IN_HOUSE and KARIGAR so
+         *     ``dispatch-karigar`` no longer 422s on API-created MOs. Guarded to
+         *     PENDING ops with no recorded work; advisory-locked against a
+         *     concurrent dispatch. Idempotency-Key flows via the global middleware.
+         */
+        patch: operations["set_mo_operation_executor_manufacturing_mo_operations__mo_operation_id__executor_patch"];
+        trace?: never;
+    };
     "/manufacturing/mo-operations/{mo_operation_id}/qc-result": {
         parameters: {
             query?: never;
@@ -5723,6 +5748,8 @@ export interface components {
             firm_id: string;
             /** Narration */
             narration?: string | null;
+            /** Operation Overrides */
+            operation_overrides?: components["schemas"]["MoOperationExecutorOverride"][];
             /** Planned End Date */
             planned_end_date?: string | null;
             /**
@@ -5838,6 +5865,66 @@ export interface components {
             qty_required: string;
             /** Qty Scrap */
             qty_scrap: string;
+        };
+        /**
+         * MoOperationExecutorOverride
+         * @description Per-operation executor override supplied at MO-create time (#204).
+         *
+         *     Lets the caller mark one (or more) of the routing's operations as a
+         *     ``KARIGAR`` (job-work) operation so the karigar send-out flow is
+         *     reachable on a freshly-created MO — without it every op materialises
+         *     as ``IN_HOUSE`` and ``dispatch-karigar`` 422s.
+         *
+         *     ``operation_master_id`` MUST be one of the routing's operations; the
+         *     service validates membership and rejects duplicates / foreign masters
+         *     with a 422. ``karigar_party_id`` is optional at create time (the
+         *     dispatch step sets it if omitted) but, when provided, the party must
+         *     be an org-scoped, non-deleted ``is_karigar`` party. Supplying a
+         *     ``karigar_party_id`` with ``executor="IN_HOUSE"`` is a 422.
+         */
+        MoOperationExecutorOverride: {
+            /**
+             * Executor
+             * @enum {string}
+             */
+            executor: "IN_HOUSE" | "KARIGAR";
+            /** Karigar Party Id */
+            karigar_party_id?: string | null;
+            /**
+             * Operation Master Id
+             * Format: uuid
+             */
+            operation_master_id: string;
+        };
+        /**
+         * MoOperationExecutorRequest
+         * @description Body for ``PATCH /manufacturing/mo-operations/{id}/executor`` (#204).
+         *
+         *     Flips a PENDING operation between ``IN_HOUSE`` and ``KARIGAR`` after
+         *     the MO already exists (mind-changes, or MOs created before the caller
+         *     knew a step would be outsourced). Only PENDING ops with no recorded
+         *     work may be flipped — the service 422s otherwise.
+         *
+         *     ``firm_id`` is defence-in-depth on top of RLS (must match the
+         *     session's firm scope when set). ``karigar_party_id`` is required-shape
+         *     identical to the create-time override: allowed only with
+         *     ``executor="KARIGAR"`` and only for an ``is_karigar`` org party.
+         */
+        MoOperationExecutorRequest: {
+            /**
+             * Executor
+             * @enum {string}
+             */
+            executor: "IN_HOUSE" | "KARIGAR";
+            /**
+             * Firm Id
+             * Format: uuid
+             */
+            firm_id: string;
+            /** Karigar Party Id */
+            karigar_party_id?: string | null;
+            /** Narration */
+            narration?: string | null;
         };
         /**
          * MoOperationListItem
@@ -6836,6 +6923,8 @@ export interface components {
         PaymentCreateRequest: {
             /** Amount */
             amount: number | string;
+            /** Bank Account Id */
+            bank_account_id?: string | null;
             /**
              * Mode
              * @default CASH
@@ -7243,6 +7332,8 @@ export interface components {
         ReceiptCreateRequest: {
             /** Amount */
             amount: number | string;
+            /** Bank Account Id */
+            bank_account_id?: string | null;
             /**
              * Mode
              * @default CASH
@@ -8208,6 +8299,11 @@ export interface components {
             item_id: string;
             /** Item Name */
             item_name: string;
+            /**
+             * Lot Count
+             * @default 0
+             */
+            lot_count: number;
             /** On Hand Qty */
             on_hand_qty: string;
             /** Sku Code */
@@ -11795,6 +11891,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KarigarOperationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_mo_operation_executor_manufacturing_mo_operations__mo_operation_id__executor_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                mo_operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoOperationExecutorRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationProgressResponse"];
                 };
             };
             /** @description Validation Error */

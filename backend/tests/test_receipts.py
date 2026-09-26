@@ -18,13 +18,15 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import text
+import pytest
+from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
 
-from app.models import Firm, Organization, Party, Voucher
-from app.models.accounting import VoucherStatus, VoucherType
-from app.service import rbac_service, receipt_service, seed_service
+from app.exceptions import AppValidationError
+from app.models import Firm, Organization, Party, Voucher, VoucherLine
+from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
+from app.service import banking_service, rbac_service, receipt_service, seed_service
 
 
 def _seed_org_with_coa_and_party(
@@ -206,3 +208,154 @@ def test_receipt_allocate_voucher_number_numeric_max_after_9999(
         f"BL-05: numeric max of ['9999','10000'] is 10000, so next must be '10001'; "
         f"got {next_num!r}. VARCHAR max would yield '9999' → '10000' (collision!)."
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #201 — BANK/UPI receipts settle against the bank account's sub-ledger
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_bank_account(
+    session: OrmSession, *, org_id: uuid.UUID, firm_id: uuid.UUID, label: str = "A"
+) -> tuple[Any, Any]:
+    """Create a non-control bank sub-ledger + BankAccount (mirror of the
+    payment-service test helper)."""
+    from app.models import Ledger
+
+    bank_control = session.execute(
+        select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == "1100",
+            Ledger.firm_id.is_(None),
+        )
+    ).scalar_one()
+    sub = Ledger(
+        org_id=org_id,
+        firm_id=firm_id,
+        code=f"1101-{uuid.uuid4().hex[:6].upper()}",
+        name=f"HDFC Sub-ledger {label}",
+        coa_group_id=bank_control.coa_group_id,
+        ledger_type="BANK",
+        is_control_account=False,
+    )
+    session.add(sub)
+    session.flush()
+    account = banking_service.create_bank_account(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        ledger_id=sub.ledger_id,
+        bank_name=f"HDFC {label}",
+    )
+    return account, sub
+
+
+def _ledger_code_by_id(session: OrmSession, ledger_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    from app.models import Ledger
+
+    return {
+        ld.ledger_id: ld.code
+        for ld in session.execute(select(Ledger).where(Ledger.ledger_id.in_(ledger_ids))).scalars()
+    }
+
+
+def test_receipt_bank_account_subledger(db_session: OrmSession) -> None:
+    """#201 (AR side): a BANK receipt carrying bank_account_id must DEBIT the
+    account's sub-ledger (not 1100). Exercises the advances split too: an
+    open invoice smaller than the receipt so the CR side lands on both AR
+    (1200) and Customer Advances (2500) and the voucher stays balanced.
+    """
+    org_id, firm_id, party_id = _seed_org_with_coa_and_party(db_session, party_name="Silk House")
+    account, sub = _make_bank_account(db_session, org_id=org_id, firm_id=firm_id)
+
+    # One open invoice with ₹600 outstanding.
+    from app.models.sales import InvoiceLifecycleStatus, SalesInvoice
+
+    inv = SalesInvoice(
+        org_id=org_id,
+        firm_id=firm_id,
+        series="INV/2526",
+        number="0001",
+        party_id=party_id,
+        invoice_date=datetime.date(2026, 4, 1),
+        invoice_amount=Decimal("600.00"),
+        paid_amount=Decimal("0"),
+        lifecycle_status=InvoiceLifecycleStatus.FINALIZED,
+    )
+    db_session.add(inv)
+    db_session.flush()
+
+    # Receive ₹1000 → ₹600 allocated to AR, ₹400 booked as advance.
+    voucher = receipt_service.post_receipt(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        amount=Decimal("1000.00"),
+        receipt_date=datetime.date(2026, 4, 30),
+        mode="BANK",
+        bank_account_id=account.bank_account_id,
+    )
+
+    lines = list(
+        db_session.execute(
+            select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id)
+        ).scalars()
+    )
+    code_by_id = _ledger_code_by_id(db_session, [ln.ledger_id for ln in lines])
+
+    dr_lines = [ln for ln in lines if ln.line_type == JournalLineType.DR]
+    cr_lines = [ln for ln in lines if ln.line_type == JournalLineType.CR]
+
+    # DR leg must be on the bank sub-ledger, not 1100.
+    assert len(dr_lines) == 1
+    assert dr_lines[0].ledger_id == sub.ledger_id
+    assert Decimal(dr_lines[0].amount) == Decimal("1000.00")
+    dr_codes = {code_by_id[ln.ledger_id] for ln in dr_lines}
+    assert "1100" not in dr_codes
+
+    # CR side splits AR (1200) + Customer Advances (2500) and balances.
+    cr_codes = {code_by_id[ln.ledger_id] for ln in cr_lines}
+    assert "1200" in cr_codes
+    assert "2500" in cr_codes
+    total_dr = sum(Decimal(ln.amount) for ln in dr_lines)
+    total_cr = sum(Decimal(ln.amount) for ln in cr_lines)
+    assert total_dr == total_cr == Decimal("1000.00")
+
+
+def test_receipt_cash_mode_rejects_bank_account_id(db_session: OrmSession) -> None:
+    """#201: CASH receipt must not carry a bank_account_id."""
+    org_id, firm_id, party_id = _seed_org_with_coa_and_party(db_session, party_name="Cash Co")
+    account, _sub = _make_bank_account(db_session, org_id=org_id, firm_id=firm_id)
+
+    with pytest.raises(AppValidationError, match="CASH"):
+        receipt_service.post_receipt(
+            db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=party_id,
+            amount=Decimal("500.00"),
+            receipt_date=datetime.date(2026, 4, 30),
+            mode="CASH",
+            bank_account_id=account.bank_account_id,
+        )
+
+
+def test_receipt_bank_mode_requires_account_when_one_exists(
+    db_session: OrmSession,
+) -> None:
+    """#201: with ≥1 bank account, a BANK receipt without bank_account_id
+    is rejected."""
+    org_id, firm_id, party_id = _seed_org_with_coa_and_party(db_session, party_name="Needs Account")
+    _make_bank_account(db_session, org_id=org_id, firm_id=firm_id)
+
+    with pytest.raises(AppValidationError, match="requires bank_account_id"):
+        receipt_service.post_receipt(
+            db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=party_id,
+            amount=Decimal("500.00"),
+            receipt_date=datetime.date(2026, 4, 30),
+            mode="BANK",
+        )

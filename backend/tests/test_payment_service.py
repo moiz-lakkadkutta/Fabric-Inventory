@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import uuid
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -390,3 +391,220 @@ def test_payment_amount_must_be_positive(db_session: OrmSession) -> None:
                 payment_date=datetime.date(2026, 1, 20),
                 mode="CASH",
             )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #201 — BANK/UPI payments settle against the bank account's sub-ledger
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_bank_account(
+    session: OrmSession, *, org_id: uuid.UUID, firm: Firm, label: str = "A"
+) -> tuple[Any, Any]:
+    """Create a non-control bank sub-ledger + a BankAccount linked to it.
+
+    Reuses the coa_group of the seeded bank control ledger (1100) so the
+    new sub-ledger sits under the same Assets group.
+    """
+    from app.models import Ledger
+    from app.service import banking_service
+
+    bank_control = session.execute(
+        select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == "1100",
+            Ledger.firm_id.is_(None),
+        )
+    ).scalar_one()
+    sub = Ledger(
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        code=f"1101-{uuid.uuid4().hex[:6].upper()}",
+        name=f"HDFC Sub-ledger {label}",
+        coa_group_id=bank_control.coa_group_id,
+        ledger_type="BANK",
+        is_control_account=False,
+    )
+    session.add(sub)
+    session.flush()
+    account = banking_service.create_bank_account(
+        session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        ledger_id=sub.ledger_id,
+        bank_name=f"HDFC {label}",
+    )
+    return account, sub
+
+
+def _cr_ledger_codes(session: OrmSession, voucher_id: uuid.UUID) -> set[str]:
+    from app.models import Ledger
+
+    lines = list(
+        session.execute(select(VoucherLine).where(VoucherLine.voucher_id == voucher_id)).scalars()
+    )
+    ledger_by_id = {
+        ld.ledger_id: ld
+        for ld in session.execute(
+            select(Ledger).where(Ledger.ledger_id.in_([ln.ledger_id for ln in lines]))
+        ).scalars()
+    }
+    return {ledger_by_id[ln.ledger_id].code for ln in lines if ln.line_type == JournalLineType.CR}
+
+
+def test_bank_payment_posts_to_account_subledger(db_session: OrmSession) -> None:
+    """#201 repro (half 1, AP side): a BANK payment carrying bank_account_id
+    must credit the account's sub-ledger, NOT the shared 1100 control ledger.
+    Before the fix, every BANK payment hardcoded CR 1100 → preview could
+    never surface a candidate.
+    """
+    org_id, firm, party, item = _seed_env(db_session)
+    account, sub = _make_bank_account(db_session, org_id=org_id, firm=firm)
+
+    _make_posted_pi(
+        db_session,
+        org_id=org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        invoice_amount="500.00",
+    )
+
+    voucher = payment_service.post_payment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        amount=Decimal("500.00"),
+        payment_date=datetime.date(2026, 1, 20),
+        mode="BANK",
+        bank_account_id=account.bank_account_id,
+    )
+
+    # CR leg must be on the sub-ledger, and 1100 must NOT appear.
+    lines = list(
+        db_session.execute(
+            select(VoucherLine).where(VoucherLine.voucher_id == voucher.voucher_id)
+        ).scalars()
+    )
+    cr_lines = [ln for ln in lines if ln.line_type == JournalLineType.CR]
+    assert len(cr_lines) == 1
+    assert cr_lines[0].ledger_id == sub.ledger_id
+    assert "1100" not in _cr_ledger_codes(db_session, voucher.voucher_id)
+
+
+def test_bank_mode_requires_account_when_one_exists(db_session: OrmSession) -> None:
+    """#201: when the firm has ≥1 bank account, a BANK payment without a
+    bank_account_id is rejected (forcing function so recon works)."""
+    org_id, firm, party, item = _seed_env(db_session)
+    _make_bank_account(db_session, org_id=org_id, firm=firm)
+    _make_posted_pi(
+        db_session,
+        org_id=org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        invoice_amount="500.00",
+    )
+
+    with pytest.raises(AppValidationError, match="requires bank_account_id"):
+        payment_service.post_payment(
+            db_session,
+            org_id=org_id,
+            firm_id=firm.firm_id,
+            party_id=party.party_id,
+            amount=Decimal("500.00"),
+            payment_date=datetime.date(2026, 1, 20),
+            mode="BANK",
+            bank_account_id=None,
+        )
+
+
+def test_bank_mode_falls_back_to_1100_when_no_accounts(db_session: OrmSession) -> None:
+    """#201: legacy fallback — a firm with zero bank accounts keeps posting
+    BANK payments to the 1100 control ledger (keeps existing FE working
+    until the account picker ships)."""
+    org_id, firm, party, item = _seed_env(db_session)
+    _make_posted_pi(
+        db_session,
+        org_id=org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        invoice_amount="500.00",
+    )
+
+    voucher = payment_service.post_payment(
+        db_session,
+        org_id=org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        amount=Decimal("500.00"),
+        payment_date=datetime.date(2026, 1, 20),
+        mode="BANK",
+    )
+    assert "1100" in _cr_ledger_codes(db_session, voucher.voucher_id)
+
+
+def test_cash_mode_rejects_bank_account_id(db_session: OrmSession) -> None:
+    """#201: CASH mode must not carry a bank_account_id."""
+    org_id, firm, party, item = _seed_env(db_session)
+    account, _sub = _make_bank_account(db_session, org_id=org_id, firm=firm)
+    _make_posted_pi(
+        db_session,
+        org_id=org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        invoice_amount="500.00",
+    )
+
+    with pytest.raises(AppValidationError, match="CASH"):
+        payment_service.post_payment(
+            db_session,
+            org_id=org_id,
+            firm_id=firm.firm_id,
+            party_id=party.party_id,
+            amount=Decimal("500.00"),
+            payment_date=datetime.date(2026, 1, 20),
+            mode="CASH",
+            bank_account_id=account.bank_account_id,
+        )
+
+
+def test_cross_firm_bank_account_rejected(db_session: OrmSession) -> None:
+    """#201: a bank_account_id from another firm must be rejected."""
+    org_id, firm, party, item = _seed_env(db_session)
+
+    # A second firm in the same org, with its own bank account.
+    other_firm = Firm(
+        org_id=org_id,
+        code=f"F-{uuid.uuid4().hex[:6].upper()}",
+        name="Other Firm",
+        has_gst=True,
+        state_code="MH",
+    )
+    db_session.add(other_firm)
+    db_session.flush()
+    other_account, _ = _make_bank_account(db_session, org_id=org_id, firm=other_firm, label="OTHER")
+
+    _make_posted_pi(
+        db_session,
+        org_id=org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        invoice_amount="500.00",
+    )
+
+    with pytest.raises(AppValidationError, match="not found"):
+        payment_service.post_payment(
+            db_session,
+            org_id=org_id,
+            firm_id=firm.firm_id,
+            party_id=party.party_id,
+            amount=Decimal("500.00"),
+            payment_date=datetime.date(2026, 1, 20),
+            mode="BANK",
+            bank_account_id=other_account.bank_account_id,
+        )

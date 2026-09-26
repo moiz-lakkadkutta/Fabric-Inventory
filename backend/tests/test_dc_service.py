@@ -660,6 +660,80 @@ def test_soft_delete_issued_dc_raises(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# #202 — DC dispatch of lot-stocked stock without an explicit lot_id
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_issue_dc_dispatches_lot_stock_without_lot_id(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    dc_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Stock exists ONLY in a lot-keyed position; DC line carries no lot_id.
+    issue_dc must succeed (FIFO across lots) instead of failing 'Insufficient
+    stock' against a nonexistent NULL-lot position."""
+    from sqlalchemy import select
+
+    from app.models import Lot, StockLedger
+
+    firm, party, item = dc_setup
+    location = inventory_service.get_or_create_default_location(
+        db_session, org_id=fresh_org_id, firm_id=firm.firm_id
+    )
+    lot = Lot(
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        lot_number="DC-LOT-1",
+        received_date=datetime.date(2026, 4, 27),
+    )
+    db_session.add(lot)
+    db_session.flush()
+    inventory_service.add_stock(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        qty=Decimal("50"),
+        unit_cost=Decimal("40"),
+        lot_id=lot.lot_id,
+        reference_type="GRN",
+        reference_id=uuid.uuid4(),
+    )
+
+    dc = _make_dc(
+        db_session, org_id=fresh_org_id, firm=firm, party=party, item=item, qty_dispatched="30"
+    )
+    assert dc.lines[0].lot_id is None
+    issued = sales_service.issue_dc(db_session, org_id=fresh_org_id, dc_id=dc.delivery_challan_id)
+    assert issued.status == DCStatus.ISSUED.value
+
+    out_rows = list(
+        db_session.execute(
+            select(StockLedger).where(
+                StockLedger.reference_type == "DC",
+                StockLedger.reference_id == dc.delivery_challan_id,
+                StockLedger.txn_type == "OUT",
+            )
+        ).scalars()
+    )
+    assert len(out_rows) == 1
+    assert out_rows[0].lot_id == lot.lot_id
+    assert Decimal(str(out_rows[0].qty_out)) == Decimal("30")
+    pos = inventory_service.get_position(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        lot_id=lot.lot_id,
+    )
+    assert pos is not None
+    assert Decimal(pos.on_hand_qty) == Decimal("20")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # #206 — cumulative over-dispatch cap + no issue against a CANCELLED SO
 # ──────────────────────────────────────────────────────────────────────
 

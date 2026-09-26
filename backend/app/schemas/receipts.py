@@ -16,9 +16,17 @@ class ReceiptCreateRequest(BaseModel):
     """
 
     party_id: uuid.UUID
-    amount: Annotated[Decimal, Field(gt=0)]
+    # #207: cap magnitude (₹1e9) + fix scale (2dp) so an oversized or
+    # sub-paise amount is rejected with a 422 field error before it can
+    # overflow / mis-round the NUMERIC(18,2) GL columns. Mirrors
+    # PaymentCreateRequest.amount.
+    amount: Annotated[Decimal, Field(gt=0, le=Decimal("1e9"), decimal_places=2)]
     receipt_date: datetime.date
     mode: Literal["CASH", "BANK", "UPI"] = "CASH"
+    # #201: for BANK/UPI, the bank account whose sub-ledger the receipt
+    # debits — required once the firm has ≥1 bank account so the movement
+    # is reconcilable. Must be omitted for CASH. The service enforces these.
+    bank_account_id: uuid.UUID | None = None
     reference: str | None = Field(default=None, max_length=255)
     series: str = Field(default="RCT/2526", min_length=1, max_length=50)
 

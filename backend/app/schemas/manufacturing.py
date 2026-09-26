@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime
 import uuid
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -298,6 +299,27 @@ class RoutingListResponse(BaseModel):
 # ──────────────────────────────────────────────────────────────────────
 
 
+class MoOperationExecutorOverride(BaseModel):
+    """Per-operation executor override supplied at MO-create time (#204).
+
+    Lets the caller mark one (or more) of the routing's operations as a
+    ``KARIGAR`` (job-work) operation so the karigar send-out flow is
+    reachable on a freshly-created MO — without it every op materialises
+    as ``IN_HOUSE`` and ``dispatch-karigar`` 422s.
+
+    ``operation_master_id`` MUST be one of the routing's operations; the
+    service validates membership and rejects duplicates / foreign masters
+    with a 422. ``karigar_party_id`` is optional at create time (the
+    dispatch step sets it if omitted) but, when provided, the party must
+    be an org-scoped, non-deleted ``is_karigar`` party. Supplying a
+    ``karigar_party_id`` with ``executor="IN_HOUSE"`` is a 422.
+    """
+
+    operation_master_id: uuid.UUID
+    executor: Literal["IN_HOUSE", "KARIGAR"]
+    karigar_party_id: uuid.UUID | None = None
+
+
 class MoCreateRequest(BaseModel):
     firm_id: uuid.UUID
     design_id: uuid.UUID
@@ -316,6 +338,31 @@ class MoCreateRequest(BaseModel):
     # the user select a per-firm fiscal-year-stamped series. Limit kept
     # tight to avoid surprises in the DB unique key.
     series: str | None = Field(default=None, max_length=50)
+    # #204: opt-in per-operation executor overrides. Empty (default) ⇒
+    # every op materialises IN_HOUSE, byte-identical to the pre-#204
+    # behaviour. The router folds this list into the ``operation_overrides``
+    # dict the service consumes (rejecting duplicate operation_master_ids).
+    operation_overrides: list[MoOperationExecutorOverride] = Field(default_factory=list)
+
+
+class MoOperationExecutorRequest(BaseModel):
+    """Body for ``PATCH /manufacturing/mo-operations/{id}/executor`` (#204).
+
+    Flips a PENDING operation between ``IN_HOUSE`` and ``KARIGAR`` after
+    the MO already exists (mind-changes, or MOs created before the caller
+    knew a step would be outsourced). Only PENDING ops with no recorded
+    work may be flipped — the service 422s otherwise.
+
+    ``firm_id`` is defence-in-depth on top of RLS (must match the
+    session's firm scope when set). ``karigar_party_id`` is required-shape
+    identical to the create-time override: allowed only with
+    ``executor="KARIGAR"`` and only for an ``is_karigar`` org party.
+    """
+
+    firm_id: uuid.UUID
+    executor: Literal["IN_HOUSE", "KARIGAR"]
+    karigar_party_id: uuid.UUID | None = None
+    narration: str | None = Field(default=None, max_length=2000)
 
 
 class MoTransitionRequest(BaseModel):
@@ -970,6 +1017,8 @@ __all__ = [
     "MoListItem",
     "MoListResponse",
     "MoMaterialLineResponse",
+    "MoOperationExecutorOverride",
+    "MoOperationExecutorRequest",
     "MoOperationResponse",
     "MoResponse",
     "MoTransitionRequest",

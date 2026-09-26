@@ -354,6 +354,54 @@ def test_void_pi_works(http_client: TestClient) -> None:
     assert resp.json()["status"] == "VOIDED"
 
 
+def test_void_partially_paid_pi_returns_409(http_client: TestClient) -> None:
+    """#191: voiding a PI that has a payment allocated is refused with a
+    409 INVOICE_STATE_ERROR envelope, not silently orphaning the cash.
+    """
+    me = _signup_owner(http_client)
+    supplier = _create_supplier(http_client, me["access_token"])
+    item = _create_item(http_client, me["access_token"])
+
+    pi = http_client.post(
+        "/purchase-invoices",
+        headers=_auth(me["access_token"]),
+        json=_pi_payload(
+            party_id=supplier["party_id"],
+            firm_id=me["firm_id"],
+            item_id=item["item_id"],
+            qty="10",
+            rate="100",
+            gst_rate="0",
+        ),
+    ).json()
+    pi_id = pi["purchase_invoice_id"]
+
+    http_client.post(
+        f"/purchase-invoices/{pi_id}/post",
+        headers=_auth(me["access_token"]),
+    ).raise_for_status()
+
+    # Pay ₹600 against the ₹1000 PI → PARTIALLY_PAID.
+    pay = http_client.post(
+        "/payments",
+        headers=_auth(me["access_token"]),
+        json={
+            "party_id": supplier["party_id"],
+            "amount": "600.00",
+            "payment_date": "2026-09-01",
+            "mode": "CASH",
+        },
+    )
+    assert pay.status_code in (200, 201), pay.text
+
+    resp = http_client.post(
+        f"/purchase-invoices/{pi_id}/void",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "INVOICE_STATE_ERROR"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # DELETE /purchase-invoices/{pi_id}
 # ──────────────────────────────────────────────────────────────────────

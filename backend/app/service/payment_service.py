@@ -66,13 +66,15 @@ from app.models.procurement import (
 from app.models.procurement import (
     VoucherStatus as PIVoucherStatus,
 )
-from app.service import audit_service, dashboard_service
+from app.service import audit_service, banking_service, dashboard_service
+from app.utils.money import ensure_money_in_range
 
 DEFAULT_PAYMENT_SERIES = "PMT/2526"
 
 _AP_LEDGER_CODE = "2000"  # Sundry Creditors (AP) — DR side
-_CASH_LEDGER_CODE = "1000"  # Cash on Hand
-_BANK_LEDGER_CODE = "1100"  # Bank Accounts (incl. UPI end-of-day)
+# #201: the CR cash/bank ledger is resolved by
+# `banking_service.resolve_settlement_ledger` — CASH → 1000, BANK/UPI →
+# the bank account's own sub-ledger (or the 1100 legacy fallback).
 
 # PI lifecycle statuses that have positive outstanding and are payable.
 _OPEN_AP_LIFECYCLES = (
@@ -138,6 +140,10 @@ def _list_open_pis_fifo(
 
     Order: invoice_date ASC, then number ASC (deterministic tiebreaker).
     Outstanding = invoice_amount + COALESCE(gst_amount, 0) - paid_amount > 0.
+
+    #190 concurrency: same AP-side race as receipt FIFO. `.with_for_update`
+    locks the PI set in deterministic order so two overlapping payments
+    serialize instead of both reading paid_amount=0 and over-allocating.
     """
     return list(
         session.execute(
@@ -153,6 +159,8 @@ def _list_open_pis_fifo(
                 PurchaseInvoice.invoice_date.asc(),
                 PurchaseInvoice.number.asc(),
             )
+            .with_for_update(of=PurchaseInvoice)
+            .execution_options(populate_existing=True)
         ).scalars()
     )
 
@@ -177,6 +185,7 @@ def post_payment(
     amount: Decimal,
     payment_date: datetime.date,
     mode: str = "CASH",
+    bank_account_id: uuid.UUID | None = None,
     series: str = DEFAULT_PAYMENT_SERIES,
     reference: str | None = None,
     posted_by: uuid.UUID | None = None,
@@ -202,6 +211,9 @@ def post_payment(
     """
     if amount <= 0:
         raise AppValidationError(f"Payment amount must be positive; got {amount}")
+    # #207: belt-and-suspenders magnitude guard (service is callable outside
+    # the HTTP/Pydantic path) before posting to NUMERIC(18,2) GL columns.
+    ensure_money_in_range(amount, field="amount")
     if mode not in {"CASH", "BANK", "UPI"}:
         raise AppValidationError(f"Unknown payment mode {mode!r}; expected CASH, BANK, or UPI")
 
@@ -216,6 +228,19 @@ def post_payment(
     if party is None:
         raise AppValidationError(f"Party {party_id} not found in org {org_id}")
     party_display = party.name
+
+    # #201: resolve the CR settlement ledger up front (before acquiring the
+    # FIFO row locks or writing any rows), so an invalid mode/bank_account_id
+    # combination fails cleanly with no partial writes. BANK/UPI payments now
+    # credit the bank account's own sub-ledger, which is what makes them
+    # reconcilable against a bank statement.
+    cash_bank_ledger = banking_service.resolve_settlement_ledger(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        mode=mode,
+        bank_account_id=bank_account_id,
+    )
 
     open_pis = _list_open_pis_fifo(session, org_id=org_id, firm_id=firm_id, party_id=party_id)
 
@@ -317,10 +342,8 @@ def post_payment(
 
     session.flush()
 
-    # GL postings: DR AP (2000), CR Cash/Bank.
+    # GL postings: DR AP (2000), CR Cash/Bank (resolved above via #201).
     ap_ledger = _resolve_ledger(session, org_id=org_id, code=_AP_LEDGER_CODE)
-    cash_or_bank_code = _CASH_LEDGER_CODE if mode == "CASH" else _BANK_LEDGER_CODE
-    cash_bank_ledger = _resolve_ledger(session, org_id=org_id, code=cash_or_bank_code)
 
     session.add(
         VoucherLine(
@@ -380,6 +403,8 @@ def post_payment(
                 "voucher_number": f"{series}/{voucher_number}",
                 "amount": str(amount),
                 "mode": mode,
+                "bank_account_id": (str(bank_account_id) if bank_account_id is not None else None),
+                "settlement_ledger_id": str(cash_bank_ledger.ledger_id),
                 "party_id": str(party_id),
                 "allocations": [
                     {"purchase_invoice_id": str(pid), "amount": str(amt)}

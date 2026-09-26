@@ -751,6 +751,318 @@ def test_void_pi_reconciled_raises(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# #191: void_pi must refuse while any payment is allocated (orphan guard)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _ap_control_balance(db_session: OrmSession, *, org_id: uuid.UUID) -> Decimal:
+    """Net balance of the AP control ledger (2000) for the org, as CR-positive.
+
+    CR (credits, supplier owed) minus DR (debits, paid down) across every
+    non-deleted voucher_line on ledger 2000.
+    """
+    ap_ledger = db_session.execute(
+        select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == "2000",
+            Ledger.firm_id.is_(None),
+            Ledger.deleted_at.is_(None),
+        )
+    ).scalar_one()
+    lines = db_session.execute(
+        select(VoucherLine).where(
+            VoucherLine.org_id == org_id,
+            VoucherLine.ledger_id == ap_ledger.ledger_id,
+        )
+    ).scalars()
+    balance = Decimal("0")
+    for line in lines:
+        amt = Decimal(line.amount)
+        if line.line_type == JournalLineType.CR:
+            balance += amt
+        else:
+            balance -= amt
+    return balance
+
+
+def test_void_pi_refuses_when_partially_paid(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Exact repro from #191: pay ₹600 against a ₹1000 PI (FIFO leaves it
+    PARTIALLY_PAID), then void → must be refused. Before the fix void
+    succeeded, orphaning the ₹600 and diverging AP control from outstanding.
+    """
+    from app.models import PaymentAllocation
+    from app.service import payment_service
+
+    firm, party, item = pi_setup
+
+    # PI-A ₹1000 (oldest by number 0001 → FIFO target), PI-B ₹500.
+    pi_a = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="0",
+    )
+    pi_b = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="50",
+        gst_rate="0",
+    )
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi_a.purchase_invoice_id)
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi_b.purchase_invoice_id)
+
+    payment_service.post_payment(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        amount=Decimal("600"),
+        payment_date=datetime.date(2026, 9, 1),
+        mode="CASH",
+    )
+    db_session.expire(pi_a)
+    assert pi_a.lifecycle_status == PurchaseInvoiceLifecycleStatus.PARTIALLY_PAID
+    assert Decimal(pi_a.paid_amount) == Decimal("600.00")
+
+    # AP control after post+pay: CR(1000+500) minus DR(600) = CR 900 = outstanding.
+    assert _ap_control_balance(db_session, org_id=fresh_org_id) == Decimal("900.00")
+
+    # Act: void the partially-paid PI → refused.
+    with pytest.raises(InvoiceStateError, match="paid/allocated"):
+        procurement_service.void_pi(db_session, org_id=fresh_org_id, pi_id=pi_a.purchase_invoice_id)
+
+    # PI-A unchanged; no reversal voucher created.
+    db_session.expire(pi_a)
+    assert pi_a.status == VoucherStatus.POSTED
+    assert Decimal(pi_a.paid_amount) == Decimal("600.00")
+    pi_a_vouchers = (
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.reference_id == pi_a.purchase_invoice_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+                Voucher.deleted_at.is_(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(pi_a_vouchers) == 1  # only the original post, no reversal
+
+    # AP control invariant still holds: == Σ open-PI outstanding (400 + 500).
+    assert _ap_control_balance(db_session, org_id=fresh_org_id) == Decimal("900.00")
+    # Belt-and-suspenders: live allocation still references PI-A.
+    live_alloc = (
+        db_session.execute(
+            select(PaymentAllocation).where(
+                PaymentAllocation.purchase_invoice_id == pi_a.purchase_invoice_id,
+                PaymentAllocation.deleted_at.is_(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(live_alloc) == 1
+
+
+def test_void_pi_still_works_when_unpaid(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Regression guard: an UNPAID POSTED PI still voids and reverses GL."""
+    firm, party, item = pi_setup
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="0",
+    )
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+
+    voided = procurement_service.void_pi(
+        db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id
+    )
+    assert voided.status == VoucherStatus.VOIDED
+    assert voided.lifecycle_status == PurchaseInvoiceLifecycleStatus.CANCELLED
+
+    # Original + reversal vouchers exist; their AP legs net to zero.
+    vouchers = (
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.reference_id == pi.purchase_invoice_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+                Voucher.deleted_at.is_(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(vouchers) == 2
+    assert _ap_control_balance(db_session, org_id=fresh_org_id) == Decimal("0")
+
+
+def test_void_pi_refuses_fully_paid_reconciled(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Regression pin: a fully-paid (RECONCILED) PI is still refused via the
+    existing RECONCILED guard.
+    """
+    from app.service import payment_service
+
+    firm, party, item = pi_setup
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="0",
+    )
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+
+    payment_service.post_payment(
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        party_id=party.party_id,
+        amount=Decimal("1000"),
+        payment_date=datetime.date(2026, 9, 1),
+        mode="CASH",
+    )
+    db_session.expire(pi)
+    assert pi.status == VoucherStatus.RECONCILED
+
+    with pytest.raises(InvoiceStateError):
+        procurement_service.void_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+
+
+def test_void_pi_refuses_on_live_allocation_even_if_paid_amount_zero(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Belt-and-suspenders branch: a live allocation blocks void even when
+    paid_amount drifted to 0.
+    """
+    from app.models import PaymentAllocation
+
+    firm, party, item = pi_setup
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="0",
+    )
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+    voucher = (
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.reference_id == pi.purchase_invoice_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+    assert voucher is not None
+    # Insert an orphan-shaped allocation directly, leaving paid_amount at 0.
+    db_session.add(
+        PaymentAllocation(
+            org_id=fresh_org_id,
+            firm_id=firm.firm_id,
+            voucher_id=voucher.voucher_id,
+            purchase_invoice_id=pi.purchase_invoice_id,
+            amount=Decimal("100"),
+        )
+    )
+    db_session.flush()
+
+    with pytest.raises(InvoiceStateError, match="allocation"):
+        procurement_service.void_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+
+
+def test_void_pi_allows_after_allocation_soft_deleted(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """Data-repair end state: a soft-deleted allocation + paid_amount 0 does
+    NOT block void.
+    """
+    from app.models import PaymentAllocation
+
+    firm, party, item = pi_setup
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="10",
+        rate="100",
+        gst_rate="0",
+    )
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+    voucher = (
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.reference_id == pi.purchase_invoice_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+    assert voucher is not None
+    db_session.add(
+        PaymentAllocation(
+            org_id=fresh_org_id,
+            firm_id=firm.firm_id,
+            voucher_id=voucher.voucher_id,
+            purchase_invoice_id=pi.purchase_invoice_id,
+            amount=Decimal("100"),
+            deleted_at=datetime.datetime.now(tz=datetime.UTC),
+        )
+    )
+    db_session.flush()
+
+    voided = procurement_service.void_pi(
+        db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id
+    )
+    assert voided.status == VoucherStatus.VOIDED
+
+
+# ──────────────────────────────────────────────────────────────────────
 # soft_delete_pi
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1076,6 +1388,50 @@ def test_void_pi_posted_reverses_gl_voucher(
     assert net_by_code.get("1300", Decimal(0)) == Decimal(0), "Inventory nets to 0"
     assert net_by_code.get("1400", Decimal(0)) == Decimal(0), "ITC nets to 0"
     assert net_by_code.get("2000", Decimal(0)) == Decimal(0), "Creditors nets to 0"
+
+
+def test_void_pi_reversal_not_blocked_by_190_posting_index(
+    db_session: OrmSession,
+    fresh_org_id: uuid.UUID,
+    pi_setup: tuple[Firm, Party, Item],
+) -> None:
+    """#190 guard: the partial-unique index ``uq_voucher_one_posting_per_ref``
+    is deliberately scoped to SALES_INVOICE / COGS_SALE and MUST NOT cover
+    PURCHASE_INVOICE — a void legitimately posts a second PURCHASE_INVOICE
+    voucher sharing (voucher_type, reference_id). If the index predicate ever
+    grew to include PURCHASE_INVOICE, the void's reversal INSERT below would
+    trip an IntegrityError at flush and this test would fail loudly.
+    """
+    firm, party, item = pi_setup
+    _seed_coa_for_pi_gl_tests(db_session, org_id=fresh_org_id)
+
+    pi = _make_pi(
+        db_session,
+        org_id=fresh_org_id,
+        firm=firm,
+        party=party,
+        item=item,
+        qty="4",
+        rate="100",
+        gst_rate="5",
+    )
+    procurement_service.post_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+    # This flush inserts the SECOND PURCHASE_INVOICE voucher for the same
+    # reference_id — must succeed (index excludes PURCHASE_INVOICE).
+    procurement_service.void_pi(db_session, org_id=fresh_org_id, pi_id=pi.purchase_invoice_id)
+    db_session.flush()
+
+    vouchers = list(
+        db_session.execute(
+            select(Voucher).where(
+                Voucher.org_id == fresh_org_id,
+                Voucher.voucher_type == VoucherType.PURCHASE_INVOICE,
+                Voucher.reference_id == pi.purchase_invoice_id,
+                Voucher.deleted_at.is_(None),
+            )
+        ).scalars()
+    )
+    assert len(vouchers) == 2, f"void must leave 2 PURCHASE_INVOICE vouchers, got {len(vouchers)}"
 
 
 # ──────────────────────────────────────────────────────────────────────
