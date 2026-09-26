@@ -103,3 +103,132 @@ COGS, so 5360 was parented under COGS for consistency.
 - New voucher type **GRN_ACCRUAL** (series "GRNI").
 - Migration head on `test_203` is `203_grn_accrual`.
 - New reference_type on vouchers: `"GRN"` (GRN accrual reference_id = grn_id).
+
+## CA-review correction (2026-09-26)
+
+**What was wrong.** A GRN-linked PI cleared the WHOLE GRN accrual (DR 2010 =
+accrual total) and booked `PI net − full accrual` to 5360 PPV. Billing fewer
+units than received therefore booked the unbilled goods as a false PPV gain
+(100 m received @ ₹200, bill 80 m @ ₹200 → CR 5360 ₹4,000), and the
+one-POSTED-PI-per-GRN guard made the remaining 20 m unbillable forever.
+
+**What changed.**
+- A GRN-linked PI clears 2010 only for the qty it **bills**: DR 2010 =
+  Σ(billed qty × GRN rate). PPV = PI net − that amount (DR if dearer, CR if
+  cheaper). Unbilled qty stays accrued in 2010 for a later bill.
+- Several POSTED PIs may bill one GRN. Cumulative billed qty per item across
+  the GRN's live PIs may never exceed received qty: checked at `create_pi`
+  (conservatively counting open DRAFTs too) and authoritatively at `post_pi`
+  (POSTED/RECONCILED only; VOIDED excluded) under `SELECT … FOR UPDATE` on the
+  GRN row, then the PI row (lock order GRN → PI → Firm; `void_pi` takes the
+  same order). The one-PI-per-GRN guard is removed.
+- **Line matching.** PI lines carry no GRN-line reference, so they match by
+  item. An item on several GRN lines clears at its **weighted-average GRN
+  rate** (Σ qty×rate / Σ qty). Chosen over FIFO because it is
+  order-independent: void-and-rebill always clears the same value, so a void
+  can never mis-allocate 2010 between GRN lines.
+- **Rounding.** Each clearing is quantized to the paisa (ROUND_HALF_UP) and
+  capped at the GRN's open 2010 balance read from the GL. The PI that completes
+  the GRN clears the open balance exactly, so paisa residue never strands in
+  2010 (e.g. 3 × ₹33.3333 accrues ₹100.00 → clears 33.33 + 33.33 + 33.34).
+- **Void** mirrors every leg of the PI voucher, so it re-opens exactly what the
+  PI cleared; its qty is billable again.
+- The loose amount-drift warning now compares the PI against the GRN value of
+  the qty it bills (a legitimate partial bill is not drift).
+- Direct PIs and legacy GRNs without an accrual voucher are unchanged.
+- `scripts/backfill_grn_accruals.py` needs no logic change (documented why:
+  all-or-nothing per GRN; a partially-billed legacy GRN keeps the legacy
+  DR-1300 path).
+
+**Basis.** Standard GRNI / accrued-purchases practice (Ind AS 2 cost of
+inventories; accrual basis under Ind AS 1 / AS 1): the GRNI liability equals
+goods received but not yet invoiced, and a purchase price variance only arises
+on quantity actually invoiced at a price different from the receipt cost.
+
+**Verifier follow-ups (same day).**
+- **Zero-value PI (free goods).** A ₹0 GRN-linked PI still consumes billable
+  qty, so it clears that qty's accrual: DR 2010 / CR 5360 (favourable PPV),
+  no AP leg. Previously it returned before posting any voucher, stranding the
+  balance in 2010 while the qty cap refused every further PI. Void reverses
+  it like any PI voucher. A ₹0 PI with nothing to clear (direct, or GRN
+  without an accrual) still posts no voucher.
+- **Same firm, same supplier.** `create_pi` (and `post_pi`, for older drafts)
+  refuse a GRN from another firm or another supplier (422). Before, a PI in
+  firm B could clear firm A's GRNI in firm B's books.
+- **Void with a soft-deleted GRN.** `void_pi` locks the GRN without the
+  soft-delete filter (still org-scoped), so a legacy PI whose GRN was later
+  soft-deleted can still be voided.
+- **Rounding aligned.** The GRN accrual (and the backfill preview) now round
+  ROUND_HALF_UP, the same as the PI-side clearing and Postgres NUMERIC. They
+  used to be HALF_EVEN vs HALF_UP; the final bill's true-up absorbed the
+  difference, but they now agree.
+
+**Legacy data: GRNs short-billed under the earlier #203 code.** That code
+cleared the FULL accrual on the first PI and booked the unbilled value as a
+false CR 5360 gain. Such a GRN can now take a second PI for the unbilled qty.
+It finds 2010 already at 0, so it clears ₹0 and books its full net as DR 5360,
+which reverses the earlier false gain. The CA should see these GRNs. This
+read-only query lists them (checked against a simulated case):
+
+```sql
+-- Read-only. GRNs with a live #203 accrual that are still short-billed
+-- (live POSTED/RECONCILED PIs bill less than received) yet whose GRN Clearing
+-- (2010) is already 0 — i.e. short-billed under the pre-correction #203 code,
+-- which cleared the FULL accrual and booked the unbilled value as a false
+-- PPV (5360) gain. Run with a role that bypasses RLS, or per org with
+-- app.current_org_id set.
+WITH recv AS (
+    SELECT g.org_id, g.firm_id, g.grn_id, g.series, g.number, g.grn_date,
+           SUM(gl.qty_received) AS received_qty,
+           SUM(gl.qty_received * COALESCE(gl.rate, 0)) AS received_value
+    FROM grn g
+    JOIN grn_line gl ON gl.grn_id = g.grn_id AND gl.deleted_at IS NULL
+    WHERE g.deleted_at IS NULL AND g.status = 'ACKNOWLEDGED'
+    GROUP BY g.org_id, g.firm_id, g.grn_id, g.series, g.number, g.grn_date
+),
+billed AS (
+    SELECT p.grn_id, SUM(pl.qty) AS billed_qty
+    FROM purchase_invoice p
+    JOIN pi_line pl ON pl.purchase_invoice_id = p.purchase_invoice_id
+                   AND pl.deleted_at IS NULL
+    WHERE p.grn_id IS NOT NULL AND p.deleted_at IS NULL
+      AND p.status IN ('POSTED', 'RECONCILED')
+    GROUP BY p.grn_id
+),
+grni AS (
+    SELECT r.grn_id,
+           SUM(CASE WHEN vl.line_type = 'CR' THEN vl.amount ELSE -vl.amount END)
+               AS open_2010
+    FROM recv r
+    JOIN voucher v
+      ON v.org_id = r.org_id AND v.deleted_at IS NULL
+     AND (   (v.voucher_type = 'GRN_ACCRUAL' AND v.reference_id = r.grn_id)
+          OR (v.voucher_type = 'PURCHASE_INVOICE' AND v.reference_id IN (
+                SELECT p.purchase_invoice_id FROM purchase_invoice p
+                WHERE p.grn_id = r.grn_id)))
+    JOIN voucher_line vl ON vl.voucher_id = v.voucher_id
+    JOIN ledger l ON l.ledger_id = vl.ledger_id AND l.code = '2010'
+    GROUP BY r.grn_id
+)
+SELECT r.org_id, r.firm_id, r.grn_id, r.series || '/' || r.number AS grn_no,
+       r.grn_date, r.received_qty, COALESCE(b.billed_qty, 0) AS billed_qty,
+       r.received_qty - COALESCE(b.billed_qty, 0) AS unbilled_qty,
+       r.received_value, g.open_2010
+FROM recv r
+JOIN grni g ON g.grn_id = r.grn_id
+LEFT JOIN billed b ON b.grn_id = r.grn_id
+WHERE EXISTS (SELECT 1 FROM voucher v
+              WHERE v.org_id = r.org_id AND v.voucher_type = 'GRN_ACCRUAL'
+                AND v.reference_id = r.grn_id AND v.deleted_at IS NULL)
+  AND COALESCE(b.billed_qty, 0) < r.received_qty
+  AND g.open_2010 = 0
+ORDER BY r.org_id, r.grn_date, grn_no;
+```
+
+Known false positive: a GRN whose priced items are fully billed but which still has an unbilled **zero-rate** (free) line also appears, because its open 2010 is 0 while billed qty < received qty. Ignore rows where the only unbilled lines are at rate 0.
+
+**Open CA question (unchanged here).** PIs carry no separate freight / other
+charges fields; any freight billed inside line rates lands in 5360 PPV as price
+variance, as before.
+
+PENDING MOIZ + CA SIGN-OFF.

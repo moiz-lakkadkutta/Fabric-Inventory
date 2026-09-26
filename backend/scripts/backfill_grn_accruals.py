@@ -20,6 +20,21 @@ Detection (per the plan §9)::
     ACKNOWLEDGED, non-deleted GRN
       AND NOT EXISTS a POSTED/RECONCILED, non-deleted PI referencing its grn_id
 
+#203 CA correction (2026-09-26) — partial billing: a GRN-linked PI now clears
+2010 only for the qty it bills, and several PIs may bill one GRN. This script
+stays consistent with that rule WITHOUT change, because the detection is
+all-or-nothing per GRN:
+  * a GRN with NO posted PI gets the full accrual; every later PI (partial or
+    not) then clears billed qty x GRN rate against it;
+  * a GRN with ANY posted PI (even a partial one) is skipped: its billed qty
+    is already in 1300 via the legacy DR-1300 shape, so accruing the full GRN
+    would double-count it. Its remaining (unbilled) qty keeps flowing through
+    the legacy DR-1300 path when billed — no accrual → legacy fall-through —
+    so such a GRN's unbilled stock stays off the GL until billed, exactly as
+    before #203. Flag these to the CA if material (list them with a query on
+    ACKNOWLEDGED GRNs whose posted PIs bill less than received).
+A GRN whose only PIs are VOIDED counts as uninvoiced (VOIDED is excluded).
+
 Idempotent: ``post_grn_accrual_voucher`` returns the existing voucher if one is
 already present (backed by ``uq_voucher_grn_accrual``), so re-running is safe
 and re-running after some GRNs have been invoiced simply skips them.
@@ -49,7 +64,7 @@ import argparse
 import os
 import sys
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
@@ -107,7 +122,7 @@ def run(engine: Engine, *, apply: bool, org_id: uuid.UUID | None) -> tuple[int, 
                     if ln.deleted_at is None
                 ),
                 Decimal("0"),
-            ).quantize(Decimal("0.01"))
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             status = (
                 "already-accrued"
                 if existing is not None

@@ -957,19 +957,46 @@ def _allocate_pi_number(
     return f"{last_int + 1:04d}"
 
 
+def _ensure_grn_matches_pi(*, grn: GRN, firm_id: uuid.UUID, party_id: uuid.UUID) -> None:
+    """#203 CA follow-up: a PI may only bill a GRN of the SAME firm and the
+    SAME supplier. Otherwise it would clear another firm's GRNI accrual in
+    this firm's books (or settle one supplier's receipt against another's
+    bill)."""
+    if grn.firm_id != firm_id:
+        raise AppValidationError(
+            f"GRN {grn.series}/{grn.number} belongs to a different firm than this "
+            f"purchase invoice; link a GRN received by the same firm, or create "
+            f"the invoice in the GRN's firm."
+        )
+    if grn.party_id != party_id:
+        raise AppValidationError(
+            f"GRN {grn.series}/{grn.number} was received from a different supplier "
+            f"than this purchase invoice's party; link a GRN from the same supplier."
+        )
+
+
+def _fmt_qty(qty: Decimal) -> str:
+    """Human-readable qty for error messages: 100.0000 → "100", 2.5000 → "2.5"."""
+    return f"{qty.normalize():f}"
+
+
 def _validate_pi_lines_against_grn(
     *,
     grn: GRN,
     pi_line_pairs: list[tuple[uuid.UUID, Decimal]],
+    already_billed: dict[uuid.UUID, Decimal] | None = None,
 ) -> None:
     """3-way match guard for PI → GRN quantities (#200 guard 5).
 
     Aggregates billed qty per item and requires (a) every billed item exists
-    on the GRN and (b) billed qty per item does not exceed the GRN's received
-    qty for that item. Amount/rate drift stays a loose warning elsewhere —
-    freight/surcharge shows up as amount, not phantom quantity — but a 10x
-    quantity over-bill is a hard reject.
+    on the GRN and (b) billed qty per item — CUMULATIVE with ``already_billed``
+    (qty other live PIs of this GRN already bill; #203 CA correction allows
+    several PIs per GRN) — does not exceed the GRN's received qty for that
+    item. Amount/rate drift stays a loose warning elsewhere — freight/surcharge
+    shows up as amount, not phantom quantity — but a quantity over-bill is a
+    hard reject.
     """
+    already_billed = already_billed or {}
     grn_qty_by_item: dict[uuid.UUID, Decimal] = {}
     for gl in grn.lines:
         if gl.deleted_at is not None:
@@ -988,10 +1015,14 @@ def _validate_pi_lines_against_grn(
             raise AppValidationError(
                 f"PI line item {item_id} is not on GRN {grn.series}/{grn.number}"
             )
-        if pi_qty > grn_qty:
+        prior = already_billed.get(item_id, Decimal("0"))
+        if prior + pi_qty > grn_qty:
+            remaining = max(grn_qty - prior, Decimal("0"))
             raise AppValidationError(
-                f"PI bills {pi_qty} of item {item_id} but GRN "
-                f"{grn.series}/{grn.number} received only {grn_qty}"
+                f"PI bills {_fmt_qty(pi_qty)} of item {item_id} but GRN "
+                f"{grn.series}/{grn.number} received only {_fmt_qty(grn_qty)} "
+                f"({_fmt_qty(prior)} already billed by other purchase invoices; "
+                f"{_fmt_qty(remaining)} left to bill)"
             )
 
 
@@ -1038,13 +1069,20 @@ def create_pi(
                 f"Cannot invoice against GRN {grn_id} in status {grn.status}: "
                 f"GRN must be ACKNOWLEDGED first"
             )
-        # #200 guard 5: block billing more qty than the GRN received.
+        _ensure_grn_matches_pi(grn=grn, firm_id=firm_id, party_id=party_id)
+        # #200 guard 5 + #203 CA correction: block billing more qty than the
+        # GRN received, CUMULATIVE across this GRN's live PIs. Create-time is
+        # conservative — open DRAFTs reserve their qty too; the authoritative
+        # (posted-only, row-locked) re-check runs in `post_pi`.
         _validate_pi_lines_against_grn(
             grn=grn,
             pi_line_pairs=[
                 (line["item_id"], Decimal(str(line["qty"])))  # type: ignore[misc]
                 for line in lines
             ],
+            already_billed=accounting_service.grn_billed_qty_by_item(
+                session, org_id=org_id, grn_id=grn_id, include_drafts=True
+            ),
         )
 
     number = _allocate_pi_number(session, org_id=org_id, firm_id=firm_id, series=series)
@@ -1167,6 +1205,52 @@ def list_pis(
     return list(session.execute(stmt).scalars())
 
 
+def _lock_grn(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    grn_id: uuid.UUID,
+    include_deleted: bool = False,
+) -> GRN:
+    """SELECT ... FOR UPDATE the GRN header row (lines eager-loaded, fresh).
+
+    ``include_deleted`` (void path only): still lock a soft-deleted GRN so a
+    legacy PI whose GRN was later soft-deleted can be voided. Always
+    org-scoped."""
+    stmt = (
+        select(GRN)
+        .options(selectinload(GRN.lines))
+        .where(GRN.grn_id == grn_id, GRN.org_id == org_id)
+    )
+    if not include_deleted:
+        stmt = stmt.where(GRN.deleted_at.is_(None))
+    grn = session.execute(
+        stmt.with_for_update(of=GRN).execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if grn is None:
+        raise AppValidationError(f"GRN {grn_id} not found")
+    return grn
+
+
+def _lock_pi(session: Session, *, org_id: uuid.UUID, pi_id: uuid.UUID) -> PurchaseInvoice:
+    """SELECT ... FOR UPDATE the PI row and re-read it (status re-checked by
+    the caller under the lock)."""
+    pi = session.execute(
+        select(PurchaseInvoice)
+        .options(selectinload(PurchaseInvoice.lines))
+        .where(
+            PurchaseInvoice.purchase_invoice_id == pi_id,
+            PurchaseInvoice.org_id == org_id,
+            PurchaseInvoice.deleted_at.is_(None),
+        )
+        .with_for_update(of=PurchaseInvoice)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if pi is None:
+        raise AppValidationError(f"PurchaseInvoice {pi_id} not found")
+    return pi
+
+
 def post_pi(
     session: Session,
     *,
@@ -1178,60 +1262,66 @@ def post_pi(
     just advances the state.
 
     Loose 3-way match: if the PI is linked to a GRN, log a warning when
-    the PI total drifts from the sum of GRN line amounts (GRN.total_amount)
-    by more than 1%. We don't block — Moiz wants flexibility for
-    rounding / freight / surcharge differences.
+    the PI total drifts from the GRN value of the qty it bills (billed qty x
+    GRN rate; #203 CA correction — was the whole GRN total) by more than 1%.
+    We don't block — Moiz wants flexibility for rounding / freight /
+    surcharge differences.
     """
     pi = get_pi(session, org_id=org_id, pi_id=pi_id)
+    grn: GRN | None = None
+    if pi.grn_id is not None:
+        # #203 CA correction: several POSTED PIs may bill one GRN, so the
+        # cumulative billed-qty cap must be race-free. Lock the GRN header row
+        # FOR UPDATE (same lock as receive_grn; lock order GRN → PI → Firm,
+        # consistent with receive's GRN → PO → Firm) so concurrent posts
+        # against one GRN serialize and the loser re-reads the winner's
+        # committed PI under READ COMMITTED.
+        grn = _lock_grn(session, org_id=org_id, grn_id=pi.grn_id)
+    pi = _lock_pi(session, org_id=org_id, pi_id=pi_id)
     if pi.status != VoucherStatus.DRAFT:
         raise InvoiceStateError(
             f"Cannot post PI {pi_id}: current status is {pi.status}, expected DRAFT"
         )
-    if pi.grn_id is not None:
-        grn = get_grn(session, org_id=org_id, grn_id=pi.grn_id)
-        # #203: one POSTED PI per GRN. The GRN accrual (DR 1300 / CR 2010) is
-        # cleared in full by the first GRN-linked PI that posts (DR 2010). A
-        # second POSTED PI against the same GRN would DR 2010 again — clearing
-        # an accrual that no longer exists and double-relieving the liability.
-        # Reject it (the minimal slice of #200's 3-way match this fix needs;
-        # nothing else enforces one-PI-per-GRN today).
-        other_posted = session.execute(
-            select(PurchaseInvoice.purchase_invoice_id)
-            .where(
-                PurchaseInvoice.org_id == org_id,
-                PurchaseInvoice.grn_id == pi.grn_id,
-                PurchaseInvoice.purchase_invoice_id != pi.purchase_invoice_id,
-                PurchaseInvoice.deleted_at.is_(None),
-                PurchaseInvoice.status.in_([VoucherStatus.POSTED, VoucherStatus.RECONCILED]),
-            )
-            .limit(1)
-        ).scalar_one_or_none()
-        if other_posted is not None:
-            raise InvoiceStateError(
-                f"Cannot post PI {pi_id}: GRN {pi.grn_id} is already invoiced by a "
-                f"posted purchase invoice. One posted PI per GRN — void the other "
-                f"first or raise a debit note."
-            )
-        # #200 guard 5 (defense-in-depth): re-check qty over-billing for DRAFT
-        # PIs created before this guard existed, before the state flip / GL post.
+    if grn is not None:
+        # Defense-in-depth for drafts created before the create-time check.
+        _ensure_grn_matches_pi(grn=grn, firm_id=pi.firm_id, party_id=pi.party_id)
+        pi_line_pairs = [
+            (line.item_id, Decimal(line.qty))
+            for line in pi.lines
+            if line.qty is not None and line.deleted_at is None
+        ]
+        # #200 guard 5 + #203 CA correction (authoritative, under the GRN
+        # lock): cumulative billed qty across this GRN's POSTED/RECONCILED PIs
+        # plus this one must not exceed received qty per item. VOIDED PIs are
+        # excluded (their GL was reversed), DRAFTs are not commitments.
         _validate_pi_lines_against_grn(
             grn=grn,
-            pi_line_pairs=[
-                (line.item_id, Decimal(line.qty)) for line in pi.lines if line.qty is not None
-            ],
+            pi_line_pairs=pi_line_pairs,
+            already_billed=accounting_service.grn_billed_qty_by_item(
+                session, org_id=org_id, grn_id=grn.grn_id, exclude_pi_id=pi.purchase_invoice_id
+            ),
         )
         # Loose AMOUNT-drift match stays a non-blocking warning (rounding /
-        # freight / surcharge flexibility — Moiz's decision, unchanged).
-        if pi.invoice_amount is not None and grn.total_amount is not None and grn.total_amount > 0:
+        # freight / surcharge flexibility — Moiz's decision, unchanged). #203 CA
+        # correction: compared against the GRN value of the qty THIS PI bills
+        # (a legitimate partial bill is not "drift").
+        billed: dict[uuid.UUID, Decimal] = {}
+        for item_id, qty in pi_line_pairs:
+            billed[item_id] = billed.get(item_id, Decimal("0")) + qty
+        grn_billed_value = accounting_service.grn_value_of_billed_qty(
+            accounting_service.grn_receipt_by_item(session, org_id=org_id, grn_id=grn.grn_id),
+            billed,
+        )
+        if pi.invoice_amount is not None and grn_billed_value > 0:
             invoice_amount = Decimal(pi.invoice_amount)
-            grn_amount = Decimal(grn.total_amount)
-            drift_pct = abs(invoice_amount - grn_amount) / grn_amount * Decimal("100")
+            drift_pct = abs(invoice_amount - grn_billed_value) / grn_billed_value * Decimal("100")
             if drift_pct > Decimal("1"):
                 # Loose match — log + carry forward in match_result; don't raise.
                 pi.match_result = {
                     "warning": "amount_drift",
                     "pi_total": str(invoice_amount),
-                    "grn_total": str(grn_amount),
+                    "grn_total": str(grn.total_amount),
+                    "grn_billed_value": str(grn_billed_value),
                     "drift_pct": str(drift_pct),
                 }
     pi.status = VoucherStatus.POSTED
@@ -1258,6 +1348,12 @@ def void_pi(
     VOIDED — for the latter it's a no-op success.
     """
     pi = get_pi(session, org_id=org_id, pi_id=pi_id)
+    if pi.grn_id is not None:
+        # #203 CA correction: voiding re-opens this PI's billed qty + GRNI
+        # clearing; serialize with concurrent posts against the same GRN
+        # (same GRN → PI lock order as post_pi).
+        _lock_grn(session, org_id=org_id, grn_id=pi.grn_id, include_deleted=True)
+    pi = _lock_pi(session, org_id=org_id, pi_id=pi_id)
     if pi.status == VoucherStatus.VOIDED:
         return pi
     if pi.status == VoucherStatus.RECONCILED:
