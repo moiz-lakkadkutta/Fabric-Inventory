@@ -17,6 +17,7 @@ still succeed.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -88,10 +89,10 @@ def _seed_customer_supplier_item(
         return customer.party_id, supplier.party_id, item.item_id
 
 
-def _assert_validation_envelope(resp) -> dict:
+def _assert_validation_envelope(resp: Any) -> dict[str, Any]:
     """Assert the canonical 422 VALIDATION_ERROR envelope; return the body."""
     assert resp.status_code == 422, resp.text
-    body = resp.json()
+    body: dict[str, Any] = resp.json()
     assert body["code"] == "VALIDATION_ERROR", body
     assert body["status"] == 422, body
     assert body["request_id"], body

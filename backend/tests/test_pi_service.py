@@ -992,6 +992,7 @@ def test_void_pi_refuses_on_live_allocation_even_if_paid_amount_zero(
         .first()
     )
 
+    assert voucher is not None
     # Insert an orphan-shaped allocation directly, leaving paid_amount at 0.
     db_session.add(
         PaymentAllocation(
@@ -1042,6 +1043,7 @@ def test_void_pi_allows_after_allocation_soft_deleted(
         .first()
     )
 
+    assert voucher is not None
     db_session.add(
         PaymentAllocation(
             org_id=fresh_org_id,

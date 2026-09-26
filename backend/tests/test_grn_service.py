@@ -1275,7 +1275,12 @@ def test_receive_grn_creates_lot_row(
         grn_date=datetime.date(2026, 4, 27),
         series="GRN/2025-26",
         lines=[
-            {"item_id": item.item_id, "qty_received": "30", "rate": "150.00", "lot_number": "LOT-A1"}
+            {
+                "item_id": item.item_id,
+                "qty_received": "30",
+                "rate": "150.00",
+                "lot_number": "LOT-A1",
+            }
         ],
     )
     procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
@@ -1289,7 +1294,7 @@ def test_receive_grn_creates_lot_row(
     lot = lots[0]
     assert lot.grn_id == grn.grn_id
     assert lot.received_date == grn.grn_date
-    assert Decimal(lot.primary_cost) == Decimal("150")
+    assert Decimal(str(lot.primary_cost)) == Decimal("150")
     assert lot.firm_id == firm.firm_id
 
     # Ledger IN row carries the lot_id.
@@ -1427,7 +1432,9 @@ def test_grn_minted_lot_surfaces_via_list_lots(
         party_id=party.party_id,
         grn_date=datetime.date(2026, 4, 27),
         series="GRN/2025-26",
-        lines=[{"item_id": item.item_id, "qty_received": "30", "rate": "150", "lot_number": "LOT-A1"}],
+        lines=[
+            {"item_id": item.item_id, "qty_received": "30", "rate": "150", "lot_number": "LOT-A1"}
+        ],
     )
     procurement_service.receive_grn(db_session, org_id=fresh_org_id, grn_id=grn.grn_id)
 

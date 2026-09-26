@@ -1163,23 +1163,36 @@ def test_stock_decrease_without_lot_consumes_fifo(
 
     firm, item, location = setup
     lot_old = Lot(
-        org_id=fresh_org_id, firm_id=firm.firm_id, item_id=item.item_id,
-        lot_number="OLD", received_date=_dt.date(2026, 1, 1),
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        lot_number="OLD",
+        received_date=_dt.date(2026, 1, 1),
     )
     lot_new = Lot(
-        org_id=fresh_org_id, firm_id=firm.firm_id, item_id=item.item_id,
-        lot_number="NEW", received_date=_dt.date(2026, 3, 1),
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        lot_number="NEW",
+        received_date=_dt.date(2026, 3, 1),
     )
     db_session.add_all([lot_old, lot_new])
     db_session.flush()
     for lot, q in ((lot_old, "10"), (lot_new, "10")):
         inventory_service.add_stock(
-            db_session, org_id=fresh_org_id, firm_id=firm.firm_id, item_id=item.item_id,
-            location_id=location.location_id, qty=Decimal(q), unit_cost=Decimal("5"),
-            lot_id=lot.lot_id, reference_type="GRN", reference_id=uuid.uuid4(),
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=firm.firm_id,
+            item_id=item.item_id,
+            location_id=location.location_id,
+            qty=Decimal(q),
+            unit_cost=Decimal("5"),
+            lot_id=lot.lot_id,
+            reference_type="GRN",
+            reference_id=uuid.uuid4(),
         )
 
-    adj, ledger = stock_service.create_adjustment(
+    adj, _ledger = stock_service.create_adjustment(
         db_session,
         org_id=fresh_org_id,
         firm_id=firm.firm_id,
@@ -1192,12 +1205,22 @@ def test_stock_decrease_without_lot_consumes_fifo(
     assert adj.qty_change == Decimal("-5")
 
     pos_old = inventory_service.get_position(
-        db_session, org_id=fresh_org_id, firm_id=firm.firm_id, item_id=item.item_id,
-        location_id=location.location_id, lot_id=lot_old.lot_id,
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        lot_id=lot_old.lot_id,
     )
     pos_new = inventory_service.get_position(
-        db_session, org_id=fresh_org_id, firm_id=firm.firm_id, item_id=item.item_id,
-        location_id=location.location_id, lot_id=lot_new.lot_id,
+        db_session,
+        org_id=fresh_org_id,
+        firm_id=firm.firm_id,
+        item_id=item.item_id,
+        location_id=location.location_id,
+        lot_id=lot_new.lot_id,
     )
+    assert pos_old is not None
+    assert pos_new is not None
     assert Decimal(pos_old.on_hand_qty) == Decimal("5")  # oldest depleted first
     assert Decimal(pos_new.on_hand_qty) == Decimal("10")

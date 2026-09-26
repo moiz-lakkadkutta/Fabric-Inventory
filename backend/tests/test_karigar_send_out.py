@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
+from typing import Any, cast
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
@@ -982,9 +983,9 @@ def test_dispatch_karigar_qty_in_starts_at_zero_no_reset_needed(
 
 
 def _op_masters_from_routing(routing: dict[str, object]) -> list[str]:
-    edges = routing["edges"]  # type: ignore[index]
-    ordered = [str(edges[0]["from_operation_id"])]  # type: ignore[index]
-    for e in edges:  # type: ignore[union-attr]
+    edges = cast(list[dict[str, Any]], routing["edges"])
+    ordered = [str(edges[0]["from_operation_id"])]
+    for e in edges:
         ordered.append(str(e["to_operation_id"]))
     return ordered
 

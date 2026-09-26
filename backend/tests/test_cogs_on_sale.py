@@ -855,9 +855,7 @@ def test_cogs_multiline_mixed_stock_and_service(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_cogs_posts_for_lot_stocked_item(
-    db_session: OrmSession, fresh_org_id: uuid.UUID
-) -> None:
+def test_cogs_posts_for_lot_stocked_item(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
     """Item stocked ONLY via a lot-keyed position (no NULL-lot). Finalizing a
     10-unit invoice must post COGS DR 5000 / CR 1300 = 500.00 (10 @ ₹50) — NOT
     silently skip it (which a NULL-lot get_position probe would have done)."""
@@ -892,8 +890,11 @@ def test_cogs_posts_for_lot_stocked_item(
     # Sanity: no NULL-lot position exists for this item.
     assert (
         inventory_service.get_position(
-            db_session, org_id=fresh_org_id, firm_id=firm.firm_id,
-            item_id=item.item_id, location_id=location.location_id,
+            db_session,
+            org_id=fresh_org_id,
+            firm_id=firm.firm_id,
+            item_id=item.item_id,
+            location_id=location.location_id,
         )
         is None
     )
@@ -931,4 +932,4 @@ def test_cogs_posts_for_lot_stocked_item(
     )
     assert len(out_rows) == 1
     assert out_rows[0].lot_id == lot.lot_id
-    assert Decimal(out_rows[0].qty_out) == Decimal("10")
+    assert Decimal(str(out_rows[0].qty_out)) == Decimal("10")
