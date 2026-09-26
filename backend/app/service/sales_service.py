@@ -645,8 +645,8 @@ def issue_dc(
         )
 
     # #206: authoritative SO guards run BEFORE any stock is moved. When the DC
-    # is linked to a SO, lock the SO row FOR UPDATE (lock order DC -> SO; #190
-    # locks the DC row first) so two concurrent issues of different DCs against
+    # is linked to a SO, lock the SO row FOR UPDATE (lock order DC -> SO; #190 adds
+    # the DC row lock first) so two concurrent issues of different DCs against
     # one SO serialize and the cumulative cap cannot be raced. The SO is then
     # reused for status advancement below (no re-fetch).
     locked_so: SalesOrder | None = None

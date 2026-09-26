@@ -700,7 +700,7 @@ def receive_grn(
     if grn.purchase_order_id is not None:
         # Lock the PO row so concurrent receives against the same PO serialize
         # and the cumulative over-receipt cap can't be raced. Lock order is
-        # GRN-then-PO (the GRN header row is already locked above by #190);
+        # GRN-then-PO (#190 adds the GRN header row lock above this one);
         # keep that order everywhere to avoid deadlock.
         po = session.execute(
             select(PurchaseOrder)
