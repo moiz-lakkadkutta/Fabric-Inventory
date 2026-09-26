@@ -314,6 +314,14 @@ def _supplier_ap(session: Session, *, org_id: uuid.UUID, firm_id: uuid.UUID) -> 
     return Decimal(total or 0)
 
 
+def _default_today(now: datetime.datetime | None = None) -> datetime.date:
+    """Today's date in IST (the GST-period timezone), so "today" / MTD roll
+    over at IST midnight, consistent with credit-note dating (#199)."""
+    from app.service import gst_service
+
+    return gst_service.gst_local_date(now or datetime.datetime.now(tz=datetime.UTC))
+
+
 def get_kpis(
     session: Session,
     *,
@@ -331,7 +339,7 @@ def get_kpis(
         return cached
 
     if today is None:
-        today = datetime.datetime.now(tz=datetime.UTC).date()
+        today = _default_today()
     month_start = today.replace(day=1)
 
     kpis: list[Kpi] = [
