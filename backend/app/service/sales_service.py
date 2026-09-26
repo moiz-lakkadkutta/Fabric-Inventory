@@ -1080,7 +1080,13 @@ def create_draft_invoice(
     # code of registration. Without this the engine saw no destination and
     # fell back to NIL_NOT_A_SUPPLY (₹0 GST). Only used when neither the
     # party nor the invoice (ship_to_state) records a state.
-    if buyer_status == BuyerStatus.REGISTERED and norm_buyer_state is None and buyer_gstin_plain:
+    # SEZ units carry a GSTIN too; their PoS (GSTR-1 Table 6B) comes from it
+    # the same way. Tax stays IGST for SEZ regardless (IGST Act §7(5)(b)).
+    if (
+        buyer_status in (BuyerStatus.REGISTERED, BuyerStatus.SEZ)
+        and norm_buyer_state is None
+        and buyer_gstin_plain
+    ):
         norm_buyer_state = normalize_state_code(buyer_gstin_plain[:2])
     norm_ship_to_state = normalize_state_code(ship_to_state) if ship_to_state else None
     pos_decision = gst_service.determine_place_of_supply(

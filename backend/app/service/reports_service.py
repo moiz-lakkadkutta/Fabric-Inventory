@@ -1609,7 +1609,12 @@ def compute_gstr1(
 
         if bucket == "b2cs":
             # Aggregate by (state, slab-rate) — real slab rates now (#195).
-            state = r.place_of_supply_state or seller_state
+            # Normalise so a legacy numeric PoS ("27") groups with "MH".
+            state = (
+                normalize_state_code(r.place_of_supply_state)
+                or r.place_of_supply_state
+                or seller_state
+            )
             b2cs_key: tuple[str, Decimal] = (state, rate)
             bucket_row = b2cs_agg.setdefault(
                 b2cs_key,

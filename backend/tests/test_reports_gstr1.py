@@ -1626,3 +1626,35 @@ def test_gstr1_numeric_firm_state_no_state_walk_in_is_b2cs(db_session: OrmSessio
 def test_gstr1_numeric_firm_state_inter_state_ka_is_b2cl(db_session: OrmSession) -> None:
     bucket, _ = _bucket_with_numeric_firm_state(db_session, party_state="KA", ship_to_state="KA")
     assert bucket == "b2cl"
+
+
+def test_gstr1_b2cs_groups_legacy_numeric_pos_with_alpha(db_session: OrmSession) -> None:
+    """Verifier follow-up: a legacy row storing PoS "27" and a new row storing
+    "MH" are the same state and must land in ONE B2CS row, not two."""
+    from app.models import SalesInvoice
+    from app.service import reports_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(db_session)
+    party_id = _recon_party(db_session, org_id, "MH")
+    for _ in range(2):
+        _finalized_invoice(
+            db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=party_id,
+            item_id=item_id,
+            invoice_date=datetime.date(2026, 9, 2),
+            price=Decimal("1000"),
+            gst_rate=Decimal("5"),
+            ship_to_state="MH",
+        )
+    legacy = db_session.execute(
+        select(SalesInvoice).where(SalesInvoice.org_id == org_id).limit(1)
+    ).scalar_one()
+    legacy.place_of_supply_state = "27"
+    db_session.flush()
+
+    result = reports_service.compute_gstr1(
+        db_session, org_id=org_id, firm_id=firm_id, period="2026-09"
+    )
+    assert [(r.place_of_supply_state, r.invoice_count) for r in result.b2cs] == [("MH", 2)]

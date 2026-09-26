@@ -1063,6 +1063,17 @@ def test_sez_party_with_gstin_in_same_state_is_igst(db_session: OrmSession) -> N
     assert invoice.place_of_supply_state == "MH"
 
 
+def test_sez_party_gstin_no_state_derives_pos_from_gstin(db_session: OrmSession) -> None:
+    """Verifier follow-up: an SEZ unit with a GSTIN but no state_code must
+    still record a place of supply (GSTR-1 Table 6B needs it) — taken from
+    the GSTIN prefix, exactly as for a REGISTERED buyer. Tax stays IGST."""
+    from app.service.gst_service import TaxType
+
+    invoice = _invoice_for_party(db_session, gstin="24SEZUN1234A1Z5", state_code=None, is_sez=True)
+    assert invoice.tax_type == TaxType.IGST.value
+    assert invoice.place_of_supply_state == "GJ"
+
+
 def test_registered_buyer_no_state_derives_state_from_gstin(db_session: OrmSession) -> None:
     """GSTIN "24…" (Gujarat), no state_code, MH seller → IGST, PoS GJ."""
     from app.service.gst_service import TaxType
