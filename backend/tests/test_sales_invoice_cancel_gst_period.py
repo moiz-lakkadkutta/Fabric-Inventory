@@ -793,3 +793,118 @@ def test_dashboard_cache_invalidated_on_cancel(db_session: OrmSession) -> None:
         for k in dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
     }  # NO clear_cache: the cancel itself must have invalidated it
     assert after["gst_collected_mtd"] == Decimal("0")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Legacy pre-#190 duplicate SALES_INVOICE vouchers, cancelled cross-period:
+# cancel reverses BOTH originals (two CREDIT_NOTEs), but GSTR-1 must report
+# the invoice once and the credit note once (dedupe in compute_gstr1).
+#
+# Runs in ONE rolled-back transaction on the migration role so the #190
+# unique index can be dropped transactionally (DDL is transactional in
+# Postgres) — the rollback restores it and removes every seeded row.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("registered", [True, False], ids=["b2b-cdnr", "b2cs-netoff"])
+def test_cross_period_cancel_of_duplicate_posted_invoice_reports_one_note(
+    admin_engine: Engine, registered: bool
+) -> None:
+    from sqlalchemy import text
+
+    conn = admin_engine.connect()
+    trans = conn.begin()
+    session = OrmSession(bind=conn)
+    try:
+        session.execute(text("DROP INDEX IF EXISTS uq_voucher_one_posting_per_ref"))
+        org_id, firm_id, item_id = _seed_gstr1_recon_org(session)
+        party_id = _party(session, org_id, state_code="MH", gstin=_GSTIN if registered else None)
+        inv = _invoice(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=party_id,
+            item_id=item_id,
+            invoice_date=datetime.date(2024, 8, 20),
+            ship_to_state="MH",
+        )
+        # Inject an identical second SALES_INVOICE voucher (simulated #190 damage).
+        orig = session.execute(
+            select(Voucher).where(
+                Voucher.org_id == org_id,
+                Voucher.voucher_type == VoucherType.SALES_INVOICE,
+                Voucher.reference_id == inv.sales_invoice_id,
+            )
+        ).scalar_one()
+        dup = Voucher(
+            org_id=org_id,
+            firm_id=firm_id,
+            voucher_type=VoucherType.SALES_INVOICE,
+            series=orig.series,
+            number="9999",
+            voucher_date=orig.voucher_date,
+            reference_type="sales_invoice",
+            reference_id=inv.sales_invoice_id,
+            narration="duplicate (simulated #190 damage)",
+            status=orig.status,
+            total_debit=orig.total_debit,
+            total_credit=orig.total_credit,
+        )
+        session.add(dup)
+        session.flush()
+        for ln in orig.lines:
+            session.add(
+                VoucherLine(
+                    org_id=org_id,
+                    voucher_id=dup.voucher_id,
+                    ledger_id=ln.ledger_id,
+                    line_type=ln.line_type,
+                    amount=ln.amount,
+                    sequence=ln.sequence,
+                )
+            )
+        session.flush()
+
+        _cancel(
+            session, org_id=org_id, invoice=inv, at=datetime.datetime(2024, 9, 10, 6, tzinfo=_UTC)
+        )
+        n_cn = session.execute(
+            select(func.count())
+            .select_from(Voucher)
+            .where(Voucher.org_id == org_id, Voucher.voucher_type == VoucherType.CREDIT_NOTE)
+        ).scalar_one()
+        assert n_cn == 2, "cancel must reverse BOTH duplicate originals"
+
+        aug = reports_service.compute_gstr1(
+            session, org_id=org_id, firm_id=firm_id, period="2024-08"
+        )
+        sep = reports_service.compute_gstr1(
+            session, org_id=org_id, firm_id=firm_id, period="2024-09"
+        )
+        # The return carries the invoice ONCE and the credit note ONCE.
+        assert _gstr1_net_tax(aug) == Decimal("50.00")
+        assert _gstr1_net_tax(sep) == Decimal("-50.00")
+        if registered:
+            assert len(aug.b2b) == 1
+            assert len(sep.cdnr) == 1 and sep.b2cs == []
+        else:
+            assert len(aug.b2cs) == 1
+            assert sep.cdnr == [] and len(sep.b2cs) == 1
+            assert sep.b2cs[0].taxable_value == Decimal("-1000.00")
+        assert len(sep.hsn) == 1
+        assert sep.hsn[0].total_qty == Decimal("-1")  # not -2
+        assert sep.hsn[0].taxable_value == Decimal("-1000.00")
+
+        # Books vs return. The legacy duplicate over-posted ledger 2100 in
+        # August (2x) and cancel reversed both in September (-2x); the return
+        # is statutorily 1x each way. Per month books != return BY EXACTLY the
+        # duplicate's tax (pre-existing #190 damage, not created by #199);
+        # across both months, books == return == 0.
+        gl_aug = _gl_2100_net(session, org_id=org_id, firm_id=firm_id, period="2024-08")
+        gl_sep = _gl_2100_net(session, org_id=org_id, firm_id=firm_id, period="2024-09")
+        assert gl_aug == Decimal("100.00") and gl_sep == Decimal("-100.00")
+        assert gl_aug + gl_sep == _gstr1_net_tax(aug) + _gstr1_net_tax(sep) == Decimal("0")
+    finally:
+        session.close()
+        trans.rollback()
+        conn.close()
