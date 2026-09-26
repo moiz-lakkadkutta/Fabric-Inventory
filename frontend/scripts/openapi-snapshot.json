@@ -3456,7 +3456,7 @@
         "type": "object"
       },
       "Gstr1Response": {
-        "description": "GSTR-1 envelope for ``period`` = YYYY-MM. Buckets:\nb2b:    Registered (GSTIN-present) sales (intra + inter state).\nb2cl:   Inter-state B2C invoices > \u20b92.5L, invoice-wise.\nb2cs:   Aggregated B2C below threshold or intra-state, by\n        (state, rate).\nexport: Zero-rated overseas / SEZ / EOU sales (party.is_export\n        / party.is_sez set; or place_of_supply is one of\n        'SEZ', 'EXPORT', 'EOU', or no Indian state code).\nhsn:    Per-HSN aggregation across every taxable line.",
+        "description": "GSTR-1 envelope for ``period`` = YYYY-MM. Buckets:\nb2b:    Registered (GSTIN-present) sales (intra + inter state).\nb2cl:   Inter-state B2C invoices with invoice value > \u20b92.5L (dated\n        before 01-Aug-2024) or > \u20b91L (on/after; Notif. 12/2024-CT),\n        invoice-wise.\nb2cs:   Aggregated B2C below threshold or intra-state, by\n        (state, rate).\nexport: Zero-rated overseas / SEZ / EOU sales (party.is_export\n        / party.is_sez set; or place_of_supply is one of\n        'SEZ', 'EXPORT', 'EOU', or no Indian state code).\nhsn:    Per-HSN aggregation across every taxable line.",
         "properties": {
           "b2b": {
             "items": {

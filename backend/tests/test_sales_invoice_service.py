@@ -432,15 +432,22 @@ def test_si_line_qty_and_price_at_upper_bound_are_valid() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# #193 (b): NIL_NOT_A_SUPPLY / NIL_LUT / NIL invoices must charge zero GST
-# so the books (ledger 2100) never diverge from the GSTR-1 return.
+# #193 CA-review correction (2026-09-26): IGST Act §10(1)(ca). An
+# UNREGISTERED buyer with no recorded state and no ship-to is NOT a
+# "not a supply" — the place of supply is the location of the SUPPLIER, so
+# the sale is intra-state: CGST + SGST at the line rate, posted to 2100.
+# (Previously these tests asserted NIL_NOT_A_SUPPLY / zero GST / a 2-line
+# voucher for this party — that was the legally wrong treatment. The
+# NIL ⇒ zero-GST invariant stays covered by the same-GSTIN branch-transfer
+# test above, the #194 non-GST firm tests below, and
+# test_accounting_service's forced-NIL guard.)
 # ──────────────────────────────────────────────────────────────────────
 
 
 def _seed_org_with_coa(
     session: OrmSession,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
-    """Seed org + COA + firm(MH) + no-state customer + item; return ids."""
+    """Seed org + COA + firm(MH) + no-state, no-GSTIN customer + item."""
     from app.service import rbac_service, seed_service
     from app.utils.crypto import generate_dek, wrap_dek
 
@@ -470,7 +477,7 @@ def _seed_org_with_coa(
         code=f"P{uuid.uuid4().hex[:6].upper()}",
         name="No State Customer",
         is_customer=True,
-        state_code=None,  # no state → NIL_NOT_A_SUPPLY path
+        state_code=None,  # unregistered, no state → PoS = supplier's state
     )
     session.add(party)
     item = Item(
@@ -486,14 +493,14 @@ def _seed_org_with_coa(
     return org_id, firm.firm_id, party.party_id, item.item_id
 
 
-def test_nil_not_a_supply_invoice_has_zero_gst(db_session: OrmSession) -> None:
-    """#193 P0-2 exact repro: no-state party, 10 x 50 @ 5%, no ship_to_state.
+def test_unregistered_no_state_invoice_is_intra_state_cgst_sgst(db_session: OrmSession) -> None:
+    """#193 §10(1)(ca): no-state unregistered party, 10 x 50 @ 5%, no ship_to.
 
-    Before the fix the invoice stored tax_type NIL_NOT_A_SUPPLY *and*
-    gst_amount 25.00 (5% of 500). After the fix gst is forced to zero while
-    the line's gst_rate is retained.
+    Before: tax_type NIL_NOT_A_SUPPLY, gst 0.00, invoice 500.00 (₹25 GST
+    under-charged). After: CGST_SGST at the seller's state (MH), CGST = SGST
+    = 500 x 5/200 = 12.50, gst 25.00, invoice 525.00.
     """
-    from app.service.gst_service import TaxType
+    from app.service.gst_service import DocumentType, TaxType
 
     org_id, firm_id, party_id, item_id = _seed_org_with_coa(db_session)
     invoice = sales_service.create_draft_invoice(
@@ -512,9 +519,11 @@ def test_nil_not_a_supply_invoice_has_zero_gst(db_session: OrmSession) -> None:
             }
         ],
     )
-    assert invoice.tax_type == TaxType.NIL_NOT_A_SUPPLY.value
-    assert invoice.gst_amount == Decimal("0.00")
-    assert invoice.invoice_amount == Decimal("500.00")
+    assert invoice.tax_type == TaxType.CGST_SGST.value
+    assert invoice.invoice_type == DocumentType.TAX_INVOICE.value
+    assert invoice.place_of_supply_state == "MH"
+    assert invoice.gst_amount == Decimal("25.00")
+    assert invoice.invoice_amount == Decimal("525.00")
 
     lines = (
         db_session.execute(
@@ -524,15 +533,41 @@ def test_nil_not_a_supply_invoice_has_zero_gst(db_session: OrmSession) -> None:
         .all()
     )
     assert len(lines) == 1
-    assert Decimal(str(lines[0].gst_amount)) == Decimal("0.00")
-    # gst_rate is retained (decision 3 in the plan): zero-rated value at a rate.
+    assert Decimal(str(lines[0].gst_amount)) == Decimal("25.00")
     assert Decimal(str(lines[0].gst_rate)) == Decimal("5")
 
 
-def test_nil_invoice_finalize_posts_two_line_voucher_no_2100(
+def test_unregistered_no_state_odd_paise_cgst_equals_sgst(db_session: OrmSession) -> None:
+    """CGST = SGST = round(taxable x rate / 200) each: 333.33 @ 5% →
+    8.33 + 8.33 = 16.66 (not a lopsided 16.67)."""
+    from app.service.gst_service import TaxType
+
+    org_id, firm_id, party_id, item_id = _seed_org_with_coa(db_session)
+    invoice = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        lines=[
+            {
+                "item_id": item_id,
+                "qty": Decimal("1"),
+                "price": Decimal("333.33"),
+                "gst_rate": Decimal("5"),
+                "sequence": 1,
+            }
+        ],
+    )
+    assert invoice.tax_type == TaxType.CGST_SGST.value
+    assert invoice.gst_amount == Decimal("16.66")
+    assert invoice.invoice_amount == Decimal("349.99")
+
+
+def test_unregistered_no_state_finalize_posts_gst_to_2100(
     db_session: OrmSession,
 ) -> None:
-    """A finalized NIL invoice posts DR 1200 / CR 4000 only — no CR 2100."""
+    """Finalized: DR 1200 525.00 / CR 4000 500.00 / CR 2100 25.00, balanced."""
     from app.models import Ledger, Voucher
     from app.models.accounting import JournalLineType, VoucherType
 
@@ -567,16 +602,15 @@ def test_nil_invoice_finalize_posts_two_line_voucher_no_2100(
         led.ledger_id: led.code
         for led in db_session.execute(select(Ledger).where(Ledger.org_id == org_id)).scalars()
     }
-    codes = {(by_code[line.ledger_id], line.line_type) for line in voucher.lines}
     amounts = {
         (by_code[line.ledger_id], line.line_type): Decimal(line.amount) for line in voucher.lines
     }
-    assert len(voucher.lines) == 2, "NIL invoice must post exactly a 2-line voucher"
-    assert amounts[("1200", JournalLineType.DR)] == Decimal("500.00")
+    assert len(voucher.lines) == 3
+    assert amounts[("1200", JournalLineType.DR)] == Decimal("525.00")
     assert amounts[("4000", JournalLineType.CR)] == Decimal("500.00")
-    assert not any(code == "2100" for code, _ in codes), "no GST Payable line on a NIL invoice"
+    assert amounts[("2100", JournalLineType.CR)] == Decimal("25.00")
     assert (
-        Decimal(str(voucher.total_debit)) == Decimal(str(voucher.total_credit)) == Decimal("500.00")
+        Decimal(str(voucher.total_debit)) == Decimal(str(voucher.total_credit)) == Decimal("525.00")
     )
 
 

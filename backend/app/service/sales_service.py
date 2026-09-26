@@ -979,7 +979,7 @@ def create_draft_invoice(
     ).scalar_one()
 
     # Compute totals first so the PoS engine sees the real invoice value
-    # (matters for the B2C ₹2.5L threshold).
+    # (matters only for the GSTR-1 B2CL bucket — see gst_service.b2cl_threshold).
     total_subtotal = Decimal("0")
     total_gst = Decimal("0")
     line_records: list[dict[str, object]] = []
@@ -1012,11 +1012,15 @@ def create_draft_invoice(
         # ~1e18) with a per-line 422 before it hits NUMERIC(18,2) at flush.
         ensure_money_in_range(line_amount, field=f"lines.{idx}.line_amount")
         # #195: this first pass computes only a PROVISIONAL full-rate GST so the
-        # PoS engine sees a realistic invoice_value for the B2CL ₹2.5L bucket
-        # test (`invoice_value > 250000`). The FINAL per-line tax is recomputed
-        # below via gst_service.compute_line_gst once tax_type is known — a ±1
-        # paisa/line difference here can never flip that strict-greater-than
-        # threshold. Do NOT persist this provisional value.
+        # PoS engine sees a realistic invoice_value for its B2CL bucket hint
+        # (`invoice_value > gst_service.b2cl_threshold(invoice_date)` — ₹2.5L
+        # before 01-Aug-2024, ₹1L on/after). That hint (pos_decision.
+        # gstr1_section) is NOT persisted and never affects tax_type or tax
+        # amounts; the authoritative GSTR-1 bucket is recomputed in
+        # reports_service from the stored final invoice_amount and the
+        # invoice's own date. The FINAL per-line tax is recomputed below via
+        # gst_service.compute_line_gst once tax_type is known. Do NOT persist
+        # this provisional value.
         gst_amount = (line_amount * gst_rate / Decimal("100")).quantize(Decimal("0.01"))
         total_subtotal += line_amount
         total_gst += gst_amount
@@ -1066,6 +1070,7 @@ def create_draft_invoice(
         ship_to_state=norm_ship_to_state or norm_buyer_state,
         invoice_value=invoice_total,
         seller_has_gst=firm.has_gst,
+        invoice_date=invoice_date,
     )
 
     # #195: SECOND PASS — now that tax_type is known, compute each line's

@@ -1014,7 +1014,9 @@ def test_gstr1_tax_totals_match_gl_2100_for_period(db_session: OrmSession) -> No
         is_customer=True,
         state_code="MH",
     )
-    # (2) NIL: no-state party, no ship_to → NIL_NOT_A_SUPPLY, 0 tax
+    # (2) no-state unregistered party, no ship_to → §10(1)(ca): PoS is the
+    # supplier's location → intra-state CGST_SGST, 50 tax (was NIL / 0 tax
+    # before the 2026-09-26 CA-review correction of #193).
     nil_party = Party(
         org_id=org_id,
         code=f"P{uuid.uuid4().hex[:6].upper()}",
@@ -1090,7 +1092,8 @@ def test_gstr1_tax_totals_match_gl_2100_for_period(db_session: OrmSession) -> No
     )
     gl_2100_total = sum((Decimal(a) for a in gl_2100), Decimal("0"))
 
-    assert gstr1_tax == Decimal("50.00"), f"expected 50.00 GSTR-1 tax, got {gstr1_tax}"
+    # 50 (intra MH party) + 50 (no-state party, now taxed at seller's state)
+    assert gstr1_tax == Decimal("100.00"), f"expected 100.00 GSTR-1 tax, got {gstr1_tax}"
     assert gl_2100_total == gstr1_tax, (
         f"books != return: ledger 2100 CR {gl_2100_total} vs GSTR-1 {gstr1_tax}"
     )
@@ -1373,3 +1376,185 @@ def test_gstr1_total_tax_equals_gl_2100_ratewise(
     # 233.31@5 → 11.66 ; 50@18 → 9.00 ; total 20.66
     assert gstr1_tax == Decimal("20.66"), gstr1_tax
     assert gl_2100_total == gstr1_tax, f"books {gl_2100_total} != return {gstr1_tax}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CA-review correction (2026-09-26)
+#   #193: unregistered buyer with no state → §10(1)(ca) PoS = supplier's
+#         location → B2CS under the SELLER's state code.
+#   #195 area: B2CL threshold is date-dependent (Notification 12/2024-CT):
+#         ₹2,50,000 before 01-Aug-2024, ₹1,00,000 on/after; B2CL is
+#         invoice value STRICTLY GREATER THAN the threshold.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _recon_party(session: OrmSession, org_id: uuid.UUID, state_code: str | None) -> uuid.UUID:
+    from app.models import Party
+
+    party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name=f"B2C {state_code}",
+        is_customer=True,
+        state_code=state_code,
+    )
+    session.add(party)
+    session.flush()
+    return party.party_id
+
+
+def _finalized_invoice(
+    session: OrmSession,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    party_id: uuid.UUID,
+    item_id: uuid.UUID,
+    invoice_date: datetime.date,
+    price: Decimal,
+    gst_rate: Decimal,
+    ship_to_state: str | None = None,
+) -> uuid.UUID:
+    from app.service import sales_service
+
+    inv = sales_service.create_draft_invoice(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=invoice_date,
+        ship_to_state=ship_to_state,
+        lines=[
+            {
+                "item_id": item_id,
+                "qty": Decimal("1"),
+                "price": price,
+                "gst_rate": gst_rate,
+                "sequence": 1,
+            }
+        ],
+    )
+    sales_service.finalize_invoice(session, org_id=org_id, sales_invoice_id=inv.sales_invoice_id)
+    return inv.sales_invoice_id
+
+
+def test_gstr1_unregistered_no_state_lands_in_b2cs_under_seller_state(
+    db_session: OrmSession,
+) -> None:
+    from app.service import reports_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(db_session)  # firm in MH
+    party_id = _recon_party(db_session, org_id, None)
+    _finalized_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        price=Decimal("1000"),
+        gst_rate=Decimal("5"),
+    )
+    result = reports_service.compute_gstr1(
+        db_session, org_id=org_id, firm_id=firm_id, period="2026-09"
+    )
+    assert result.b2b == [] and result.b2cl == [] and result.export == []
+    assert len(result.b2cs) == 1
+    row = result.b2cs[0]
+    assert row.place_of_supply_state == "MH"
+    assert row.gst_rate == Decimal("5")
+    assert row.taxable_value == Decimal("1000.00")
+    assert row.cgst == Decimal("25.00")
+    assert row.sgst == Decimal("25.00")
+    assert row.igst == Decimal("0")
+
+
+def _b2c_inter_state_bucket(
+    session: OrmSession, *, invoice_date: datetime.date, price: Decimal, gst_rate: Decimal
+) -> str:
+    """Create + finalize one MH→GJ unregistered invoice; return its GSTR-1 bucket."""
+    from app.service import reports_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(session)
+    party_id = _recon_party(session, org_id, "GJ")
+    _finalized_invoice(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date=invoice_date,
+        price=price,
+        gst_rate=gst_rate,
+        ship_to_state="GJ",
+    )
+    result = reports_service.compute_gstr1(
+        session, org_id=org_id, firm_id=firm_id, period=invoice_date.strftime("%Y-%m")
+    )
+    buckets = [
+        name
+        for name, rows in (
+            ("b2b", result.b2b),
+            ("b2cl", result.b2cl),
+            ("b2cs", result.b2cs),
+            ("export", result.export),
+        )
+        if rows
+    ]
+    assert len(buckets) == 1, buckets
+    return buckets[0]
+
+
+def test_gstr1_b2cl_on_cutover_date_just_above_1_lakh(db_session: OrmSession) -> None:
+    """2024-08-01, invoice value ₹1,00,001 → B2CL."""
+    assert (
+        _b2c_inter_state_bucket(
+            db_session,
+            invoice_date=datetime.date(2024, 8, 1),
+            price=Decimal("100001"),
+            gst_rate=Decimal("0"),
+        )
+        == "b2cl"
+    )
+
+
+def test_gstr1_b2cs_on_cutover_date_exactly_1_lakh(db_session: OrmSession) -> None:
+    """2024-08-01, invoice value exactly ₹1,00,000 → B2CS (strictly greater)."""
+    assert (
+        _b2c_inter_state_bucket(
+            db_session,
+            invoice_date=datetime.date(2024, 8, 1),
+            price=Decimal("100000"),
+            gst_rate=Decimal("0"),
+        )
+        == "b2cs"
+    )
+
+
+def test_gstr1_b2cs_day_before_cutover_1_5_lakh(db_session: OrmSession) -> None:
+    """2024-07-31, invoice value ₹1,50,000 → B2CS (old ₹2.5L threshold)."""
+    assert (
+        _b2c_inter_state_bucket(
+            db_session,
+            invoice_date=datetime.date(2024, 7, 31),
+            price=Decimal("150000"),
+            gst_rate=Decimal("0"),
+        )
+        == "b2cs"
+    )
+
+
+def test_gstr1_b2cl_threshold_tests_invoice_value_including_tax(
+    db_session: OrmSession,
+) -> None:
+    """Taxable ₹95,239 @5% IGST = 4,761.95 → invoice value ₹1,00,000.95 > ₹1L
+    → B2CL, although the taxable value alone is below ₹1L."""
+    assert (
+        _b2c_inter_state_bucket(
+            db_session,
+            invoice_date=datetime.date(2026, 9, 2),
+            price=Decimal("95239"),
+            gst_rate=Decimal("5"),
+        )
+        == "b2cl"
+    )

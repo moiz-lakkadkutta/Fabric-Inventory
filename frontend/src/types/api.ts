@@ -3962,7 +3962,9 @@ export interface components {
          * Gstr1Response
          * @description GSTR-1 envelope for ``period`` = YYYY-MM. Buckets:
          *     b2b:    Registered (GSTIN-present) sales (intra + inter state).
-         *     b2cl:   Inter-state B2C invoices > ₹2.5L, invoice-wise.
+         *     b2cl:   Inter-state B2C invoices with invoice value > ₹2.5L (dated
+         *             before 01-Aug-2024) or > ₹1L (on/after; Notif. 12/2024-CT),
+         *             invoice-wise.
          *     b2cs:   Aggregated B2C below threshold or intra-state, by
          *             (state, rate).
          *     export: Zero-rated overseas / SEZ / EOU sales (party.is_export

@@ -1407,6 +1407,7 @@ def _bucket_for_invoice(
     party_is_sez: bool,
     place_of_supply_state: str | None,
     invoice_value: Decimal,
+    invoice_date: datetime.date,
 ) -> str:
     """Classify a sales invoice into one of B2B / B2CL / B2CS / EXPORT.
 
@@ -1414,8 +1415,10 @@ def _bucket_for_invoice(
       - export: party.is_export OR party.is_sez OR place_of_supply IN
         {'SEZ','EXPORT','EOU'} (non-state tokens from the PoS engine).
       - b2b: party has a GSTIN on file (REGISTERED).
-      - b2cl: B2C (no GSTIN), inter-state, invoice_value > ₹2.5L.
-      - b2cs: everything else B2C (intra-state, or inter-state ≤ ₹2.5L).
+      - b2cl: B2C (no GSTIN), inter-state, invoice_value strictly greater
+        than ``gst_service.b2cl_threshold(invoice_date)`` — ₹2.5L before
+        01-Aug-2024, ₹1L on/after (Notification 12/2024-CT).
+      - b2cs: everything else B2C (intra-state, or inter-state ≤ threshold).
     """
     if party_is_export or party_is_sez:
         return "export"
@@ -1424,7 +1427,7 @@ def _bucket_for_invoice(
     if party_gstin is not None:
         return "b2b"
     is_inter_state = place_of_supply_state is not None and place_of_supply_state != seller_state
-    if is_inter_state and invoice_value > gst_service.B2C_INTER_STATE_THRESHOLD:
+    if is_inter_state and gst_service.is_b2cl_value(invoice_value, invoice_date):
         return "b2cl"
     return "b2cs"
 
@@ -1592,6 +1595,7 @@ def compute_gstr1(
             party_is_sez=bool(r.party_is_sez),
             place_of_supply_state=r.place_of_supply_state,
             invoice_value=invoice_total,
+            invoice_date=r.invoice_date,
         )
 
         if bucket == "b2cs":

@@ -26,6 +26,7 @@ Reference: specs/place-of-supply-tests.md
 
 from __future__ import annotations
 
+import datetime
 import enum
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -78,7 +79,35 @@ class BuyerStatus(enum.StrEnum):
     EOU = "EOU"
 
 
-B2C_INTER_STATE_THRESHOLD = Decimal("250000")  # ₹2.5L per §10(1)(d) — GSTR-1 bucket only
+# ── GSTR-1 Table 5 (B2CL) threshold — date-dependent ─────────────────────
+# B2CL = inter-state B2C invoice whose invoice value is STRICTLY GREATER THAN
+# the threshold. Notification 12/2024-Central Tax (10-Jul-2024) lowered it
+# from ₹2,50,000 to ₹1,00,000 w.e.f. 01-Aug-2024. This is a reporting bucket
+# only — it never changes tax_type or tax amounts (inter-state is always
+# IGST). Always resolve it via `b2cl_threshold(invoice_date)` so each
+# invoice is classified by the law in force on its own date.
+B2CL_THRESHOLD_BEFORE_AUG_2024 = Decimal("250000")
+B2CL_THRESHOLD_FROM_AUG_2024 = Decimal("100000")
+B2CL_THRESHOLD_CUTOVER_DATE = datetime.date(2024, 8, 1)
+
+
+def b2cl_threshold(invoice_date: datetime.date | None) -> Decimal:
+    """GSTR-1 B2CL invoice-value threshold in force on *invoice_date*.
+
+    ₹2,50,000 before 2024-08-01; ₹1,00,000 on or after (Notification
+    12/2024-CT). ``None`` (date unknown — only pure-engine callers that
+    don't care about the reporting bucket) resolves to the CURRENT law.
+    """
+    if invoice_date is not None and invoice_date < B2CL_THRESHOLD_CUTOVER_DATE:
+        return B2CL_THRESHOLD_BEFORE_AUG_2024
+    return B2CL_THRESHOLD_FROM_AUG_2024
+
+
+def is_b2cl_value(invoice_value: Decimal, invoice_date: datetime.date | None) -> bool:
+    """True iff an inter-state B2C invoice of *invoice_value* (total incl.
+    tax) dated *invoice_date* belongs in GSTR-1 B2CL (strictly greater)."""
+    return invoice_value > b2cl_threshold(invoice_date)
+
 
 # ── GST rate slab allow-list ───────────────────────────────────────────────
 # Statutory ad-valorem GST rates per the GST Council rate schedule.
@@ -116,8 +145,9 @@ class PlaceOfSupply:
     # can group invoices without re-deriving from buyer/value at filing
     # time. Possible values:
     #   "B2B"    — registered buyer (intra OR inter state); invoice-wise
-    #   "B2CL"   — inter-state B2C with invoice value > ₹2.5L; invoice-wise
-    #   "B2CS"   — B2C consolidated (intra-state, or inter-state ≤ ₹2.5L)
+    #   "B2CL"   — inter-state B2C with invoice value > b2cl_threshold(date)
+    #              (₹2.5L before 01-Aug-2024, ₹1L from then); invoice-wise
+    #   "B2CS"   — B2C consolidated (intra-state, or inter-state ≤ threshold)
     #   "EXPORT" — SEZ / EXPORT / EOU
     #   "NIL"    — non-supply / NIL_LUT
     gstr1_section: str = "B2B"
@@ -138,6 +168,7 @@ def determine_place_of_supply(
     invoice_value: Decimal = Decimal("0"),
     lut_active: bool = False,
     seller_has_gst: bool = True,
+    invoice_date: datetime.date | None = None,
 ) -> PlaceOfSupply:
     """Return the (tax_type, pos_state, document_type) decision for one
     sales-invoice header.
@@ -147,6 +178,9 @@ def determine_place_of_supply(
     the safe fallback for unhandled combinations (caller can refuse to
     save the invoice if it sees the fallback when it expected a real
     tax type).
+
+    ``invoice_date`` only selects the GSTR-1 B2CL threshold (see
+    ``b2cl_threshold``); ``None`` means the current threshold.
     """
     # GST-1/B1: canonicalise every state input before any comparison so the
     # intra-vs-inter equality below is format-agnostic. The codebase stores
@@ -215,10 +249,21 @@ def determine_place_of_supply(
         )
 
     # 3) Default: PoS = ship_to_state, falling back to buyer_state.
+    is_b2c_unregistered = buyer_status in {BuyerStatus.CONSUMER, BuyerStatus.UNREGISTERED}
     pos = ship_to_state or buyer_state
+    if pos is None and is_b2c_unregistered and seller_state:
+        # #193 CA-review correction — IGST Act §10(1)(ca): for goods supplied
+        # to an UNREGISTERED person, the place of supply is the address
+        # recorded on the invoice or, when no address is recorded, the
+        # LOCATION OF THE SUPPLIER. No recorded state ⇒ PoS = seller's
+        # state ⇒ intra-state CGST+SGST (B2CS under the seller's state).
+        # Previously this fell through to NIL_NOT_A_SUPPLY and charged ₹0.
+        pos = seller_state
     if pos is None:
-        # No usable destination — refuse to charge tax. Caller should
-        # surface this as a validation error before saving the invoice.
+        # No usable destination — refuse to charge tax. Reached only for a
+        # REGISTERED buyer with no state (the §10(1)(ca) fallback above
+        # covers unregistered buyers) or a seller with no state. Caller
+        # should surface this as a validation error before saving.
         return PlaceOfSupply(
             tax_type=TaxType.NIL_NOT_A_SUPPLY,
             pos_state=None,
@@ -228,16 +273,16 @@ def determine_place_of_supply(
 
     # 4) Geography-based tax_type — Scenarios 1, 2, 4, 5, 6, 7, 21.
     # INT-11 fix (P2-1): inter-state is ALWAYS IGST regardless of value.
-    # The ₹2.5L threshold is only a GSTR-1 reporting bucket (B2CL vs
-    # B2CS), which is computed below — NOT a tax_type flip.
-    is_b2c_unregistered = buyer_status in {BuyerStatus.CONSUMER, BuyerStatus.UNREGISTERED}
+    # The B2CL value threshold (b2cl_threshold: ₹2.5L → ₹1L from
+    # 01-Aug-2024) is only a GSTR-1 reporting bucket (B2CL vs B2CS),
+    # computed below — NOT a tax_type flip.
     is_inter_state = pos != seller_state
 
     if is_inter_state:
         tax_type = TaxType.IGST
         pos_state = pos
         if is_b2c_unregistered:
-            section = "B2CL" if invoice_value > B2C_INTER_STATE_THRESHOLD else "B2CS"
+            section = "B2CL" if is_b2cl_value(invoice_value, invoice_date) else "B2CS"
         else:
             section = "B2B"
     else:
@@ -342,7 +387,9 @@ def split_tax(*, tax_type: TaxType, gst_amount: Decimal) -> GstSplit:
 
 
 __all__ = [
-    "B2C_INTER_STATE_THRESHOLD",
+    "B2CL_THRESHOLD_BEFORE_AUG_2024",
+    "B2CL_THRESHOLD_CUTOVER_DATE",
+    "B2CL_THRESHOLD_FROM_AUG_2024",
     "GST_ROUNDING",
     "TWOPLACES",
     "VALID_GST_SLAB_RATES",
@@ -351,8 +398,10 @@ __all__ = [
     "GstSplit",
     "PlaceOfSupply",
     "TaxType",
+    "b2cl_threshold",
     "compute_line_gst",
     "determine_place_of_supply",
+    "is_b2cl_value",
     "is_valid_gst_rate",
     "split_tax",
 ]
