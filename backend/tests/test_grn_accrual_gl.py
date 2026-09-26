@@ -1191,7 +1191,7 @@ def test_void_pi_whose_grn_was_soft_deleted(
     db_session.flush()
 
     voided = procurement_service.void_pi(db_session, org_id=fresh_org_id, pi_id=pi_id)
-    assert voided.status.value == "VOIDED"
+    assert voided.status is not None and voided.status.value == "VOIDED"
     assert _tb_balance(db_session, org_id=fresh_org_id, firm=firm, code="2010") == Decimal("-2000")
 
 
