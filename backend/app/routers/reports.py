@@ -28,6 +28,8 @@ from app.schemas.reports import (
     DaybookResponse,
     DaybookVoucher,
     Gstr1B2csRow,
+    Gstr1CdnrRow,
+    Gstr1CdnurRow,
     Gstr1HsnRow,
     Gstr1InvoiceRow,
     Gstr1Response,
@@ -565,7 +567,7 @@ def get_party_statement(
 @router.get(
     "/gstr1",
     response_model=Gstr1Response,
-    summary="GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period",
+    summary="GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN / CDNR / CDNUR) for a period",
 )
 def get_gstr1(
     db: SyncDBSession,
@@ -577,7 +579,7 @@ def get_gstr1(
             alias="format",
             description=(
                 "`xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / "
-                "Export / HSN); `csv` flattens the B2B sheet (use xlsx for "
+                "Export / HSN / CDNR / CDNUR); `csv` flattens the B2B sheet (use xlsx for "
                 "the full filing)."
             ),
             pattern="^(csv|xlsx)$",
@@ -634,4 +636,12 @@ def get_gstr1(
         b2cs=[Gstr1B2csRow(**row.__dict__) for row in result.b2cs],
         export=[Gstr1InvoiceRow(**inv.__dict__) for inv in result.export],
         hsn=[Gstr1HsnRow(**row.__dict__) for row in result.hsn],
+        cdnr=[
+            Gstr1CdnrRow(**{k: v for k, v in n.__dict__.items() if k != "ur_type"})
+            for n in result.cdnr
+        ],
+        cdnur=[
+            Gstr1CdnurRow(**{k: v for k, v in n.__dict__.items() if k != "gstin"})
+            for n in result.cdnur
+        ],
     )

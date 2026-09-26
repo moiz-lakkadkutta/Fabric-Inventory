@@ -4358,7 +4358,17 @@ paths:
         reversing CREDIT_NOTE voucher (and reverses the COGS voucher +
         restores stock when present) so voucher-driven reports (TB, P&L,
         party statement, daybook) stay consistent with status-driven reports
-        (GSTR-1, ageing), which exclude CANCELLED invoices. Idempotent.
+        (GSTR-1, ageing). Idempotent.
+        GST periods (#199, CA-review correction; periods are calendar months
+        in Asia/Kolkata): the reversal, COGS reversal and stock restore are
+        dated on the cancel date in IST (never before the invoice date). A
+        SAME-PERIOD cancel is a true cancellation — GSTR-1 excludes the
+        invoice. A CROSS-PERIOD cancel is a CGST Act §34 credit note — the
+        original stays in its own month's GSTR-1 and the credit note is
+        reported in the cancel month (cdnr / cdnur / b2cs net-off). A
+        cross-period cancel after 30 November following the end of the
+        invoice's financial year (April-March) is refused with 409 (§34(2)
+        time limit).
       operationId: cancelInvoice
       tags:
         - sales
@@ -4395,8 +4405,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: >-
-            Invoice cannot be cancelled — not finalized, already paid, or
-            linked to a delivery challan.
+            Invoice cannot be cancelled — not finalized, already paid,
+            linked to a delivery challan, or (#199) a cross-period cancel past
+            the §34 credit-note time limit (30-Nov after the invoice's FY end).
       x-permission: sales.invoice.cancel
 
   /invoices/{invoice_id}/send-whatsapp:
@@ -5235,7 +5246,7 @@ paths:
 
   /reports/gstr1:
     get:
-      summary: Get GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period
+      summary: Get GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN / CDNR / CDNUR) for a period
       operationId: getGstr1
       tags:
         - reports
@@ -5253,10 +5264,28 @@ paths:
       responses:
         '200':
           description: |
-            GSTR-1 envelope — five buckets keyed by category. With
+            GSTR-1 envelope — buckets keyed by category. With
             `format=xlsx` returns a multi-sheet workbook (B2B / B2CL /
-            B2CS / Export / HSN as separate sheets). With `format=csv`
-            flattens the B2B bucket only (use xlsx for the full filing).
+            B2CS / Export / HSN / CDNR / CDNUR as separate sheets). With
+            `format=csv` flattens the B2B bucket only (use xlsx for the
+            full filing).
+
+            CREDIT NOTES (#199, additive): a finalized invoice cancelled in a
+            LATER month (Asia/Kolkata) than its invoice date is a CGST Act
+            §34 credit note. The original invoice STILL appears in its own
+            month's buckets; the month the CREDIT_NOTE voucher is dated
+            reports it as: `cdnr` (original was B2B — `Gstr1CdnrRow` with
+            recipient `gstin`, masked like B2B), `cdnur` (original was B2CL
+            or export — `Gstr1CdnurRow` with `ur_type` B2CL / EXPWP /
+            EXPWOP), or, for a B2CS original, a negative adjustment netted
+            into that month's `b2cs` row for the same (state, rate) — a
+            negative row with `invoice_count` 0 if there were no sales. Each
+            credit-note row is per (note, slab rate) with note number/date,
+            original invoice number/date, place of supply, `note_value`,
+            `taxable_value`, CGST/SGST/IGST and `note_type` "C"; amounts are
+            POSITIVE (the note type carries the sign). `hsn` is net of every
+            credit note in the period. A same-month cancel is excluded from
+            every section.
 
             RATE-WISE (BREAKING SHAPE CHANGE, #195): the return is
             statutory rate-wise. b2b / b2cl / export emit ONE ROW PER

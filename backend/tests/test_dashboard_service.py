@@ -617,3 +617,18 @@ def test_get_activity_returns_recent_audit_rows(db_session: OrmSession) -> None:
     assert len(items) == 2
     # Most-recent first by created_at.
     assert items[0].kind in {"sales.invoice.finalize", "auth.session.switch_firm"}
+
+
+def test_dashboard_default_today_is_ist_date() -> None:
+    """00:30 IST on 1-Sep is still 31-Aug in UTC; the dashboard's 'today'
+    (and therefore MTD) must already be 1-Sep, matching GST periods."""
+    import datetime as _dt
+
+    from app.service import dashboard_service
+
+    assert dashboard_service._default_today(
+        _dt.datetime(2024, 8, 31, 19, 0, tzinfo=_dt.UTC)
+    ) == _dt.date(2024, 9, 1)
+    assert dashboard_service._default_today(
+        _dt.datetime(2024, 8, 31, 18, 29, tzinfo=_dt.UTC)
+    ) == _dt.date(2024, 8, 31)

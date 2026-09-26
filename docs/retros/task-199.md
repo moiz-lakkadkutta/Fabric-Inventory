@@ -58,7 +58,10 @@ damage)". With #190's index now present, a second such insert is rejected by the
 - Guards: paid → 409, DC-linked → 409, DRAFT → 409, blank reason → 422.
 - Reverse-if-present for COGS; mirror-only (never reconstruct amounts); stock restore
   keyed off the `sales_invoice` outbound stock_ledger rows.
-- GSTR-1/ageing/dashboard needed no code change — CANCELLED already excluded.
+- ~~GSTR-1/ageing/dashboard needed no code change — CANCELLED already excluded.~~
+  **SUPERSEDED (2026-09-26):** wrong for GST periods — GSTR-1 and the dashboard
+  sales/GST KPIs were changed; see "CA-review correction (2026-09-26)" below. Ageing
+  is unchanged (a cancelled invoice has nothing outstanding).
 
 ## How the reversal avoids the #190 unique index (the load-bearing detail)
 
@@ -75,11 +78,13 @@ reference_id)` WHERE `voucher_type IN ('SALES_INVOICE','COGS_SALE')`.
 ## Open flags carried over (Ask-vs-Decide)
 
 - **Moiz — schema:** two new nullable columns on `sales_invoice` + one partial index.
-- **Moiz + CA — GST period:** v1 is a full cancel dated the cancel day; cancelling an
-  invoice from a *prior* GSTR-1 period retroactively removes it from that period's data.
-  Legally a prior-period correction belongs in a credit note. Current behavior: allow +
-  audit; NO period warning is emitted yet (the plan recommended logging one — deferred).
-  CA to confirm before any real GST filing depends on it.
+- **SUPERSEDED (2026-09-26)** — resolved by the CA-review correction below (cross-period
+  cancel = §34 credit note; original stays in its month; time limit enforced):
+  - **Moiz + CA — GST period:** v1 is a full cancel dated the cancel day; cancelling an
+    invoice from a *prior* GSTR-1 period retroactively removes it from that period's data.
+    Legally a prior-period correction belongs in a credit note. Current behavior: allow +
+    audit; NO period warning is emitted yet (the plan recommended logging one — deferred).
+    CA to confirm before any real GST filing depends on it.
 - **Follow-up ticket:** credit-note *document* (partial amounts, GSTR-1 CDNR,
   `revises_invoice_id` linkage, DC-linked sales-returns, receipt-unwind → advance).
 
@@ -89,7 +94,105 @@ reference_id)` WHERE `voucher_type IN ('SALES_INVOICE','COGS_SALE')`.
 `SELECT reference_id FROM voucher WHERE voucher_type='SALES_INVOICE' GROUP BY 1 HAVING
 count(*)>1;` — cancel+reissue any affected invoices in-app (cancel is now the remedy).
 
-### 2. Pre-existing unrelated failure to be aware of
+### 2. ~~Pre-existing unrelated failure to be aware of~~ — SUPERSEDED (2026-09-26): `test_cogs_on_sale.py` passes on the current base; the note below is historical.
 `tests/test_cogs_on_sale.py::test_finalize_service_item_no_cogs_no_stock` fails on the
 integration branch independent of #199 (it seeds a `has_gst=False` firm with
 `gst_rate=18`, which `create_draft_invoice` rejects per #194). Not touched by this task.
+
+## CA-review correction (2026-09-26)
+
+**What was wrong.** GSTR-1 dropped every CANCELLED invoice and had no credit-note
+section. An invoice cancelled in a later month vanished from its original month's
+GSTR-1 (possibly already filed) and nothing appeared in the cancel month, while the
+books reduced ledger 2100 in the cancel month — books and returns disagreed in both
+months. The reversal was also dated on the UTC day, not the IST day.
+
+**Legal / accounting basis.** Once a period's GSTR-1 is filed an invoice in it cannot
+be deleted; the only correction is a credit note under CGST Act §34, reported in the
+return of the month the note is issued — GSTR-1 Table 9B **CDNR** (registered
+recipient, original B2B), **CDNUR** (unregistered, original B2CL or export); a note
+against a B2CS invoice is netted off that month's B2CS (same state + rate), and the HSN
+summary (Table 12) is net of credit notes. §34(2) (as amended by Finance Act 2022): a
+credit note must be declared by 30 November following the end of the financial year of
+the original supply (or the annual-return date, if earlier).
+
+**What changed.**
+- `gst_service`: `gst_local_date` (fixed UTC+05:30), `is_later_gst_period`,
+  `credit_note_deadline` (30-Nov after the April-March FY end).
+- `sales_service.cancel_invoice`: takes an injectable `now` (default `_utcnow()`, a
+  monkeypatchable seam); computes the cancel date in IST; a **cross-period** cancel
+  (cancel month IST > invoice month) after the deadline raises `InvoiceStateError`
+  (409) telling the user no credit note can reduce tax now and to consult their CA.
+  The CREDIT_NOTE reversal, COGS reversal and stock restore are dated
+  `max(cancel_date_IST, invoice_date)`. Audit payload gains `reversal_date` +
+  `gst_treatment` (`SAME_PERIOD_CANCELLATION` / `CREDIT_NOTE_S34`).
+- `accounting_service._post_reversal_of` / `reverse_sales_invoice_gl` /
+  `reverse_cogs_sale_gl`: optional `voucher_date` (default unchanged: UTC today).
+- `reports_service.compute_gstr1`: a CANCELLED invoice is still reported in its own
+  month iff its CREDIT_NOTE reversal is dated in a later month (the credit note's
+  `voucher_date` is the single source of truth for the period, so books and return
+  always pick the same month). New `cdnr` / `cdnur` sections (per note × slab rate;
+  positive amounts, `note_type` "C"; CDNR GSTIN masked like B2B; CDNUR `ur_type`
+  B2CL / EXPWP / EXPWOP); B2CS originals net off `b2cs` (negative row, count 0, when no
+  sales that month); `hsn` reduced by every note's lines. Original classified with
+  `_bucket_for_invoice` using its own invoice date (date-dependent B2CL threshold).
+- Schema/API: `Gstr1CdnrRow`, `Gstr1CdnurRow` on `Gstr1Response`; XLSX gains CDNR and
+  CDNUR sheets (B2B stays sheet 0 for CSV). OpenAPI snapshot, FE types, `specs/` updated.
+- FE: GSTR-1 panel shows both credit-note sections; header totals are net of notes;
+  B2CS / HSN tax cells render negatives.
+- Tests: `tests/test_sales_invoice_cancel_gst_period.py` (same-month, IST same-period,
+  B2B→CDNR, masked CDNR GSTIN, B2CL→CDNUR, export→CDNUR EXPWOP, B2CS net-off with and
+  without cancel-month sales, IST boundary, deadline allow/refuse, pure deadline + IST
+  helpers, HTTP JSON + XLSX, HTTP 409). Each checks books == return per period (Σ GSTR-1
+  tax, notes negative == net CR on 2100 from SALES_INVOICE + CREDIT_NOTE). Existing
+  cancel + concurrency tests now pin the cancel clock to a same-period instant (they
+  previously relied on the wall clock and would have become cross-period — and, after
+  30-Nov-2027, refused).
+
+**Out of scope (not built).**
+- The Oct-2025 rule that a credit note to a registered recipient needs the recipient's
+  ITC reversal (IMS accept/reject) before the supplier's liability reduces.
+- Annual-return-date limb of the §34 deadline (no annual-return date is tracked).
+- Partial credit notes / sales returns (separate backlog item) and debit notes.
+- SEZ originals sit in the existing `export` bucket, so their notes go to CDNUR
+  (EXPWP/EXPWOP); on the portal a SEZ recipient has a GSTIN and belongs in CDNR
+  (SEZWP/SEZWOP). Pre-existing classification choice — CA to confirm.
+
+**Flags for Moiz + CA.**
+- Reversal dated `max(cancel date IST, invoice date)` — a future-dated invoice cancelled
+  before its date gets a reversal on the invoice date (a reversal never predates the
+  document; keeps books == return). Legacy reversals dated *before* the invoice month
+  are treated as same-period (not reported).
+- Credit-note amounts are positive with note type "C" (portal JSON convention); the
+  header totals / books==return check subtract them.
+- HSN is reduced for all credit notes (Table 12 instructions), not only B2CS ones.
+
+**Dashboard (verifier follow-up, 2026-09-26).** `dashboard_service` sales_today /
+sales_mtd / gst_collected_mtd used to drop every CANCELLED invoice by status, so an
+invoice dated 10-Aug (₹1,000 + ₹50 GST) cancelled 12-Sep showed ₹0 GST collected for
+August (GSTR-1 / GL 2100: ₹50) and nothing in September. They now reuse the GSTR-1
+predicate (`reports_service.gstr1_invoice_filter` +
+`cross_period_credit_note_invoice_ids`): a cross-period-cancelled invoice counts in its
+invoice month; its CREDIT_NOTE reduces the month of its voucher_date; a same-period
+cancel counts nowhere; drafts stay excluded (#196). **Presentation choice:** the KPIs
+are NET figures — sales (gross, incl. GST) minus credit notes dated in the window — so
+September shows Sales MTD −₹1,050 and GST collected −₹50 in that example (a month can go
+negative). Cache invalidation on cancel is covered by a test.
+
+**Duplicate-posted invoices (pre-#190).** Cancel reverses every duplicate original, but
+GSTR-1 reports the invoice and its credit note once each (tested, B2B and B2CS; the test
+fails if the dedupe is removed). Per month, books (2x) ≠ return (1x) by exactly the
+duplicate's tax — that is the legacy #190 damage, not something #199 introduces; across
+the two months both net to zero.
+
+**Further CA / follow-up items.**
+- The CREDIT_NOTE voucher reuses the invoice's series with its own per-type counter, so
+  a note number can look identical to an invoice number (e.g. both "RT/2526/0001"); the
+  counter has no FY reset; and there is no credit-note document/PDF for the buyer
+  (Rule 53(1A) particulars). Needs a proper credit-note series + document.
+- Negative B2CS / HSN rows: how the offline tool / portal accepts a B2CS or HSN row that
+  nets negative for a month (CA to confirm filing practice, e.g. carry into B2CSA).
+- GSTR-1 classifies both the original invoice and the credit note using the party's
+  CURRENT GSTIN / is_export / is_sez flags, not a snapshot at invoice time — if a party
+  registers later, a past B2CS invoice would re-bucket as B2B. Needs an invoice-time
+  snapshot.

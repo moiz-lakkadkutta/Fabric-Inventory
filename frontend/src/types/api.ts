@@ -2128,7 +2128,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period */
+        /** GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN / CDNR / CDNUR) for a period */
         get: operations["get_gstr1_reports_gstr1_get"];
         put?: never;
         post?: never;
@@ -3881,6 +3881,128 @@ export interface components {
             taxable_value: string;
         };
         /**
+         * Gstr1CdnrRow
+         * @description GSTR-1 Table 9B CDNR — credit note to a REGISTERED recipient (the
+         *     original invoice was B2B). ``gstin`` is plaintext, or masked to last-3
+         *     when the caller lacks masters.party.pii.read (same rule as B2B).
+         */
+        Gstr1CdnrRow: {
+            /** Cgst */
+            cgst: string;
+            /** Gst Rate */
+            gst_rate: string;
+            /** Gstin */
+            gstin: string | null;
+            /** Igst */
+            igst: string;
+            /**
+             * Invoice Date
+             * Format: date
+             */
+            invoice_date: string;
+            /** Invoice Number */
+            invoice_number: string;
+            /** Invoice Series */
+            invoice_series: string;
+            /**
+             * Note Date
+             * Format: date
+             */
+            note_date: string;
+            /** Note Number */
+            note_number: string;
+            /** Note Series */
+            note_series: string;
+            /** Note Type */
+            note_type: string;
+            /** Note Value */
+            note_value: string;
+            /**
+             * Note Voucher Id
+             * Format: uuid
+             */
+            note_voucher_id: string;
+            /**
+             * Party Id
+             * Format: uuid
+             */
+            party_id: string;
+            /** Party Name */
+            party_name: string;
+            /** Place Of Supply State */
+            place_of_supply_state: string | null;
+            /**
+             * Sales Invoice Id
+             * Format: uuid
+             */
+            sales_invoice_id: string;
+            /** Sgst */
+            sgst: string;
+            /** Taxable Value */
+            taxable_value: string;
+        };
+        /**
+         * Gstr1CdnurRow
+         * @description GSTR-1 Table 9B CDNUR — credit note to an UNREGISTERED recipient
+         *     (original was B2CL or export). ``ur_type`` is "B2CL", "EXPWP" (export
+         *     with IGST paid) or "EXPWOP" (export under LUT / without payment).
+         */
+        Gstr1CdnurRow: {
+            /** Cgst */
+            cgst: string;
+            /** Gst Rate */
+            gst_rate: string;
+            /** Igst */
+            igst: string;
+            /**
+             * Invoice Date
+             * Format: date
+             */
+            invoice_date: string;
+            /** Invoice Number */
+            invoice_number: string;
+            /** Invoice Series */
+            invoice_series: string;
+            /**
+             * Note Date
+             * Format: date
+             */
+            note_date: string;
+            /** Note Number */
+            note_number: string;
+            /** Note Series */
+            note_series: string;
+            /** Note Type */
+            note_type: string;
+            /** Note Value */
+            note_value: string;
+            /**
+             * Note Voucher Id
+             * Format: uuid
+             */
+            note_voucher_id: string;
+            /**
+             * Party Id
+             * Format: uuid
+             */
+            party_id: string;
+            /** Party Name */
+            party_name: string;
+            /** Place Of Supply State */
+            place_of_supply_state: string | null;
+            /**
+             * Sales Invoice Id
+             * Format: uuid
+             */
+            sales_invoice_id: string;
+            /** Sgst */
+            sgst: string;
+            /** Taxable Value */
+            taxable_value: string;
+            /** Ur Type */
+            ur_type: string;
+        };
+        /**
          * Gstr1HsnRow
          * @description One HSN summary row, rate-wise (#195). The GSTR-1 HSN section
          *     aggregates invoice lines by ``(HSN code, UQC/UOM, gst_rate)``. Items
@@ -3970,7 +4092,14 @@ export interface components {
          *     export: Zero-rated overseas / SEZ / EOU sales (party.is_export
          *             / party.is_sez set; or place_of_supply is one of
          *             'SEZ', 'EXPORT', 'EOU', or no Indian state code).
-         *     hsn:    Per-HSN aggregation across every taxable line.
+         *     hsn:    Per-HSN aggregation across every taxable line, NET of the
+         *             period's credit notes (Table 12).
+         *     cdnr:   Credit notes issued this period against B2B invoices of an
+         *             earlier period (cross-period cancel, CGST Act §34).
+         *     cdnur:  Same, against B2CL / export invoices. Credit notes against
+         *             B2CS invoices are not listed — they are netted off this
+         *             period's b2cs rows (which may therefore be negative).
+         *     A same-period cancel is excluded from every section.
          */
         Gstr1Response: {
             /** B2B */
@@ -3979,6 +4108,10 @@ export interface components {
             b2cl: components["schemas"]["Gstr1InvoiceRow"][];
             /** B2Cs */
             b2cs: components["schemas"]["Gstr1B2csRow"][];
+            /** Cdnr */
+            cdnr: components["schemas"]["Gstr1CdnrRow"][];
+            /** Cdnur */
+            cdnur: components["schemas"]["Gstr1CdnurRow"][];
             /** Export */
             export: components["schemas"]["Gstr1InvoiceRow"][];
             /**
@@ -13581,7 +13714,7 @@ export interface operations {
             query: {
                 /** @description Period as YYYY-MM (Indian fiscal month). */
                 period: string;
-                /** @description `xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / Export / HSN); `csv` flattens the B2B sheet (use xlsx for the full filing). */
+                /** @description `xlsx` returns a multi-sheet workbook (B2B / B2CL / B2CS / Export / HSN / CDNR / CDNUR); `csv` flattens the B2B sheet (use xlsx for the full filing). */
                 format?: string | null;
             };
             header?: never;

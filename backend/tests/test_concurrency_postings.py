@@ -289,6 +289,12 @@ def test_concurrent_finalize_backstop_index_maps_to_409(
 # ──────────────────────────────────────────────────────────────────────
 
 
+# Pinned cancel clock: same GST period as the 2026-04-15 invoices below, so the
+# tests don't depend on the wall clock (a real-clock cancel would become a §34
+# credit note and, after 30-Nov-2027, be refused by the time limit).
+_CANCEL_AT = datetime.datetime(2026, 4, 20, 6, 0, tzinfo=datetime.UTC)
+
+
 @pytest.mark.parametrize("n", [2, 3])
 def test_concurrent_cancel_single_reversal(
     sync_engine: Engine, admin_engine: Engine, n: int
@@ -319,7 +325,7 @@ def test_concurrent_cancel_single_reversal(
             org_id,
             n,
             lambda s: sales_service.cancel_invoice(
-                s, org_id=org_id, sales_invoice_id=inv_id, reason="race"
+                s, org_id=org_id, sales_invoice_id=inv_id, reason="race", now=_CANCEL_AT
             ),
         )
 
@@ -450,7 +456,9 @@ def test_cancel_reverses_duplicate_finalize_vouchers(
 
         # Cancel: must reverse BOTH originals.
         with _new_session(sync_engine, org_id) as s:
-            sales_service.cancel_invoice(s, org_id=org_id, sales_invoice_id=inv_id, reason="dedupe")
+            sales_service.cancel_invoice(
+                s, org_id=org_id, sales_invoice_id=inv_id, reason="dedupe", now=_CANCEL_AT
+            )
             s.commit()
 
         with _new_session(sync_engine, org_id) as s:

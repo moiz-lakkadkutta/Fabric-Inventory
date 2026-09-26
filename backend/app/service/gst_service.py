@@ -109,6 +109,44 @@ def is_b2cl_value(invoice_value: Decimal, invoice_date: datetime.date | None) ->
     return invoice_value > b2cl_threshold(invoice_date)
 
 
+# ── GST tax periods (Asia/Kolkata) + §34 credit-note time limit ───────────
+# GST return periods are calendar months in India Standard Time. IST is a
+# fixed UTC+05:30 (no DST), so a fixed offset is exact and avoids a tzdata
+# dependency on slim runtime images.
+GST_PERIOD_TZ = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
+
+
+def gst_local_date(ts: datetime.datetime) -> datetime.date:
+    """Calendar date of *ts* in Asia/Kolkata (the GST period timezone).
+
+    A naive *ts* is treated as UTC (the storage convention)."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=datetime.UTC)
+    return ts.astimezone(GST_PERIOD_TZ).date()
+
+
+def gst_period(d: datetime.date) -> tuple[int, int]:
+    """(year, month) GST return period that *d* falls in."""
+    return (d.year, d.month)
+
+
+def is_later_gst_period(d: datetime.date, than: datetime.date) -> bool:
+    """True iff *d* falls in a GST period strictly after *than*'s period."""
+    return gst_period(d) > gst_period(than)
+
+
+def credit_note_deadline(invoice_date: datetime.date) -> datetime.date:
+    """Last day a §34 credit note against an invoice dated *invoice_date* can
+    be declared: 30 November following the end of the invoice's financial
+    year (April-March). CGST Act §34(2) as amended by Finance Act 2022.
+
+    The alternative "date of filing the annual return, if earlier" limb is
+    NOT tracked (no annual-return date in the system) — see #199 retro.
+    """
+    fy_end_year = invoice_date.year + 1 if invoice_date.month >= 4 else invoice_date.year
+    return datetime.date(fy_end_year, 11, 30)
+
+
 # ── GST rate slab allow-list ───────────────────────────────────────────────
 # Statutory ad-valorem GST rates per the GST Council rate schedule.
 # CA-VALIDATED-PENDING: confirm with CA whether 1.5% or 7.5% special/
