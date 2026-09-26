@@ -692,3 +692,104 @@ def test_cancel_endpoint_refuses_after_s34_time_limit(
     )
     assert resp.status_code == 409, resp.text
     assert "34" in resp.text and "CA" in resp.text
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Dashboard KPIs follow the same GST-period semantics as GSTR-1 / GL.
+# The "Sales" KPIs are gross (invoice_amount incl. GST); a cross-period
+# credit note is shown as a NEGATIVE contribution in its own month, so the
+# month's KPI is a NET figure (sales - credit notes) and can go below zero.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _kpis(
+    session: OrmSession, *, org_id: uuid.UUID, firm_id: uuid.UUID, today: datetime.date
+) -> dict[str, Decimal]:
+    from app.service import dashboard_service
+
+    dashboard_service.clear_cache()
+    return {
+        k.key: k.value
+        for k in dashboard_service.get_kpis(session, org_id=org_id, firm_id=firm_id, today=today)
+    }
+
+
+def test_dashboard_cross_period_cancel_counts_in_original_month_and_nets_cancel_month(
+    db_session: OrmSession,
+) -> None:
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(db_session)
+    party_id = _party(db_session, org_id, state_code="MH", gstin=_GSTIN)
+    inv = _invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date=datetime.date(2024, 8, 10),
+    )
+    _cancel(
+        db_session, org_id=org_id, invoice=inv, at=datetime.datetime(2024, 9, 12, 6, tzinfo=_UTC)
+    )
+
+    aug = _kpis(db_session, org_id=org_id, firm_id=firm_id, today=datetime.date(2024, 8, 31))
+    assert aug["sales_mtd"] == Decimal("1050.00")
+    assert aug["gst_collected_mtd"] == Decimal("50.00")
+    # GST collected agrees with GSTR-1 and GL 2100 for August.
+    assert aug["gst_collected_mtd"] == _gl_2100_net(
+        db_session, org_id=org_id, firm_id=firm_id, period="2024-08"
+    )
+
+    sep = _kpis(db_session, org_id=org_id, firm_id=firm_id, today=datetime.date(2024, 9, 30))
+    assert sep["sales_mtd"] == Decimal("-1050.00")
+    assert sep["gst_collected_mtd"] == Decimal("-50.00")
+    assert sep["gst_collected_mtd"] == _gl_2100_net(
+        db_session, org_id=org_id, firm_id=firm_id, period="2024-09"
+    )
+    # Sales today on the credit-note day nets the note too.
+    sep12 = _kpis(db_session, org_id=org_id, firm_id=firm_id, today=datetime.date(2024, 9, 12))
+    assert sep12["sales_today"] == Decimal("-1050.00")
+
+
+def test_dashboard_same_month_cancel_counts_nowhere(db_session: OrmSession) -> None:
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(db_session)
+    party_id = _party(db_session, org_id, state_code="MH", gstin=_GSTIN)
+    inv = _invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date=datetime.date(2024, 9, 5),
+    )
+    _cancel(
+        db_session, org_id=org_id, invoice=inv, at=datetime.datetime(2024, 9, 20, 6, tzinfo=_UTC)
+    )
+    sep = _kpis(db_session, org_id=org_id, firm_id=firm_id, today=datetime.date(2024, 9, 30))
+    assert sep["sales_mtd"] == Decimal("0")
+    assert sep["gst_collected_mtd"] == Decimal("0")
+
+
+def test_dashboard_cache_invalidated_on_cancel(db_session: OrmSession) -> None:
+    from app.service import dashboard_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(db_session)
+    party_id = _party(db_session, org_id, state_code="MH", gstin=_GSTIN)
+    inv = _invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date=datetime.date(2024, 9, 5),
+    )
+    today = datetime.date(2024, 9, 30)
+    before = _kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)  # warms cache
+    assert before["gst_collected_mtd"] == Decimal("50.00")
+    _cancel(
+        db_session, org_id=org_id, invoice=inv, at=datetime.datetime(2024, 9, 20, 6, tzinfo=_UTC)
+    )
+    after = {
+        k.key: k.value
+        for k in dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    }  # NO clear_cache: the cancel itself must have invalidated it
+    assert after["gst_collected_mtd"] == Decimal("0")

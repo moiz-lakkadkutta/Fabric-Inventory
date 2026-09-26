@@ -1531,6 +1531,46 @@ def _gstr1_invoice_filter() -> Any:
     )
 
 
+def gstr1_invoice_filter() -> Any:
+    """Public alias of the GSTR-1 own-month invoice predicate, for other
+    period reports (dashboard KPIs) that must agree with GSTR-1 (#199)."""
+    return _gstr1_invoice_filter()
+
+
+def cross_period_credit_note_invoice_ids(
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    from_date: datetime.date,
+    to_date: datetime.date,
+) -> Any:
+    """SELECT of DISTINCT sales_invoice_ids whose §34 credit note (the
+    CREDIT_NOTE reversal of a cross-period cancel) is dated in
+    [from_date, to_date]. Same predicate as GSTR-1's cdnr/cdnur/B2CS
+    net-off; DISTINCT so a pre-#190 duplicate-voucher invoice counts once."""
+    cn, orig, cond = _sales_credit_note_join()
+    return (
+        select(SalesInvoice.sales_invoice_id)
+        .select_from(cn)
+        .join(orig, orig.voucher_id == cn.reference_id)
+        .join(SalesInvoice, SalesInvoice.sales_invoice_id == orig.reference_id)
+        .where(
+            cond,
+            cn.org_id == org_id,
+            cn.firm_id == firm_id,
+            cn.voucher_date >= from_date,
+            cn.voucher_date <= to_date,
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.firm_id == firm_id,
+            SalesInvoice.deleted_at.is_(None),
+            SalesInvoice.lifecycle_status == InvoiceLifecycleStatus.CANCELLED,
+            func.date_trunc("month", cn.voucher_date)
+            > func.date_trunc("month", SalesInvoice.invoice_date),
+        )
+        .distinct()
+    )
+
+
 def _cdnur_type(bucket: str, *, igst: Decimal) -> str:
     """GSTR-1 CDNUR 'UR type' for an unregistered original: B2CL, or
     EXPWP / EXPWOP for an export with / without IGST paid."""

@@ -30,7 +30,7 @@ import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 from threading import Lock
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session
@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from app.models import AuditLog, PurchaseInvoice, SalesInvoice, StockPosition
 from app.models.procurement import PurchaseInvoiceLifecycleStatus
 from app.models.sales import InvoiceLifecycleStatus
+from app.service import reports_service
 
 CACHE_TTL_SECONDS = 60
 
@@ -142,18 +143,11 @@ _OPEN_AP_LIFECYCLES = (
     PurchaseInvoiceLifecycleStatus.PARTIALLY_PAID,
     PurchaseInvoiceLifecycleStatus.OVERDUE,
 )
-# Invoices that are billed into the ledger. Mirrors
-# reports_service._GSTR1_LIFECYCLE — DRAFT/CONFIRMED never hit the GL, and
-# CANCELLED/DISCARDED were never billed (or were reversed). Only these
-# statuses may count toward sales/GST KPIs, matching how _OPEN_AR_LIFECYCLES
-# (correctly) drives outstanding_ar/overdue_ar.
-_BILLED_LIFECYCLES = (
-    InvoiceLifecycleStatus.FINALIZED,
-    InvoiceLifecycleStatus.POSTED,
-    InvoiceLifecycleStatus.PARTIALLY_PAID,
-    InvoiceLifecycleStatus.PAID,
-    InvoiceLifecycleStatus.OVERDUE,
-)
+# Sales / GST KPIs use the GSTR-1 period predicate
+# (`reports_service.gstr1_invoice_filter`): FINALIZED+ statuses (DRAFT /
+# CONFIRMED never hit the GL, #196) plus CANCELLED invoices whose cancel was
+# cross-period (#199). `_OPEN_AR_LIFECYCLES` still drives outstanding_ar /
+# overdue_ar.
 
 
 def _outstanding_ar(session: Session, *, org_id: uuid.UUID, firm_id: uuid.UUID) -> Decimal:
@@ -188,6 +182,49 @@ def _overdue_ar(
     return Decimal(total or 0)
 
 
+def _net_invoice_sum_in_range(
+    session: Session,
+    *,
+    column: Any,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    start: datetime.date,
+    end: datetime.date,
+) -> Decimal:
+    """Σ ``column`` over invoices reported in [start, end] MINUS Σ ``column``
+    over invoices whose §34 credit note is dated in [start, end] (#199).
+
+    Same GST-period semantics as GSTR-1 (``reports_service``):
+      - billed invoices (FINALIZED+) count in their
+        invoice month; DRAFT / CONFIRMED never count (#196);
+      - a CROSS-period-cancelled invoice still counts in its invoice month,
+        and its CREDIT_NOTE reversal reduces the month of its voucher_date;
+      - a SAME-period cancel counts nowhere.
+    The result is therefore a NET figure and can be negative in a month
+    whose credit notes exceed its sales.
+    """
+    billed: Decimal | None = session.execute(
+        select(func.coalesce(func.sum(column), 0)).where(
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.firm_id == firm_id,
+            SalesInvoice.deleted_at.is_(None),
+            reports_service.gstr1_invoice_filter(),
+            SalesInvoice.invoice_date >= start,
+            SalesInvoice.invoice_date <= end,
+        )
+    ).scalar_one()
+    credited: Decimal | None = session.execute(
+        select(func.coalesce(func.sum(column), 0)).where(
+            SalesInvoice.sales_invoice_id.in_(
+                reports_service.cross_period_credit_note_invoice_ids(
+                    org_id=org_id, firm_id=firm_id, from_date=start, to_date=end
+                )
+            )
+        )
+    ).scalar_one()
+    return Decimal(billed or 0) - Decimal(credited or 0)
+
+
 def _sales_in_range(
     session: Session,
     *,
@@ -196,22 +233,17 @@ def _sales_in_range(
     start: datetime.date,
     end: datetime.date,
 ) -> Decimal:
-    """Sum of invoice_amount for billed invoices in [start, end].
-
-    Only FINALIZED+ invoices count (see `_BILLED_LIFECYCLES`); DRAFT and
-    CONFIRMED never hit the GL, and CANCELLED/DISCARDED were never billed.
-    """
-    total: Decimal | None = session.execute(
-        select(func.coalesce(func.sum(SalesInvoice.invoice_amount), 0)).where(
-            SalesInvoice.org_id == org_id,
-            SalesInvoice.firm_id == firm_id,
-            SalesInvoice.deleted_at.is_(None),
-            SalesInvoice.lifecycle_status.in_(_BILLED_LIFECYCLES),
-            SalesInvoice.invoice_date >= start,
-            SalesInvoice.invoice_date <= end,
-        )
-    ).scalar_one()
-    return Decimal(total or 0)
+    """Net invoice_amount (gross, incl. GST) for [start, end] — billed
+    invoices less §34 credit notes dated in the range. See
+    `_net_invoice_sum_in_range` for the period rules."""
+    return _net_invoice_sum_in_range(
+        session,
+        column=SalesInvoice.invoice_amount,
+        org_id=org_id,
+        firm_id=firm_id,
+        start=start,
+        end=end,
+    )
 
 
 def _gst_collected_in_range(
@@ -224,26 +256,24 @@ def _gst_collected_in_range(
 ) -> Decimal:
     """Sum of `gst_amount` for billed invoices in [start, end].
 
-    Only FINALIZED+ invoices count (see `_BILLED_LIFECYCLES`) — DRAFT/
+    Only FINALIZED+ invoices count — DRAFT/
     CONFIRMED invoices never posted GST to the ledger, so they must not
-    inflate this number.
+    inflate this number. #199: NET of §34 credit notes dated in the range,
+    so it agrees with GSTR-1 and ledger 2100 for the month.
 
     Why this matters: textile firms watch GST-collected MTD because it
     foreshadows their GSTR-3B liability for the month. Without it on
     the dashboard, Moiz had to run an ad-hoc query every time a customer
     asked "how much GST am I sitting on?"
     """
-    total: Decimal | None = session.execute(
-        select(func.coalesce(func.sum(SalesInvoice.gst_amount), 0)).where(
-            SalesInvoice.org_id == org_id,
-            SalesInvoice.firm_id == firm_id,
-            SalesInvoice.deleted_at.is_(None),
-            SalesInvoice.lifecycle_status.in_(_BILLED_LIFECYCLES),
-            SalesInvoice.invoice_date >= start,
-            SalesInvoice.invoice_date <= end,
-        )
-    ).scalar_one()
-    return Decimal(total or 0)
+    return _net_invoice_sum_in_range(
+        session,
+        column=SalesInvoice.gst_amount,
+        org_id=org_id,
+        firm_id=firm_id,
+        start=start,
+        end=end,
+    )
 
 
 def _low_stock_skus(session: Session, *, org_id: uuid.UUID, firm_id: uuid.UUID) -> int:
