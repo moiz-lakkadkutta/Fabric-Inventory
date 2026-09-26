@@ -87,3 +87,69 @@ NIL-with-GST invoices for CA-approved JV remediation.
 - No new dev-env requirements.
 - `test_193` restored to head after the smoke test wiped it (two-step upgrade described above).
 - Untracked file intentionally added: `backend/scripts/repair_party_state_codes.py`.
+
+## CA-review correction (2026-09-26)
+
+**What changed.** Open flag (2) above ("CONSUMER-with-no-state stays NIL/zero") is reversed on
+CA review. `gst_service.determine_place_of_supply` now falls back to the **seller's state** as the
+place of supply when the buyer is unregistered (CONSUMER / UNREGISTERED) and neither the party nor
+the invoice records a state. The sale is therefore intra-state: `tax_type = CGST_SGST`,
+`place_of_supply_state = firm.state_code`, Tax Invoice, CGST = SGST = round(taxable × rate / 200)
+per line, CR 2100 on finalize, and GSTR-1 B2CS under the seller's state.
+Example (test): 10 × ₹50 @ 5%, no-state walk-in → before: NIL_NOT_A_SUPPLY, GST ₹0, invoice ₹500;
+after: CGST ₹12.50 + SGST ₹12.50, invoice ₹525, voucher DR 1200 525 / CR 4000 500 / CR 2100 25.
+
+**Why / legal basis.** IGST Act §10(1)(ca): for goods supplied to an unregistered person, the place
+of supply is the address recorded on the invoice, or the **location of the supplier** where no
+address is recorded. "No state" is therefore not "not a supply" — the old behaviour under-charged
+GST on every walk-in cash sale with no state entered.
+
+**Unchanged.** Junk state codes are still rejected (party + invoice validation); same-GSTIN branch
+transfer, LUT zero-rated SEZ/export/EOU, and non-GST sellers (#194) keep their NIL treatment; the
+NIL ⇒ zero-GST invariant is unchanged. A **registered** buyer with no state now takes its state from
+the GSTIN prefix (follow-up 3 below). A seller firm with no state also stays NIL (no location to fall
+back to).
+
+**Tests changed.** `test_sales_invoice_service`: the two no-state tests that asserted NIL / ₹0 GST /
+2-line voucher now assert CGST_SGST / ₹25 GST / 3-line voucher with CR 2100 (renamed
+`test_unregistered_no_state_*`; plus an odd-paise CGST == SGST case). `test_reports_gstr1::
+test_gstr1_tax_totals_match_gl_2100_for_period`: the no-state party now contributes ₹50, so the
+expected GSTR-1 = GL-2100 total is ₹100 (was ₹50). New pure-engine and GSTR-1 B2CS tests added.
+
+**Verifier follow-ups (same day, commit after d1c44c4).**
+1. *Exports/SEZ were hitting the fallback.* `sales_service._classify_buyer` only returned
+   REGISTERED/CONSUMER, so an `is_export` party with no GSTIN/state got CGST+SGST. It now maps
+   `is_sez` → SEZ and `is_export` → EXPORT *before* the GSTIN check (SEZ wins if both). These reach
+   the engine's zero-rated branches: NIL_LUT with an LUT, else IGST. **There is no LUT flag in the
+   schema yet** — `lut_active` is never passed — so exports/SEZ are currently IGST (export with
+   payment of IGST). An SEZ unit with a same-state GSTIN is IGST too (IGST Act §7(5)(b)). The
+   engine's "SEZ"/"EXPORT"/"EOU" PoS tokens don't fit `sales_invoice.place_of_supply_state`
+   VARCHAR(2) (a latent bug never hit before because those statuses were unreachable), so the
+   stored PoS is the destination state (SEZ unit's state) or NULL; `tax_type` carries the
+   treatment and GSTR-1 buckets these via `party.is_export/is_sez`. Widening the column / storing
+   portal code "96" for exports is a schema decision for Moiz.
+2. *Numeric firm state misfiled GSTR-1.* Signup stored the Onboarding-autofilled GSTIN prefix
+   ("27") raw, while `place_of_supply_state` is canonical alpha ("MH") → intra-state B2C ≥ ₹1L went
+   to B2CL. `compute_gstr1` / `_bucket_for_invoice` now compare canonical codes; the PDF state-name
+   lookup is format-agnostic (`pdf_service._state_name`); `SignupRequest.state_code` is validated
+   and canonicalised with `validate_state_code` ("27"/"mh" → "MH", junk → 422), matching the
+   party `state_code` form. No backfill of existing firm rows (reads normalise instead). There is
+   no firm create/update schema other than signup.
+3. *Registered buyer with no state.* A REGISTERED buyer (GSTIN) with no `state_code` and no
+   ship-to state now takes its state from the GSTIN's first two digits (e.g. "24…" → GJ; MH seller
+   → IGST). Previously NIL ₹0.
+
+**Legacy data notes.**
+- Party rows that held a *junk* state before #193's validation were nulled by the repair script
+  (or are still junk-but-unnormalisable on read). Either way they now have no usable state and, if
+  unregistered, fall back to the **seller's** state (§10(1)(ca)) on any new invoice.
+- The fallback is **not date-gated**. §10(1)(ca) was inserted by the Finance Act 2023 w.e.f.
+  1-Oct-2023; an invoice dated earlier (e.g. a back-dated or migrated one) gets the same treatment.
+  CA to confirm this is acceptable for pre-Oct-2023 dates (none expected in live use).
+
+**Flags.**
+- Historic finalized invoices to no-state walk-ins are NIL with ₹0 GST (under-charged). They are
+  NOT rewritten; remediation (supplementary invoice / JV) is a CA call.
+- A free-text `ship_to_address` without a state is not parsed; only a recorded state code counts.
+
+PENDING MOIZ + CA SIGN-OFF.

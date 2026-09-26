@@ -90,3 +90,28 @@ Run against the real DB before any GSTR-1 filing prep.
 - `pnpm gen:types` was re-run so `src/types/api.ts` matches the updated
   `scripts/openapi-snapshot.json` (`pnpm check:types` clean).
 - Backend test env needs `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`.
+
+## CA-review correction (2026-09-26) — B2CL threshold is date-dependent
+
+**What changed.** `B2C_INTER_STATE_THRESHOLD = ₹2,50,000` is replaced by
+`gst_service.b2cl_threshold(invoice_date)` (+ `is_b2cl_value`): ₹2,50,000 for invoices dated
+before 2024-08-01, ₹1,00,000 on/after. B2CL = invoice value (incl. tax) **strictly greater than**
+the threshold. Used by the PoS engine's `gstr1_section` hint (now given `invoice_date` by
+`sales_service.create_draft_invoice`) and by the authoritative GSTR-1 classifier
+`reports_service._bucket_for_invoice` (per-invoice `invoice_date`). Reporting bucket only — tax
+type and amounts are unaffected.
+
+**Why / legal basis.** Notification 12/2024-Central Tax (10-Jul-2024) lowered the GSTR-1 Table 5
+(B2CL) threshold for inter-state B2C invoices from ₹2.5 lakh to ₹1 lakh w.e.f. 01-Aug-2024.
+The code still used ₹2.5L, so inter-state B2C invoices between ₹1L and ₹2.5L were being
+consolidated in B2CS instead of reported invoice-wise in B2CL.
+
+**Tests.** Boundaries: 2024-08-01 ₹1,00,001 → B2CL, ₹1,00,000 → B2CS; 2024-07-31 ₹1,50,000 →
+B2CS; tax-inclusive value (taxable ₹95,239 @5% = ₹1,00,000.95) → B2CL. Three existing tests that
+pinned the ₹2.5L boundary without a date were given a 2024-07-31 invoice date (their scenario is
+the pre-cutover law); expectations unchanged.
+
+**Note.** `determine_place_of_supply(invoice_date=None)` uses the current (₹1L) threshold; its
+`gstr1_section` is not persisted — the filed bucket always comes from `reports_service`.
+
+PENDING MOIZ + CA SIGN-OFF.

@@ -22,6 +22,7 @@ balloon this branch's scope. Recorded in the retro.
 
 from __future__ import annotations
 
+import datetime
 from decimal import Decimal
 
 import pytest
@@ -61,7 +62,8 @@ def test_inter_state_b2c_at_exactly_threshold_is_igst() -> None:
         buyer_state="KA",
         buyer_gstin=None,
         buyer_status=BuyerStatus.CONSUMER,
-        invoice_value=gst_service.B2C_INTER_STATE_THRESHOLD,
+        invoice_value=gst_service.B2CL_THRESHOLD_BEFORE_AUG_2024,
+        invoice_date=datetime.date(2024, 7, 31),  # ₹2.5L era (pre Notif. 12/2024)
     )
     assert out.tax_type == TaxType.IGST
     assert out.pos_state == "KA"
@@ -105,6 +107,9 @@ def test_gstr1_section_b2cs_for_inter_state_b2c_low_value() -> None:
         buyer_gstin=None,
         buyer_status=BuyerStatus.CONSUMER,
         invoice_value=Decimal("200000"),
+        # CA-review 2026-09-26: ₹2L is B2CS only under the pre-01-Aug-2024
+        # ₹2.5L threshold; from 01-Aug-2024 (₹1L) it would be B2CL.
+        invoice_date=datetime.date(2024, 7, 31),
     )
     assert hasattr(out, "gstr1_section"), (
         "PlaceOfSupply must expose `gstr1_section` so GSTR-1 filing can "

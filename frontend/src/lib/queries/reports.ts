@@ -222,7 +222,7 @@ export function useTrialBalance() {
 //
 // BE envelope shape (Gstr1Response):
 //   b2b:    per-counterparty invoices (GSTIN-present)
-//   b2cl:   inter-state B2C invoices > ₹2.5L
+//   b2cl:   inter-state B2C invoices > ₹2.5L (before 01-Aug-2024) / > ₹1L (on/after)
 //   b2cs:   aggregated B2C below threshold, grouped by (state, gst_rate)
 //   export: zero-rated overseas / SEZ / EOU sales
 //   hsn:    per-HSN aggregation across taxable lines

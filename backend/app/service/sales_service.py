@@ -931,7 +931,21 @@ def _allocate_si_number(
 
 
 def _classify_buyer(party: Party) -> BuyerStatus:
-    """REGISTERED if party.gstin is set, else CONSUMER."""
+    """Map a party to the PoS engine's buyer status.
+
+    SEZ / EXPORT are checked FIRST (verifier follow-up to #193): they are
+    zero-rated destinations (IGST Act §16) and must reach the engine's
+    SEZ / EXPORT branches — never the §10(1)(ca) unregistered-buyer
+    fallback (which would charge CGST+SGST on an export), nor the
+    geography branch (an SEZ unit's GSTIN is in an Indian state, but a
+    supply to SEZ is inter-state per IGST Act §7(5)(b)). SEZ wins over
+    export when both flags are set (SEZ units are domestic GSTIN-holders).
+    Then REGISTERED if party.gstin is set, else CONSUMER.
+    """
+    if party.is_sez:
+        return BuyerStatus.SEZ
+    if party.is_export:
+        return BuyerStatus.EXPORT
     if party.gstin:
         return BuyerStatus.REGISTERED
     return BuyerStatus.CONSUMER
@@ -979,7 +993,7 @@ def create_draft_invoice(
     ).scalar_one()
 
     # Compute totals first so the PoS engine sees the real invoice value
-    # (matters for the B2C ₹2.5L threshold).
+    # (matters only for the GSTR-1 B2CL bucket — see gst_service.b2cl_threshold).
     total_subtotal = Decimal("0")
     total_gst = Decimal("0")
     line_records: list[dict[str, object]] = []
@@ -1012,11 +1026,15 @@ def create_draft_invoice(
         # ~1e18) with a per-line 422 before it hits NUMERIC(18,2) at flush.
         ensure_money_in_range(line_amount, field=f"lines.{idx}.line_amount")
         # #195: this first pass computes only a PROVISIONAL full-rate GST so the
-        # PoS engine sees a realistic invoice_value for the B2CL ₹2.5L bucket
-        # test (`invoice_value > 250000`). The FINAL per-line tax is recomputed
-        # below via gst_service.compute_line_gst once tax_type is known — a ±1
-        # paisa/line difference here can never flip that strict-greater-than
-        # threshold. Do NOT persist this provisional value.
+        # PoS engine sees a realistic invoice_value for its B2CL bucket hint
+        # (`invoice_value > gst_service.b2cl_threshold(invoice_date)` — ₹2.5L
+        # before 01-Aug-2024, ₹1L on/after). That hint (pos_decision.
+        # gstr1_section) is NOT persisted and never affects tax_type or tax
+        # amounts; the authoritative GSTR-1 bucket is recomputed in
+        # reports_service from the stored final invoice_amount and the
+        # invoice's own date. The FINAL per-line tax is recomputed below via
+        # gst_service.compute_line_gst once tax_type is known. Do NOT persist
+        # this provisional value.
         gst_amount = (line_amount * gst_rate / Decimal("100")).quantize(Decimal("0.01"))
         total_subtotal += line_amount
         total_gst += gst_amount
@@ -1056,16 +1074,31 @@ def create_draft_invoice(
     # on an intra-state Maharashtra sale.
     norm_seller_state = normalize_state_code(firm.state_code) or ""
     norm_buyer_state = normalize_state_code(party.state_code)
+    buyer_status = _classify_buyer(party)
+    # Verifier follow-up to #193: a REGISTERED buyer with no recorded state
+    # takes its state from the GSTIN — the first two digits are the GST state
+    # code of registration. Without this the engine saw no destination and
+    # fell back to NIL_NOT_A_SUPPLY (₹0 GST). Only used when neither the
+    # party nor the invoice (ship_to_state) records a state.
+    # SEZ units carry a GSTIN too; their PoS (GSTR-1 Table 6B) comes from it
+    # the same way. Tax stays IGST for SEZ regardless (IGST Act §7(5)(b)).
+    if (
+        buyer_status in (BuyerStatus.REGISTERED, BuyerStatus.SEZ)
+        and norm_buyer_state is None
+        and buyer_gstin_plain
+    ):
+        norm_buyer_state = normalize_state_code(buyer_gstin_plain[:2])
     norm_ship_to_state = normalize_state_code(ship_to_state) if ship_to_state else None
     pos_decision = gst_service.determine_place_of_supply(
         seller_state=norm_seller_state,
         seller_gstin=seller_gstin_plain,
         buyer_state=norm_buyer_state,
         buyer_gstin=buyer_gstin_plain,
-        buyer_status=_classify_buyer(party),
+        buyer_status=buyer_status,
         ship_to_state=norm_ship_to_state or norm_buyer_state,
         invoice_value=invoice_total,
         seller_has_gst=firm.has_gst,
+        invoice_date=invoice_date,
     )
 
     # #195: SECOND PASS — now that tax_type is known, compute each line's
@@ -1092,6 +1125,18 @@ def create_draft_invoice(
     # NUMERIC(18,2) invoice_amount column at flush.
     ensure_money_in_range(invoice_total, field="invoice_amount")
 
+    # sales_invoice.place_of_supply_state is VARCHAR(2) (a state code). The
+    # engine's special-destination tokens ("SEZ" / "EXPORT" / "EOU") don't fit
+    # and were never persisted before SEZ/EXPORT parties were routed to those
+    # branches. Store the destination STATE instead (for an SEZ unit, the
+    # state it is located in — the GSTR-1 SEZ PoS; for an overseas export,
+    # usually none → NULL). The zero-rated treatment is carried by tax_type,
+    # and GSTR-1 routes these to the export bucket via party.is_export /
+    # party.is_sez. No schema change (widening the column is Moiz-gated).
+    stored_pos_state = pos_decision.pos_state
+    if stored_pos_state is not None and len(stored_pos_state) > 2:
+        stored_pos_state = norm_ship_to_state or norm_buyer_state
+
     number = _allocate_si_number(session, org_id=org_id, firm_id=firm_id, series=series)
 
     invoice = SalesInvoice(
@@ -1103,7 +1148,7 @@ def create_draft_invoice(
         invoice_date=invoice_date,
         bill_to_address=bill_to_address,
         ship_to_address=ship_to_address,
-        place_of_supply_state=pos_decision.pos_state,
+        place_of_supply_state=stored_pos_state,
         invoice_amount=invoice_total,
         gst_amount=total_gst,
         paid_amount=Decimal("0"),
@@ -1152,7 +1197,7 @@ def create_draft_invoice(
                 "invoice_amount": str(invoice_total),
                 "gst_amount": str(total_gst),
                 "tax_type": pos_decision.tax_type.value,
-                "place_of_supply_state": pos_decision.pos_state,
+                "place_of_supply_state": stored_pos_state,
                 "lines": len(line_records),
             }
         },

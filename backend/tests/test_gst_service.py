@@ -8,6 +8,7 @@ in the module docstring.
 
 from __future__ import annotations
 
+import datetime
 import uuid
 from decimal import Decimal
 
@@ -192,14 +193,18 @@ def test_pos_branch_transfer_same_gstin_is_not_a_supply() -> None:
 def test_pos_b2c_threshold_at_exactly_250k() -> None:
     """At exactly ₹2.5L the boundary case is IGST (per INT-11 P2-1 fix).
     The threshold flips the GSTR-1 reporting section (B2CS at-or-below,
-    B2CL above), but tax_type is always IGST inter-state."""
+    B2CL above), but tax_type is always IGST inter-state.
+
+    CA-review 2026-09-26: ₹2.5L is the pre-01-Aug-2024 threshold
+    (Notification 12/2024-CT), so the invoice is now dated 2024-07-31."""
     out = determine_place_of_supply(
         seller_state="MH",
         seller_gstin="27AAAAA1234A1Z5",
         buyer_state="KA",
         buyer_gstin=None,
         buyer_status=BuyerStatus.CONSUMER,
-        invoice_value=gst_service.B2C_INTER_STATE_THRESHOLD,
+        invoice_value=gst_service.B2CL_THRESHOLD_BEFORE_AUG_2024,
+        invoice_date=datetime.date(2024, 7, 31),
     )
     assert out.tax_type == TaxType.IGST
     assert out.pos_state == "KA"
@@ -799,3 +804,133 @@ def test_b1_regression_inter_state_numeric_buyer_state() -> None:
         "Inter-state MH->KA sale must be IGST even with raw mixed-format states"
     )
     assert out.pos_state == "KA"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CA-review correction (#193): IGST Act §10(1)(ca) — goods supplied to an
+# UNREGISTERED person: place of supply is the address recorded on the
+# invoice, or the LOCATION OF THE SUPPLIER when none is recorded. So a B2C
+# buyer with no state and no ship-to is intra-state at the seller's state
+# (CGST+SGST), never NIL_NOT_A_SUPPLY.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("buyer_status", [BuyerStatus.CONSUMER, BuyerStatus.UNREGISTERED])
+def test_pos_unregistered_buyer_no_state_is_intra_state_at_seller(
+    buyer_status: BuyerStatus,
+) -> None:
+    out = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state=None,
+        buyer_gstin=None,
+        buyer_status=buyer_status,
+        ship_to_state=None,
+        invoice_value=Decimal("500000"),  # value irrelevant intra-state
+    )
+    assert out.tax_type == TaxType.CGST_SGST
+    assert out.pos_state == "MH"
+    assert out.document_type == DocumentType.TAX_INVOICE
+    assert out.gstr1_section == "B2CS"
+
+
+def test_pos_unregistered_buyer_no_state_numeric_seller_state_normalised() -> None:
+    """The fallback PoS is the seller's canonical alpha code."""
+    out = determine_place_of_supply(
+        seller_state="27",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state=None,
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+    )
+    assert out.tax_type == TaxType.CGST_SGST
+    assert out.pos_state == "MH"
+
+
+def test_pos_unregistered_buyer_ship_to_still_wins() -> None:
+    """A recorded ship-to state is still the PoS (inter-state → IGST)."""
+    out = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state=None,
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+        ship_to_state="GJ",
+        invoice_value=Decimal("1000"),
+    )
+    assert out.tax_type == TaxType.IGST
+    assert out.pos_state == "GJ"
+
+
+def test_pos_unregistered_buyer_no_state_seller_state_missing_stays_nil() -> None:
+    """Conservative: with no seller state either there is no location to
+    fall back to — keep the NIL refusal rather than guess."""
+    out = determine_place_of_supply(
+        seller_state="",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state=None,
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+    )
+    assert out.tax_type == TaxType.NIL_NOT_A_SUPPLY
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #195 area / CA-review: B2CL threshold is date-dependent. Notification
+# 12/2024-CT (10-Jul-2024) lowered it from ₹2.5L to ₹1L w.e.f. 01-Aug-2024.
+# B2CL = invoice value STRICTLY GREATER THAN the threshold.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "invoice_date,expected",
+    [
+        (datetime.date(2017, 7, 1), Decimal("250000")),
+        (datetime.date(2024, 7, 31), Decimal("250000")),
+        (datetime.date(2024, 8, 1), Decimal("100000")),
+        (datetime.date(2026, 9, 26), Decimal("100000")),
+    ],
+)
+def test_b2cl_threshold_by_invoice_date(invoice_date: datetime.date, expected: Decimal) -> None:
+    assert gst_service.b2cl_threshold(invoice_date) == expected
+
+
+@pytest.mark.parametrize(
+    "invoice_date,value,expected_section",
+    [
+        (datetime.date(2024, 8, 1), Decimal("100001"), "B2CL"),
+        (datetime.date(2024, 8, 1), Decimal("100000"), "B2CS"),
+        (datetime.date(2024, 8, 1), Decimal("100000.01"), "B2CL"),
+        (datetime.date(2024, 7, 31), Decimal("150000"), "B2CS"),
+        (datetime.date(2024, 7, 31), Decimal("250000"), "B2CS"),
+        (datetime.date(2024, 7, 31), Decimal("250000.01"), "B2CL"),
+    ],
+)
+def test_pos_b2cl_section_uses_invoice_date_threshold(
+    invoice_date: datetime.date, value: Decimal, expected_section: str
+) -> None:
+    out = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state="KA",
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+        invoice_value=value,
+        invoice_date=invoice_date,
+    )
+    assert out.tax_type == TaxType.IGST  # reporting bucket only; tax unchanged
+    assert out.gstr1_section == expected_section
+
+
+def test_pdf_state_name_lookup_is_format_agnostic() -> None:
+    """Verifier follow-up: the PDF state-name lookup must resolve numeric,
+    alpha and lowercase codes to the same name (firm.state_code may be the
+    legacy numeric form)."""
+    from app.service.pdf_service import _state_name
+
+    assert _state_name("27") == "Maharashtra"
+    assert _state_name("MH") == "Maharashtra"
+    assert _state_name("mh") == "Maharashtra"
+    assert _state_name("WB") == "West Bengal"
+    assert _state_name("XX") == ""
+    assert _state_name(None) == ""
