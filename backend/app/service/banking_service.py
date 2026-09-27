@@ -15,7 +15,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
@@ -142,14 +142,29 @@ def create_bank_account(
     # S1: post an opening GL JV when a non-zero initial balance is supplied.
     # This keeps the denormalized `balance` column in lockstep with the GL
     # from day one — symmetric with the update path (Fix 5b / BANK-6).
+    #
+    # #97: the ledger may already carry this opening balance — the "New bank
+    # account" dialog sends it on POST /ledgers (which books its own opening
+    # JV) AND on POST /bank-accounts. Booking it again here doubled the bank
+    # ledger and 3200 while the TB still balanced. So: book only when the
+    # ledger has no balance yet; accept a balance equal to the ledger's; and
+    # refuse a conflicting one rather than silently posting an adjustment.
     if balance is not None and Decimal(balance) != Decimal("0"):
-        _post_bank_balance_adjustment_jv(
-            session,
-            org_id=org_id,
-            account=account,
-            delta=Decimal(balance),
-            created_by=created_by,
-        )
+        ledger_balance = _ledger_gl_balance(session, org_id=org_id, ledger_id=ledger_id)
+        if ledger_balance == Decimal("0"):
+            _post_bank_balance_adjustment_jv(
+                session,
+                org_id=org_id,
+                account=account,
+                delta=Decimal(balance),
+                created_by=created_by,
+            )
+        elif ledger_balance != Decimal(balance):
+            raise AppValidationError(
+                f"Ledger {ledger.code} already has a balance of {ledger_balance:.2f}, but "
+                f"this bank account was given an opening balance of {Decimal(balance):.2f}. "
+                "Enter the same amount, or leave the bank account's opening balance blank."
+            )
 
     return account
 
@@ -355,6 +370,39 @@ def update_bank_account(
     account.updated_at = datetime.now(tz=UTC)
     session.flush()
     return account
+
+
+def _ledger_gl_balance(session: Session, *, org_id: uuid.UUID, ledger_id: uuid.UUID) -> Decimal:
+    """Net GL balance of one ledger (DR positive), counted exactly as the
+    Trial Balance counts it: the row's opening_balance plus every POSTED,
+    non-deleted voucher line."""
+    from app.models.accounting import Voucher, VoucherLine, VoucherStatus
+
+    movement = session.execute(
+        select(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (VoucherLine.line_type == JournalLineType.DR, VoucherLine.amount),
+                        else_=-VoucherLine.amount,
+                    )
+                ),
+                0,
+            )
+        )
+        .select_from(VoucherLine)
+        .join(Voucher, Voucher.voucher_id == VoucherLine.voucher_id)
+        .where(
+            VoucherLine.ledger_id == ledger_id,
+            Voucher.org_id == org_id,
+            Voucher.deleted_at.is_(None),
+            Voucher.status == VoucherStatus.POSTED,
+        )
+    ).scalar_one()
+    opening = session.execute(
+        select(func.coalesce(Ledger.opening_balance, 0)).where(Ledger.ledger_id == ledger_id)
+    ).scalar_one()
+    return (Decimal(opening) + Decimal(movement)).quantize(Decimal("0.01"))
 
 
 def _post_bank_balance_adjustment_jv(
