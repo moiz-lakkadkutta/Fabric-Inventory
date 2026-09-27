@@ -412,6 +412,14 @@ components:
         state_code:
           type: string
           maxLength: 2
+          nullable: true
+          description: >-
+            Indian GST state code. Accepts a 2-digit numeric GST-schedule code
+            (e.g. "27") or a 2-char ISO 3166-2:IN alphabetic abbreviation
+            (e.g. "MH"); numeric input is canonicalised to alpha on store.
+            An unrecognised value (e.g. "XX") is rejected with 422 — the same
+            rule invoices apply to ship_to_state (#193). Empty string / null
+            clears the field (PATCH-clear).
         is_supplier:
           type: boolean
           default: false
@@ -3104,9 +3112,14 @@ paths:
         Creates a DRAFT PI. When linked to a GRN (#200): the GRN must be
         ACKNOWLEDGED, every billed item must exist on the GRN, and billed qty
         per item must not exceed the GRN's received qty for that item — else
-        422 (checked again at post, before GL). AMOUNT/rate drift stays a loose
-        non-blocking warning (rounding / freight / surcharge flexibility);
-        only quantity over-billing is blocked.
+        422 (checked again at post, before GL). #203 CA correction: several
+        PIs may bill one GRN (partial billing); the qty cap is CUMULATIVE
+        across the GRN's live PIs (create counts POSTED/RECONCILED + open
+        DRAFTs; post, under a GRN row lock, counts POSTED/RECONCILED; VOIDED
+        PIs are excluded). On post a GRN-linked PI clears GRN Clearing (2010)
+        only for the billed qty × GRN rate and books PPV (5360) on that qty.
+        AMOUNT/rate drift stays a loose non-blocking warning (rounding /
+        freight / surcharge flexibility); only quantity over-billing is blocked.
       operationId: createPurchaseInvoice
       tags:
         - procurement
@@ -4238,10 +4251,15 @@ paths:
                 $ref: '#/components/schemas/Invoice'
         '422':
           description: >-
-            Validation error. Also (#207): a computed line_amount or invoice
-            total exceeding the ₹1e9 ceiling — even when each qty/price passes
-            its own 1e9 cap — is rejected here (VALIDATION_ERROR) rather than
-            overflowing NUMERIC(18,2) into 500.
+            Validation error. Includes the non-GST-firm case (#194): a firm
+            with `has_gst = false` may only issue a Bill of Supply, so a line
+            carrying a positive `gst_rate` is rejected with an actionable
+            "not GST-registered" detail. (Such a firm's zero-rate lines are
+            accepted and stored as `invoice_type = BILL_OF_SUPPLY`,
+            `tax_type = NIL`, `gst_amount = 0`.) Also (#207): a computed
+            line_amount or invoice total exceeding the ₹1e9 ceiling — even
+            when each qty/price passes its own 1e9 cap — is rejected here
+            (VALIDATION_ERROR) rather than overflowing NUMERIC(18,2) into 500.
           content:
             application/json:
               schema:
@@ -4331,6 +4349,66 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
       x-permission: sales.invoice.finalize
+
+  /invoices/{invoice_id}/cancel:
+    post:
+      summary: Cancel a finalized invoice (posts a reversing GL voucher)
+      description: >-
+        Cancels a FINALIZED (unpaid, non-DC-linked) sales invoice. Posts a
+        reversing CREDIT_NOTE voucher (and reverses the COGS voucher +
+        restores stock when present) so voucher-driven reports (TB, P&L,
+        party statement, daybook) stay consistent with status-driven reports
+        (GSTR-1, ageing). Idempotent.
+        GST periods (#199, CA-review correction; periods are calendar months
+        in Asia/Kolkata): the reversal, COGS reversal and stock restore are
+        dated on the cancel date in IST (never before the invoice date). A
+        SAME-PERIOD cancel is a true cancellation — GSTR-1 excludes the
+        invoice. A CROSS-PERIOD cancel is a CGST Act §34 credit note — the
+        original stays in its own month's GSTR-1 and the credit note is
+        reported in the cancel month (cdnr / cdnur / b2cs net-off). A
+        cross-period cancel after 30 November following the end of the
+        invoice's financial year (April-March) is refused with 409 (§34(2)
+        time limit).
+      operationId: cancelInvoice
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                  description: Why the invoice is being cancelled (required).
+      responses:
+        '200':
+          description: Invoice cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            Invoice cannot be cancelled — not finalized, already paid,
+            linked to a delivery challan, or (#199) a cross-period cancel past
+            the §34 credit-note time limit (30-Nov after the invoice's FY end).
+      x-permission: sales.invoice.cancel
 
   /invoices/{invoice_id}/send-whatsapp:
     post:
@@ -5168,7 +5246,7 @@ paths:
 
   /reports/gstr1:
     get:
-      summary: Get GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN) for a period
+      summary: Get GSTR-1 buckets (B2B / B2CL / B2CS / Export / HSN / CDNR / CDNUR) for a period
       operationId: getGstr1
       tags:
         - reports
@@ -5186,16 +5264,58 @@ paths:
       responses:
         '200':
           description: |
-            GSTR-1 envelope — five buckets keyed by category. With
+            GSTR-1 envelope — buckets keyed by category. With
             `format=xlsx` returns a multi-sheet workbook (B2B / B2CL /
-            B2CS / Export / HSN as separate sheets). With `format=csv`
-            flattens the B2B bucket only (use xlsx for the full filing).
+            B2CS / Export / HSN / CDNR / CDNUR as separate sheets). With
+            `format=csv` flattens the B2B bucket only (use xlsx for the
+            full filing).
+
+            CREDIT NOTES (#199, additive): a finalized invoice cancelled in a
+            LATER month (Asia/Kolkata) than its invoice date is a CGST Act
+            §34 credit note. The original invoice STILL appears in its own
+            month's buckets; the month the CREDIT_NOTE voucher is dated
+            reports it as: `cdnr` (original was B2B — `Gstr1CdnrRow` with
+            recipient `gstin`, masked like B2B), `cdnur` (original was B2CL
+            or export — `Gstr1CdnurRow` with `ur_type` B2CL / EXPWP /
+            EXPWOP), or, for a B2CS original, a negative adjustment netted
+            into that month's `b2cs` row for the same (state, rate) — a
+            negative row with `invoice_count` 0 if there were no sales. Each
+            credit-note row is per (note, slab rate) with note number/date,
+            original invoice number/date, place of supply, `note_value`,
+            `taxable_value`, CGST/SGST/IGST and `note_type` "C"; amounts are
+            POSITIVE (the note type carries the sign). `hsn` is net of every
+            credit note in the period. A same-month cancel is excluded from
+            every section.
+
+            RATE-WISE (BREAKING SHAPE CHANGE, #195): the return is
+            statutory rate-wise. b2b / b2cl / export emit ONE ROW PER
+            (invoice, slab rate) — a mixed-rate invoice yields several
+            rows, each with `gst_rate` a real slab (0 / 0.25 / 3 / 5 /
+            12 / 18 / 28, never a blended per-invoice rate), `taxable_value`
+            the taxable amount AT THAT RATE, and `invoice_value` the header
+            total repeated on every row. `Gstr1InvoiceRow.gst_rate` is now
+            non-nullable. b2cs groups by (state, slab rate); its
+            `invoice_count` counts DISTINCT invoices, not rate-rows. The
+            hsn rows are rate-wise too and each carries a new `gst_rate`
+            field (added to the XLSX HSN sheet as a "GST rate %" column).
+            CGST == SGST on every intra-state row (each half =
+            round(taxable × rate / 200)).
           content:
             application/json:
               schema:
                 type: object
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: >-
+            Firm is not GST-registered (#194): a firm with `has_gst = false`
+            has no GST return to file, so GSTR-1 (JSON, XLSX, and CSV export
+            paths) is refused with a "not GST-registered" detail rather than
+            an empty/misleading dataset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
       x-permission: accounting.report.view
 
   /reports/item-profit:

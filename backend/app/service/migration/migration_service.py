@@ -55,6 +55,7 @@ from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.masters import TaxStatus
 from app.service import audit_service, masters_service
 from app.service.common_guards import assert_firm_in_org
+from app.utils.gst_states import normalize_state_code
 
 from .intermediate import (
     IntermediateOpeningBalance,
@@ -342,6 +343,7 @@ def approve(
     party_id_by_source: dict[str, uuid.UUID] = {}
     parties_created = 0
     parties_skipped = 0
+    state_warnings: list[dict[str, object]] = []
     for ip in parties_intermediate:
         existing_party_id = _resolve_existing_party(
             session, org_id=org_id, firm_id=firm_id, code=ip.code
@@ -350,6 +352,26 @@ def approve(
             party_id_by_source[ip.source_id] = existing_party_id
             parties_skipped += 1
             continue
+        # #193: masters_service.create_party now rejects junk state codes.
+        # A migration must NOT abort mid-run on one bad source value — drop
+        # an unmappable state to NULL and record a warn row instead. Valid
+        # codes (incl. numeric) are canonicalised inside create_party.
+        source_state = ip.state_code
+        safe_state = normalize_state_code(source_state)
+        if source_state and safe_state is None:
+            state_warnings.append(
+                {
+                    "severity": "warn",
+                    "code": "PARTY_STATE_DROPPED",
+                    "message": (
+                        f"Party {ip.code!r} had an unrecognised state code "
+                        f"{source_state!r}; imported with no state. Set it in "
+                        "Masters → Party before invoicing (else invoices resolve "
+                        "to a non-supply / zero GST)."
+                    ),
+                    "source_ref": ip.source_id,
+                }
+            )
         party = masters_service.create_party(
             session,
             org_id=org_id,
@@ -365,13 +387,21 @@ def approve(
             pan=ip.pan,
             phone=ip.phone,
             email=ip.email,
-            state_code=ip.state_code,
+            state_code=safe_state,
             contact_person=ip.contact_person,
             notes=f"Imported from Vyapar migration {migration_id}",
             created_by=approver_user_id,
         )
         party_id_by_source[ip.source_id] = party.party_id
         parties_created += 1
+
+    if state_warnings:
+        recon = dict(row.reconciliation_json or {})
+        recon_rows = list(recon.get("rows", []))
+        recon_rows.extend(state_warnings)
+        recon["rows"] = recon_rows
+        recon["warnings"] = int(recon.get("warnings", 0)) + len(state_warnings)
+        row.reconciliation_json = recon
 
     # Post the compound opening-balance voucher. One header, N lines.
     opening_voucher_id: uuid.UUID | None = None

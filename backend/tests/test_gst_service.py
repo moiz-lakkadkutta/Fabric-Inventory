@@ -8,6 +8,7 @@ in the module docstring.
 
 from __future__ import annotations
 
+import datetime
 import uuid
 from decimal import Decimal
 
@@ -19,6 +20,7 @@ from app.service.gst_service import (
     BuyerStatus,
     DocumentType,
     TaxType,
+    compute_line_gst,
     determine_place_of_supply,
     split_tax,
 )
@@ -191,14 +193,18 @@ def test_pos_branch_transfer_same_gstin_is_not_a_supply() -> None:
 def test_pos_b2c_threshold_at_exactly_250k() -> None:
     """At exactly ₹2.5L the boundary case is IGST (per INT-11 P2-1 fix).
     The threshold flips the GSTR-1 reporting section (B2CS at-or-below,
-    B2CL above), but tax_type is always IGST inter-state."""
+    B2CL above), but tax_type is always IGST inter-state.
+
+    CA-review 2026-09-26: ₹2.5L is the pre-01-Aug-2024 threshold
+    (Notification 12/2024-CT), so the invoice is now dated 2024-07-31."""
     out = determine_place_of_supply(
         seller_state="MH",
         seller_gstin="27AAAAA1234A1Z5",
         buyer_state="KA",
         buyer_gstin=None,
         buyer_status=BuyerStatus.CONSUMER,
-        invoice_value=gst_service.B2C_INTER_STATE_THRESHOLD,
+        invoice_value=gst_service.B2CL_THRESHOLD_BEFORE_AUG_2024,
+        invoice_date=datetime.date(2024, 7, 31),
     )
     assert out.tax_type == TaxType.IGST
     assert out.pos_state == "KA"
@@ -215,6 +221,83 @@ def test_pos_no_destination_falls_through_to_not_a_supply() -> None:
         invoice_value=Decimal("0"),
     )
     assert out.tax_type == TaxType.NIL_NOT_A_SUPPLY
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #194: a non-GST-registered seller (firm.has_gst = false) can only issue a
+# Bill of Supply — always NIL, never CGST_SGST / IGST, regardless of buyer
+# state or status. The seller_has_gst check runs FIRST in the engine.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "buyer_state,buyer_status",
+    [
+        ("MH", BuyerStatus.CONSUMER),  # intra-state B2C
+        ("GJ", BuyerStatus.CONSUMER),  # inter-state B2C — still NIL, never IGST
+        ("GJ", BuyerStatus.REGISTERED),  # inter-state B2B — still NIL
+    ],
+)
+def test_pos_non_gst_seller_returns_nil_bill_of_supply(
+    buyer_state: str, buyer_status: BuyerStatus
+) -> None:
+    out = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin=None,
+        buyer_state=buyer_state,
+        buyer_gstin=None,
+        buyer_status=buyer_status,
+        invoice_value=Decimal("100000"),
+        seller_has_gst=False,
+    )
+    assert out.tax_type == TaxType.NIL
+    assert out.document_type == DocumentType.BILL_OF_SUPPLY
+    assert out.gstr1_section == "NIL"
+    # PoS is still recorded informationally when a destination is known.
+    assert out.pos_state == buyer_state
+
+
+def test_pos_non_gst_seller_export_buyer_still_bill_of_supply() -> None:
+    """A non-registered seller cannot issue a zero-rated-under-LUT export
+    doc — the seller_has_gst check runs before the SEZ/export branch."""
+    out = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin=None,
+        buyer_state=None,
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.EXPORT,
+        invoice_value=Decimal("500000"),
+        lut_active=True,
+        seller_has_gst=False,
+    )
+    assert out.tax_type == TaxType.NIL
+    assert out.document_type == DocumentType.BILL_OF_SUPPLY
+
+
+def test_pos_default_seller_has_gst_true_unchanged() -> None:
+    """Regression: omitting seller_has_gst reproduces the current
+    CGST_SGST / IGST decisions (default True) — GST firms unaffected."""
+    intra = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state="MH",
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+        invoice_value=Decimal("1000"),
+    )
+    assert intra.tax_type == TaxType.CGST_SGST
+    assert intra.document_type == DocumentType.TAX_INVOICE
+
+    inter = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state="GJ",
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+        invoice_value=Decimal("1000"),
+    )
+    assert inter.tax_type == TaxType.IGST
+    assert inter.document_type == DocumentType.TAX_INVOICE
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -236,15 +319,74 @@ def test_split_tax_cgst_sgst_even() -> None:
     assert s.igst == Decimal("0")
 
 
-def test_split_tax_cgst_sgst_odd_paise_rounding() -> None:
-    """Odd-paise totals: rounding remainder goes onto SGST so the sum
-    matches the input exactly.
+def test_split_tax_legacy_odd_input_equal_halves() -> None:
+    """#195: CGST must ALWAYS equal SGST — even for a legacy odd-paise
+    total. Replaces the old dump-on-SGST behaviour.
+
+    A pre-#195 FINALIZED line may carry an odd-paise gst_amount (e.g.
+    11.67). Splitting it yields EQUAL halves (5.84 / 5.84 via HALF_EVEN)
+    that can differ from the stored total by ≤1 paisa — a deliberate
+    legacy divergence documented in split_tax.
     """
-    s = split_tax(tax_type=TaxType.CGST_SGST, gst_amount=Decimal("1.01"))
-    assert s.cgst + s.sgst == Decimal("1.01")
-    # cgst is rounded-half: 0.50; sgst absorbs the remainder: 0.51.
-    assert s.cgst == Decimal("0.50")
-    assert s.sgst == Decimal("0.51")
+    s = split_tax(tax_type=TaxType.CGST_SGST, gst_amount=Decimal("11.67"))
+    assert s.cgst == s.sgst, "CGST must equal SGST (statutory GSTR-1 rule)"
+    # 11.67 / 2 = 5.835 → HALF_EVEN → 5.84 on each side.
+    assert s.cgst == Decimal("5.84")
+    assert s.sgst == Decimal("5.84")
+    assert s.igst == Decimal("0")
+
+    # Even input splits exactly.
+    s2 = split_tax(tax_type=TaxType.CGST_SGST, gst_amount=Decimal("11.66"))
+    assert s2.cgst == s2.sgst == Decimal("5.83")
+    assert s2.cgst + s2.sgst == Decimal("11.66")
+
+
+def test_compute_line_gst_cgst_sgst_equal_halves() -> None:
+    """#195 canonical vector: taxable 233.31 @ 5% intra-state.
+
+    Old full-rate method: 233.31 x 5% = 11.6655 → 11.67, split 5.84/5.83.
+    New statutory method: each half = round(233.31 x 2.5%) = round(5.83275)
+    = 5.83 → CGST == SGST == 5.83, line gst_amount 11.66.
+    """
+    s = compute_line_gst(
+        line_amount=Decimal("233.31"), gst_rate=Decimal("5"), tax_type=TaxType.CGST_SGST
+    )
+    assert s.cgst == Decimal("5.83")
+    assert s.sgst == Decimal("5.83")
+    assert s.igst == Decimal("0.00")
+    assert s.cgst == s.sgst
+    assert s.cgst + s.sgst == Decimal("11.66")
+
+    # Clean 18% line: 100.00 @ 18% → 9.00 / 9.00, total 18.00.
+    s2 = compute_line_gst(
+        line_amount=Decimal("100.00"), gst_rate=Decimal("18"), tax_type=TaxType.CGST_SGST
+    )
+    assert s2.cgst == s2.sgst == Decimal("9.00")
+    assert s2.cgst + s2.sgst == Decimal("18.00")
+
+
+def test_compute_line_gst_igst_full_rate() -> None:
+    s = compute_line_gst(
+        line_amount=Decimal("233.31"), gst_rate=Decimal("5"), tax_type=TaxType.IGST
+    )
+    assert s.igst == Decimal("11.67")
+    assert s.cgst == Decimal("0.00")
+    assert s.sgst == Decimal("0.00")
+
+
+def test_compute_line_gst_nil_zero() -> None:
+    for t in (TaxType.NIL, TaxType.NIL_LUT, TaxType.NIL_NOT_A_SUPPLY):
+        s = compute_line_gst(line_amount=Decimal("1000.00"), gst_rate=Decimal("18"), tax_type=t)
+        assert s.cgst == s.sgst == s.igst == Decimal("0.00"), t
+
+
+def test_compute_line_gst_negative_raises() -> None:
+    from app.exceptions import AppValidationError
+
+    with pytest.raises(AppValidationError, match="negative"):
+        compute_line_gst(
+            line_amount=Decimal("-1"), gst_rate=Decimal("5"), tax_type=TaxType.CGST_SGST
+        )
 
 
 def test_split_tax_nil_returns_zeros() -> None:
@@ -662,3 +804,133 @@ def test_b1_regression_inter_state_numeric_buyer_state() -> None:
         "Inter-state MH->KA sale must be IGST even with raw mixed-format states"
     )
     assert out.pos_state == "KA"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CA-review correction (#193): IGST Act §10(1)(ca) — goods supplied to an
+# UNREGISTERED person: place of supply is the address recorded on the
+# invoice, or the LOCATION OF THE SUPPLIER when none is recorded. So a B2C
+# buyer with no state and no ship-to is intra-state at the seller's state
+# (CGST+SGST), never NIL_NOT_A_SUPPLY.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("buyer_status", [BuyerStatus.CONSUMER, BuyerStatus.UNREGISTERED])
+def test_pos_unregistered_buyer_no_state_is_intra_state_at_seller(
+    buyer_status: BuyerStatus,
+) -> None:
+    out = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state=None,
+        buyer_gstin=None,
+        buyer_status=buyer_status,
+        ship_to_state=None,
+        invoice_value=Decimal("500000"),  # value irrelevant intra-state
+    )
+    assert out.tax_type == TaxType.CGST_SGST
+    assert out.pos_state == "MH"
+    assert out.document_type == DocumentType.TAX_INVOICE
+    assert out.gstr1_section == "B2CS"
+
+
+def test_pos_unregistered_buyer_no_state_numeric_seller_state_normalised() -> None:
+    """The fallback PoS is the seller's canonical alpha code."""
+    out = determine_place_of_supply(
+        seller_state="27",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state=None,
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+    )
+    assert out.tax_type == TaxType.CGST_SGST
+    assert out.pos_state == "MH"
+
+
+def test_pos_unregistered_buyer_ship_to_still_wins() -> None:
+    """A recorded ship-to state is still the PoS (inter-state → IGST)."""
+    out = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state=None,
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+        ship_to_state="GJ",
+        invoice_value=Decimal("1000"),
+    )
+    assert out.tax_type == TaxType.IGST
+    assert out.pos_state == "GJ"
+
+
+def test_pos_unregistered_buyer_no_state_seller_state_missing_stays_nil() -> None:
+    """Conservative: with no seller state either there is no location to
+    fall back to — keep the NIL refusal rather than guess."""
+    out = determine_place_of_supply(
+        seller_state="",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state=None,
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+    )
+    assert out.tax_type == TaxType.NIL_NOT_A_SUPPLY
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #195 area / CA-review: B2CL threshold is date-dependent. Notification
+# 12/2024-CT (10-Jul-2024) lowered it from ₹2.5L to ₹1L w.e.f. 01-Aug-2024.
+# B2CL = invoice value STRICTLY GREATER THAN the threshold.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "invoice_date,expected",
+    [
+        (datetime.date(2017, 7, 1), Decimal("250000")),
+        (datetime.date(2024, 7, 31), Decimal("250000")),
+        (datetime.date(2024, 8, 1), Decimal("100000")),
+        (datetime.date(2026, 9, 26), Decimal("100000")),
+    ],
+)
+def test_b2cl_threshold_by_invoice_date(invoice_date: datetime.date, expected: Decimal) -> None:
+    assert gst_service.b2cl_threshold(invoice_date) == expected
+
+
+@pytest.mark.parametrize(
+    "invoice_date,value,expected_section",
+    [
+        (datetime.date(2024, 8, 1), Decimal("100001"), "B2CL"),
+        (datetime.date(2024, 8, 1), Decimal("100000"), "B2CS"),
+        (datetime.date(2024, 8, 1), Decimal("100000.01"), "B2CL"),
+        (datetime.date(2024, 7, 31), Decimal("150000"), "B2CS"),
+        (datetime.date(2024, 7, 31), Decimal("250000"), "B2CS"),
+        (datetime.date(2024, 7, 31), Decimal("250000.01"), "B2CL"),
+    ],
+)
+def test_pos_b2cl_section_uses_invoice_date_threshold(
+    invoice_date: datetime.date, value: Decimal, expected_section: str
+) -> None:
+    out = determine_place_of_supply(
+        seller_state="MH",
+        seller_gstin="27AAAAA1234A1Z5",
+        buyer_state="KA",
+        buyer_gstin=None,
+        buyer_status=BuyerStatus.CONSUMER,
+        invoice_value=value,
+        invoice_date=invoice_date,
+    )
+    assert out.tax_type == TaxType.IGST  # reporting bucket only; tax unchanged
+    assert out.gstr1_section == expected_section
+
+
+def test_pdf_state_name_lookup_is_format_agnostic() -> None:
+    """Verifier follow-up: the PDF state-name lookup must resolve numeric,
+    alpha and lowercase codes to the same name (firm.state_code may be the
+    legacy numeric form)."""
+    from app.service.pdf_service import _state_name
+
+    assert _state_name("27") == "Maharashtra"
+    assert _state_name("MH") == "Maharashtra"
+    assert _state_name("mh") == "Maharashtra"
+    assert _state_name("WB") == "West Bengal"
+    assert _state_name("XX") == ""
+    assert _state_name(None) == ""

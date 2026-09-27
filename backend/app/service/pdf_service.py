@@ -43,6 +43,7 @@ from app.models.sales import InvoiceLifecycleStatus
 from app.service import gst_service, sales_service
 from app.service.gst_service import TaxType
 from app.utils.crypto import decrypt_pii, get_org_dek
+from app.utils.gst_states import normalize_state_code
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
 _TEMPLATE_DIR = os.path.abspath(_TEMPLATE_DIR)
@@ -100,6 +101,21 @@ _STATE_NAMES: dict[str, str] = {
     "DL": "Delhi",
     "UP": "Uttar Pradesh",
 }
+
+
+def _state_name(code: str | None) -> str:
+    """State name for any stored state-code format (numeric "27", alpha
+    "MH", lowercase). Canonicalises via ``normalize_state_code`` and matches
+    the first ``_STATE_NAMES`` key that canonicalises to the same state, so
+    a legacy numeric firm.state_code and a canonical alpha one render the
+    same name. Unknown / empty → "". (Verifier follow-up to #193.)"""
+    canonical = normalize_state_code(code)
+    if canonical is None:
+        return ""
+    for key, name in _STATE_NAMES.items():
+        if normalize_state_code(key) == canonical:
+            return name
+    return ""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -319,18 +335,27 @@ def _build_context(
         TaxType.CGST_SGST.value: "CGST + SGST (Intra-State)",
         TaxType.NIL_LUT.value: "NIL (LUT — Export)",
         TaxType.NIL_NOT_A_SUPPLY.value: "NIL (Not a supply)",
+        TaxType.NIL.value: "NIL (Bill of Supply)",
     }.get(tax_type_str, tax_type_str)
 
     doc_title = _doc_title_for(invoice, firm)
 
+    # #194: a Bill of Supply (non-GST firm) — and any zero-tax document —
+    # must not show GST columns/rows. `show_gst` drives the template to
+    # drop the GST% + CGST/SGST/IGST columns and the tax total rows, so a
+    # non-GST firm's PDF is a legally-coherent Bill of Supply rather than a
+    # Tax Invoice with zero-filled tax cells.
+    show_gst = gst_total > 0
+
     return {
         "doc_title": doc_title,
+        "show_gst": show_gst,
         "tax_split_label": _tax_split_label(invoice),
         "seller": {
             "name": firm.legal_name or firm.name,
             "gstin": seller_gstin,
             "state_code": seller_state_code,
-            "state_name": _STATE_NAMES.get(seller_state_code, ""),
+            "state_name": _state_name(seller_state_code),
             "address": firm.address,
             "phone": None,  # firm.phone is encrypted bytes; intentionally not displayed for v1
             "email": firm.email,
@@ -339,7 +364,7 @@ def _build_context(
             "name": party.legal_name or party.name,
             "gstin": buyer_gstin,
             "state_code": buyer_state_code,
-            "state_name": _STATE_NAMES.get(buyer_state_code, ""),
+            "state_name": _state_name(buyer_state_code),
             "address": invoice.bill_to_address,
             "phone": None,
         },
@@ -350,7 +375,7 @@ def _build_context(
             "date_display": _fmt_date(invoice.invoice_date),
             "due_date_display": _fmt_date(invoice.due_date),
             "place_of_supply_state": pos_code,
-            "place_of_supply_name": _STATE_NAMES.get(pos_code, ""),
+            "place_of_supply_name": _state_name(pos_code),
             "tax_type_label": tax_type_label,
             "lifecycle_status": invoice.lifecycle_status.value,
         },

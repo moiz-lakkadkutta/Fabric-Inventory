@@ -217,6 +217,9 @@ def _seed_party_and_item(
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         firm = session.execute(select(Firm).where(Firm.firm_id == firm_id)).scalar_one()
         firm.state_code = "MH"
+        # #194: signup mints has_gst=False (no GSTIN entered). These tests
+        # model a GST-registered firm issuing tax invoices, so opt it in.
+        firm.has_gst = True
         party = Party(
             org_id=org_id,
             code=f"P{uuid.uuid4().hex[:6].upper()}",
@@ -537,3 +540,94 @@ def test_finalize_writes_balanced_voucher(http_client: TestClient, sync_engine: 
         )
         assert debits == credits, f"voucher unbalanced: DR={debits}, CR={credits}"
         assert debits == Decimal("10500.00")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #194 — a non-GST-registered firm (has_gst=False) is rejected at the HTTP
+# boundary when a line carries GST; the envelope detail is actionable.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_nongst_party_and_item(
+    sync_engine: Engine, *, org_id: uuid.UUID, firm_id: uuid.UUID
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Seed a customer + item and set firm.state_code, but leave the firm
+    non-GST (has_gst stays False as signup minted it)."""
+    from app.models import Firm, Item, Party
+    from app.models.masters import ItemType, TrackingType, UomType
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        firm = session.execute(select(Firm).where(Firm.firm_id == firm_id)).scalar_one()
+        firm.state_code = "MH"
+        firm.has_gst = False
+        party = Party(
+            org_id=org_id,
+            code=f"P{uuid.uuid4().hex[:6].upper()}",
+            name=f"Cash Buyer {uuid.uuid4().hex[:4]}",
+            is_customer=True,
+            state_code="MH",
+        )
+        session.add(party)
+        item = Item(
+            org_id=org_id,
+            code=f"I{uuid.uuid4().hex[:6].upper()}",
+            name="Cotton Suit",
+            item_type=ItemType.FINISHED,
+            tracking=TrackingType.NONE,
+            primary_uom=UomType.METER,
+        )
+        session.add(item)
+        session.flush()
+        session.commit()
+        return party.party_id, item.item_id
+
+
+def test_post_invoice_non_gst_firm_422_envelope(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    me = _signup_owner(http_client)
+    party_id, item_id = _seed_nongst_party_and_item(
+        sync_engine, org_id=uuid.UUID(me["org_id"]), firm_id=uuid.UUID(me["firm_id"])
+    )
+    resp = http_client.post(
+        "/invoices",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "party_id": str(party_id),
+            "invoice_date": "2026-09-02",
+            "ship_to_state": "MH",
+            "lines": [{"item_id": str(item_id), "qty": "1", "price": "1000", "gst_rate": "5"}],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "not GST-registered" in body["detail"]
+
+
+def test_post_invoice_non_gst_firm_zero_rate_creates_bill_of_supply(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """The same non-GST firm can issue a zero-rate Bill of Supply via HTTP."""
+    me = _signup_owner(http_client)
+    party_id, item_id = _seed_nongst_party_and_item(
+        sync_engine, org_id=uuid.UUID(me["org_id"]), firm_id=uuid.UUID(me["firm_id"])
+    )
+    resp = http_client.post(
+        "/invoices",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "party_id": str(party_id),
+            "invoice_date": "2026-09-02",
+            "ship_to_state": "MH",
+            "lines": [{"item_id": str(item_id), "qty": "1", "price": "1000", "gst_rate": "0"}],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["invoice_type"] == "BILL_OF_SUPPLY"
+    assert body["tax_type"] == "NIL"
+    assert Decimal(body["gst_amount"]) == Decimal("0.00")

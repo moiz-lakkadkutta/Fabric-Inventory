@@ -50,6 +50,10 @@ def _signup_owner(client: TestClient) -> dict[str, str]:
             "org_name": f"Org-{uuid.uuid4().hex[:8]}",
             "firm_name": "Primary",
             "state_code": "MH",
+            # #194: these tests charge 5% GST → firm must be GST-registered.
+            # A GSTIN at signup sets has_gst=True (distinct from the party
+            # GSTIN so the same-GSTIN branch-transfer check never fires).
+            "gstin": "27SELLER999S1Z5",
         },
     )
     assert resp.status_code == 201, resp.text
@@ -492,7 +496,7 @@ def test_stock_summary_csv_export(http_client: TestClient, sync_engine: Engine) 
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_gstr1_xlsx_export_has_five_sheets(http_client: TestClient, sync_engine: Engine) -> None:
+def test_gstr1_xlsx_export_has_seven_sheets(http_client: TestClient, sync_engine: Engine) -> None:
     me = _signup_owner(http_client)
     org_id = uuid.UUID(me["org_id"])
     party_id, item_id = _seed_party_and_item(sync_engine, org_id=org_id)
@@ -506,7 +510,15 @@ def test_gstr1_xlsx_export_has_five_sheets(http_client: TestClient, sync_engine:
     )
     _assert_attachment(resp, XLSX_MEDIA, "xlsx")
     wb = load_workbook(io.BytesIO(resp.content))
-    assert wb.sheetnames == ["B2B", "B2CL", "B2CS", "Export", "HSN"], wb.sheetnames
+    assert wb.sheetnames == [
+        "B2B",
+        "B2CL",
+        "B2CS",
+        "Export",
+        "HSN",
+        "CDNR",
+        "CDNUR",
+    ], wb.sheetnames
 
 
 # ──────────────────────────────────────────────────────────────────────

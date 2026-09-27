@@ -10,6 +10,7 @@ Buckets exercised:
 
 from __future__ import annotations
 
+import datetime
 import io
 import uuid
 from decimal import Decimal
@@ -945,3 +946,715 @@ def test_gstr1_gstin_masked_for_user_without_pii_read_permission(
     assert gstin_in_response is not None and "*" in gstin_in_response, (
         f"Expected masked GSTIN (with '*'), got {gstin_in_response!r}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #193 regression guard: Σ GSTR-1 tax == Σ ledger-2100 movement for the
+# period. A NIL invoice that used to charge GST broke this by exactly its
+# (omitted-from-return) tax.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_gstr1_recon_org(session: OrmSession) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """org + COA + firm(MH) + item; return (org_id, firm_id, item_id)."""
+    from app.models import Firm, Item, Organization
+    from app.models.masters import ItemType, TrackingType, UomType
+    from app.service import rbac_service, seed_service
+    from app.utils.crypto import generate_dek, wrap_dek
+
+    org_id = uuid.uuid4()
+    session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+    org = Organization(
+        org_id=org_id,
+        name=f"recon-org-{uuid.uuid4().hex[:8]}",
+        admin_email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+        encrypted_dek=wrap_dek(generate_dek(), org_id=org_id),
+    )
+    session.add(org)
+    session.flush()
+    rbac_service.seed_system_roles(session, org_id=org_id)
+    seed_service.seed_system_catalog(session, org_id=org_id)
+    firm = Firm(
+        org_id=org_id,
+        code=f"F{uuid.uuid4().hex[:6].upper()}",
+        name="Recon Firm",
+        has_gst=True,
+        state_code="MH",
+    )
+    session.add(firm)
+    item = Item(
+        org_id=org_id,
+        code=f"I{uuid.uuid4().hex[:6].upper()}",
+        name="Chiffon",
+        item_type=ItemType.FINISHED,
+        tracking=TrackingType.NONE,
+        primary_uom=UomType.METER,
+        hsn_code="5208",
+    )
+    session.add(item)
+    session.flush()
+    return org_id, firm.firm_id, item.item_id
+
+
+def test_gstr1_tax_totals_match_gl_2100_for_period(db_session: OrmSession) -> None:
+    """Books == return: after #193, the sum of GSTR-1 tax across all buckets
+    equals the period's CR movement on ledger 2100 (GST Payable). Before the
+    fix the NIL invoice contributed 2100 CR but zero to the return."""
+    from app.models import Ledger, Party, Voucher, VoucherLine
+    from app.models.accounting import JournalLineType
+    from app.service import reports_service, sales_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(db_session)
+
+    # (1) intra-state 5% consumer sale (party MH, ship_to MH) → CGST_SGST, 50 tax
+    intra_party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="Intra Consumer",
+        is_customer=True,
+        state_code="MH",
+    )
+    # (2) no-state unregistered party, no ship_to → §10(1)(ca): PoS is the
+    # supplier's location → intra-state CGST_SGST, 50 tax (was NIL / 0 tax
+    # before the 2026-09-26 CA-review correction of #193).
+    nil_party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="No State",
+        is_customer=True,
+        state_code=None,
+    )
+    # (3) 0%-rate intra sale → CGST_SGST bucket but 0 tax
+    zero_party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="Zero Rate",
+        is_customer=True,
+        state_code="MH",
+    )
+    db_session.add_all([intra_party, nil_party, zero_party])
+    db_session.flush()
+
+    inv_date = datetime.date(2026, 9, 2)
+    for party_id, gst_rate, ship_to in (
+        (intra_party.party_id, Decimal("5"), "MH"),
+        (nil_party.party_id, Decimal("5"), None),
+        (zero_party.party_id, Decimal("0"), "MH"),
+    ):
+        inv = sales_service.create_draft_invoice(
+            db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=party_id,
+            invoice_date=inv_date,
+            ship_to_state=ship_to,
+            lines=[
+                {
+                    "item_id": item_id,
+                    "qty": Decimal("10"),
+                    "price": Decimal("100"),
+                    "gst_rate": gst_rate,
+                    "sequence": 1,
+                }
+            ],
+        )
+        sales_service.finalize_invoice(
+            db_session, org_id=org_id, sales_invoice_id=inv.sales_invoice_id
+        )
+
+    # Σ GSTR-1 tax across b2b / b2cl / b2cs / export (hsn would double-count).
+    result = reports_service.compute_gstr1(
+        db_session, org_id=org_id, firm_id=firm_id, period="2026-09"
+    )
+    gstr1_tax = sum(
+        (row.cgst + row.sgst + row.igst)
+        for bucket in (result.b2b, result.b2cl, result.b2cs, result.export)
+        for row in bucket
+    )
+
+    # Σ ledger-2100 CR movement for the period.
+    gst_ledger_id = db_session.execute(
+        select(Ledger.ledger_id).where(Ledger.org_id == org_id, Ledger.code == "2100")
+    ).scalar_one()
+    gl_2100 = (
+        db_session.execute(
+            select(VoucherLine.amount)
+            .join(Voucher, Voucher.voucher_id == VoucherLine.voucher_id)
+            .where(
+                VoucherLine.ledger_id == gst_ledger_id,
+                VoucherLine.line_type == JournalLineType.CR,
+                Voucher.voucher_date >= datetime.date(2026, 9, 1),
+                Voucher.voucher_date <= datetime.date(2026, 9, 30),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    gl_2100_total = sum((Decimal(a) for a in gl_2100), Decimal("0"))
+
+    # 50 (intra MH party) + 50 (no-state party, now taxed at seller's state)
+    assert gstr1_tax == Decimal("100.00"), f"expected 100.00 GSTR-1 tax, got {gstr1_tax}"
+    assert gl_2100_total == gstr1_tax, (
+        f"books != return: ledger 2100 CR {gl_2100_total} vs GSTR-1 {gstr1_tax}"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #194 — GSTR-1 is not applicable to a non-GST-registered firm
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _signup_owner_nongst(client: TestClient) -> dict[str, str]:
+    """Sign up WITHOUT a GSTIN → firm.has_gst = False, then switch firm."""
+    resp = client.post(
+        "/auth/signup",
+        json={
+            "email": f"u-{uuid.uuid4().hex[:10]}@example.com",
+            "password": "strong-password-1",
+            "org_name": f"Org-{uuid.uuid4().hex[:8]}",
+            "firm_name": "Non-GST Primary",
+            "state_code": "MH",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    body: dict[str, str] = resp.json()
+    switch = client.post(
+        "/auth/switch-firm",
+        headers={"Authorization": f"Bearer {body['access_token']}"},
+        json={"firm_id": body["firm_id"]},
+    )
+    assert switch.status_code == 200, switch.text
+    body["access_token"] = switch.json()["access_token"]
+    return body
+
+
+def test_gstr1_refuses_non_gst_firm(http_client: TestClient, sync_engine: Engine) -> None:
+    me = _signup_owner_nongst(http_client)
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-09",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "not GST-registered" in body["detail"]
+
+
+def test_gstr1_xlsx_refuses_non_gst_firm(http_client: TestClient, sync_engine: Engine) -> None:
+    """The XLSX export path shares compute_gstr1 → same 422, no half-written file."""
+    me = _signup_owner_nongst(http_client)
+    resp = http_client.get(
+        "/reports/gstr1?period=2026-09&format=xlsx",
+        headers=_auth(me["access_token"]),
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #195 — rate-wise GSTR-1 rows (one row per slab rate, CGST == SGST)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _create_finalize_multiline(
+    http_client: TestClient,
+    me: dict[str, str],
+    *,
+    party_id: uuid.UUID,
+    lines: list[dict[str, str]],
+    invoice_date: str,
+    ship_to_state: str = "MH",
+) -> str:
+    create = http_client.post(
+        "/invoices",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "party_id": str(party_id),
+            "invoice_date": invoice_date,
+            "ship_to_state": ship_to_state,
+            "lines": lines,
+        },
+    )
+    assert create.status_code == 201, create.text
+    invoice_id: str = create.json()["sales_invoice_id"]
+    fin = http_client.post(f"/invoices/{invoice_id}/finalize", headers=_auth(me["access_token"]))
+    assert fin.status_code == 200, fin.text
+    return invoice_id
+
+
+_SLAB_RATES = {
+    Decimal("0"),
+    Decimal("0.25"),
+    Decimal("3"),
+    Decimal("5"),
+    Decimal("12"),
+    Decimal("18"),
+    Decimal("28"),
+}
+
+
+def test_gstr1_b2b_one_row_per_invoice_per_rate(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """#195 (b) repro: a mixed-rate intra-state B2B invoice must emit ONE
+    ROW PER SLAB RATE — never a single blended-rate row (e.g. 10.34)."""
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_id = _seed_b2b_party(sync_engine, org_id=org_id, state_code="MH")
+    item5 = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    item12 = _seed_item(sync_engine, org_id=org_id, hsn_code="6006")
+    _create_finalize_multiline(
+        http_client,
+        me,
+        party_id=party_id,
+        invoice_date="2026-09-02",
+        lines=[
+            {"item_id": str(item5), "qty": "1", "price": "233.31", "gst_rate": "5"},
+            {"item_id": str(item12), "qty": "1", "price": "100", "gst_rate": "12"},
+        ],
+    )
+    resp = http_client.get("/reports/gstr1?period=2026-09", headers=_auth(me["access_token"]))
+    assert resp.status_code == 200, resp.text
+    b2b = resp.json()["b2b"]
+    # Two rows — one per rate — for the single invoice.
+    assert len(b2b) == 2, b2b
+    by_rate = {Decimal(r["gst_rate"]): r for r in b2b}
+    assert set(by_rate) == {Decimal("5"), Decimal("12")}
+    # No blended / non-slab rate anywhere.
+    for r in b2b:
+        assert Decimal(r["gst_rate"]) in _SLAB_RATES, r["gst_rate"]
+        assert Decimal(r["cgst"]) == Decimal(r["sgst"]), "CGST must equal SGST"
+    r5 = by_rate[Decimal("5")]
+    assert Decimal(r5["taxable_value"]) == Decimal("233.31")
+    assert Decimal(r5["cgst"]) == Decimal("5.83") == Decimal(r5["sgst"])
+    r12 = by_rate[Decimal("12")]
+    assert Decimal(r12["taxable_value"]) == Decimal("100.00")
+    assert Decimal(r12["cgst"]) == Decimal("6.00") == Decimal(r12["sgst"])
+    # invoice_value is the header total, repeated on each rate row.
+    # header = 233.31 + 11.66 + 100 + 12 = 356.97
+    assert Decimal(r5["invoice_value"]) == Decimal(r12["invoice_value"]) == Decimal("356.97")
+
+
+def test_gstr1_b2cs_groups_by_state_and_slab_rate(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """B2CS groups by (state, slab-rate); invoice_count = DISTINCT invoices,
+    not rate-rows — a mixed-rate invoice must not inflate the count."""
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party = _seed_b2c_party(sync_engine, org_id=org_id, state_code="MH")  # intra
+    item5 = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    item12 = _seed_item(sync_engine, org_id=org_id, hsn_code="6006")
+    # Two invoices, each carrying a 5% and a 12% line.
+    for _ in range(2):
+        _create_finalize_multiline(
+            http_client,
+            me,
+            party_id=party,
+            invoice_date="2026-09-03",
+            lines=[
+                {"item_id": str(item5), "qty": "1", "price": "1000", "gst_rate": "5"},
+                {"item_id": str(item12), "qty": "1", "price": "1000", "gst_rate": "12"},
+            ],
+        )
+    resp = http_client.get("/reports/gstr1?period=2026-09", headers=_auth(me["access_token"]))
+    assert resp.status_code == 200, resp.text
+    b2cs = {(r["place_of_supply_state"], Decimal(r["gst_rate"])): r for r in resp.json()["b2cs"]}
+    assert set(b2cs) == {("MH", Decimal("5")), ("MH", Decimal("12"))}
+    for key, row in b2cs.items():
+        assert row["invoice_count"] == 2, f"{key}: distinct invoices, not rate-rows"
+        assert Decimal(row["cgst"]) == Decimal(row["sgst"])
+    assert Decimal(b2cs[("MH", Decimal("5"))]["taxable_value"]) == Decimal("2000.00")
+    assert Decimal(b2cs[("MH", Decimal("5"))]["cgst"]) == Decimal("50.00")
+    assert Decimal(b2cs[("MH", Decimal("12"))]["cgst"]) == Decimal("120.00")
+
+
+def test_gstr1_hsn_rows_carry_slab_rate(http_client: TestClient, sync_engine: Engine) -> None:
+    """HSN summary is rate-wise: each row carries gst_rate and CGST == SGST."""
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_id = _seed_b2b_party(sync_engine, org_id=org_id, state_code="MH")
+    item5 = _seed_item(sync_engine, org_id=org_id, hsn_code="5208")
+    item12 = _seed_item(sync_engine, org_id=org_id, hsn_code="6006")
+    _create_finalize_multiline(
+        http_client,
+        me,
+        party_id=party_id,
+        invoice_date="2026-09-04",
+        lines=[
+            {"item_id": str(item5), "qty": "2", "price": "500", "gst_rate": "5"},
+            {"item_id": str(item12), "qty": "1", "price": "1000", "gst_rate": "12"},
+        ],
+    )
+    resp = http_client.get("/reports/gstr1?period=2026-09", headers=_auth(me["access_token"]))
+    assert resp.status_code == 200, resp.text
+    hsn = resp.json()["hsn"]
+    by_hsn = {(r["hsn_code"], Decimal(r["gst_rate"])): r for r in hsn}
+    assert ("5208", Decimal("5")) in by_hsn
+    assert ("6006", Decimal("12")) in by_hsn
+    for r in hsn:
+        assert "gst_rate" in r
+        assert Decimal(r["cgst"]) == Decimal(r["sgst"])
+    assert Decimal(by_hsn[("5208", Decimal("5"))]["cgst"]) == Decimal("25.00")
+    assert Decimal(by_hsn[("6006", Decimal("12"))]["cgst"]) == Decimal("60.00")
+
+
+def test_gstr1_total_tax_equals_gl_2100_ratewise(
+    db_session: OrmSession,
+) -> None:
+    """#195 books==return for a MIXED-RATE invoice: Σ GSTR-1 tax across
+    buckets == period ledger-2100 CR movement, to the paisa."""
+    from app.models import Ledger, Party, Voucher, VoucherLine
+    from app.models.accounting import JournalLineType
+    from app.service import reports_service, sales_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(db_session)
+    party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name="Intra B2B",
+        is_customer=True,
+        state_code="MH",
+    )
+    db_session.add(party)
+    db_session.flush()
+
+    inv = sales_service.create_draft_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party.party_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        ship_to_state="MH",
+        lines=[
+            {
+                "item_id": item_id,
+                "qty": Decimal("1"),
+                "price": Decimal("233.31"),
+                "gst_rate": Decimal("5"),
+                "sequence": 1,
+            },
+            {
+                "item_id": item_id,
+                "qty": Decimal("1"),
+                "price": Decimal("50"),
+                "gst_rate": Decimal("18"),
+                "sequence": 2,
+            },
+        ],
+    )
+    sales_service.finalize_invoice(db_session, org_id=org_id, sales_invoice_id=inv.sales_invoice_id)
+
+    result = reports_service.compute_gstr1(
+        db_session, org_id=org_id, firm_id=firm_id, period="2026-09"
+    )
+    gstr1_tax = sum(
+        (row.cgst + row.sgst + row.igst)
+        for bucket in (result.b2b, result.b2cl, result.b2cs, result.export)
+        for row in bucket
+    )
+    gst_ledger_id = db_session.execute(
+        select(Ledger.ledger_id).where(Ledger.org_id == org_id, Ledger.code == "2100")
+    ).scalar_one()
+    gl_2100 = (
+        db_session.execute(
+            select(VoucherLine.amount)
+            .join(Voucher, Voucher.voucher_id == VoucherLine.voucher_id)
+            .where(
+                VoucherLine.ledger_id == gst_ledger_id,
+                VoucherLine.line_type == JournalLineType.CR,
+                Voucher.voucher_date >= datetime.date(2026, 9, 1),
+                Voucher.voucher_date <= datetime.date(2026, 9, 30),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    gl_2100_total = sum((Decimal(a) for a in gl_2100), Decimal("0"))
+    # 233.31@5 → 11.66 ; 50@18 → 9.00 ; total 20.66
+    assert gstr1_tax == Decimal("20.66"), gstr1_tax
+    assert gl_2100_total == gstr1_tax, f"books {gl_2100_total} != return {gstr1_tax}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CA-review correction (2026-09-26)
+#   #193: unregistered buyer with no state → §10(1)(ca) PoS = supplier's
+#         location → B2CS under the SELLER's state code.
+#   #195 area: B2CL threshold is date-dependent (Notification 12/2024-CT):
+#         ₹2,50,000 before 01-Aug-2024, ₹1,00,000 on/after; B2CL is
+#         invoice value STRICTLY GREATER THAN the threshold.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _recon_party(session: OrmSession, org_id: uuid.UUID, state_code: str | None) -> uuid.UUID:
+    from app.models import Party
+
+    party = Party(
+        org_id=org_id,
+        code=f"P{uuid.uuid4().hex[:6].upper()}",
+        name=f"B2C {state_code}",
+        is_customer=True,
+        state_code=state_code,
+    )
+    session.add(party)
+    session.flush()
+    return party.party_id
+
+
+def _finalized_invoice(
+    session: OrmSession,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    party_id: uuid.UUID,
+    item_id: uuid.UUID,
+    invoice_date: datetime.date,
+    price: Decimal,
+    gst_rate: Decimal,
+    ship_to_state: str | None = None,
+) -> uuid.UUID:
+    from app.service import sales_service
+
+    inv = sales_service.create_draft_invoice(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        invoice_date=invoice_date,
+        ship_to_state=ship_to_state,
+        lines=[
+            {
+                "item_id": item_id,
+                "qty": Decimal("1"),
+                "price": price,
+                "gst_rate": gst_rate,
+                "sequence": 1,
+            }
+        ],
+    )
+    sales_service.finalize_invoice(session, org_id=org_id, sales_invoice_id=inv.sales_invoice_id)
+    return inv.sales_invoice_id
+
+
+def test_gstr1_unregistered_no_state_lands_in_b2cs_under_seller_state(
+    db_session: OrmSession,
+) -> None:
+    from app.service import reports_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(db_session)  # firm in MH
+    party_id = _recon_party(db_session, org_id, None)
+    _finalized_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        price=Decimal("1000"),
+        gst_rate=Decimal("5"),
+    )
+    result = reports_service.compute_gstr1(
+        db_session, org_id=org_id, firm_id=firm_id, period="2026-09"
+    )
+    assert result.b2b == [] and result.b2cl == [] and result.export == []
+    assert len(result.b2cs) == 1
+    row = result.b2cs[0]
+    assert row.place_of_supply_state == "MH"
+    assert row.gst_rate == Decimal("5")
+    assert row.taxable_value == Decimal("1000.00")
+    assert row.cgst == Decimal("25.00")
+    assert row.sgst == Decimal("25.00")
+    assert row.igst == Decimal("0")
+
+
+def _b2c_inter_state_bucket(
+    session: OrmSession, *, invoice_date: datetime.date, price: Decimal, gst_rate: Decimal
+) -> str:
+    """Create + finalize one MH→GJ unregistered invoice; return its GSTR-1 bucket."""
+    from app.service import reports_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(session)
+    party_id = _recon_party(session, org_id, "GJ")
+    _finalized_invoice(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date=invoice_date,
+        price=price,
+        gst_rate=gst_rate,
+        ship_to_state="GJ",
+    )
+    result = reports_service.compute_gstr1(
+        session, org_id=org_id, firm_id=firm_id, period=invoice_date.strftime("%Y-%m")
+    )
+    buckets = [
+        name
+        for name, rows in (
+            ("b2b", result.b2b),
+            ("b2cl", result.b2cl),
+            ("b2cs", result.b2cs),
+            ("export", result.export),
+        )
+        if rows
+    ]
+    assert len(buckets) == 1, buckets
+    return buckets[0]
+
+
+def test_gstr1_b2cl_on_cutover_date_just_above_1_lakh(db_session: OrmSession) -> None:
+    """2024-08-01, invoice value ₹1,00,001 → B2CL."""
+    assert (
+        _b2c_inter_state_bucket(
+            db_session,
+            invoice_date=datetime.date(2024, 8, 1),
+            price=Decimal("100001"),
+            gst_rate=Decimal("0"),
+        )
+        == "b2cl"
+    )
+
+
+def test_gstr1_b2cs_on_cutover_date_exactly_1_lakh(db_session: OrmSession) -> None:
+    """2024-08-01, invoice value exactly ₹1,00,000 → B2CS (strictly greater)."""
+    assert (
+        _b2c_inter_state_bucket(
+            db_session,
+            invoice_date=datetime.date(2024, 8, 1),
+            price=Decimal("100000"),
+            gst_rate=Decimal("0"),
+        )
+        == "b2cs"
+    )
+
+
+def test_gstr1_b2cs_day_before_cutover_1_5_lakh(db_session: OrmSession) -> None:
+    """2024-07-31, invoice value ₹1,50,000 → B2CS (old ₹2.5L threshold)."""
+    assert (
+        _b2c_inter_state_bucket(
+            db_session,
+            invoice_date=datetime.date(2024, 7, 31),
+            price=Decimal("150000"),
+            gst_rate=Decimal("0"),
+        )
+        == "b2cs"
+    )
+
+
+def test_gstr1_b2cl_threshold_tests_invoice_value_including_tax(
+    db_session: OrmSession,
+) -> None:
+    """Taxable ₹95,239 @5% IGST = 4,761.95 → invoice value ₹1,00,000.95 > ₹1L
+    → B2CL, although the taxable value alone is below ₹1L."""
+    assert (
+        _b2c_inter_state_bucket(
+            db_session,
+            invoice_date=datetime.date(2026, 9, 2),
+            price=Decimal("95239"),
+            gst_rate=Decimal("5"),
+        )
+        == "b2cl"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Verifier follow-up: a firm whose state_code was stored NUMERIC ("27", the
+# pre-fix signup path) must classify GSTR-1 buckets against the canonical
+# alpha PoS ("MH") — intra-state B2C ≥ ₹1L is B2CS, never B2CL.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _bucket_with_numeric_firm_state(
+    session: OrmSession, *, party_state: str | None, ship_to_state: str | None
+) -> tuple[str, list[str]]:
+    from app.models import Firm
+    from app.service import reports_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(session)
+    firm = session.execute(select(Firm).where(Firm.firm_id == firm_id)).scalar_one()
+    firm.state_code = "27"  # legacy numeric form
+    session.flush()
+    party_id = _recon_party(session, org_id, party_state)
+    _finalized_invoice(
+        session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        invoice_date=datetime.date(2026, 9, 2),
+        price=Decimal("150000"),
+        gst_rate=Decimal("0"),
+        ship_to_state=ship_to_state,
+    )
+    result = reports_service.compute_gstr1(
+        session, org_id=org_id, firm_id=firm_id, period="2026-09"
+    )
+    buckets = [
+        name
+        for name, rows in (
+            ("b2b", result.b2b),
+            ("b2cl", result.b2cl),
+            ("b2cs", result.b2cs),
+            ("export", result.export),
+        )
+        if rows
+    ]
+    assert len(buckets) == 1, buckets
+    states = [r.place_of_supply_state for r in result.b2cs]
+    return buckets[0], states
+
+
+def test_gstr1_numeric_firm_state_intra_mh_customer_is_b2cs(db_session: OrmSession) -> None:
+    bucket, states = _bucket_with_numeric_firm_state(
+        db_session, party_state="MH", ship_to_state="MH"
+    )
+    assert bucket == "b2cs"
+    assert states == ["MH"]
+
+
+def test_gstr1_numeric_firm_state_no_state_walk_in_is_b2cs(db_session: OrmSession) -> None:
+    bucket, states = _bucket_with_numeric_firm_state(
+        db_session, party_state=None, ship_to_state=None
+    )
+    assert bucket == "b2cs"
+    assert states == ["MH"]
+
+
+def test_gstr1_numeric_firm_state_inter_state_ka_is_b2cl(db_session: OrmSession) -> None:
+    bucket, _ = _bucket_with_numeric_firm_state(db_session, party_state="KA", ship_to_state="KA")
+    assert bucket == "b2cl"
+
+
+def test_gstr1_b2cs_groups_legacy_numeric_pos_with_alpha(db_session: OrmSession) -> None:
+    """Verifier follow-up: a legacy row storing PoS "27" and a new row storing
+    "MH" are the same state and must land in ONE B2CS row, not two."""
+    from app.models import SalesInvoice
+    from app.service import reports_service
+
+    org_id, firm_id, item_id = _seed_gstr1_recon_org(db_session)
+    party_id = _recon_party(db_session, org_id, "MH")
+    for _ in range(2):
+        _finalized_invoice(
+            db_session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=party_id,
+            item_id=item_id,
+            invoice_date=datetime.date(2026, 9, 2),
+            price=Decimal("1000"),
+            gst_rate=Decimal("5"),
+            ship_to_state="MH",
+        )
+    legacy = db_session.execute(
+        select(SalesInvoice).where(SalesInvoice.org_id == org_id).limit(1)
+    ).scalar_one()
+    legacy.place_of_supply_state = "27"
+    db_session.flush()
+
+    result = reports_service.compute_gstr1(
+        db_session, org_id=org_id, firm_id=firm_id, period="2026-09"
+    )
+    assert [(r.place_of_supply_state, r.invoice_count) for r in result.b2cs] == [("MH", 2)]

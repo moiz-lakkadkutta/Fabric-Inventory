@@ -26,7 +26,7 @@ from collections.abc import Callable
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as OrmSession
@@ -282,6 +282,225 @@ def test_concurrent_finalize_backstop_index_maps_to_409(
                 sales_service.finalize_invoice(s, org_id=org_id, sales_invoice_id=inv_id)
     finally:
         _drop_org(admin_engine, org_id)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #199 — concurrent cancel of a finalized invoice posts exactly one reversal
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Pinned cancel clock: same GST period as the 2026-04-15 invoices below, so the
+# tests don't depend on the wall clock (a real-clock cancel would become a §34
+# credit note and, after 30-Nov-2027, be refused by the time limit).
+_CANCEL_AT = datetime.datetime(2026, 4, 20, 6, 0, tzinfo=datetime.UTC)
+
+
+@pytest.mark.parametrize("n", [2, 3])
+def test_concurrent_cancel_single_reversal(
+    sync_engine: Engine, admin_engine: Engine, n: int
+) -> None:
+    """N parallel cancels on one FINALIZED invoice: the invoice row lock
+    serializes them, so exactly ONE reversal voucher is posted and the rest
+    return the idempotent no-op (or, if the lock were bypassed, the reversal
+    unique index rejects the loser as a 409). Invariant: exactly one
+    non-deleted reversal per original voucher; TB nets to zero."""
+    org_id, firm_id, party_id, item_id = _seed_org_firm_party_item(sync_engine)
+    try:
+        with _new_session(sync_engine, org_id) as s:
+            inv = sales_service.create_draft_invoice(
+                s,
+                org_id=org_id,
+                firm_id=firm_id,
+                party_id=party_id,
+                invoice_date=datetime.date(2026, 4, 15),
+                ship_to_state="MH",
+                lines=[{"item_id": item_id, "qty": "1", "price": "1000", "gst_rate": "0"}],
+            )
+            inv_id = inv.sales_invoice_id
+            sales_service.finalize_invoice(s, org_id=org_id, sales_invoice_id=inv_id)
+            s.commit()
+
+        results = _race(
+            sync_engine,
+            org_id,
+            n,
+            lambda s: sales_service.cancel_invoice(
+                s, org_id=org_id, sales_invoice_id=inv_id, reason="race", now=_CANCEL_AT
+            ),
+        )
+
+        # Every worker resolves cleanly: the winner cancels, the losers either
+        # no-op (lock path) or hit the reversal index (backstop path → 409).
+        assert all(r in ("OK", "InvoiceStateError") for r in results), f"unexpected: {results}"
+        assert results.count("OK") >= 1, f"no worker succeeded: {results}"
+
+        with _new_session(sync_engine, org_id) as s:
+            reversal_count = s.execute(
+                text(
+                    "SELECT count(*) FROM voucher "
+                    "WHERE reference_type = 'sales_invoice_reversal' "
+                    "AND deleted_at IS NULL AND org_id = :o"
+                ),
+                {"o": str(org_id)},
+            ).scalar()
+            assert reversal_count == 1, f"expected exactly 1 reversal, got {reversal_count}"
+
+            status = s.execute(
+                text("SELECT lifecycle_status FROM sales_invoice WHERE sales_invoice_id = :inv"),
+                {"inv": str(inv_id)},
+            ).scalar()
+            assert status == InvoiceLifecycleStatus.CANCELLED.value
+
+            # AR (1200) nets to zero: original DR 1000 + reversal CR 1000.
+            ar_net = s.execute(
+                text(
+                    "SELECT coalesce(sum(CASE WHEN vl.line_type='DR' THEN vl.amount "
+                    "ELSE -vl.amount END), 0) FROM voucher_line vl "
+                    "JOIN ledger l ON l.ledger_id = vl.ledger_id "
+                    "JOIN voucher v ON v.voucher_id = vl.voucher_id "
+                    "WHERE l.code = '1200' AND v.org_id = :o AND v.deleted_at IS NULL"
+                ),
+                {"o": str(org_id)},
+            ).scalar()
+            assert Decimal(str(ar_net)) == Decimal("0"), f"AR not netted to zero: {ar_net}"
+    finally:
+        _drop_org(admin_engine, org_id)
+
+
+def test_cancel_reverses_duplicate_finalize_vouchers(
+    sync_engine: Engine, admin_engine: Engine
+) -> None:
+    """#199 is the in-app remedy for #190 duplicate-posting fallout: if an
+    invoice somehow carries TWO SALES_INVOICE vouchers (the pre-#190 race),
+    cancel must reverse ALL of them so the TB still nets to zero.
+
+    The #190 partial-unique index now PREVENTS creating a second such voucher,
+    so we drop it for the duration, insert the duplicate, cancel, and restore
+    the index afterward (after wiping the org so the recreate sees no dups)."""
+    from app.models import Ledger, Voucher, VoucherLine
+    from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
+
+    _idx_recreate = (
+        "CREATE UNIQUE INDEX uq_voucher_one_posting_per_ref "
+        "ON voucher (org_id, voucher_type, reference_type, reference_id) "
+        "WHERE deleted_at IS NULL AND reference_id IS NOT NULL "
+        "AND voucher_type IN ('SALES_INVOICE', 'COGS_SALE')"
+    )
+
+    org_id, firm_id, party_id, item_id = _seed_org_firm_party_item(sync_engine)
+    try:
+        with _new_session(sync_engine, org_id) as s:
+            inv = sales_service.create_draft_invoice(
+                s,
+                org_id=org_id,
+                firm_id=firm_id,
+                party_id=party_id,
+                invoice_date=datetime.date(2026, 4, 15),
+                ship_to_state="MH",
+                lines=[{"item_id": item_id, "qty": "1", "price": "1000", "gst_rate": "0"}],
+            )
+            inv_id = inv.sales_invoice_id
+            sales_service.finalize_invoice(s, org_id=org_id, sales_invoice_id=inv_id)
+            s.commit()
+
+        # Drop #190's index (superuser) so we can inject the duplicate.
+        with OrmSession(admin_engine, expire_on_commit=False) as a:
+            a.execute(text("DROP INDEX IF EXISTS uq_voucher_one_posting_per_ref"))
+            a.commit()
+
+        # Inject a second identical SALES_INVOICE voucher for the invoice.
+        with _new_session(sync_engine, org_id) as s:
+            ar = s.execute(
+                select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "1200")
+            ).scalar_one()
+            sales = s.execute(
+                select(Ledger).where(Ledger.org_id == org_id, Ledger.code == "4000")
+            ).scalar_one()
+            dup = Voucher(
+                org_id=org_id,
+                firm_id=firm_id,
+                voucher_type=VoucherType.SALES_INVOICE,
+                series=inv.series,
+                number="9999",
+                voucher_date=datetime.date(2026, 4, 15),
+                reference_type="sales_invoice",
+                reference_id=inv_id,
+                narration="duplicate (simulated #190 damage)",
+                status=VoucherStatus.POSTED,
+                total_debit=Decimal("1000"),
+                total_credit=Decimal("1000"),
+            )
+            s.add(dup)
+            s.flush()
+            s.add(
+                VoucherLine(
+                    org_id=org_id,
+                    voucher_id=dup.voucher_id,
+                    ledger_id=ar.ledger_id,
+                    line_type=JournalLineType.DR,
+                    amount=Decimal("1000"),
+                    sequence=1,
+                )
+            )
+            s.add(
+                VoucherLine(
+                    org_id=org_id,
+                    voucher_id=dup.voucher_id,
+                    ledger_id=sales.ledger_id,
+                    line_type=JournalLineType.CR,
+                    amount=Decimal("1000"),
+                    sequence=2,
+                )
+            )
+            s.commit()
+
+        # Cancel: must reverse BOTH originals.
+        with _new_session(sync_engine, org_id) as s:
+            sales_service.cancel_invoice(
+                s, org_id=org_id, sales_invoice_id=inv_id, reason="dedupe", now=_CANCEL_AT
+            )
+            s.commit()
+
+        with _new_session(sync_engine, org_id) as s:
+            orig_count = s.execute(
+                text(
+                    "SELECT count(*) FROM voucher WHERE voucher_type='SALES_INVOICE' "
+                    "AND reference_type='sales_invoice' AND reference_id=:inv "
+                    "AND deleted_at IS NULL"
+                ),
+                {"inv": str(inv_id)},
+            ).scalar()
+            assert orig_count == 2, f"expected 2 duplicate originals, got {orig_count}"
+
+            rev_count = s.execute(
+                text(
+                    "SELECT count(*) FROM voucher WHERE reference_type='sales_invoice_reversal' "
+                    "AND deleted_at IS NULL AND org_id=:o"
+                ),
+                {"o": str(org_id)},
+            ).scalar()
+            assert rev_count == 2, f"expected 2 reversals (one per original), got {rev_count}"
+
+            ar_net = s.execute(
+                text(
+                    "SELECT coalesce(sum(CASE WHEN vl.line_type='DR' THEN vl.amount "
+                    "ELSE -vl.amount END), 0) FROM voucher_line vl "
+                    "JOIN ledger l ON l.ledger_id = vl.ledger_id "
+                    "JOIN voucher v ON v.voucher_id = vl.voucher_id "
+                    "WHERE l.code='1200' AND v.org_id=:o AND v.deleted_at IS NULL"
+                ),
+                {"o": str(org_id)},
+            ).scalar()
+            assert Decimal(str(ar_net)) == Decimal("0"), (
+                f"AR not netted after dup reversal: {ar_net}"
+            )
+    finally:
+        _drop_org(admin_engine, org_id)
+        # Restore #190's index (org is wiped, so no duplicates remain to trip it).
+        with OrmSession(admin_engine, expire_on_commit=False) as a:
+            a.execute(text("DROP INDEX IF EXISTS uq_voucher_one_posting_per_ref"))
+            a.execute(text(_idx_recreate))
+            a.commit()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -617,5 +836,102 @@ def test_parallel_issues_cannot_exceed_ordered(sync_engine: Engine, admin_engine
                 {"p": str(so_id)},
             ).scalar()
             assert so_status == "PARTIAL_DC", f"unexpected SO status: {so_status}"
+    finally:
+        _drop_org(admin_engine, org_id)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #203 CA correction — parallel PI posts cannot over-bill one GRN
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_parallel_pi_posts_cannot_over_bill_grn(
+    sync_engine: Engine, admin_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GRN of 100 received @ 200 with two DRAFT PIs of 60 each (create-time
+    guard bypassed, as for legacy drafts). Two parallel post_pi calls: exactly
+    one succeeds; the loser is refused under the GRN row lock (cumulative
+    billed 120 > 100). GRNI (2010) for the GRN ends at CR 8,000 — only the
+    winner's 60 m cleared — and exactly one PURCHASE_INVOICE voucher exists.
+    """
+    org_id, firm_id, party_id, item_id = _seed_org_firm_party_item(sync_engine)
+    try:
+        with _new_session(sync_engine, org_id) as s:
+            grn = procurement_service.create_grn(
+                s,
+                org_id=org_id,
+                firm_id=firm_id,
+                party_id=party_id,
+                grn_date=datetime.date(2026, 4, 15),
+                series="GRN",
+                lines=[{"item_id": item_id, "qty_received": "100", "rate": "200"}],
+            )
+            grn_id = grn.grn_id
+            procurement_service.receive_grn(s, org_id=org_id, grn_id=grn_id)
+            monkeypatch.setattr(
+                procurement_service, "_validate_pi_lines_against_grn", lambda *a, **k: None
+            )
+            pi_ids = [
+                procurement_service.create_pi(
+                    s,
+                    org_id=org_id,
+                    firm_id=firm_id,
+                    party_id=party_id,
+                    invoice_date=datetime.date(2026, 4, 20),
+                    series="PI",
+                    lines=[{"item_id": item_id, "qty": "60", "rate": "200"}],
+                    grn_id=grn_id,
+                ).purchase_invoice_id
+                for _ in range(2)
+            ]
+            monkeypatch.undo()
+            s.commit()
+
+        counter = {"i": 0}
+        counter_lock = threading.Lock()
+
+        def _post(s: OrmSession) -> None:
+            with counter_lock:
+                idx = counter["i"]
+                counter["i"] += 1
+            procurement_service.post_pi(s, org_id=org_id, pi_id=pi_ids[idx])
+
+        results = _race(sync_engine, org_id, 2, _post)
+
+        assert results.count("OK") == 1, f"expected exactly one winner, got {results}"
+        assert all(r in ("OK", "AppValidationError", "InvoiceStateError") for r in results), (
+            f"unexpected results: {results}"
+        )
+
+        with _new_session(sync_engine, org_id) as s:
+            posted = s.execute(
+                text(
+                    "SELECT count(*) FROM purchase_invoice "
+                    "WHERE grn_id = :g AND status = 'POSTED' AND deleted_at IS NULL"
+                ),
+                {"g": str(grn_id)},
+            ).scalar()
+            assert posted == 1, f"expected one POSTED PI, got {posted}"
+
+            pi_vouchers = s.execute(
+                text(
+                    "SELECT count(*) FROM voucher WHERE voucher_type = 'PURCHASE_INVOICE' "
+                    "AND reference_id::text = ANY(:p) AND deleted_at IS NULL"
+                ),
+                {"p": [str(p) for p in pi_ids]},
+            ).scalar()
+            assert pi_vouchers == 1, f"expected one PI voucher, got {pi_vouchers}"
+
+            grni = s.execute(
+                text(
+                    "SELECT coalesce(sum(CASE WHEN vl.line_type = 'CR' THEN vl.amount "
+                    "ELSE -vl.amount END), 0) FROM voucher_line vl "
+                    "JOIN ledger l ON l.ledger_id = vl.ledger_id "
+                    "JOIN voucher v ON v.voucher_id = vl.voucher_id "
+                    "WHERE l.code = '2010' AND vl.org_id = :o AND v.deleted_at IS NULL"
+                ),
+                {"o": str(org_id)},
+            ).scalar()
+            assert Decimal(str(grni)) == Decimal("8000.00"), f"GRNI balance wrong: {grni}"
     finally:
         _drop_org(admin_engine, org_id)

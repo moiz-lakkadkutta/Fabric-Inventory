@@ -270,11 +270,13 @@ class PartyStatementResponse(BaseModel):
 
 
 class Gstr1InvoiceRow(BaseModel):
-    """One invoice row in the B2B / B2CL / EXPORT buckets. Tax split
-    matches CGST/SGST/IGST per the invoice's tax_type. ``gstin`` is
-    masked-but-printable (hex of the encrypted blob is opaque; the FE
-    can render "GSTIN on file" without the value). Future Wave-5
-    refinement will decrypt for filing-XML generation."""
+    """One (invoice, rate) row in the B2B / B2CL / EXPORT buckets (#195).
+
+    GSTR-1 is rate-wise: a mixed-rate invoice emits ONE ROW PER SLAB RATE
+    (0/5/12/18/28), each with that rate's taxable_value and tax; the header
+    ``invoice_value`` is repeated on every row (portal convention). CGST ==
+    SGST on every intra-state row. ``gstin`` is the plaintext GSTIN (or
+    masked to last-3 when the caller lacks masters.party.pii.read)."""
 
     sales_invoice_id: uuid.UUID
     invoice_date: datetime.date
@@ -284,9 +286,9 @@ class Gstr1InvoiceRow(BaseModel):
     party_name: str
     gstin: str | None
     place_of_supply_state: str | None
-    invoice_value: Decimal
-    taxable_value: Decimal
-    gst_rate: Decimal | None  # representative rate; lines may differ
+    invoice_value: Decimal  # header total, repeated across the invoice's rate rows
+    taxable_value: Decimal  # taxable value AT THIS RATE
+    gst_rate: Decimal  # #195: real slab rate for this row (was a blended rate)
     cgst: Decimal
     sgst: Decimal
     igst: Decimal
@@ -307,14 +309,15 @@ class Gstr1B2csRow(BaseModel):
 
 
 class Gstr1HsnRow(BaseModel):
-    """One HSN summary row. The GSTR-1 HSN section aggregates all
-    invoice lines by HSN code (with UQC/UOM and rate alongside). Items
+    """One HSN summary row, rate-wise (#195). The GSTR-1 HSN section
+    aggregates invoice lines by ``(HSN code, UQC/UOM, gst_rate)``. Items
     without an HSN set surface as empty-string ``hsn_code``; the FE
     flags them as data-quality issues."""
 
     hsn_code: str
     description: str | None
     uom: str
+    gst_rate: Decimal  # #195: slab rate for this HSN group
     total_qty: Decimal
     taxable_value: Decimal
     cgst: Decimal
@@ -323,16 +326,71 @@ class Gstr1HsnRow(BaseModel):
     total_value: Decimal
 
 
+class _Gstr1CreditNoteRowBase(BaseModel):
+    """Common fields of a GSTR-1 credit-note row (#199).
+
+    One row per (credit note, slab rate). A cross-period cancel of a
+    finalized invoice is a CGST Act §34 credit note for the full value,
+    reported in the month the note is dated. Amounts are POSITIVE; the sign
+    is carried by ``note_type`` ("C" = credit), matching the GSTN portal.
+    ``note_series`` / ``note_number`` / ``note_date`` are the CREDIT_NOTE
+    voucher's; ``invoice_*`` identify the original invoice."""
+
+    note_voucher_id: uuid.UUID
+    note_series: str
+    note_number: str
+    note_date: datetime.date
+    note_type: str  # "C"
+    sales_invoice_id: uuid.UUID
+    invoice_series: str
+    invoice_number: str
+    invoice_date: datetime.date
+    party_id: uuid.UUID
+    party_name: str
+    place_of_supply_state: str | None
+    note_value: Decimal  # note total, repeated across its rate rows
+    taxable_value: Decimal  # taxable value AT THIS RATE
+    gst_rate: Decimal
+    cgst: Decimal
+    sgst: Decimal
+    igst: Decimal
+
+
+class Gstr1CdnrRow(_Gstr1CreditNoteRowBase):
+    """GSTR-1 Table 9B CDNR — credit note to a REGISTERED recipient (the
+    original invoice was B2B). ``gstin`` is plaintext, or masked to last-3
+    when the caller lacks masters.party.pii.read (same rule as B2B)."""
+
+    gstin: str | None
+
+
+class Gstr1CdnurRow(_Gstr1CreditNoteRowBase):
+    """GSTR-1 Table 9B CDNUR — credit note to an UNREGISTERED recipient
+    (original was B2CL or export). ``ur_type`` is "B2CL", "EXPWP" (export
+    with IGST paid) or "EXPWOP" (export under LUT / without payment)."""
+
+    ur_type: str
+
+
 class Gstr1Response(BaseModel):
     """GSTR-1 envelope for ``period`` = YYYY-MM. Buckets:
     b2b:    Registered (GSTIN-present) sales (intra + inter state).
-    b2cl:   Inter-state B2C invoices > ₹2.5L, invoice-wise.
+    b2cl:   Inter-state B2C invoices with invoice value > ₹2.5L (dated
+            before 01-Aug-2024) or > ₹1L (on/after; Notif. 12/2024-CT),
+            invoice-wise.
     b2cs:   Aggregated B2C below threshold or intra-state, by
             (state, rate).
     export: Zero-rated overseas / SEZ / EOU sales (party.is_export
             / party.is_sez set; or place_of_supply is one of
             'SEZ', 'EXPORT', 'EOU', or no Indian state code).
-    hsn:    Per-HSN aggregation across every taxable line.
+    hsn:    Per-HSN aggregation across every taxable line, NET of the
+            period's credit notes (Table 12).
+    cdnr:   Credit notes issued this period against B2B invoices of an
+            earlier period (cross-period cancel, CGST Act §34).
+    cdnur:  Same, against B2CL / export invoices. Credit notes against
+            B2CS invoices are not listed — they are netted off this
+            period's b2cs rows (which may therefore be negative).
+    A same-period cancel is excluded from every section.
     """
 
     period: str  # "YYYY-MM"
@@ -343,6 +401,8 @@ class Gstr1Response(BaseModel):
     b2cs: list[Gstr1B2csRow]
     export: list[Gstr1InvoiceRow]
     hsn: list[Gstr1HsnRow]
+    cdnr: list[Gstr1CdnrRow]
+    cdnur: list[Gstr1CdnurRow]
 
 
 __all__ = [
@@ -351,6 +411,8 @@ __all__ = [
     "DaybookResponse",
     "DaybookVoucher",
     "Gstr1B2csRow",
+    "Gstr1CdnrRow",
+    "Gstr1CdnurRow",
     "Gstr1HsnRow",
     "Gstr1InvoiceRow",
     "Gstr1Response",

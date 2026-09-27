@@ -277,3 +277,48 @@ def test_delete_party_returns_204_and_hides_from_list(http_client: TestClient) -
     # No longer in the default (active-only) list.
     listed = http_client.get("/parties", headers=_auth(me["access_token"])).json()
     assert all(p["code"] != "P-DEL" for p in listed["items"])
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #193 (a): junk state_code rejected at the HTTP boundary (422 envelope)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_post_parties_junk_state_returns_422(http_client: TestClient) -> None:
+    """#193 P2-1 repro step 1: POST /parties {"state_code":"XX"} → 422.
+
+    Before the fix this returned 201 with state_code stored as "XX".
+    """
+    me = _signup_owner(http_client)
+    resp = http_client.post(
+        "/parties",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": "JUNK1",
+            "name": "Junk State Co",
+            "is_customer": True,
+            "state_code": "XX",
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    # The field error must point at state_code.
+    assert "state_code" in resp.text
+    assert body  # non-empty error envelope
+
+
+def test_post_parties_numeric_state_normalized_to_alpha(http_client: TestClient) -> None:
+    """Numeric state code "27" is accepted and stored/returned as "MH"."""
+    me = _signup_owner(http_client)
+    resp = http_client.post(
+        "/parties",
+        headers=_auth(me["access_token"]),
+        json={
+            "code": "NUM1",
+            "name": "Numeric State Co",
+            "is_customer": True,
+            "state_code": "27",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["state_code"] == "MH"

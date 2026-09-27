@@ -61,6 +61,8 @@ def _seed_party_and_item(
         session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         firm = session.execute(select(Firm).where(Firm.firm_id == firm_id)).scalar_one()
         firm.state_code = "MH"
+        # #194: signup mints has_gst=False; these tests render tax invoices.
+        firm.has_gst = True
         firm.address = "142, Resham Bhavan, Ring Road, Surat 395002"
         party = Party(
             org_id=org_id,
@@ -380,3 +382,131 @@ def test_render_invoice_pdf_returns_pdf_bytes(http_client: TestClient, sync_engi
         )
     assert pdf_bytes.startswith(b"%PDF-")
     assert len(pdf_bytes) > 1000
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #194 — a non-GST firm's Bill of Supply renders with no GST columns/rows
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_non_gst_firm_pdf_titled_bill_of_supply_with_zero_tax(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """A has_gst=False firm's finalized zero-rate invoice renders as a
+    'Bill of Supply' with the GST columns and tax total rows suppressed."""
+    from app.models import Firm, Item, Party
+    from app.models.masters import ItemType, TrackingType, UomType
+    from app.service import pdf_service
+
+    me = _signup_owner(http_client)  # signup → has_gst=False
+    org_id = uuid.UUID(me["org_id"])
+    firm_id = uuid.UUID(me["firm_id"])
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        firm = session.execute(select(Firm).where(Firm.firm_id == firm_id)).scalar_one()
+        firm.state_code = "MH"
+        firm.has_gst = False
+        party = Party(
+            org_id=org_id,
+            code=f"P{uuid.uuid4().hex[:6].upper()}",
+            name="Local Cash Buyer",
+            is_customer=True,
+            state_code="MH",
+        )
+        session.add(party)
+        item = Item(
+            org_id=org_id,
+            code=f"I{uuid.uuid4().hex[:6].upper()}",
+            name="Cotton Suit",
+            item_type=ItemType.FINISHED,
+            tracking=TrackingType.NONE,
+            primary_uom=UomType.METER,
+            hsn_code="5208",
+        )
+        session.add(item)
+        session.flush()
+        party_id, item_id = party.party_id, item.item_id
+        session.commit()
+
+    create = http_client.post(
+        "/invoices",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "party_id": str(party_id),
+            "invoice_date": "2026-09-02",
+            "ship_to_state": "MH",
+            "lines": [{"item_id": str(item_id), "qty": "2", "price": "500", "gst_rate": "0"}],
+        },
+    )
+    assert create.status_code == 201, create.text
+    invoice_id = uuid.UUID(create.json()["sales_invoice_id"])
+    fin = http_client.post(f"/invoices/{invoice_id}/finalize", headers=_auth(me["access_token"]))
+    assert fin.status_code == 200, fin.text
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        html = pdf_service.render_invoice_html(session, invoice_id=invoice_id, org_id=org_id)
+
+    assert "Bill of Supply" in html
+    assert "Tax Invoice" not in html
+    # The GST column headers and tax total rows must be gone entirely.
+    assert "CGST (₹)" not in html
+    assert "SGST (₹)" not in html
+    assert "IGST (₹)" not in html
+    assert "Total GST" not in html
+    # Subtotal / grand total still render.
+    assert "Subtotal (Taxable Value)" in html
+    assert "1,000.00" in html  # 2 x 500 taxable value (Indian grouping)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #195 — PDF line & total CGST must equal SGST (equal-halves split)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_pdf_cgst_equals_sgst_per_line_and_totals(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """#195: a mixed-rate intra-state invoice must render CGST == SGST on
+    every line AND in the totals. Before the fix the odd paisa landed on
+    CGST (5.84 vs 5.83), breaking equality."""
+    from app.service import pdf_service
+
+    me = _signup_owner(http_client)
+    org_id = uuid.UUID(me["org_id"])
+    party_id, item_id = _seed_party_and_item(
+        sync_engine, org_id=org_id, firm_id=uuid.UUID(me["firm_id"])
+    )
+    create = http_client.post(
+        "/invoices",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "party_id": str(party_id),
+            "invoice_date": "2026-09-02",
+            "ship_to_state": "MH",
+            "lines": [
+                {"item_id": str(item_id), "qty": "1", "price": "233.31", "gst_rate": "5"},
+                {"item_id": str(item_id), "qty": "1", "price": "50", "gst_rate": "18"},
+            ],
+        },
+    )
+    assert create.status_code == 201, create.text
+    invoice_id = uuid.UUID(create.json()["sales_invoice_id"])
+    fin = http_client.post(f"/invoices/{invoice_id}/finalize", headers=_auth(me["access_token"]))
+    assert fin.status_code == 200, fin.text
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        invoice, firm, party = pdf_service._load_invoice_for_render(
+            session, invoice_id=invoice_id, org_id=org_id
+        )
+        ctx = pdf_service._build_context(session, invoice=invoice, firm=firm, party=party)
+
+    for line in ctx["lines"]:
+        assert line["cgst"] == line["sgst"], f"line CGST {line['cgst']} != SGST {line['sgst']}"
+    assert ctx["totals"]["cgst"] == ctx["totals"]["sgst"], (
+        f"total CGST {ctx['totals']['cgst']} != SGST {ctx['totals']['sgst']}"
+    )

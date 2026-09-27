@@ -986,3 +986,57 @@ def test_cycle2_mfa_setup_on_already_enabled_user_returns_409(
         "Cycle-2 Fix 1 FAIL: MFA was disabled after the rejected re-setup. "
         "The 409 path must leave mfa_enabled=True and mfa_secret unchanged."
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Verifier follow-up (#193 area): signup canonicalises the firm state code.
+# Onboarding auto-fills the numeric GSTIN prefix ("27"); it must be stored
+# in the same canonical alpha form as party.state_code ("MH").
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _signup_state(client: TestClient, state_code: str) -> tuple[int, dict[str, str]]:
+    resp = client.post(
+        "/auth/signup",
+        json={
+            "email": _unique_email(),
+            "password": "strong-password-1",
+            "org_name": _unique_org_name(),
+            "firm_name": "Primary Firm",
+            "state_code": state_code,
+        },
+    )
+    return resp.status_code, resp.json()
+
+
+def _firm_state(sync_engine: Engine, body: dict[str, str]) -> str | None:
+    from sqlalchemy.orm import Session as OrmSession
+
+    from app.models import Firm
+
+    with OrmSession(sync_engine) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{body['org_id']}'"))
+        return session.execute(
+            select(Firm.state_code).where(Firm.firm_id == uuid.UUID(body["firm_id"]))
+        ).scalar_one()
+
+
+def test_signup_numeric_state_code_stored_canonical(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    status, body = _signup_state(http_client, "27")
+    assert status == 201, body
+    assert _firm_state(sync_engine, body) == "MH"
+
+
+def test_signup_lowercase_alpha_state_code_stored_canonical(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    status, body = _signup_state(http_client, "ka")
+    assert status == 201, body
+    assert _firm_state(sync_engine, body) == "KA"
+
+
+def test_signup_junk_state_code_rejected(http_client: TestClient) -> None:
+    status, _ = _signup_state(http_client, "XX")
+    assert status == 422

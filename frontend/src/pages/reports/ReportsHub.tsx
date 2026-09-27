@@ -20,6 +20,7 @@ import {
   type AgeingRowVM,
   type AgeingVM,
   type Gstr1B2csVM,
+  type Gstr1CreditNoteVM,
   type Gstr1HsnVM,
   type Gstr1InvoiceVM,
   type Gstr1VM,
@@ -588,6 +589,16 @@ function Gstr1Panel({
           <Gstr1B2BSection rows={q.data?.b2b ?? []} />
           <Gstr1B2CLSection rows={q.data?.b2cl ?? []} />
           <Gstr1B2CSSection rows={q.data?.b2cs ?? []} />
+          <Gstr1CreditNoteSection
+            title="Credit notes · registered (CDNR)"
+            kind="cdnr"
+            rows={q.data?.cdnr ?? []}
+          />
+          <Gstr1CreditNoteSection
+            title="Credit notes · unregistered (CDNUR)"
+            kind="cdnur"
+            rows={q.data?.cdnur ?? []}
+          />
           <Gstr1HsnSection rows={q.data?.hsn ?? []} />
         </>
       )}
@@ -606,17 +617,23 @@ function Gstr1Header({
   data: Gstr1VM | undefined;
   isPending: boolean;
 }) {
+  // #199: totals are NET of credit notes (CDNR / CDNUR rows carry positive
+  // amounts with note_type "C"; B2CS net-offs are already negative).
   const totalTaxable = data
     ? sumTaxable(data.b2b) +
       sumTaxable(data.b2cl) +
       data.b2cs.reduce((s, r) => s + r.taxable_value, 0) +
-      sumTaxable(data.export)
+      sumTaxable(data.export) -
+      sumTaxable(data.cdnr) -
+      sumTaxable(data.cdnur)
     : 0;
   const totalTax = data
     ? sumTax(data.b2b) +
       sumTax(data.b2cl) +
       data.b2cs.reduce((s, r) => s + r.cgst + r.sgst + r.igst, 0) +
-      sumTax(data.export)
+      sumTax(data.export) -
+      sumTax(data.cdnr) -
+      sumTax(data.cdnur)
     : 0;
   const invoiceCount = data
     ? data.b2b.length +
@@ -656,18 +673,26 @@ function Gstr1Header({
       </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="Invoices" value={isPending ? '—' : String(invoiceCount)} />
-        <Stat label="Taxable value" value={isPending ? '—' : formatINRCompact(totalTaxable)} />
-        <Stat label="Tax (CGST+SGST+IGST)" value={isPending ? '—' : formatINRCompact(totalTax)} />
+        <Stat
+          label="Taxable value (net)"
+          value={isPending ? '—' : formatINRCompact(totalTaxable)}
+        />
+        <Stat
+          label="Tax (CGST+SGST+IGST, net)"
+          value={isPending ? '—' : formatINRCompact(totalTax)}
+        />
         <Stat label="HSN rows" value={isPending ? '—' : String(data?.hsn.length ?? 0)} />
       </div>
     </div>
   );
 }
 
-function sumTaxable(rows: Gstr1InvoiceVM[]): number {
+type Gstr1TaxRow = Pick<Gstr1InvoiceVM, 'taxable_value' | 'cgst' | 'sgst' | 'igst'>;
+
+function sumTaxable(rows: Gstr1TaxRow[]): number {
   return rows.reduce((s, r) => s + r.taxable_value, 0);
 }
-function sumTax(rows: Gstr1InvoiceVM[]): number {
+function sumTax(rows: Gstr1TaxRow[]): number {
   return rows.reduce((s, r) => s + r.cgst + r.sgst + r.igst, 0);
 }
 
@@ -737,6 +762,7 @@ function Gstr1B2BSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
                 <Th>Counterparty</Th>
                 <Th>Invoice</Th>
                 <Th>Date</Th>
+                <Th align="right">GST %</Th>
                 <Th align="right">Taxable</Th>
                 <Th align="right">CGST</Th>
                 <Th align="right">SGST</Th>
@@ -747,7 +773,7 @@ function Gstr1B2BSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
             <tbody>
               {rows.map((r) => (
                 <tr
-                  key={r.sales_invoice_id}
+                  key={`${r.sales_invoice_id}-${r.gst_rate}`}
                   style={{ borderTop: '1px solid var(--border-subtle)' }}
                 >
                   <td
@@ -767,6 +793,9 @@ function Gstr1B2BSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
                     style={{ fontSize: 12, color: 'var(--text-secondary)' }}
                   >
                     {r.invoice_date}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.gst_rate}%
                   </td>
                   <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
                     {formatINRCompact(r.taxable_value)}
@@ -801,6 +830,7 @@ function Gstr1B2CLSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
                 <Th>Counterparty</Th>
                 <Th>Invoice</Th>
                 <Th>Date</Th>
+                <Th align="right">GST %</Th>
                 <Th align="right">Taxable</Th>
                 <Th align="right">IGST</Th>
                 <Th align="right">Total</Th>
@@ -809,7 +839,7 @@ function Gstr1B2CLSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
             <tbody>
               {rows.map((r) => (
                 <tr
-                  key={r.sales_invoice_id}
+                  key={`${r.sales_invoice_id}-${r.gst_rate}`}
                   style={{ borderTop: '1px solid var(--border-subtle)' }}
                 >
                   <td
@@ -829,6 +859,9 @@ function Gstr1B2CLSection({ rows }: { rows: Gstr1InvoiceVM[] }) {
                     style={{ fontSize: 12, color: 'var(--text-secondary)' }}
                   >
                     {r.invoice_date}
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.gst_rate}%
                   </td>
                   <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
                     {formatINRCompact(r.taxable_value)}
@@ -890,9 +923,102 @@ function Gstr1B2CSSection({ rows }: { rows: Gstr1B2csVM[] }) {
                   <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
                     {formatINRCompact(r.taxable_value)}
                   </td>
+                  <TdSigned value={r.cgst} />
+                  <TdSigned value={r.sgst} />
+                  <TdSigned value={r.igst} />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </SectionWrapper>
+  );
+}
+
+/**
+ * #199: §34 credit notes issued this period against invoices of an earlier
+ * month (cross-period cancels). CDNR = registered buyer (original was B2B);
+ * CDNUR = unregistered (original was B2CL / export). Amounts are shown as
+ * positive credits — the header totals subtract them.
+ */
+function Gstr1CreditNoteSection({
+  title,
+  kind,
+  rows,
+}: {
+  title: string;
+  kind: 'cdnr' | 'cdnur';
+  rows: Gstr1CreditNoteVM[];
+}) {
+  return (
+    <SectionWrapper title={title} count={rows.length}>
+      {rows.length === 0 ? (
+        <EmptyRow
+          message={
+            kind === 'cdnr'
+              ? 'No credit notes to registered buyers in this period.'
+              : 'No credit notes to unregistered buyers in this period.'
+          }
+        />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left" style={{ minWidth: 820 }}>
+            <thead style={{ background: 'var(--bg-surface)' }}>
+              <tr style={{ color: 'var(--text-tertiary)' }}>
+                <Th>{kind === 'cdnr' ? 'GSTIN' : 'UR type'}</Th>
+                <Th>Counterparty</Th>
+                <Th>Note</Th>
+                <Th>Note date</Th>
+                <Th>Original invoice</Th>
+                <Th align="right">GST %</Th>
+                <Th align="right">Taxable</Th>
+                <Th align="right">CGST</Th>
+                <Th align="right">SGST</Th>
+                <Th align="right">IGST</Th>
+                <Th align="right">Note value</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr
+                  key={`${r.note_voucher_id}-${r.gst_rate}`}
+                  style={{ borderTop: '1px solid var(--border-subtle)' }}
+                >
+                  <td
+                    className="mono px-3 py-2.5"
+                    style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}
+                  >
+                    {(kind === 'cdnr' ? r.gstin : r.ur_type) ?? '—'}
+                  </td>
+                  <td className="px-3 py-2.5" style={{ fontSize: 13, fontWeight: 500 }}>
+                    {r.party_name}
+                  </td>
+                  <td className="mono px-3 py-2.5" style={{ fontSize: 12, fontWeight: 500 }}>
+                    {r.note_series}/{r.note_number}
+                  </td>
+                  <td
+                    className="num px-3 py-2.5"
+                    style={{ fontSize: 12, color: 'var(--text-secondary)' }}
+                  >
+                    {r.note_date}
+                  </td>
+                  <td className="mono px-3 py-2.5" style={{ fontSize: 12 }}>
+                    {r.invoice_series}/{r.invoice_number}
+                    <span style={{ color: 'var(--text-tertiary)' }}> · {r.invoice_date}</span>
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.gst_rate}%
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {formatINRCompact(r.taxable_value)}
+                  </td>
                   <Td value={r.cgst} />
                   <Td value={r.sgst} />
                   <Td value={r.igst} />
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right', fontWeight: 500 }}>
+                    {formatINRCompact(r.note_value)}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -916,6 +1042,7 @@ function Gstr1HsnSection({ rows }: { rows: Gstr1HsnVM[] }) {
                 <Th>HSN</Th>
                 <Th>Description</Th>
                 <Th>UQC</Th>
+                <Th align="right">GST %</Th>
                 <Th align="right">Qty</Th>
                 <Th align="right">Taxable</Th>
                 <Th align="right">CGST</Th>
@@ -927,7 +1054,7 @@ function Gstr1HsnSection({ rows }: { rows: Gstr1HsnVM[] }) {
             <tbody>
               {rows.map((r, i) => (
                 <tr
-                  key={`${r.hsn_code}-${i}`}
+                  key={`${r.hsn_code}-${r.gst_rate}-${i}`}
                   style={{
                     borderTop: '1px solid var(--border-subtle)',
                     background: r.hsn_code === '' ? 'var(--warning-subtle)' : 'transparent',
@@ -946,14 +1073,17 @@ function Gstr1HsnSection({ rows }: { rows: Gstr1HsnVM[] }) {
                     {r.uom.toLowerCase()}
                   </td>
                   <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
+                    {r.gst_rate}%
+                  </td>
+                  <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
                     {r.total_qty.toLocaleString('en-IN')}
                   </td>
                   <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
                     {formatINRCompact(r.taxable_value)}
                   </td>
-                  <Td value={r.cgst} />
-                  <Td value={r.sgst} />
-                  <Td value={r.igst} />
+                  <TdSigned value={r.cgst} />
+                  <TdSigned value={r.sgst} />
+                  <TdSigned value={r.igst} />
                   <td className="num px-3 py-2.5" style={{ textAlign: 'right', fontWeight: 500 }}>
                     {formatINRCompact(r.total_value)}
                   </td>
@@ -964,6 +1094,22 @@ function Gstr1HsnSection({ rows }: { rows: Gstr1HsnVM[] }) {
         </div>
       )}
     </SectionWrapper>
+  );
+}
+
+/** Like `Td` but renders negative amounts (#199: B2CS / HSN rows can be
+ * negative when a credit note nets them off). */
+function TdSigned({ value }: { value: number }) {
+  return (
+    <td
+      className="num px-3 py-2.5"
+      style={{
+        textAlign: 'right',
+        color: value !== 0 ? 'var(--text-primary)' : 'var(--text-tertiary)',
+      }}
+    >
+      {value !== 0 ? formatINRCompact(value) : '—'}
+    </td>
   );
 }
 

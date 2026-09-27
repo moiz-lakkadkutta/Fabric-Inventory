@@ -37,9 +37,10 @@ from app.models import (
     SalesOrder,
     SiLine,
     SOLine,
+    StockLedger,
 )
 from app.models.masters import ItemType
-from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
+from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus, VoucherStatus
 from app.service import (
     accounting_service,
     audit_service,
@@ -54,6 +55,11 @@ from app.utils.money import ensure_money_in_range
 
 # Stockable item types (all types except SERVICE).
 _STOCKABLE_ITEM_TYPES = frozenset(t for t in ItemType if t != ItemType.SERVICE)
+
+# #193/#195: the NIL tax-type family (not-a-supply, LUT-zero-rated export, or
+# explicit nil) must always carry zero GST. Zeroing now lives inside
+# gst_service.compute_line_gst (single source of truth), which returns an
+# all-zero split for these types; accounting_service keeps its own guard set.
 
 # ──────────────────────────────────────────────────────────────────────
 # Document numbering
@@ -646,8 +652,8 @@ def issue_dc(
         )
 
     # #206: authoritative SO guards run BEFORE any stock is moved. When the DC
-    # is linked to a SO, lock the SO row FOR UPDATE (lock order DC -> SO; #190 adds
-    # the DC row lock first) so two concurrent issues of different DCs against
+    # is linked to a SO, lock the SO row FOR UPDATE (lock order DC -> SO; #190
+    # locks the DC row first) so two concurrent issues of different DCs against
     # one SO serialize and the cumulative cap cannot be raced. The SO is then
     # reused for status advancement below (no re-fetch).
     locked_so: SalesOrder | None = None
@@ -731,9 +737,10 @@ def issue_dc(
             )
 
     # COGS is recognized at invoice finalize (revenue-matching principle),
-    # NOT at DC dispatch.  DC-linked invoices skip COGS in finalize_invoice
-    # via the `delivery_challan_id is None` guard, so posting COGS here
-    # would produce a double-count.  Do not add a post_cogs_voucher call here.
+    # NOT at DC dispatch.  issue_dc only relieves stock here; the COGS_SALE
+    # voucher is posted later by finalize_invoice → _post_cogs_for_dc_invoice
+    # (#198), which reads these outbound rows for the cost basis. Posting COGS
+    # here would double-count.  Do not add a post_cogs_voucher call here.
 
     dc.status = DCStatus.ISSUED.value
     dc.updated_at = datetime.datetime.now(tz=datetime.UTC)
@@ -924,7 +931,21 @@ def _allocate_si_number(
 
 
 def _classify_buyer(party: Party) -> BuyerStatus:
-    """REGISTERED if party.gstin is set, else CONSUMER."""
+    """Map a party to the PoS engine's buyer status.
+
+    SEZ / EXPORT are checked FIRST (verifier follow-up to #193): they are
+    zero-rated destinations (IGST Act §16) and must reach the engine's
+    SEZ / EXPORT branches — never the §10(1)(ca) unregistered-buyer
+    fallback (which would charge CGST+SGST on an export), nor the
+    geography branch (an SEZ unit's GSTIN is in an Indian state, but a
+    supply to SEZ is inter-state per IGST Act §7(5)(b)). SEZ wins over
+    export when both flags are set (SEZ units are domestic GSTIN-holders).
+    Then REGISTERED if party.gstin is set, else CONSUMER.
+    """
+    if party.is_sez:
+        return BuyerStatus.SEZ
+    if party.is_export:
+        return BuyerStatus.EXPORT
     if party.gstin:
         return BuyerStatus.REGISTERED
     return BuyerStatus.CONSUMER
@@ -972,7 +993,7 @@ def create_draft_invoice(
     ).scalar_one()
 
     # Compute totals first so the PoS engine sees the real invoice value
-    # (matters for the B2C ₹2.5L threshold).
+    # (matters only for the GSTR-1 B2CL bucket — see gst_service.b2cl_threshold).
     total_subtotal = Decimal("0")
     total_gst = Decimal("0")
     line_records: list[dict[str, object]] = []
@@ -987,12 +1008,33 @@ def create_draft_invoice(
                 f"GST rate {gst_rate} is not a recognised statutory slab rate. "
                 "Valid rates: 0, 0.25, 3, 5, 12, 18, 28."
             )
+        # #194: a non-GST-registered firm (firm.has_gst = false) can only
+        # issue a Bill of Supply, which carries no tax. Reject any line
+        # bearing a positive GST rate with an actionable message rather
+        # than silently zeroing it — item masters carry GST rates, so the
+        # user must see WHY tax was dropped (data-entry / expectation
+        # mismatch). gst_rate 0 / null is fine (0 is a Bill of Supply line).
+        if not firm.has_gst and gst_rate > 0:
+            raise AppValidationError(
+                f"Firm {firm.name} is not GST-registered: remove GST rates from "
+                "invoice lines (a Bill of Supply carries no tax), or register the "
+                "firm for GST."
+            )
         line_amount = (qty * price).quantize(Decimal("0.01"))
         # #207: reject a derived product that overflows the money ceiling
         # (each of qty/price passes its ≤1e9 field cap, but qty*price can be
         # ~1e18) with a per-line 422 before it hits NUMERIC(18,2) at flush.
         ensure_money_in_range(line_amount, field=f"lines.{idx}.line_amount")
-        # GST-7: already quantized to 2dp in sales_service; kept here for clarity.
+        # #195: this first pass computes only a PROVISIONAL full-rate GST so the
+        # PoS engine sees a realistic invoice_value for its B2CL bucket hint
+        # (`invoice_value > gst_service.b2cl_threshold(invoice_date)` — ₹2.5L
+        # before 01-Aug-2024, ₹1L on/after). That hint (pos_decision.
+        # gstr1_section) is NOT persisted and never affects tax_type or tax
+        # amounts; the authoritative GSTR-1 bucket is recomputed in
+        # reports_service from the stored final invoice_amount and the
+        # invoice's own date. The FINAL per-line tax is recomputed below via
+        # gst_service.compute_line_gst once tax_type is known. Do NOT persist
+        # this provisional value.
         gst_amount = (line_amount * gst_rate / Decimal("100")).quantize(Decimal("0.01"))
         total_subtotal += line_amount
         total_gst += gst_amount
@@ -1009,10 +1051,6 @@ def create_draft_invoice(
         )
 
     invoice_total = total_subtotal + total_gst
-    # #207: guard the accumulated header total (subtotal + GST) — per-line
-    # amounts can each be ≤ ceiling yet sum past it — before it reaches the
-    # NUMERIC(18,2) invoice_amount column at flush.
-    ensure_money_in_range(invoice_total, field="invoice_amount")
 
     # B1 fix: decrypt both GSTINs back to plaintext before handing them
     # to the PoS engine. The previous code emitted `hex(ciphertext)`,
@@ -1036,16 +1074,68 @@ def create_draft_invoice(
     # on an intra-state Maharashtra sale.
     norm_seller_state = normalize_state_code(firm.state_code) or ""
     norm_buyer_state = normalize_state_code(party.state_code)
+    buyer_status = _classify_buyer(party)
+    # Verifier follow-up to #193: a REGISTERED buyer with no recorded state
+    # takes its state from the GSTIN — the first two digits are the GST state
+    # code of registration. Without this the engine saw no destination and
+    # fell back to NIL_NOT_A_SUPPLY (₹0 GST). Only used when neither the
+    # party nor the invoice (ship_to_state) records a state.
+    # SEZ units carry a GSTIN too; their PoS (GSTR-1 Table 6B) comes from it
+    # the same way. Tax stays IGST for SEZ regardless (IGST Act §7(5)(b)).
+    if (
+        buyer_status in (BuyerStatus.REGISTERED, BuyerStatus.SEZ)
+        and norm_buyer_state is None
+        and buyer_gstin_plain
+    ):
+        norm_buyer_state = normalize_state_code(buyer_gstin_plain[:2])
     norm_ship_to_state = normalize_state_code(ship_to_state) if ship_to_state else None
     pos_decision = gst_service.determine_place_of_supply(
         seller_state=norm_seller_state,
         seller_gstin=seller_gstin_plain,
         buyer_state=norm_buyer_state,
         buyer_gstin=buyer_gstin_plain,
-        buyer_status=_classify_buyer(party),
+        buyer_status=buyer_status,
         ship_to_state=norm_ship_to_state or norm_buyer_state,
         invoice_value=invoice_total,
+        seller_has_gst=firm.has_gst,
+        invoice_date=invoice_date,
     )
+
+    # #195: SECOND PASS — now that tax_type is known, compute each line's
+    # FINAL, statutory GST via gst_service.compute_line_gst. This is the single
+    # source of truth: CGST == SGST == round(taxable x rate/200) for intra-state
+    # (so the odd paisa never lands lopsided on CGST), the full rate on IGST,
+    # and ZERO for the NIL family (subsumes #193's zeroing block — a NIL type
+    # returns an all-zero split regardless of gst_rate, so the books never
+    # diverge from the GSTR-1 return). gst_rate on the lines is deliberately
+    # retained (zero-rated value is reported *at a rate*).
+    total_gst = Decimal("0.00")
+    for record in line_records:
+        split = gst_service.compute_line_gst(
+            line_amount=record["line_amount"],  # type: ignore[arg-type]
+            gst_rate=record["gst_rate"],  # type: ignore[arg-type]
+            tax_type=pos_decision.tax_type,
+        )
+        line_gst = split.cgst + split.sgst + split.igst
+        record["gst_amount"] = line_gst
+        total_gst += line_gst
+    invoice_total = total_subtotal + total_gst
+    # #207: guard the accumulated header total (subtotal + GST) — per-line
+    # amounts can each be ≤ ceiling yet sum past it — before it reaches the
+    # NUMERIC(18,2) invoice_amount column at flush.
+    ensure_money_in_range(invoice_total, field="invoice_amount")
+
+    # sales_invoice.place_of_supply_state is VARCHAR(2) (a state code). The
+    # engine's special-destination tokens ("SEZ" / "EXPORT" / "EOU") don't fit
+    # and were never persisted before SEZ/EXPORT parties were routed to those
+    # branches. Store the destination STATE instead (for an SEZ unit, the
+    # state it is located in — the GSTR-1 SEZ PoS; for an overseas export,
+    # usually none → NULL). The zero-rated treatment is carried by tax_type,
+    # and GSTR-1 routes these to the export bucket via party.is_export /
+    # party.is_sez. No schema change (widening the column is Moiz-gated).
+    stored_pos_state = pos_decision.pos_state
+    if stored_pos_state is not None and len(stored_pos_state) > 2:
+        stored_pos_state = norm_ship_to_state or norm_buyer_state
 
     number = _allocate_si_number(session, org_id=org_id, firm_id=firm_id, series=series)
 
@@ -1058,7 +1148,7 @@ def create_draft_invoice(
         invoice_date=invoice_date,
         bill_to_address=bill_to_address,
         ship_to_address=ship_to_address,
-        place_of_supply_state=pos_decision.pos_state,
+        place_of_supply_state=stored_pos_state,
         invoice_amount=invoice_total,
         gst_amount=total_gst,
         paid_amount=Decimal("0"),
@@ -1107,7 +1197,7 @@ def create_draft_invoice(
                 "invoice_amount": str(invoice_total),
                 "gst_amount": str(total_gst),
                 "tax_type": pos_decision.tax_type.value,
-                "place_of_supply_state": pos_decision.pos_state,
+                "place_of_supply_state": stored_pos_state,
                 "lines": len(line_records),
             }
         },
@@ -1172,12 +1262,23 @@ def finalize_invoice(
 
     voucher = accounting_service.post_invoice_to_gl(session, invoice=invoice, posted_by=updated_by)
 
-    # COGS-on-sale: relieve inventory and post COGS for direct invoices.
-    # DC-linked invoices (delivery_challan_id is set) already had stock
-    # removed and COGS posted when the DC was issued — skip here to avoid
-    # double-posting.
+    # COGS-on-sale (#198): recognize cost at finalize for BOTH paths.
+    #  - Direct invoices: relieve inventory now and post COGS on the relief.
+    #  - DC-linked invoices: stock was already relieved at DC issue, so read
+    #    the DC's outbound movements for the cost basis and post COGS without
+    #    decrementing stock a second time.
+    # Both post exactly one COGS_SALE voucher referencing the invoice, dated
+    # invoice_date; the reference-idempotency guard in post_cogs_voucher (plus
+    # #190's finalize row-lock) prevents duplicates on replay.
     if invoice.delivery_challan_id is None:
         _post_cogs_for_invoice(
+            session,
+            invoice=invoice,
+            org_id=org_id,
+            updated_by=updated_by,
+        )
+    else:
+        _post_cogs_for_dc_invoice(
             session,
             invoice=invoice,
             org_id=org_id,
@@ -1206,6 +1307,241 @@ def finalize_invoice(
 
     dashboard_service.invalidate_firm(invoice.firm_id)
     return invoice
+
+
+# Lifecycle states a cancel may act on: the invoice is finalized into the
+# GL but not yet settled by a receipt. PARTIALLY_PAID / PAID are blocked by
+# the paid_amount guard below (unwind the receipt via the credit-note flow).
+_CANCELLABLE_LIFECYCLE = frozenset(
+    {
+        InvoiceLifecycleStatus.FINALIZED,
+        InvoiceLifecycleStatus.POSTED,
+        InvoiceLifecycleStatus.OVERDUE,
+    }
+)
+
+
+def _utcnow() -> datetime.datetime:
+    """Clock seam for ``cancel_invoice`` (tests monkeypatch this to pin the
+    GST period of a cancel)."""
+    return datetime.datetime.now(tz=datetime.UTC)
+
+
+def cancel_invoice(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    sales_invoice_id: uuid.UUID,
+    reason: str,
+    cancelled_by: uuid.UUID | None = None,
+    now: datetime.datetime | None = None,
+) -> SalesInvoice:
+    """Cancel a FINALIZED sales invoice: post reversing GL vouchers, restore
+    stock, and move the invoice to CANCELLED.
+
+    GST-period semantics (#199 CA-review correction; periods are calendar
+    months in Asia/Kolkata):
+      - SAME-PERIOD cancel (cancel date IST in the invoice's month): a true
+        cancellation before that month's GSTR-1 could be filed. GSTR-1
+        excludes the invoice; the reversal is dated in the same month.
+      - CROSS-PERIOD cancel: a CGST Act §34 credit note for the full value.
+        The original month's GSTR-1 keeps the invoice; the reversal
+        (CREDIT_NOTE) is dated on the cancel date and reported in that
+        month's GSTR-1 (CDNR / CDNUR / B2CS net-off) — see
+        ``reports_service.compute_gstr1``. Refused after 30-Nov following
+        the end of the invoice's financial year (§34(2) time limit).
+
+    The reversal / stock-restore date is the cancel date in IST, floored at
+    the invoice date (a reversal never predates the document it reverses).
+    ``now`` is an injectable clock (UTC-aware); defaults to the current time.
+
+    The reversal is what keeps voucher-driven reports (TB, P&L, party
+    statement, daybook) consistent with status-driven ones (GSTR-1, ageing). See
+    ``accounting_service.reverse_sales_invoice_gl`` for why the sales-GL
+    reversal is a CREDIT_NOTE and how it avoids #190's posting index.
+
+    Guards (raise InvoiceStateError → 409):
+      - not in {FINALIZED, POSTED, OVERDUE} (DRAFT is discarded via other
+        flows; a re-cancel of a CANCELLED invoice is an idempotent no-op);
+      - ``paid_amount > 0`` — a receipt was applied; unwind it first;
+      - DC-linked — goods were physically dispatched (v1 scope: use the
+        credit-note / sales-return flow, a follow-up ticket).
+
+    ``reason`` is required (spec §7). Idempotent: cancelling an already-
+    CANCELLED invoice returns it unchanged (exactly one reversal per
+    original voucher, enforced by the reversal unique index).
+
+    GATED — schema + GST-period semantics PENDING MOIZ + CA SIGN-OFF.
+    """
+    if not reason or not reason.strip():
+        raise AppValidationError("A cancellation reason is required.")
+    reason = reason.strip()
+
+    # #190-style lock: take the invoice row FOR UPDATE before the state check
+    # so two overlapping cancels serialize here. The loser wakes after the
+    # winner commits, sees CANCELLED, and returns the idempotent no-op.
+    invoice = session.execute(
+        select(SalesInvoice)
+        .options(selectinload(SalesInvoice.lines))
+        .where(
+            SalesInvoice.sales_invoice_id == sales_invoice_id,
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.deleted_at.is_(None),
+        )
+        .with_for_update(of=SalesInvoice)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise NotFoundError(f"Sales invoice {sales_invoice_id} not found.")
+
+    # Idempotent terminal transition (matches void_pi / cancel_so convention).
+    if invoice.lifecycle_status == InvoiceLifecycleStatus.CANCELLED:
+        return invoice
+
+    if invoice.lifecycle_status not in _CANCELLABLE_LIFECYCLE:
+        raise InvoiceStateError(
+            f"Cannot cancel invoice {sales_invoice_id}: status is "
+            f"{invoice.lifecycle_status.value}. Only a finalized, unpaid invoice "
+            "can be cancelled.",
+            title="Invoice cannot be cancelled",
+        )
+
+    if Decimal(invoice.paid_amount or 0) > 0:
+        raise InvoiceStateError(
+            f"Cannot cancel invoice {sales_invoice_id}: "
+            f"₹{Decimal(invoice.paid_amount):.2f} already received. Unwind the "
+            "receipt first (credit-note / refund workflow).",
+            title="Invoice cannot be cancelled",
+        )
+
+    if invoice.delivery_challan_id is not None:
+        raise InvoiceStateError(
+            f"Cannot cancel invoice {sales_invoice_id}: it is linked to a delivery "
+            "challan (goods were dispatched). Use the sales-return / credit-note "
+            "workflow instead.",
+            title="Invoice cannot be cancelled",
+        )
+
+    # #199: GST period of the cancel is its calendar month in IST, not UTC.
+    now = now if now is not None else _utcnow()
+    cancel_date_ist = gst_service.gst_local_date(now)
+    cross_period = gst_service.is_later_gst_period(cancel_date_ist, invoice.invoice_date)
+    if cross_period:
+        deadline = gst_service.credit_note_deadline(invoice.invoice_date)
+        if cancel_date_ist > deadline:
+            raise InvoiceStateError(
+                f"Cannot cancel invoice {invoice.series}/{invoice.number} dated "
+                f"{invoice.invoice_date:%d-%b-%Y}: it was reported in an earlier GST "
+                "period, so cancelling it means issuing a credit note under CGST Act "
+                f"§34, and the time limit for that was {deadline:%d-%b-%Y} (30 November "
+                "after the end of the invoice's financial year). A credit note issued "
+                "now cannot reduce your GST liability. Please consult your CA before "
+                "making any adjustment.",
+                title="Credit-note time limit (§34) has passed",
+            )
+    reversal_date = max(cancel_date_ist, invoice.invoice_date)
+
+    # Reverse ALL sales-GL vouchers (usually one; duplicates from a pre-#190
+    # race are all reversed) and the COGS voucher if present.
+    reversals = accounting_service.reverse_sales_invoice_gl(
+        session,
+        invoice=invoice,
+        reason=reason,
+        posted_by=cancelled_by,
+        voucher_date=reversal_date,
+    )
+    cogs_reversal = accounting_service.reverse_cogs_sale_gl(
+        session,
+        invoice=invoice,
+        reason=reason,
+        posted_by=cancelled_by,
+        voucher_date=reversal_date,
+    )
+
+    # Restore stock relieved at finalize (direct invoices only — DC-linked is
+    # blocked above). Keeps GL-1300 (restored by the COGS reversal) and the
+    # physical stock position moving together.
+    _restore_stock_for_cancel(session, invoice=invoice, org_id=org_id, txn_date=reversal_date)
+
+    before_status = invoice.lifecycle_status.value
+    invoice.lifecycle_status = InvoiceLifecycleStatus.CANCELLED
+    invoice.status = VoucherStatus.VOIDED
+    invoice.cancelled_at = now
+    invoice.cancel_reason = reason
+    invoice.updated_at = now
+    if cancelled_by is not None:
+        invoice.updated_by = cancelled_by
+
+    reversal_ids = [str(v.voucher_id) for v in reversals]
+    if cogs_reversal is not None:
+        reversal_ids.append(str(cogs_reversal.voucher_id))
+
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=invoice.firm_id,
+        user_id=cancelled_by,
+        entity_type="sales.invoice",
+        entity_id=invoice.sales_invoice_id,
+        action="cancel",
+        changes={
+            "before": {"lifecycle_status": before_status},
+            "after": {
+                "lifecycle_status": InvoiceLifecycleStatus.CANCELLED.value,
+                "cancelled_at": now.isoformat(),
+                "cancel_reason": reason,
+                "reversal_voucher_ids": reversal_ids,
+                "reversal_date": reversal_date.isoformat(),
+                "gst_treatment": (
+                    "CREDIT_NOTE_S34" if cross_period else "SAME_PERIOD_CANCELLATION"
+                ),
+            },
+        },
+    )
+    session.flush()
+
+    dashboard_service.invalidate_firm(invoice.firm_id)
+    return invoice
+
+
+def _restore_stock_for_cancel(
+    session: Session,
+    *,
+    invoice: SalesInvoice,
+    org_id: uuid.UUID,
+    txn_date: datetime.date,
+) -> None:
+    """Add back the stock relieved at finalize for a direct invoice.
+
+    Reads the outbound ``stock_ledger`` rows written by ``_post_cogs_for_invoice``
+    (reference_type='sales_invoice') and posts a matching inbound move per row
+    at the same unit_cost, so the weighted-average position value is restored
+    exactly. No-op when nothing was relieved (services-only invoice).
+    """
+    out_rows = list(
+        session.execute(
+            select(StockLedger).where(
+                StockLedger.org_id == org_id,
+                StockLedger.reference_type == "sales_invoice",
+                StockLedger.reference_id == invoice.sales_invoice_id,
+                StockLedger.qty_out > 0,
+            )
+        ).scalars()
+    )
+    for row in out_rows:
+        inventory_service.add_stock(
+            session,
+            org_id=org_id,
+            firm_id=invoice.firm_id,
+            item_id=row.item_id,
+            location_id=row.location_id,
+            qty=Decimal(row.qty_out or 0),
+            unit_cost=Decimal(row.unit_cost) if row.unit_cost is not None else Decimal("0"),
+            lot_id=row.lot_id,
+            reference_type="sales_invoice_cancel",
+            reference_id=invoice.sales_invoice_id,
+            txn_date=txn_date,
+        )
 
 
 def _post_cogs_for_invoice(
@@ -1315,11 +1651,87 @@ def _post_cogs_for_invoice(
         reference_id=invoice.sales_invoice_id,
         consumed=consumed,
         posted_by=updated_by,
+        voucher_date=invoice.invoice_date,
+    )
+
+
+def _post_cogs_for_dc_invoice(
+    session: Session,
+    *,
+    invoice: SalesInvoice,
+    org_id: uuid.UUID,
+    updated_by: uuid.UUID | None,
+) -> None:
+    """Post COGS for a DC-linked invoice at finalize (#198 Part 2).
+
+    Stock was already relieved when the DC was issued (``issue_dc``), so we
+    do NOT decrement stock again — we read the DC's outbound StockLedger rows
+    to recover the cost basis and post a single COGS_SALE voucher referencing
+    the INVOICE (DR 5000 / CR 1300, at the DC's weighted-average cost, dated
+    invoice_date).
+
+    Guard: if another non-deleted invoice already links to this DC, refuse —
+    two invoices sharing one DC would double-count the DC's cost.
+    """
+    dc_id = invoice.delivery_challan_id
+    if dc_id is None:  # pragma: no cover — caller only routes DC-linked here.
+        return
+
+    # Guard against two invoices sharing one DC (would double-count COGS):
+    # refuse if another already-FINALIZED invoice claims this DC. Two DRAFTs
+    # may coexist; the first to finalize wins, the second is rejected here.
+    other = session.execute(
+        select(SalesInvoice.sales_invoice_id).where(
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.delivery_challan_id == dc_id,
+            SalesInvoice.sales_invoice_id != invoice.sales_invoice_id,
+            SalesInvoice.lifecycle_status != InvoiceLifecycleStatus.DRAFT,
+            SalesInvoice.deleted_at.is_(None),
+        )
+    ).first()
+    if other is not None:
+        raise InvoiceStateError(
+            f"Delivery challan {dc_id} is already linked to a finalized invoice; "
+            "cannot post COGS twice for the same dispatch.",
+            title="Invoice already finalized",
+        )
+
+    # Recover the cost basis from the DC's outbound stock movements.
+    out_rows = list(
+        session.execute(
+            select(StockLedger).where(
+                StockLedger.org_id == org_id,
+                StockLedger.reference_type == "DC",
+                StockLedger.reference_id == dc_id,
+                StockLedger.qty_out > 0,
+            )
+        ).scalars()
+    )
+    consumed: list[tuple[uuid.UUID, Decimal, Decimal]] = [
+        (
+            row.item_id,
+            Decimal(row.qty_out or 0),
+            Decimal(row.unit_cost) if row.unit_cost is not None else Decimal("0"),
+        )
+        for row in out_rows
+    ]
+
+    accounting_service.post_cogs_voucher(
+        session,
+        org_id=org_id,
+        firm_id=invoice.firm_id,
+        series=invoice.series,
+        reference_type="sales_invoice",
+        reference_id=invoice.sales_invoice_id,
+        consumed=consumed,
+        posted_by=updated_by,
+        voucher_date=invoice.invoice_date,
     )
 
 
 __all__ = [
     "DEFAULT_INVOICE_SERIES",
+    "cancel_invoice",
     "cancel_so",
     "confirm_so",
     "create_dc",

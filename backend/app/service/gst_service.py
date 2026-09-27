@@ -26,12 +26,24 @@ Reference: specs/place-of-supply-tests.md
 
 from __future__ import annotations
 
+import datetime
 import enum
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 
 from app.exceptions import AppValidationError
 from app.utils.gst_states import normalize_state_code
+
+# ── Money rounding (single source of truth for all GST math) ────────────────
+# TWOPLACES = paise precision. GST_ROUNDING is made EXPLICIT here (finding
+# P3-4: the default Decimal-context ROUND_HALF_EVEN was undocumented). It is
+# applied uniformly to per-line GST, the CGST/SGST halves, and IGST so every
+# path rounds the same way.
+# CA-VALIDATED-PENDING (#195, decision 2): keep ROUND_HALF_EVEN for this PR;
+# a switch to ROUND_HALF_UP (common in Indian tax software) is a one-line
+# change here once the CA rules — do NOT scatter rounding modes elsewhere.
+TWOPLACES = Decimal("0.01")
+GST_ROUNDING = ROUND_HALF_EVEN
 
 
 class TaxType(enum.StrEnum):
@@ -67,7 +79,73 @@ class BuyerStatus(enum.StrEnum):
     EOU = "EOU"
 
 
-B2C_INTER_STATE_THRESHOLD = Decimal("250000")  # ₹2.5L per §10(1)(d) — GSTR-1 bucket only
+# ── GSTR-1 Table 5 (B2CL) threshold — date-dependent ─────────────────────
+# B2CL = inter-state B2C invoice whose invoice value is STRICTLY GREATER THAN
+# the threshold. Notification 12/2024-Central Tax (10-Jul-2024) lowered it
+# from ₹2,50,000 to ₹1,00,000 w.e.f. 01-Aug-2024. This is a reporting bucket
+# only — it never changes tax_type or tax amounts (inter-state is always
+# IGST). Always resolve it via `b2cl_threshold(invoice_date)` so each
+# invoice is classified by the law in force on its own date.
+B2CL_THRESHOLD_BEFORE_AUG_2024 = Decimal("250000")
+B2CL_THRESHOLD_FROM_AUG_2024 = Decimal("100000")
+B2CL_THRESHOLD_CUTOVER_DATE = datetime.date(2024, 8, 1)
+
+
+def b2cl_threshold(invoice_date: datetime.date | None) -> Decimal:
+    """GSTR-1 B2CL invoice-value threshold in force on *invoice_date*.
+
+    ₹2,50,000 before 2024-08-01; ₹1,00,000 on or after (Notification
+    12/2024-CT). ``None`` (date unknown — only pure-engine callers that
+    don't care about the reporting bucket) resolves to the CURRENT law.
+    """
+    if invoice_date is not None and invoice_date < B2CL_THRESHOLD_CUTOVER_DATE:
+        return B2CL_THRESHOLD_BEFORE_AUG_2024
+    return B2CL_THRESHOLD_FROM_AUG_2024
+
+
+def is_b2cl_value(invoice_value: Decimal, invoice_date: datetime.date | None) -> bool:
+    """True iff an inter-state B2C invoice of *invoice_value* (total incl.
+    tax) dated *invoice_date* belongs in GSTR-1 B2CL (strictly greater)."""
+    return invoice_value > b2cl_threshold(invoice_date)
+
+
+# ── GST tax periods (Asia/Kolkata) + §34 credit-note time limit ───────────
+# GST return periods are calendar months in India Standard Time. IST is a
+# fixed UTC+05:30 (no DST), so a fixed offset is exact and avoids a tzdata
+# dependency on slim runtime images.
+GST_PERIOD_TZ = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
+
+
+def gst_local_date(ts: datetime.datetime) -> datetime.date:
+    """Calendar date of *ts* in Asia/Kolkata (the GST period timezone).
+
+    A naive *ts* is treated as UTC (the storage convention)."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=datetime.UTC)
+    return ts.astimezone(GST_PERIOD_TZ).date()
+
+
+def gst_period(d: datetime.date) -> tuple[int, int]:
+    """(year, month) GST return period that *d* falls in."""
+    return (d.year, d.month)
+
+
+def is_later_gst_period(d: datetime.date, than: datetime.date) -> bool:
+    """True iff *d* falls in a GST period strictly after *than*'s period."""
+    return gst_period(d) > gst_period(than)
+
+
+def credit_note_deadline(invoice_date: datetime.date) -> datetime.date:
+    """Last day a §34 credit note against an invoice dated *invoice_date* can
+    be declared: 30 November following the end of the invoice's financial
+    year (April-March). CGST Act §34(2) as amended by Finance Act 2022.
+
+    The alternative "date of filing the annual return, if earlier" limb is
+    NOT tracked (no annual-return date in the system) — see #199 retro.
+    """
+    fy_end_year = invoice_date.year + 1 if invoice_date.month >= 4 else invoice_date.year
+    return datetime.date(fy_end_year, 11, 30)
+
 
 # ── GST rate slab allow-list ───────────────────────────────────────────────
 # Statutory ad-valorem GST rates per the GST Council rate schedule.
@@ -105,8 +183,9 @@ class PlaceOfSupply:
     # can group invoices without re-deriving from buyer/value at filing
     # time. Possible values:
     #   "B2B"    — registered buyer (intra OR inter state); invoice-wise
-    #   "B2CL"   — inter-state B2C with invoice value > ₹2.5L; invoice-wise
-    #   "B2CS"   — B2C consolidated (intra-state, or inter-state ≤ ₹2.5L)
+    #   "B2CL"   — inter-state B2C with invoice value > b2cl_threshold(date)
+    #              (₹2.5L before 01-Aug-2024, ₹1L from then); invoice-wise
+    #   "B2CS"   — B2C consolidated (intra-state, or inter-state ≤ threshold)
     #   "EXPORT" — SEZ / EXPORT / EOU
     #   "NIL"    — non-supply / NIL_LUT
     gstr1_section: str = "B2B"
@@ -126,6 +205,8 @@ def determine_place_of_supply(
     ship_to_state: str | None = None,
     invoice_value: Decimal = Decimal("0"),
     lut_active: bool = False,
+    seller_has_gst: bool = True,
+    invoice_date: datetime.date | None = None,
 ) -> PlaceOfSupply:
     """Return the (tax_type, pos_state, document_type) decision for one
     sales-invoice header.
@@ -135,6 +216,9 @@ def determine_place_of_supply(
     the safe fallback for unhandled combinations (caller can refuse to
     save the invoice if it sees the fallback when it expected a real
     tax type).
+
+    ``invoice_date`` only selects the GSTR-1 B2CL threshold (see
+    ``b2cl_threshold``); ``None`` means the current threshold.
     """
     # GST-1/B1: canonicalise every state input before any comparison so the
     # intra-vs-inter equality below is format-agnostic. The codebase stores
@@ -149,6 +233,24 @@ def determine_place_of_supply(
     seller_state = normalize_state_code(seller_state) or seller_state
     buyer_state = normalize_state_code(buyer_state)
     ship_to_state = normalize_state_code(ship_to_state)
+
+    # 0) Non-GST seller (#194). A firm that is not GST-registered
+    # (`firm.has_gst = false` — no GSTIN to remit tax under) can only
+    # issue a Bill of Supply, which carries NO tax regardless of the
+    # buyer's state or status. This check runs FIRST so a non-registered
+    # seller can never fall through to CGST_SGST / IGST (nor to the
+    # branch-transfer / SEZ / export branches, none of which can apply
+    # without a seller GSTIN). tax_type NIL joins the NIL family that
+    # sales_service already forces to zero GST (#193), keeping the books
+    # (no CR 2100) in step with a legally-coherent zero-tax document.
+    # pos_state is recorded informationally when a destination is known.
+    if not seller_has_gst:
+        return PlaceOfSupply(
+            tax_type=TaxType.NIL,
+            pos_state=ship_to_state or buyer_state,
+            document_type=DocumentType.BILL_OF_SUPPLY,
+            gstr1_section="NIL",
+        )
 
     # 1) Same-GSTIN branch transfer — not a supply (Scenario 22).
     if seller_gstin is not None and buyer_gstin is not None and seller_gstin == buyer_gstin:
@@ -185,10 +287,21 @@ def determine_place_of_supply(
         )
 
     # 3) Default: PoS = ship_to_state, falling back to buyer_state.
+    is_b2c_unregistered = buyer_status in {BuyerStatus.CONSUMER, BuyerStatus.UNREGISTERED}
     pos = ship_to_state or buyer_state
+    if pos is None and is_b2c_unregistered and seller_state:
+        # #193 CA-review correction — IGST Act §10(1)(ca): for goods supplied
+        # to an UNREGISTERED person, the place of supply is the address
+        # recorded on the invoice or, when no address is recorded, the
+        # LOCATION OF THE SUPPLIER. No recorded state ⇒ PoS = seller's
+        # state ⇒ intra-state CGST+SGST (B2CS under the seller's state).
+        # Previously this fell through to NIL_NOT_A_SUPPLY and charged ₹0.
+        pos = seller_state
     if pos is None:
-        # No usable destination — refuse to charge tax. Caller should
-        # surface this as a validation error before saving the invoice.
+        # No usable destination — refuse to charge tax. Reached only for a
+        # REGISTERED buyer with no state (the §10(1)(ca) fallback above
+        # covers unregistered buyers) or a seller with no state. Caller
+        # should surface this as a validation error before saving.
         return PlaceOfSupply(
             tax_type=TaxType.NIL_NOT_A_SUPPLY,
             pos_state=None,
@@ -198,16 +311,16 @@ def determine_place_of_supply(
 
     # 4) Geography-based tax_type — Scenarios 1, 2, 4, 5, 6, 7, 21.
     # INT-11 fix (P2-1): inter-state is ALWAYS IGST regardless of value.
-    # The ₹2.5L threshold is only a GSTR-1 reporting bucket (B2CL vs
-    # B2CS), which is computed below — NOT a tax_type flip.
-    is_b2c_unregistered = buyer_status in {BuyerStatus.CONSUMER, BuyerStatus.UNREGISTERED}
+    # The B2CL value threshold (b2cl_threshold: ₹2.5L → ₹1L from
+    # 01-Aug-2024) is only a GSTR-1 reporting bucket (B2CL vs B2CS),
+    # computed below — NOT a tax_type flip.
     is_inter_state = pos != seller_state
 
     if is_inter_state:
         tax_type = TaxType.IGST
         pos_state = pos
         if is_b2c_unregistered:
-            section = "B2CL" if invoice_value > B2C_INTER_STATE_THRESHOLD else "B2CS"
+            section = "B2CL" if is_b2cl_value(invoice_value, invoice_date) else "B2CS"
         else:
             section = "B2B"
     else:
@@ -225,10 +338,13 @@ def determine_place_of_supply(
 
 @dataclass(frozen=True)
 class GstSplit:
-    """Money split per line. Sum of components equals total tax.
+    """Money split per line/group.
 
-    For CGST_SGST, `cgst` and `sgst` are equal halves. For IGST, the full
-    amount sits on `igst`. For NIL_* and NIL, every component is zero.
+    For CGST_SGST, `cgst` and `sgst` are EQUAL halves (#195). For IGST, the
+    full amount sits on `igst`. For NIL_* and NIL, every component is zero.
+    When produced by `compute_line_gst` the components sum exactly to the
+    line tax; when produced by `split_tax` on a legacy odd-paise total the
+    equal halves may differ from that total by ≤1 paisa (see `split_tax`).
     """
 
     cgst: Decimal
@@ -236,17 +352,64 @@ class GstSplit:
     igst: Decimal
 
 
-def split_tax(*, tax_type: TaxType, gst_amount: Decimal) -> GstSplit:
-    """Split `gst_amount` between CGST/SGST/IGST per the tax_type.
+def compute_line_gst(*, line_amount: Decimal, gst_rate: Decimal, tax_type: TaxType) -> GstSplit:
+    """Statutory per-line GST split — the single source of truth (#195).
 
-    Halves are computed via `quantize(Decimal('0.01'))` so the split
-    sums exactly to the input even when the input is odd-paise.
+    The GSTN portal validates CGST and SGST *independently*, each as
+    ``round(taxable x rate / 2)`` — NOT as a halved full-rate total (which
+    dumped the odd paisa onto CGST and made CGST ≠ SGST). This helper
+    computes each component directly from the taxable amount so the two
+    halves are always exactly equal and the line total is always even to
+    the paisa.
+
+      - CGST_SGST: cgst = sgst = quantize(line_amount x rate / 200); the
+        line's gst_amount is ``cgst + sgst`` (always even).
+      - IGST: igst = quantize(line_amount x rate / 100); cgst = sgst = 0.
+      - NIL / NIL_LUT / NIL_NOT_A_SUPPLY: every component is zero (a
+        zero-rated / not-a-supply line carries value but no tax — #193).
+
+    Rounding uses the explicit module constant GST_ROUNDING (decision 2,
+    #195). ``line_amount`` and ``gst_rate`` must be non-negative; a
+    negative line has no meaning here (use a credit note to reverse tax).
+    """
+    if line_amount < Decimal("0"):
+        raise AppValidationError(
+            f"line_amount cannot be negative (got {line_amount}); "
+            "use a credit note to reverse a prior sale"
+        )
+    if gst_rate < Decimal("0"):
+        raise AppValidationError(f"gst_rate cannot be negative (got {gst_rate})")
+
+    if tax_type == TaxType.IGST:
+        igst = (line_amount * gst_rate / Decimal("100")).quantize(TWOPLACES, GST_ROUNDING)
+        return GstSplit(cgst=Decimal("0.00"), sgst=Decimal("0.00"), igst=igst)
+    if tax_type == TaxType.CGST_SGST:
+        half = (line_amount * gst_rate / Decimal("200")).quantize(TWOPLACES, GST_ROUNDING)
+        return GstSplit(cgst=half, sgst=half, igst=Decimal("0.00"))
+    # NIL family: zero-rated / not-a-supply — no tax.
+    return GstSplit(cgst=Decimal("0.00"), sgst=Decimal("0.00"), igst=Decimal("0.00"))
+
+
+def split_tax(*, tax_type: TaxType, gst_amount: Decimal) -> GstSplit:
+    """Split an ALREADY-COMPUTED ``gst_amount`` between CGST/SGST/IGST.
+
+    Used by the PDF renderer and GSTR-1 to split a per-line / per-group
+    total tax back into components. For CGST_SGST the halves are EQUAL:
+    ``cgst = sgst = quantize(gst_amount / 2, GST_ROUNDING)`` (#195). The
+    write path now produces even per-line totals via ``compute_line_gst``,
+    so for all post-fix rows the two halves sum back to the input exactly.
+
+    LEGACY behaviour (deliberate): a pre-#195 FINALIZED line may carry an
+    odd-paise ``gst_amount`` (e.g. 11.67) whose GL voucher is already
+    posted. Splitting it here yields equal halves (5.84 / 5.84 → sum 11.68,
+    or 5.83 / 5.83 → sum 11.66) that can differ from the stored total by ≤1
+    paisa. That is intentional: the return must show CGST == SGST; the
+    paisa remains in the GL until the row is repaired (see
+    scripts/repair_gst_line_amounts.py). Do NOT "fix" this by dumping the
+    remainder on one side — that re-introduces CGST ≠ SGST.
 
     Raises `AppValidationError` if `gst_amount` is negative — tax can never
     be negative (GST-7 fix).
-
-    Both cgst and sgst are re-quantized to 2dp to prevent sub-paise
-    remainder when the input itself has more than 2 decimal places (GST-7).
     """
     if gst_amount < Decimal("0"):
         raise AppValidationError(
@@ -256,23 +419,27 @@ def split_tax(*, tax_type: TaxType, gst_amount: Decimal) -> GstSplit:
     if tax_type == TaxType.IGST:
         return GstSplit(cgst=Decimal("0"), sgst=Decimal("0"), igst=gst_amount)
     if tax_type == TaxType.CGST_SGST:
-        half = (gst_amount / 2).quantize(Decimal("0.01"))
-        # Re-quantize sgst so a 3-dp input (e.g. 100.005) doesn't leak
-        # sub-paise into the DB (GST-7: sgst = 100.005 - 50.00 = 50.005).
-        sgst = (gst_amount - half).quantize(Decimal("0.01"))
-        return GstSplit(cgst=half, sgst=sgst, igst=Decimal("0"))
+        half = (gst_amount / 2).quantize(TWOPLACES, GST_ROUNDING)
+        return GstSplit(cgst=half, sgst=half, igst=Decimal("0"))
     return GstSplit(cgst=Decimal("0"), sgst=Decimal("0"), igst=Decimal("0"))
 
 
 __all__ = [
-    "B2C_INTER_STATE_THRESHOLD",
+    "B2CL_THRESHOLD_BEFORE_AUG_2024",
+    "B2CL_THRESHOLD_CUTOVER_DATE",
+    "B2CL_THRESHOLD_FROM_AUG_2024",
+    "GST_ROUNDING",
+    "TWOPLACES",
     "VALID_GST_SLAB_RATES",
     "BuyerStatus",
     "DocumentType",
     "GstSplit",
     "PlaceOfSupply",
     "TaxType",
+    "b2cl_threshold",
+    "compute_line_gst",
     "determine_place_of_supply",
+    "is_b2cl_value",
     "is_valid_gst_rate",
     "split_tax",
 ]

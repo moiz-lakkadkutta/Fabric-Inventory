@@ -121,6 +121,14 @@ _SYSTEM_COA_GROUPS: list[tuple[str, str, str]] = [
     ("LIABILITY", "Liabilities", "LIABILITY"),
     ("EQUITY", "Equity", "EQUITY"),
     ("REVENUE", "Revenue", "REVENUE"),
+    # COGS is a distinct P&L section from operating EXPENSE so the P&L can
+    # report gross profit (income minus COGS) separately from net profit
+    # (gross minus expenses). ledger 5000 (Cost of Goods Sold) and 5350
+    # (Inventory Adjustment) live here — see #198. compute_pnl buckets on
+    # CoaGroup.group_type, so without a COGS group `cogs` was always 0 and
+    # 5000/5350 were lumped into EXPENSE (a net stock-adjustment gain then
+    # rendered as a negative expense).
+    ("COGS", "Cost of Goods Sold", "COGS"),
     ("EXPENSE", "Expenses", "EXPENSE"),
 ]
 
@@ -146,6 +154,14 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     # "TAX","LIABILITY". is_control=False; postings hit this ledger directly.
     ("1400", "ITC Receivable (Input GST)", "TAX", "ASSET", False),
     ("2000", "Sundry Creditors (AP)", "PAYABLE", "LIABILITY", True),
+    # #203: GRN Clearing (GRNI) — the goods-received-not-invoiced accrual.
+    # Credited at GRN receipt (DR 1300 Inventory / CR 2010) so received-but-
+    # unbilled stock shows on the Balance Sheet as both an asset and a
+    # liability; the accrual is cleared when the matching Purchase Invoice
+    # posts (DR 2010 / DR-or-CR 5360 PPV / DR 1400 ITC / CR 2000 AP). A
+    # LIABILITY (like AP) but NOT a control account — postings hit it
+    # directly, no per-supplier sub-ledger.
+    ("2010", "GRN Clearing (GRNI)", "PAYABLE", "LIABILITY", False),
     ("2100", "GST Payable", "TAX", "LIABILITY", False),
     ("2200", "TDS Payable", "TAX", "LIABILITY", False),
     # E2 (BL-01): Customer Advances — liability for money received from customers
@@ -163,7 +179,7 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     ("3200", "Opening Balance Difference", "EQUITY", "EQUITY", False),
     ("4000", "Sales Revenue", "REVENUE", "REVENUE", False),
     ("4100", "Other Income", "REVENUE", "REVENUE", False),
-    ("5000", "Cost of Goods Sold", "COGS", "EXPENSE", False),
+    ("5000", "Cost of Goods Sold", "COGS", "COGS", False),
     ("5100", "Salaries & Wages", "EXPENSE", "EXPENSE", False),
     ("5200", "Rent", "EXPENSE", "EXPENSE", False),
     ("5300", "Utilities", "EXPENSE", "EXPENSE", False),
@@ -173,7 +189,15 @@ _SYSTEM_LEDGERS: list[tuple[str, str, str, str, bool]] = [
     # Code 5300 is already "Utilities"; use the next gap in the 5xxx band.
     # DR when adjusting stock UP (write-in / found stock);
     # CR when adjusting stock DOWN (write-down / shrinkage).
-    ("5350", "Inventory Adjustment", "EXPENSE", "EXPENSE", False),
+    ("5350", "Inventory Adjustment", "EXPENSE", "COGS", False),
+    # #203: Purchase Price Variance — the P&L home for the difference between
+    # what a GRN accrued (goods received at the GRN line rate) and what the
+    # matching Purchase Invoice actually bills. Debited when the PI costs more
+    # than the GRN accrued (unfavourable), credited when it costs less
+    # (favourable). Parented under COGS (like 5350) so gross profit reflects
+    # supplier price drift; keeps the drift out of Inventory (1300) valuation,
+    # which stays aligned with the weighted-average cost the GRN already set.
+    ("5360", "Purchase Price Variance", "EXPENSE", "COGS", False),
 ]
 
 
