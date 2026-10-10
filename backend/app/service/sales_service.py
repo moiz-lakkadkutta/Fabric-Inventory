@@ -953,6 +953,34 @@ def _classify_buyer(party: Party) -> BuyerStatus:
     return BuyerStatus.CONSUMER
 
 
+def _refuse_nil_not_a_supply_for_registered_buyer(
+    *, tax_type: str, document_type: str, buyer_gstin: str | None, party: Party
+) -> None:
+    """#215 guard (create_draft_invoice + finalize_invoice).
+
+    NIL_NOT_A_SUPPLY on a TAX_INVOICE is the PoS engine's "no usable
+    destination" fallback. For a GSTIN-bearing buyer that means a B2B sale
+    would go out with ₹0 GST — raise a 422 telling the user how to fix it.
+    The same-GSTIN branch transfer (document_type DELIVERY_CHALLAN) is a
+    legitimate non-supply and is allowed.
+
+    PENDING MOIZ+CA SIGN-OFF.
+    """
+    if tax_type != gst_service.TaxType.NIL_NOT_A_SUPPLY.value:
+        return
+    if document_type == gst_service.DocumentType.DELIVERY_CHALLAN.value:
+        return
+    if not buyer_gstin:
+        return
+    raise AppValidationError(
+        f"Cannot determine the place of supply for party {party.name!r} "
+        f"(GSTIN {buyer_gstin}): the party has no state recorded and the "
+        f"GSTIN prefix {buyer_gstin[:2]!r} is not a valid GST state code, so "
+        "GST would be charged as ₹0. Set the party's state in Masters → Party "
+        "(or correct its GSTIN), or enter a ship-to state on the invoice."
+    )
+
+
 def create_draft_invoice(
     session: Session,
     *,
@@ -1121,6 +1149,18 @@ def create_draft_invoice(
         invoice_date=invoice_date,
     )
 
+    # #215: a GSTIN-bearing (registered) buyer must never be invoiced as
+    # NIL_NOT_A_SUPPLY (₹0 GST) unless it is a same-GSTIN branch transfer
+    # (document_type DELIVERY_CHALLAN). Reached when neither the party, the
+    # invoice's ship-to, nor the GSTIN prefix yields a state (e.g. a legacy
+    # GSTIN starting "99"/"00"). Refuse rather than silently under-charge.
+    _refuse_nil_not_a_supply_for_registered_buyer(
+        tax_type=pos_decision.tax_type.value,
+        document_type=pos_decision.document_type.value,
+        buyer_gstin=buyer_gstin_plain,
+        party=party,
+    )
+
     # #195: SECOND PASS — now that tax_type is known, compute each line's
     # FINAL, statutory GST via gst_service.compute_line_gst. This is the single
     # source of truth: CGST == SGST == round(taxable x rate/200) for intra-state
@@ -1280,6 +1320,30 @@ def finalize_invoice(
             f"Cannot finalize invoice {sales_invoice_id}: status is "
             f"{invoice.lifecycle_status}, expected DRAFT.",
             title="Invoice already finalized",
+        )
+
+    # #215: a draft stored as NIL_NOT_A_SUPPLY for a GSTIN-bearing buyer
+    # (created before the create-time guard existed) must not be finalized
+    # into a ₹0-GST tax invoice. Tax type is fixed at draft time, so this
+    # only needs the stored values + the party's current GSTIN.
+    if invoice.tax_type == gst_service.TaxType.NIL_NOT_A_SUPPLY.value:
+        fin_party = session.execute(
+            select(Party).where(Party.party_id == invoice.party_id, Party.org_id == org_id)
+        ).scalar_one()
+        fin_gstin = (
+            crypto.decrypt_pii(
+                fin_party.gstin,
+                dek=crypto.get_org_dek(session, org_id=org_id),
+                org_id=org_id,
+            )
+            if fin_party.gstin
+            else None
+        )
+        _refuse_nil_not_a_supply_for_registered_buyer(
+            tax_type=invoice.tax_type,
+            document_type=invoice.invoice_type or "",
+            buyer_gstin=fin_gstin,
+            party=fin_party,
         )
 
     # #209: for a DC-linked invoice, lock + re-validate the DC row now —

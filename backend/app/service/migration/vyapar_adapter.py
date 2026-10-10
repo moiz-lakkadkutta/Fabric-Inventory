@@ -52,6 +52,7 @@ import openpyxl
 from openpyxl.utils.exceptions import InvalidFileException
 
 from app.exceptions import AppValidationError
+from app.utils.gst_states import gstin_validation_error
 
 from .intermediate import (
     IntermediateOpeningBalance,
@@ -136,7 +137,6 @@ _PARTY_TYPE_MAP: dict[str, tuple[PartyKind, ...]] = {
 # intentionally permissive — we only need the digits and the optional
 # leading minus + decimal point.
 _RUPEE_NOISE_RE = re.compile(r"[₹,\s]")
-_GSTIN_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[A-Z\d]$")
 
 # OWASP CWE-1236: chars that trigger formula execution when they appear at
 # the start of a spreadsheet cell. We neutralise them in name/code fields
@@ -439,9 +439,11 @@ class VyaparExcelAdapter:
             raw_code = _normalize_str(raw.get("code"))
             code = raw_code if raw_code else _derive_code(name, source_idx)
             gstin = _normalize_str(raw.get("gstin"))
-            # Pre-validate GSTIN format; otherwise the commit-step's
-            # masters_service will reject the row at insert time.
-            if gstin and not _GSTIN_RE.fullmatch(gstin):
+            # Pre-validate GSTIN with the SAME rule as masters_service
+            # (format + state-code prefix, #215); otherwise the commit-step's
+            # create_party would reject the row and abort the whole migration.
+            # validate() emits the matching GSTIN_FORMAT_INVALID warning.
+            if gstin and gstin_validation_error(gstin) is not None:
                 gstin = None
             state_code = _normalize_str(raw.get("state_code"))
             if state_code:
@@ -571,14 +573,16 @@ class VyaparExcelAdapter:
                 warnings += 1
 
             gstin = _normalize_str(raw.get("gstin"))
-            if gstin and not _GSTIN_RE.fullmatch(gstin):
+            gstin_error = gstin_validation_error(gstin) if gstin else None
+            if gstin_error is not None:
                 rows.append(
                     ReconciliationRow(
                         severity="warn",
                         code="GSTIN_FORMAT_INVALID",
                         message=(
-                            f"GSTIN {gstin!r} on row {source_idx} doesn't match the standard "
-                            "15-character format; party will be imported without GSTIN."
+                            f"Row {source_idx}: {gstin_error} The party will be imported "
+                            "without a GSTIN (as unregistered); add the corrected GSTIN "
+                            "in Masters → Party before invoicing."
                         ),
                         source_ref=source_ref,
                     )
