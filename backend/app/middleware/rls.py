@@ -33,6 +33,12 @@ class RLSMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         request.state.org_id = None
+        # Q01-02: principal + active firm for the firm-scope GUC
+        # (`get_db_sync` → `firm_scope_service.apply_user_firm_scope`). Only
+        # ACCESS tokens identify a principal; a refresh token leaves these
+        # unset so the firm scope stays fail-closed.
+        request.state.rls_user_id = None
+        request.state.rls_firm_id = None
         auth_header = request.headers.get("authorization", "")
 
         if auth_header.startswith("Bearer "):
@@ -49,6 +55,10 @@ class RLSMiddleware(BaseHTTPMiddleware):
                 if org_id_raw:
                     # Strict UUID validation — get_db formats this into SET LOCAL.
                     request.state.org_id = str(UUID(str(org_id_raw)))
+                    if claims.get("token_type") == "access" and claims.get("sub"):
+                        request.state.rls_user_id = str(UUID(str(claims["sub"])))
+                        firm_raw = claims.get("firm_id")
+                        request.state.rls_firm_id = str(UUID(str(firm_raw))) if firm_raw else None
             except (jwt.InvalidTokenError, ValueError, TypeError):
                 # Best-effort. Real auth lands TASK-007.
                 pass

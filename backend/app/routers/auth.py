@@ -57,6 +57,7 @@ from app.schemas.auth import (
 from app.service import (
     audit_service,
     feature_flag_service,
+    firm_scope_service,
     identity_service,
     inventory_service,
     password_reset_service,
@@ -224,6 +225,22 @@ def _resolve_org_by_name(session: SyncDBSession, org_name: str) -> Organization 
     return org
 
 
+def _accessible_firms(
+    session: SyncDBSession, *, user_id: uuid.UUID, org_id: uuid.UUID
+) -> list[Firm]:
+    """Q01-02: the firms a user may switch into — every live firm in the org
+    for a holder of an org-wide role, otherwise only the firms they hold a
+    role in (the same rule `/auth/switch-firm` enforces). Feeds login's
+    single-firm auto-select and `available_firms` on login / mfa-verify /
+    `/auth/me`, so a firm-scoped user is never offered a firm they'd be
+    refused."""
+    stmt = select(Firm).where(Firm.org_id == org_id, Firm.deleted_at.is_(None))
+    granted = firm_scope_service.accessible_firm_ids(session, user_id=user_id)
+    if granted is not None:
+        stmt = stmt.where(Firm.firm_id.in_(granted))
+    return list(session.execute(stmt.order_by(Firm.created_at.asc())).scalars())
+
+
 def _make_firm_code(firm_name: str) -> str:
     """Auto-generate a firm code from the name. Uppercase alphanumerics,
     truncated to 10 chars (the DDL `firm.code` length limit). Adds a UUID
@@ -285,6 +302,10 @@ def signup(
 
     new_org_id = uuid.uuid4()
     db.execute(text(f"SET LOCAL app.current_org_id = '{new_org_id}'"))
+    # Q01-02: signup is a SYSTEM context — no principal exists yet, and the
+    # bootstrap seeds firm-scoped rows (default location, …) for the firm it
+    # creates. The new org owns nothing else, so '*' widens nothing.
+    firm_scope_service.apply_system_firm_scope(db)
 
     # TASK-TR-SEC1: every org owns a Data Encryption Key, minted here
     # and wrapped with the master KEK before INSERT. Same row format
@@ -550,13 +571,7 @@ def login(
     # same shape and the FE doesn't need a follow-up round-trip. Owners
     # (org-wide roles) see every firm in their org; that's the typical
     # dogfood + early-customer shape.
-    firms = list(
-        db.execute(
-            select(Firm)
-            .where(Firm.org_id == user.org_id, Firm.deleted_at.is_(None))
-            .order_by(Firm.created_at.asc())
-        ).scalars()
-    )
+    firms = _accessible_firms(db, user_id=user.user_id, org_id=user.org_id)
     auto_firm_id = firms[0].firm_id if len(firms) == 1 else None
 
     pair = identity_service.issue_tokens(db, user=user, firm_id=auto_firm_id)
@@ -673,13 +688,7 @@ def mfa_verify(
 
     # #208 (D3): single-firm auto-select, identical to the login handler, so
     # an MFA user isn't dead-ended on "No active firm" after every login.
-    firms = list(
-        db.execute(
-            select(Firm)
-            .where(Firm.org_id == user.org_id, Firm.deleted_at.is_(None))
-            .order_by(Firm.created_at.asc())
-        ).scalars()
-    )
+    firms = _accessible_firms(db, user_id=user.user_id, org_id=user.org_id)
     auto_firm_id = firms[0].firm_id if len(firms) == 1 else None
 
     pair = identity_service.issue_tokens(db, user=user, firm_id=auto_firm_id)
@@ -1179,17 +1188,11 @@ def me(current_user: CurrentUser, db: SyncDBSession) -> MeResponse:
         if current_user.firm_id is not None
         else {}
     )
-    # Available firms — Owners (org-wide roles) see every firm in their
-    # org; non-Owner refinement (UserFirmScope filtering) lands when
-    # other roles actually need it. For dogfood + early friendly-customer
-    # this matches the typical "one Owner per org" shape.
-    firms = list(
-        db.execute(
-            select(Firm)
-            .where(Firm.org_id == current_user.org_id, Firm.deleted_at.is_(None))
-            .order_by(Firm.created_at.asc())
-        ).scalars()
-    )
+    # Available firms (Q01-02): org-wide role holders see every firm in the
+    # org; firm-scoped users only the firms they hold a role in. The unused
+    # `user_firm_scope` table is NOT consulted — `user_role.firm_id` is the
+    # one source of firm grants.
+    firms = _accessible_firms(db, user_id=current_user.user_id, org_id=current_user.org_id)
     # Email lookup — CUT-004: the FE topbar / user menu reads identity
     # from /auth/me. JWT carries user_id only; email lives in app_user.
     user_row = db.execute(
