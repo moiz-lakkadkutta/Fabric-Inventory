@@ -1619,7 +1619,9 @@ def _tax_type_for_invoice(*, raw_tax_type: str | None) -> TaxType:
         return TaxType.NIL
 
 
-def _reported_pos(pos_state: str | None, raw_tax_type: str | None, seller_state: str) -> str | None:
+def _reported_pos(
+    pos_state: str | None, raw_tax_type: str | None, seller_state: str, *, bucket: str
+) -> str | None:
     """Place of supply printed on a B2B / B2CL / export / CDN row.
 
     The invoice's recorded PoS, unchanged — EXCEPT the pre-#215 ₹0 fallback
@@ -1631,8 +1633,15 @@ def _reported_pos(pos_state: str | None, raw_tax_type: str | None, seller_state:
     Its tax is ₹0 (``split_tax`` of a NIL type) — reported with ₹0 tax
     because the original invoice was mis-priced (pre-#215); CA to confirm,
     and the firm should amend. PENDING MOIZ + CA SIGN-OFF.
+
+    The fallback applies only to domestic rows (b2b / b2cl): an export / SEZ
+    row's PoS is a foreign / SEZ destination and is never relabelled.
     """
-    if pos_state is None and raw_tax_type == TaxType.NIL_NOT_A_SUPPLY.value:
+    if (
+        bucket in ("b2b", "b2cl")
+        and pos_state is None
+        and raw_tax_type == TaxType.NIL_NOT_A_SUPPLY.value
+    ):
         return seller_state or None
     return pos_state
 
@@ -1852,7 +1861,9 @@ def compute_gstr1(
             party_id=r.party_id,
             party_name=r.party_name,
             gstin=gstin_str,
-            place_of_supply_state=_reported_pos(r.place_of_supply_state, r.tax_type, seller_state),
+            place_of_supply_state=_reported_pos(
+                r.place_of_supply_state, r.tax_type, seller_state, bucket=bucket
+            ),
             invoice_value=invoice_total,  # header total, repeated per rate row
             taxable_value=taxable_value,
             gst_rate=rate,
@@ -2010,7 +2021,9 @@ def compute_gstr1(
             party_id=r.party_id,
             party_name=r.party_name,
             gstin=note_gstin,
-            place_of_supply_state=_reported_pos(r.place_of_supply_state, r.tax_type, seller_state),
+            place_of_supply_state=_reported_pos(
+                r.place_of_supply_state, r.tax_type, seller_state, bucket=bucket
+            ),
             note_value=Decimal(r.invoice_amount or 0),
             taxable_value=taxable_value,
             gst_rate=rate,

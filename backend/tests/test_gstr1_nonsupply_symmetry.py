@@ -472,3 +472,16 @@ def test_unknown_tax_type_fails_toward_reporting() -> None:
         assert accounting_service.is_gstr1_reportable_supply(
             invoice_type=invoice_type, tax_type="FUTURE_TAX"
         )
+
+
+@pytest.mark.parametrize(
+    ("bucket", "expected"),
+    [("b2b", "MH"), ("b2cl", "MH"), ("export", None)],
+)
+def test_reported_pos_firm_state_fallback_only_on_domestic_rows(
+    bucket: str, expected: str | None
+) -> None:
+    """Verifier concern: the firm-state PoS fallback must never relabel an
+    export / SEZ row (its PoS is a foreign / SEZ destination, not the firm)."""
+    got = reports_service._reported_pos(None, "NIL_NOT_A_SUPPLY", "MH", bucket=bucket)
+    assert got == expected
