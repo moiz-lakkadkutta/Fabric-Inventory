@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-27
 **Branch:** task/097-bank-ob-regression
-**Commit:** (filled at merge)
+**Commit:** `8cfc493` (merged to main via #218, 2026-09-27)
 
 ## Summary
 
