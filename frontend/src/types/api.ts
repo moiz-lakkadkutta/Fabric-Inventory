@@ -7952,6 +7952,11 @@ export interface components {
         SalesInvoiceCreateRequest: {
             /** Bill To Address */
             bill_to_address?: string | null;
+            /**
+             * Delivery Challan Id
+             * @description Bill an ISSUED/ACKNOWLEDGED delivery challan (DEBT-02). Same firm + customer; the stockable lines must bill exactly the challan's items and quantities (SERVICE lines such as freight may be added). A challan can be held by only one live invoice; cancelling it frees the challan. Finalize then posts COGS from the challan's dispatch without relieving stock a second time.
+             */
+            delivery_challan_id?: string | null;
             /** Due Date */
             due_date?: string | null;
             /**

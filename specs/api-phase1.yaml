@@ -682,6 +682,12 @@ components:
           type: string
           format: uuid
           nullable: true
+          description: >-
+            Delivery challan this invoice bills (DEBT-02). One invoice bills
+            one challan; a challan is held by at most one live invoice
+            (DRAFT included; cancelling frees it). On finalize the invoice
+            posts COGS from the challan's dispatch and does not relieve stock
+            a second time.
         tax_regime:
           type: string
           enum:
@@ -4260,6 +4266,14 @@ paths:
             line_amount or invoice total exceeding the ₹1e9 ceiling — even
             when each qty/price passes its own 1e9 cap — is rejected here
             (VALIDATION_ERROR) rather than overflowing NUMERIC(18,2) into 500.
+            DEBT-02 / #209 — `delivery_challan_id` bills a delivery challan and
+            is rejected when: the challan is unknown / deleted, belongs to a
+            different firm or customer, is not ISSUED/ACKNOWLEDGED (e.g. still
+            DRAFT), is already held by another live (non-cancelled) invoice —
+            including one created concurrently — or the invoice's stockable
+            lines don't bill exactly the challan's items and quantities
+            (SERVICE lines such as freight may be added; partial billing of a
+            challan is not supported).
           content:
             application/json:
               schema:
@@ -4354,11 +4368,14 @@ paths:
     post:
       summary: Cancel a finalized invoice (posts a reversing GL voucher)
       description: >-
-        Cancels a FINALIZED (unpaid, non-DC-linked) sales invoice. Posts a
+        Cancels a FINALIZED (unpaid) sales invoice. Posts a
         reversing CREDIT_NOTE voucher (and reverses the COGS voucher +
         restores stock when present) so voucher-driven reports (TB, P&L,
         party statement, daybook) stay consistent with status-driven reports
         (GSTR-1, ageing). Idempotent.
+        DC-linked invoices (DEBT-02 / #209): revenue and COGS are reversed
+        but stock is NOT restored — the goods left with the delivery challan.
+        The challan is released and can be billed on a new invoice.
         GST periods (#199, CA-review correction; periods are calendar months
         in Asia/Kolkata): the reversal, COGS reversal and stock restore are
         dated on the cancel date in IST (never before the invoice date). A
@@ -4406,7 +4423,7 @@ paths:
         '409':
           description: >-
             Invoice cannot be cancelled — not finalized, already paid,
-            linked to a delivery challan, or (#199) a cross-period cancel past
+            or (#199) a cross-period cancel past
             the §34 credit-note time limit (30-Nov after the invoice's FY end).
       x-permission: sales.invoice.cancel
 

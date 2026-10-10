@@ -24,6 +24,7 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError, InvoiceStateError, NotFoundError
@@ -45,6 +46,7 @@ from app.service import (
     accounting_service,
     audit_service,
     dashboard_service,
+    dc_invoice_link_service,
     gst_service,
     inventory_service,
 )
@@ -966,6 +968,7 @@ def create_draft_invoice(
     ship_to_address: str | None = None,
     notes: str | None = None,
     created_by: uuid.UUID | None = None,
+    delivery_challan_id: uuid.UUID | None = None,
 ) -> SalesInvoice:
     """Create a DRAFT sales invoice with computed GST split + audit log.
 
@@ -976,6 +979,13 @@ def create_draft_invoice(
 
     Raises `AppValidationError` for missing lines, unknown party / firm
     / item, or a buyer who is flagged as supplier-only.
+
+    DEBT-02 / #209: ``delivery_challan_id`` bills an ISSUED/ACKNOWLEDGED
+    delivery challan. The DC row is locked FOR UPDATE and validated (same
+    firm + party, not billed by another live invoice, stockable lines match
+    the DC's items + quantities) BEFORE the firm row is locked for numbering;
+    see ``dc_invoice_link_service``. Finalize then takes COGS from the DC's
+    stock movements instead of relieving stock again.
     """
     if not lines:
         raise AppValidationError("Sales invoice must have at least one line")
@@ -987,6 +997,16 @@ def create_draft_invoice(
         org_id=org_id,
         item_ids=[line["item_id"] for line in lines],  # type: ignore[misc]
     )
+    if delivery_challan_id is not None:
+        # Lock order: DC row -> firm row (numbering below).
+        dc_invoice_link_service.validate_link_for_create(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=party_id,
+            dc_id=delivery_challan_id,
+            lines=lines,
+        )
 
     firm = session.execute(
         select(Firm).where(Firm.firm_id == firm_id, Firm.org_id == org_id)
@@ -1145,6 +1165,7 @@ def create_draft_invoice(
         series=series,
         number=number,
         party_id=party_id,
+        delivery_challan_id=delivery_challan_id,
         invoice_date=invoice_date,
         bill_to_address=bill_to_address,
         ship_to_address=ship_to_address,
@@ -1162,7 +1183,13 @@ def create_draft_invoice(
         updated_by=created_by,
     )
     session.add(invoice)
-    session.flush()
+    try:
+        session.flush()  # may trip uq_sales_invoice_delivery_challan_live (#209)
+    except IntegrityError as exc:
+        # Backstop for the DC lock: a concurrent link that slipped past it
+        # surfaces as the same 422, never a raw 500.
+        dc_invoice_link_service.translate_link_integrity_error(exc, dc_id=delivery_challan_id)
+        raise
 
     for record in line_records:
         session.add(
@@ -1199,6 +1226,9 @@ def create_draft_invoice(
                 "tax_type": pos_decision.tax_type.value,
                 "place_of_supply_state": stored_pos_state,
                 "lines": len(line_records),
+                "delivery_challan_id": (
+                    str(delivery_challan_id) if delivery_challan_id is not None else None
+                ),
             }
         },
     )
@@ -1251,6 +1281,13 @@ def finalize_invoice(
             f"{invoice.lifecycle_status}, expected DRAFT.",
             title="Invoice already finalized",
         )
+
+    # #209: for a DC-linked invoice, lock + re-validate the DC row now —
+    # BEFORE post_invoice_to_gl locks the firm row for voucher numbering
+    # (lock order invoice -> DC -> firm, same as create_draft_invoice's
+    # DC -> firm), so the "no other live invoice on this DC" check can't race.
+    if invoice.delivery_challan_id is not None:
+        dc_invoice_link_service.revalidate_link_for_finalize(session, invoice=invoice)
 
     before_status = invoice.lifecycle_status.value
     now = datetime.datetime.now(tz=datetime.UTC)
@@ -1363,9 +1400,13 @@ def cancel_invoice(
     Guards (raise InvoiceStateError → 409):
       - not in {FINALIZED, POSTED, OVERDUE} (DRAFT is discarded via other
         flows; a re-cancel of a CANCELLED invoice is an idempotent no-op);
-      - ``paid_amount > 0`` — a receipt was applied; unwind it first;
-      - DC-linked — goods were physically dispatched (v1 scope: use the
-        credit-note / sales-return flow, a follow-up ticket).
+      - ``paid_amount > 0`` — a receipt was applied; unwind it first.
+
+    DC-linked invoices (DEBT-02 / #209) CAN be cancelled: revenue and COGS are
+    reversed but stock is NOT restored — the goods left with the delivery
+    challan and are still with the customer. The DC returns to "dispatched,
+    not billed" (its link is released) and can be invoiced again. Goods that
+    actually come back go through the sales-return flow, not cancel.
 
     ``reason`` is required (spec §7). Idempotent: cancelling an already-
     CANCELLED invoice returns it unchanged (exactly one reversal per
@@ -1414,14 +1455,6 @@ def cancel_invoice(
             title="Invoice cannot be cancelled",
         )
 
-    if invoice.delivery_challan_id is not None:
-        raise InvoiceStateError(
-            f"Cannot cancel invoice {sales_invoice_id}: it is linked to a delivery "
-            "challan (goods were dispatched). Use the sales-return / credit-note "
-            "workflow instead.",
-            title="Invoice cannot be cancelled",
-        )
-
     # #199: GST period of the cancel is its calendar month in IST, not UTC.
     now = now if now is not None else _utcnow()
     cancel_date_ist = gst_service.gst_local_date(now)
@@ -1458,9 +1491,10 @@ def cancel_invoice(
         voucher_date=reversal_date,
     )
 
-    # Restore stock relieved at finalize (direct invoices only — DC-linked is
-    # blocked above). Keeps GL-1300 (restored by the COGS reversal) and the
-    # physical stock position moving together.
+    # Restore stock relieved at finalize (direct invoices only). Keeps GL-1300
+    # (restored by the COGS reversal) and the physical stock position moving
+    # together. A DC-linked invoice relieved nothing at finalize (the DC did),
+    # so this is a no-op for it: the goods stay out with the challan.
     _restore_stock_for_cancel(session, invoice=invoice, org_id=org_id, txn_date=reversal_date)
 
     before_status = invoice.lifecycle_status.value
@@ -1670,31 +1704,15 @@ def _post_cogs_for_dc_invoice(
     the INVOICE (DR 5000 / CR 1300, at the DC's weighted-average cost, dated
     invoice_date).
 
-    Guard: if another non-deleted invoice already links to this DC, refuse —
-    two invoices sharing one DC would double-count the DC's cost.
+    Guard (#209): ``finalize_invoice`` has already locked the DC row and
+    verified no other live invoice bills it
+    (``dc_invoice_link_service.revalidate_link_for_finalize``), backed by the
+    partial unique index ``uq_sales_invoice_delivery_challan_live`` — so the
+    DC's cost can't be posted twice.
     """
     dc_id = invoice.delivery_challan_id
     if dc_id is None:  # pragma: no cover — caller only routes DC-linked here.
         return
-
-    # Guard against two invoices sharing one DC (would double-count COGS):
-    # refuse if another already-FINALIZED invoice claims this DC. Two DRAFTs
-    # may coexist; the first to finalize wins, the second is rejected here.
-    other = session.execute(
-        select(SalesInvoice.sales_invoice_id).where(
-            SalesInvoice.org_id == org_id,
-            SalesInvoice.delivery_challan_id == dc_id,
-            SalesInvoice.sales_invoice_id != invoice.sales_invoice_id,
-            SalesInvoice.lifecycle_status != InvoiceLifecycleStatus.DRAFT,
-            SalesInvoice.deleted_at.is_(None),
-        )
-    ).first()
-    if other is not None:
-        raise InvoiceStateError(
-            f"Delivery challan {dc_id} is already linked to a finalized invoice; "
-            "cannot post COGS twice for the same dispatch.",
-            title="Invoice already finalized",
-        )
 
     # Recover the cost basis from the DC's outbound stock movements.
     out_rows = list(

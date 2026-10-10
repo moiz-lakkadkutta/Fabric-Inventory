@@ -300,6 +300,17 @@ class SalesInvoiceCreateRequest(BaseModel):
     bill_to_address: str | None = None
     ship_to_address: str | None = None
     notes: str | None = None
+    delivery_challan_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "Bill an ISSUED/ACKNOWLEDGED delivery challan (DEBT-02). Same firm + "
+            "customer; the stockable lines must bill exactly the challan's items "
+            "and quantities (SERVICE lines such as freight may be added). A challan "
+            "can be held by only one live invoice; cancelling it frees the challan. "
+            "Finalize then posts COGS from the challan's dispatch without relieving "
+            "stock a second time."
+        ),
+    )
     lines: list[SiLineCreateRequest] = Field(min_length=1)
 
     @field_validator("ship_to_state", mode="before")
