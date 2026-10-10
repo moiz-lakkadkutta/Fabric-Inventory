@@ -1537,8 +1537,27 @@ def _gstr1_invoice_filter() -> Any:
 
 def gstr1_invoice_filter() -> Any:
     """Public alias of the GSTR-1 own-month invoice predicate, for other
-    period reports (dashboard KPIs) that must agree with GSTR-1 (#199)."""
+    period reports (dashboard KPIs) that must agree with GSTR-1 (#199).
+
+    Lifecycle/period only: it does NOT drop non-supplies, so a non-GST
+    firm's Bills of Supply still count as dashboard sales. GSTR-1 itself
+    adds ``accounting_service.gstr1_reportable_supply_clause`` on top
+    (see ``_gstr1_reported_invoice_filter``)."""
     return _gstr1_invoice_filter()
+
+
+def _gstr1_reported_invoice_filter() -> Any:
+    """Invoice-side predicate of GSTR-1 (B2B / B2CL / B2CS / export / HSN):
+    the own-month lifecycle rule AND the document is a reportable supply —
+    the SAME predicate the credit-note side uses (via
+    ``s34_credit_note_clause``), so an invoice is on the invoice side iff a
+    later-month cancel of it is on the note side. A same-GSTIN branch
+    transfer (NIL_NOT_A_SUPPLY) or a Bill of Supply (NIL) is in no section.
+    GATED — PENDING MOIZ + CA SIGN-OFF."""
+    return and_(
+        _gstr1_invoice_filter(),
+        accounting_service.gstr1_reportable_supply_clause(SalesInvoice),
+    )
 
 
 def cross_period_credit_note_invoice_ids(
@@ -1708,7 +1727,7 @@ def compute_gstr1(
             SiLine.deleted_at.is_(None),
             SalesInvoice.invoice_date >= from_date,
             SalesInvoice.invoice_date <= to_date,
-            _gstr1_invoice_filter(),
+            _gstr1_reported_invoice_filter(),
         )
         .group_by(
             SalesInvoice.sales_invoice_id,
@@ -2007,7 +2026,7 @@ def compute_gstr1(
             SiLine.deleted_at.is_(None),
             SalesInvoice.invoice_date >= from_date,
             SalesInvoice.invoice_date <= to_date,
-            _gstr1_invoice_filter(),
+            _gstr1_reported_invoice_filter(),
         )
         # #195: group by hsn + uom + RATE (portal HSN summary is rate-wise);
         # tax_type stays in the key so IGST vs CGST/SGST split honestly across

@@ -1305,11 +1305,55 @@ _S34_INVOICE_TYPE = "TAX_INVOICE"
 _NON_S34_TAX_TYPES = ("NIL", "NIL_NOT_A_SUPPLY")
 
 
-def invoice_supports_s34_note(*, invoice_type: str | None, tax_type: str | None) -> bool:
-    """Conditions 3 + 4 above: the original document can carry a §34 note."""
+# ──────────────────────────────────────────────────────────────────────
+# GSTR-1 symmetry: is this sales document a REPORTABLE SUPPLY?
+#
+# Conditions 3 + 4 of the §34 predicate, factored out as ONE predicate that
+# BOTH sides of GSTR-1 use: the invoice side (B2B / B2CL / B2CS / export /
+# HSN, ``reports_service.compute_gstr1``) and the credit-note side (CDNR /
+# CDNUR / B2CS net-off / HSN net-off, via ``s34_credit_note_clause``). An
+# invoice is reported in its own month iff a later-month cancel of it is
+# reported as a §34 note — the two can no longer diverge.
+#
+# Not reportable (absent from every GSTR-1 section, both sides):
+#   * tax_type NIL_NOT_A_SUPPLY — a same-GSTIN branch transfer is not a
+#     supply (Sch. I para 2 covers DISTINCT persons only). Not reported in
+#     Table 8 (nil / exempt / non-GST) either — PENDING CA confirmation
+#     (CA question 4). GSTR-1 here has no Table 8 / Table 13 sections yet;
+#     if they are added they must reuse this predicate.
+#   * tax_type NIL — a Bill of Supply issued while the firm was not GST-
+#     registered (#194; GSTR-1 itself is refused for a non-GST firm). Only
+#     reaches a GSTR-1 when the firm registers later.
+#   * invoice_type other than TAX_INVOICE (or NULL legacy) — Bill of Supply,
+#     Delivery Challan, Cash Memo, Estimate. The app only ever writes
+#     TAX_INVOICE / BILL_OF_SUPPLY / DELIVERY_CHALLAN (from the PoS engine);
+#     Cash Memo / Estimate exist only as legacy / imported values.
+# NIL_LUT (zero-rated export under LUT) IS a reportable supply.
+# GATED — PENDING MOIZ + CA SIGN-OFF.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def is_gstr1_reportable_supply(*, invoice_type: str | None, tax_type: str | None) -> bool:
+    """Python form: the document is a tax invoice for a supply, reported in
+    GSTR-1 (and therefore able to carry a §34 credit note)."""
     if invoice_type is not None and invoice_type != _S34_INVOICE_TYPE:
         return False
     return tax_type not in _NON_S34_TAX_TYPES
+
+
+def gstr1_reportable_supply_clause(invoice: Any) -> Any:
+    """SQL form of ``is_gstr1_reportable_supply``. ``invoice`` is the
+    SalesInvoice entity or an alias of it."""
+    return and_(
+        or_(invoice.invoice_type.is_(None), invoice.invoice_type == _S34_INVOICE_TYPE),
+        or_(invoice.tax_type.is_(None), invoice.tax_type.not_in(_NON_S34_TAX_TYPES)),
+    )
+
+
+def invoice_supports_s34_note(*, invoice_type: str | None, tax_type: str | None) -> bool:
+    """Conditions 3 + 4 above: the original document can carry a §34 note.
+    Exactly ``is_gstr1_reportable_supply`` (GSTR-1 symmetry)."""
+    return is_gstr1_reportable_supply(invoice_type=invoice_type, tax_type=tax_type)
 
 
 def is_s34_credit_note(
@@ -1335,8 +1379,7 @@ def s34_credit_note_clause(cn: Any, invoice: Any) -> Any:
     return and_(
         not_(cn.series.like(f"{_CXL_SERIES_PREFIX}%")),
         func.date_trunc("month", cn.voucher_date) > func.date_trunc("month", invoice.invoice_date),
-        or_(invoice.invoice_type.is_(None), invoice.invoice_type == _S34_INVOICE_TYPE),
-        or_(invoice.tax_type.is_(None), invoice.tax_type.not_in(_NON_S34_TAX_TYPES)),
+        gstr1_reportable_supply_clause(invoice),
     )
 
 
