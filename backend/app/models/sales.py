@@ -30,6 +30,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
     SmallInteger,
     String,
@@ -363,6 +364,21 @@ class SalesInvoice(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
             "series",
             "number",
             name="sales_invoice_org_id_firm_id_series_number_key",
+        ),
+        # #209 / DEBT-02: a delivery challan is billed by at most ONE live
+        # invoice (DRAFT counts; CANCELLED / DISCARDED / soft-deleted release
+        # it). Mirrors migration 209_dc_invoice_link; the service locks the DC
+        # row first and translates a violation to 422.
+        Index(
+            "uq_sales_invoice_delivery_challan_live",
+            "delivery_challan_id",
+            unique=True,
+            postgresql_where=text(
+                "delivery_challan_id IS NOT NULL AND deleted_at IS NULL AND "
+                "lifecycle_status NOT IN ("
+                "'CANCELLED'::invoice_lifecycle_status, "
+                "'DISCARDED'::invoice_lifecycle_status)"
+            ),
         ),
     )
 

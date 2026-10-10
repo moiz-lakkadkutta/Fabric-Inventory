@@ -636,6 +636,7 @@ def create_invoice(
         ship_to_address=body.ship_to_address,
         notes=body.notes,
         created_by=current_user.user_id,
+        delivery_challan_id=body.delivery_challan_id,
     )
     party_names = sales_service.party_name_map(
         db, org_id=current_user.org_id, party_ids=[invoice.party_id]
