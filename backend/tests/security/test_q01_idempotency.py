@@ -171,3 +171,56 @@ async def test_q01_04_switch_firm_tokens_not_replayable_without_auth(sync_engine
         assert "access_token" not in anon.text, (
             f"anonymous replay received the victim's tokens ({anon.status_code})"
         )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Q01-11: get_db_sync commits AFTER the response is sent (request-scoped yield dep)",
+)
+async def test_q01_11_commit_failure_is_not_acknowledged_or_cached(
+    sync_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FastAPI 0.136 runs request-scoped `yield` teardown after the response
+    is sent, and get_db_sync commits in that teardown. If COMMIT fails
+    (connection drop, DB restart) the client has already been told 201 and
+    the idempotency cache has stored that 201, so the client's retry is
+    'successfully' replayed for a write that was rolled back."""
+    from sqlalchemy.orm import Session
+
+    _ = sync_engine
+    async with q01_client(raise_app_exceptions=False) as client:
+        owner = await signup(client)
+        key = str(uuid.uuid4())
+        body = {"code": "Q01-GHOST", "name": "Rolled back", "is_supplier": True}
+        headers = {**bearer(owner["access_token"]), **idem(key)}
+
+        real_commit = Session.commit
+
+        def _failing_commit(self: Session) -> None:
+            raise RuntimeError("simulated COMMIT failure (connection lost)")
+
+        monkeypatch.setattr(Session, "commit", _failing_commit)
+        try:
+            # raise_app_exceptions=False: observe exactly what a real HTTP
+            # client receives (uvicorn logs the post-send error, client keeps 201).
+            first = await client.post("/parties", headers=headers, json=body)
+        finally:
+            monkeypatch.setattr(Session, "commit", real_commit)
+
+        listed = await client.get(
+            "/parties", params={"limit": 200}, headers=bearer(owner["access_token"])
+        )
+        persisted = any(p["code"] == "Q01-GHOST" for p in listed.json()["items"])
+        assert not persisted  # the write really was rolled back
+        problems = []
+        if first.status_code < 500:
+            problems.append(f"client was told {first.status_code} for a rolled-back write")
+        retry = await client.post("/parties", headers=headers, json=body)
+        again = await client.get(
+            "/parties", params={"limit": 200}, headers=bearer(owner["access_token"])
+        )
+        if retry.status_code == 201 and not any(
+            p["code"] == "Q01-GHOST" for p in again.json()["items"]
+        ):
+            problems.append("retry replayed a cached 201 for a row that does not exist")
+        assert problems == []

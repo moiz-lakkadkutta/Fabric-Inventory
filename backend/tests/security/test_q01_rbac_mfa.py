@@ -152,3 +152,23 @@ async def test_q01_03_owner_without_mfa_cannot_get_a_session(sync_engine: Engine
         assert not resp.json().get("access_token"), (
             "Owner without MFA received an access token from password alone"
         )
+
+
+@pytest.mark.xfail(
+    strict=True, reason="Q01-10: refresh rotation has no row lock — a token can be redeemed twice"
+)
+async def test_q01_10_refresh_token_single_use_under_concurrency(sync_engine: Engine) -> None:
+    """Two concurrent /auth/refresh calls with the SAME refresh token must
+    yield at most one new pair. Today both succeed (SELECT … then UPDATE by
+    PK, no FOR UPDATE / conditional UPDATE), forking the token family."""
+    import asyncio
+
+    _ = sync_engine
+    async with q01_client() as client:
+        owner = await signup(client)
+        rt = owner["refresh_token"]
+        results = await asyncio.gather(
+            *[client.post("/auth/refresh", json={"refresh_token": rt}) for _ in range(4)]
+        )
+        ok = [r for r in results if r.status_code == 200]
+        assert len(ok) <= 1, f"one refresh token redeemed {len(ok)} times"

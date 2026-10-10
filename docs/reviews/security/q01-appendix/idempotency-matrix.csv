@@ -1,0 +1,100 @@
+method,path,key_required,handler_declares_header,cache_key_scope,pre_auth_replay,credential_in_cached_body,concurrent_double_exec_risk,handler
+POST,/auth/signup,EXEMPT(by-design),Y,n/a,n/a,,n/a,app/routers/auth.py:244
+POST,/auth/login,EXEMPT(by-design),Y,n/a,n/a,,n/a,app/routers/auth.py:389
+POST,/auth/mfa-verify,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,access+refresh token in body,dup-create,app/routers/auth.py:599
+POST,/auth/mfa/setup,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,TOTP secret + otpauth URI,dup-create,app/routers/auth.py:726
+POST,/auth/mfa/confirm,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/auth.py:766
+POST,/auth/forgot,EXEMPT(by-design),N,n/a,n/a,,n/a,app/routers/auth.py:831
+POST,/auth/reset,EXEMPT(by-design),N,n/a,n/a,,n/a,app/routers/auth.py:856
+POST,/auth/refresh,EXEMPT(by-design),Y,n/a,n/a,,n/a,app/routers/auth.py:909
+POST,/auth/logout,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/auth.py:957
+POST,/auth/switch-firm,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,access+refresh token in body,dup-create,app/routers/auth.py:1058
+POST,/parties,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/masters.py:90
+PATCH,/parties/{party_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/masters.py:212
+DELETE,/parties/{party_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/masters.py:251
+POST,/items,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/items.py:98
+PATCH,/items/{item_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/items.py:217
+DELETE,/items/{item_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/items.py:249
+POST,/skus,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/items.py:287
+PATCH,/skus/{sku_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/items.py:328
+DELETE,/skus/{sku_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/items.py:352
+POST,/purchase-orders,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/procurement.py:109
+POST,/purchase-orders/{po_id}/approve,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/procurement.py:191
+POST,/purchase-orders/{po_id}/confirm,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/procurement.py:208
+POST,/purchase-orders/{po_id}/cancel,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/procurement.py:225
+DELETE,/purchase-orders/{po_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/procurement.py:242
+POST,/grns,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/procurement.py:314
+POST,/grns/{grn_id}/receive,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/procurement.py:396
+DELETE,/grns/{grn_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/procurement.py:413
+POST,/purchase-invoices,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/procurement.py:492
+POST,/purchase-invoices/{pi_id}/post,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/procurement.py:577
+POST,/purchase-invoices/{pi_id}/void,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/procurement.py:594
+DELETE,/purchase-invoices/{pi_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/procurement.py:611
+POST,/stock-adjustments,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/inventory.py:64
+POST,/locations,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/inventory.py:208
+POST,/sales-orders,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/sales.py:93
+POST,/sales-orders/{so_id}/confirm,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/sales.py:174
+POST,/sales-orders/{so_id}/cancel,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/sales.py:191
+DELETE,/sales-orders/{so_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/sales.py:208
+POST,/delivery-challans,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/sales.py:263
+POST,/delivery-challans/{dc_id}/issue,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/sales.py:346
+DELETE,/delivery-challans/{dc_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/sales.py:363
+POST,/invoices,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/sales.py:604
+POST,/invoices/{sales_invoice_id}/finalize,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/sales.py:694
+POST,/invoices/{sales_invoice_id}/cancel,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/sales.py:726
+POST,/receipts,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/receipts.py:60
+POST,/payments,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/payments.py:53
+POST,/bank-accounts,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/banking.py:121
+PATCH,/bank-accounts/{bank_account_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/banking.py:231
+DELETE,/bank-accounts/{bank_account_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/banking.py:258
+POST,/cheques,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/banking.py:281
+POST,/vouchers/journal,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/banking.py:507
+POST,/bank-reconciliation/preview,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/bank_reconciliation.py:73
+POST,/bank-reconciliation/confirm,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/bank_reconciliation.py:130
+POST,/bank-reconciliation/unmatched-as-voucher,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/bank_reconciliation.py:169
+POST,/coa/groups,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/accounting.py:107
+POST,/ledgers,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/accounting.py:181
+PATCH,/ledgers/{ledger_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/accounting.py:224
+POST,/job-work-orders,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/jobwork.py:128
+POST,/job-work-orders/{jwo_id}/receive,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/jobwork.py:181
+POST,/admin/invites,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,invite_link (dev only),dup-create,app/routers/admin.py:140
+POST,/admin/invites/accept,EXEMPT(by-design),N,n/a,n/a,,n/a,app/routers/admin.py:204
+PATCH,/admin/users/{user_id}/role,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/admin.py:240
+POST,/admin/roles,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/admin.py:409
+PATCH,/admin/roles/{role_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/admin.py:441
+DELETE,/admin/roles/{role_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/admin.py:471
+POST,/admin/migrations,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/migrations.py:124
+POST,/admin/migrations/{migration_id}/approve,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/migrations.py:226
+POST,/admin/migrations/{migration_id}/reject,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/migrations.py:288
+POST,/designs,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:224
+PATCH,/designs/{design_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:296
+DELETE,/designs/{design_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:322
+POST,/operation-masters,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:348
+PATCH,/operation-masters/{operation_master_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:431
+DELETE,/operation-masters/{operation_master_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:460
+POST,/cost-centres,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:487
+PATCH,/cost-centres/{cost_centre_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:568
+DELETE,/cost-centres/{cost_centre_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:595
+POST,/boms,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:621
+POST,/boms/{bom_id}/activate,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:704
+DELETE,/boms/{bom_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:724
+POST,/routings,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:781
+PATCH,/routings/{routing_id}/edges,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:876
+DELETE,/routings/{routing_id},"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:911
+POST,/manufacturing/mo,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:1061
+POST,/manufacturing/mo/{mo_id}/release,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:1204
+POST,/manufacturing/mo/{mo_id}/start,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:1227
+POST,/manufacturing/mo/{mo_id}/complete,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/manufacturing.py:1311
+POST,/manufacturing/mo/{mo_id}/close,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/manufacturing.py:1356
+POST,/manufacturing/mo/{mo_id}/issue-materials,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/manufacturing.py:1428
+POST,/manufacturing/mo-operations/{mo_operation_id}/start,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:1588
+POST,/manufacturing/mo-operations/{mo_operation_id}/qty-in,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:1615
+POST,/manufacturing/mo-operations/{mo_operation_id}/qty-out,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:1643
+POST,/manufacturing/mo-operations/{mo_operation_id}/complete,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/manufacturing.py:1674
+PATCH,/manufacturing/mo-operations/{mo_operation_id}/executor,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:1793
+POST,/manufacturing/mo-operations/{mo_operation_id}/dispatch-karigar,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:1877
+POST,/manufacturing/mo-operations/{mo_operation_id}/acknowledge-karigar,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:1910
+POST,/manufacturing/mo-operations/{mo_operation_id}/receive-karigar,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/manufacturing.py:1937
+POST,/manufacturing/mo-operations/{mo_operation_id}/close-karigar,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,HIGH (money/stock/GL),app/routers/manufacturing.py:1972
+POST,/manufacturing/mo-operations/{mo_operation_id}/start-qc,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:2071
+POST,/manufacturing/mo-operations/{mo_operation_id}/record-qc-result,"Y (middleware, UUID)",Y,idem:{path}:{key} (no org/user/method),Y,,dup-create,app/routers/manufacturing.py:2097

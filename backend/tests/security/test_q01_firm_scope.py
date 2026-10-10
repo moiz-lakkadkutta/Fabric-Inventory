@@ -117,8 +117,29 @@ async def test_q01_02_firm1_clerk_cannot_list_firm2_parties(sync_engine: Engine)
         items = resp.json().get("items", []) if resp.status_code == 200 else []
         leaked = [p["code"] for p in items]
         assert "Q01-F2-OWN" not in leaked, "F1-only clerk listed F2's parties"
-        # Direct by-id read of the F2 row is the IDOR variant of the same gap.
+
+
+@pytest.mark.xfail(
+    strict=True, reason="Q01-02: by-id routes rely on org-level RLS only (no firm check)"
+)
+async def test_q01_02_firm1_clerk_cannot_read_firm2_party_by_id(sync_engine: Engine) -> None:
+    async with q01_client() as client:
+        ctx = await _firm1_clerk(client, sync_engine)
+        seeded = await client.post(
+            "/parties",
+            headers={**bearer(ctx["owner"]["access_token"]), **idem()},
+            json={
+                "code": "Q01-F2-BYID",
+                "name": "F2 by-id secret",
+                "is_customer": True,
+                "firm_id": ctx["f2"],
+                "phone": "+919888888888",
+            },
+        )
+        assert seeded.status_code == 201, seeded.text
         by_id = await client.get(
             f"/parties/{seeded.json()['party_id']}", headers=bearer(ctx["clerk_token"])
         )
-        assert by_id.status_code in (403, 404), "F1-only clerk read an F2 party by id"
+        assert by_id.status_code in (403, 404), (
+            f"F1-only clerk read an F2 party by id: {by_id.status_code} {by_id.text[:160]}"
+        )

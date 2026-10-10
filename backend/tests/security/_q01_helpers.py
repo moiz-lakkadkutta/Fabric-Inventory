@@ -28,7 +28,7 @@ PASSWORD = "strong-password-1"
 
 
 @asynccontextmanager
-async def q01_client() -> AsyncIterator[AsyncClient]:
+async def q01_client(*, raise_app_exceptions: bool = True) -> AsyncIterator[AsyncClient]:
     """Full app over ASGI with the idempotency cache on a private fakeredis."""
     reset_settings()
     from main import create_app
@@ -46,7 +46,10 @@ async def q01_client() -> AsyncIterator[AsyncClient]:
     else:  # pragma: no cover - guards a middleware refactor silently skipping the cache
         raise AssertionError("IdempotencyMiddleware not found in the app stack")
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions),
+        base_url="http://test",
+    ) as c:
         yield c
     await fake.aclose()
 
