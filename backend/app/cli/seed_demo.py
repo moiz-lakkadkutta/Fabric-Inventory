@@ -41,6 +41,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import AppUser, Firm, Organization, Role
 from app.service import (
+    firm_scope_service,
     identity_service,
     rbac_service,
     seed_service,
@@ -98,6 +99,9 @@ def _ensure_org_and_firm(
 
     if org is not None:
         session.execute(text(f"SET LOCAL app.current_org_id = '{org.org_id}'"))
+        # Q01-02: a CLI seeding run is a SYSTEM firm-scope context (works under
+        # fabric_app / NOBYPASSRLS, not only the migration role).
+        firm_scope_service.apply_system_firm_scope(session)
         firm = session.execute(
             select(Firm).where(Firm.org_id == org.org_id).order_by(Firm.code).limit(1)
         ).scalar_one_or_none()
@@ -118,6 +122,9 @@ def _ensure_org_and_firm(
     # Fresh signup path. Mirrors routers/auth.py::signup.
     new_org_id = uuid.uuid4()
     session.execute(text(f"SET LOCAL app.current_org_id = '{new_org_id}'"))
+    # Q01-02: a CLI seeding run is a SYSTEM firm-scope context (works under
+    # fabric_app / NOBYPASSRLS, not only the migration role).
+    firm_scope_service.apply_system_firm_scope(session)
     # Per TASK-TR-SEC1, every org owns a DEK for PII envelope encryption.
     dek_blob = wrap_dek(generate_dek(), org_id=new_org_id)
     org = Organization(org_id=new_org_id, name=org_name, admin_email=email, encrypted_dek=dek_blob)
