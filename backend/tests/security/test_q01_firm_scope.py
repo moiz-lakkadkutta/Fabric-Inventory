@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.engine import Engine
 
@@ -519,3 +520,36 @@ async def test_q01_02_pii_is_masked_when_crossing_into_a_firm_without_pii_read(
             f"/parties/{pid}", params={"firm_id": f2}, headers=bearer(owner["access_token"])
         )
         assert own.json()["phone"] == phone
+
+
+# ── M2: a DB-layer firm refusal is a clean 403, never a 500 ──
+
+
+async def test_q01_02_rls_refusal_maps_to_403_without_leaking_policy(
+    sync_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Take the app-layer check out (as if a future route forgot / a parser
+    gap reopened): the RESTRICTIVE firm policy must still stop the write and
+    the caller must get the same 403 shape — no 500, no policy/table name."""
+    import app.dependencies as deps
+
+    monkeypatch.setattr(deps, "_fastapi_parses_as_json", lambda _ct: False)
+    async with q01_client(raise_app_exceptions=False) as client:
+        ctx = await _firm1_clerk(client, sync_engine)
+        resp = await client.post(
+            "/parties",
+            headers={**bearer(ctx["clerk_token"]), **idem()},
+            json={"code": "Q01-M2", "name": "x", "is_supplier": True, "firm_id": ctx["f2"]},
+        )
+        assert resp.status_code == 403, resp.text
+        body = resp.json()
+        assert body["title"] == "No access to that firm"
+        assert body["code"] == "PERMISSION_DENIED"
+        text_ = resp.text.lower()
+        for leak in ("policy", "party", "row-level", "firm_scope", "sql"):
+            assert leak not in text_, f"{leak!r} leaked: {resp.text}"
+        # Nothing was written: the owner can't see it in F2 either.
+        lst = await client.get(
+            "/parties", params={"firm_id": ctx["f2"]}, headers=bearer(ctx["owner"]["access_token"])
+        )
+        assert "Q01-M2" not in {p["code"] for p in lst.json()["items"]}
