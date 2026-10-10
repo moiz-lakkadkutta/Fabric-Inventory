@@ -386,3 +386,105 @@ def test_get_activity_returns_recent_audit_rows(db_session: OrmSession) -> None:
     assert len(items) == 2
     # Most-recent first by created_at.
     assert items[0].kind in {"sales.invoice.finalize", "auth.session.switch_firm"}
+
+
+# New tests for issue #196
+def test_sales_gst_kpis_exclude_draft_invoices(db_session: OrmSession) -> None:
+    """Draft invoices should not contribute to sales_today, sales_mtd, gst_collected_mtd."""
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    # Draft invoice with amount and GST
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="DRAFT-001",
+        invoice_date=today,
+        invoice_amount=Decimal("10498.95"),
+        paid_amount=Decimal("0"),
+        lifecycle=InvoiceLifecycleStatus.DRAFT,
+    )
+    # Manually set GST amount because _add_invoice sets gst_amount=0
+    inv = db_session.query(SalesInvoice).filter_by(firm_id=firm_id, number="DRAFT-001").one()
+    inv.gst_amount = Decimal("499.95")
+    db_session.flush()
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(kpis, "sales_today").value == Decimal("0")
+    assert _kpi_by_key(kpis, "sales_mtd").value == Decimal("0")
+    assert _kpi_by_key(kpis, "gst_collected_mtd").value == Decimal("0")
+
+
+def test_sales_gst_kpis_include_finalized_invoices(db_session: OrmSession) -> None:
+    """Finalized invoices should contribute to sales_today, sales_mtd, gst_collected_mtd."""
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="FIN-001",
+        invoice_date=today,
+        invoice_amount=Decimal("10498.95"),
+        paid_amount=Decimal("0"),
+        lifecycle=InvoiceLifecycleStatus.FINALIZED,
+    )
+    inv = db_session.query(SalesInvoice).filter_by(firm_id=firm_id, number="FIN-001").one()
+    inv.gst_amount = Decimal("499.95")
+    db_session.flush()
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(kpis, "sales_today").value == Decimal("10498.95")
+    assert _kpi_by_key(kpis, "sales_mtd").value == Decimal("10498.95")
+    assert _kpi_by_key(kpis, "gst_collected_mtd").value == Decimal("499.95")
+
+
+def test_outstanding_overdue_ar_still_exclude_drafts(db_session: OrmSession) -> None:
+    """AR KPIs should continue to exclude draft invoices (regression guard)."""
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    # Draft invoice with amount
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="DRAFT-AR",
+        invoice_date=today,
+        invoice_amount=Decimal("5000"),
+        paid_amount=Decimal("0"),
+        due_date=today,
+        lifecycle=InvoiceLifecycleStatus.DRAFT,
+    )
+    # Finalized invoice with amount
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="FIN-AR",
+        invoice_date=today,
+        invoice_amount=Decimal("5000"),
+        paid_amount=Decimal("0"),
+        due_date=today,
+        lifecycle=InvoiceLifecycleStatus.FINALIZED,
+    )
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    outstanding = _kpi_by_key(kpis, "outstanding_ar")
+    overdue = _kpi_by_key(kpis, "overdue_ar")
+    # Draft excluded, finalized included (due_date == today => not overdue)
+    assert outstanding.value == Decimal("5000")
+    assert overdue.value == Decimal("0")

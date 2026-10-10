@@ -5,7 +5,7 @@ Six KPIs scoped to the current (org, firm):
                         FINALIZED/POSTED/PARTIALLY_PAID/OVERDUE invoices.
   2. overdue_ar      -- same set, filtered to due_date < today.
   3. sales_today     -- sum(invoice_amount) where invoice_date == today,
-                        lifecycle is not CANCELLED/DISCARDED.
+                        lifecycle is FINALIZED+ (excludes DRAFT, CANCELLED, DISCARDED).
   4. sales_mtd       -- same, month-to-date.
   5. low_stock_skus  -- count of items where on-hand quantity <= 0
                         (proxy until per-item reorder thresholds land).
@@ -141,10 +141,14 @@ _OPEN_AP_LIFECYCLES = (
     PurchaseInvoiceLifecycleStatus.PARTIALLY_PAID,
     PurchaseInvoiceLifecycleStatus.OVERDUE,
 )
-_NON_CANCELLED_LIFECYCLES = tuple(
-    s
-    for s in InvoiceLifecycleStatus
-    if s not in {InvoiceLifecycleStatus.CANCELLED, InvoiceLifecycleStatus.DISCARDED}
+# Statuses considered "finalized or later" for sales/GST KPIs.
+# Excludes DRAFT, CANCELLED, DISCARDED (and CONFIRMED, VOIDED if present).
+_FINALIZED_PLUS_LIFECYCLES = (
+    InvoiceLifecycleStatus.FINALIZED,
+    InvoiceLifecycleStatus.POSTED,
+    InvoiceLifecycleStatus.PARTIALLY_PAID,
+    InvoiceLifecycleStatus.PAID,
+    InvoiceLifecycleStatus.OVERDUE,
 )
 
 
@@ -188,15 +192,15 @@ def _sales_in_range(
     start: datetime.date,
     end: datetime.date,
 ) -> Decimal:
-    """Sum of invoice_amount for invoices in [start, end], excluding
-    cancelled / discarded.
+    """Sum of invoice_amount for invoices in [start, end],
+    lifecycle status in _FINALIZED_PLUS_LIFECYCLES.
     """
     total: Decimal | None = session.execute(
         select(func.coalesce(func.sum(SalesInvoice.invoice_amount), 0)).where(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
-            SalesInvoice.lifecycle_status.in_(_NON_CANCELLED_LIFECYCLES),
+            SalesInvoice.lifecycle_status.in_(_FINALIZED_PLUS_LIFECYCLES),
             SalesInvoice.invoice_date >= start,
             SalesInvoice.invoice_date <= end,
         )
@@ -224,7 +228,7 @@ def _gst_collected_in_range(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
-            SalesInvoice.lifecycle_status.in_(_NON_CANCELLED_LIFECYCLES),
+            SalesInvoice.lifecycle_status.in_(_FINALIZED_PLUS_LIFECYCLES),
             SalesInvoice.invoice_date >= start,
             SalesInvoice.invoice_date <= end,
         )
