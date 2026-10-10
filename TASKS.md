@@ -9,9 +9,20 @@ Each task is completable in 1-4 hours and maps to the 12-week plan. Pick the nex
 **Authoritative plan:** [`docs/implementation-plan-trial.md`](docs/implementation-plan-trial.md)
 **Driven by:** live audit on 2026-05-14 (backend verified real; frontend mock/stub surface mapped).
 **Goal:** customer-trial-ready for a named friendly customer — an in-house ladies-suit manufacturer, sub-₹5 Cr.
-**Trial target:** ~2026-09-01 (≈15 weeks).
+**Trial target:** ~2026-09-01 (≈15 weeks). **Missed** — see status below.
 
 This section supersedes the 2026-05-10 cutover block for task selection. The `TASK-CUT-*` backlog below it is either Done or folded into the tracks here. Pick the next **Ready** `TASK-TR-*` task in wave order.
+
+### Status at 2026-10-10 (statuses below re-verified against merged PRs)
+- **Built:** Manufacturing end to end (backend A01–A11, frontend A12 + UI tasks A1–A5 + masters E1-*), audit-gap stubs (B01–B05; B06 partial), manual journal voucher and bank reconciliation (C01–C04; C05 E2E not found), deploy-artifact fixes (E01a), migration OB suspense (E06a), seed-demo (Q04a).
+- **Since then on `main`:** security remediation waves A–F1 (#171–#182), COGS / AP settlement (#183, #185), and the 2026-09-02 QA campaign. All 19 QA fixes are merged (#212, #213, #214), including the CA-review corrections to GST/GRNI treatment; then #97 (#218).
+- **Trial blockers, in order:**
+  1. **CA sign-off** on the GST/accounting treatments merged in #214 (**#217**; includes DEBT-01). The treatments are live without CA review.
+  2. **Deployment never run** (E01 deploy half). This blocks E02–E05.
+  3. **Quality gates Q01–Q06** not started.
+- **Not built:** partial sales/purchase returns (D01–D04). Only full cancellation of a finalized invoice exists, via the §34 credit note (#199 / #214).
+- **Open issues:** #209 (DC→invoice lock, with DEBT-02), #215 (GSTIN prefix not a state code), #216 (credit-note series/document; SEZ reporting), #210 (test gap). Debt: DEBT-02 to DEBT-04 and FUP-205-A to C below.
+- **Open decisions for Moiz:** an LUT flag for exports/SEZ (always IGST today); widening `place_of_supply_state` (VARCHAR(2)) for the portal's "96" export code.
 
 ### Locked decisions (see plan doc §2)
 - Migration scope = **Parties + Opening Balances only**, verified E2E. Items entered manually at onboarding. CLAUDE.md #5 amended (trial ≠ cutover).
@@ -32,76 +43,76 @@ This section supersedes the 2026-05-10 cutover block for task selection. The `TA
 | Q — Quality gates | run on `main` | Waves 3–4 |
 | S — Stretch | `wt/tr-stretch` | Wave 3 (if ahead) |
 
-Per CLAUDE.md: each task gets its own `task/<id>-slug` branch inside the track worktree. Self-review + merge on green CI; escalate to Moiz on red CI or Ask-vs-Decide gates. `[$]` = money/tax-touching → balanced-GL test + Moiz review required.
+Per CLAUDE.md: each task gets its own `task/<id>-slug` branch. Self-review + merge on green CI; escalate to Moiz on red CI or Ask-vs-Decide gates. `[$]` = money/tax-touching → balanced-GL test + Moiz review required.
 
-### Backlog — Wave 0 (de-risk, W1–W2) — START HERE
+### Backlog — Wave 0 (de-risk, W1–W2)
 | ID | Task | Status | Notes |
 |----|------|--------|-------|
-| TASK-TR-E06 | Verify Vyapar migration commit path E2E | **Done** (2026-05-14) | Upload/preview work; commit had a P0 blocker — see E06a. Verification script `/tmp/e06_migration_verify.py` |
-| TASK-TR-E06a `[$]` | Fix migration commit — post OB imbalance to suspense ledger | **Ready** | **Spec'd:** new seeded ledger `3200 Opening Balance Difference` (suspense, EQUITY); commit succeeds + reports parked amount prominently; `tb_reconciles` stays false. Money-logic → failing test first, PR for Moiz review, no self-merge |
-| TASK-TR-E01 | (audit half) Audit deploy artifacts + provisioning checklist | **Done** (2026-05-14) | `docs/ops/hetzner-provisioning-checklist.md` — 9 blockers, 27-step checklist |
-| TASK-TR-A01 | Manufacturing SQLAlchemy models (11 tables) + schema parity | **In progress** | Worktree `../fabric-worktrees/tr-manufacturing` @ `task/tr-a01-mfg-models`. Schema source: `schema/ddl.sql:555–2105` (11 tables, 4 enums) |
-| TASK-TR-Q04 | Moiz dogfooding — run trader modules on real business | **Ready** | **Uses synthetic data for now** (not real-data migration) — unblocks immediately, see Q04a |
-| TASK-TR-Q04a | `make seed-demo` — synthetic textile dataset (parties, items, stock, a few txns) | **Ready** | So Moiz can dogfood + Manufacturing can be synthetically dogfooded without waiting on E06a |
+| TASK-TR-E06 | Verify Vyapar migration commit path E2E | **Done** (2026-05-14) | Commit had a P0 blocker → E06a |
+| TASK-TR-E06a `[$]` | Fix migration commit — post OB imbalance to suspense ledger | **Done** (#105, 2026-05-15) | Ledger `3200 Opening Balance Difference` |
+| TASK-TR-E01 | (audit half) Audit deploy artifacts + provisioning checklist | **Done** (2026-05-14) | `docs/ops/hetzner-provisioning-checklist.md` |
+| TASK-TR-A01 | Manufacturing SQLAlchemy models (11 tables) + schema parity | **Done** (#106, #109) | |
+| TASK-TR-Q04 | Moiz dogfooding — run trader modules on real business | **Partial** | Synthetic-data QA campaign ran 2026-09-02 (`docs/reviews/qa-2026-09-02.md`; all 19 findings fixed). Real-business use not recorded |
+| TASK-TR-Q04a | `make seed-demo` — synthetic textile dataset | **Done** (#107) | Dev Demo Co re-seeded 2026-09-26 |
 
-> **Box provisioning (TASK-TR-E01 deploy half) — deferred to pre-trial (~August)** per Moiz 2026-05-14. Repo stays **private**; the box uses `docker login ghcr.io` with a `read:packages` token. The artifact audit is done, so what's left is the actual run-through. Moved to Wave 3 below. Open: confirm `taana.in` domain ownership before then.
+> **Box provisioning (TASK-TR-E01 deploy half)** was deferred to pre-trial per Moiz 2026-05-14 and has **not been done**. Repo stays **private**; the box uses `docker login ghcr.io` with a `read:packages` token. Open: confirm `taana.in` domain ownership.
 
 ### Backlog — Wave 1 (spine + honesty, W2–W6)
-| ID | Task | Status | Blocked by |
-|----|------|--------|-----------|
-| TASK-TR-A02 | Design + Operation Master + Cost Centre CRUD | Blocked | A01 |
-| TASK-TR-A03 | BOM service + router (versioned, `part_role`) | Blocked | A02 |
-| TASK-TR-A04 | Routing service + router (DAG, edge types, no-cycle validation) | Blocked | A02 |
-| TASK-TR-A05 | MO creation + lifecycle (`mo_status` machine, BOM explosion, routing instantiation) | Blocked | A03, A04 |
-| TASK-TR-A06 `[$]` | Material issue — consume stock + WIP/inventory GL posting | Blocked | A05 |
-| TASK-TR-B01 | Inventory live stock-on-hand (wire `useSkus` off the zero-stub) | **Ready** | — |
-| TASK-TR-B02 | Lots live — backend endpoints if missing + wire `useLots`/`useLot` | **Ready** | — |
-| TASK-TR-B03 | GSTR-1 UI — wire `useGstr1` to live `/reports/gstr1` + panel + export | **Ready** | — |
-| TASK-TR-B04 | Report tabs — Ageing, Ledger statement, Party statement, ITC-04 | **Ready** | — |
-| TASK-TR-B05 | Dead-button cleanup — remove/wire ComingSoon buttons; fix Inventory "New GRN" | **Ready** | — |
-| TASK-TR-B06 | Inventory/reports E2E + retro | Blocked | B01–B05 |
-| TASK-TR-C01 `[$]` | Manual journal voucher — service + router + schema (revives TASK-042) | **Ready** | — |
-| TASK-TR-C02 | Manual journal voucher UI ("New voucher" → real form) | Blocked | C01 |
-| TASK-TR-C03 `[$]` | Bank reconciliation — service + router (revives TASK-056) | **Ready** | — |
-| TASK-TR-C04 | Bank reconciliation UI ("Reconcile bank" → real flow) | Blocked | C03 |
-| TASK-TR-C05 | Accounting E2E + retro | Blocked | C02, C04 |
+| ID | Task | Status | Evidence |
+|----|------|--------|----------|
+| TASK-TR-A02 | Design + Operation Master + Cost Centre CRUD | **Done** | #110, #126 |
+| TASK-TR-A03 | BOM service + router (versioned, `part_role`) | **Done** | #114 |
+| TASK-TR-A04 | Routing service + router (DAG, edge types, no-cycle validation) | **Done** | #117, #123 |
+| TASK-TR-A05 | MO creation + lifecycle | **Done** | #121, #131 |
+| TASK-TR-A06 `[$]` | Material issue — consume stock + WIP/inventory GL posting | **Done** | #124 (merged as DRAFT pending ledger-code sign-off), #132 |
+| TASK-TR-B01 | Inventory live stock-on-hand | **Done** | #115 |
+| TASK-TR-B02 | Lots live — backend endpoints + wire `useLots`/`useLot` | **Done** | #118; lots minted on GRN receive since #202 |
+| TASK-TR-B03 | GSTR-1 UI — live `/reports/gstr1` + panel + export | **Done** | #111, #122; rate-wise rows #195; CDNR/CDNUR #199 |
+| TASK-TR-B04 | Report tabs — Ageing, Ledger statement, Party statement, ITC-04 | **Done** | #113 |
+| TASK-TR-B05 | Dead-button cleanup | **Done** | #125 (plus TR-B1/B2 #152, #153) |
+| TASK-TR-B06 | Inventory/reports E2E + retro | **Partial** | #127 shipped inventory polish; no dedicated inventory/reports E2E spec found |
+| TASK-TR-C01 `[$]` | Manual journal voucher — service + router + schema | **Done** | #116, #120 |
+| TASK-TR-C02 | Manual journal voucher UI | **Done** | in #116 |
+| TASK-TR-C03 `[$]` | Bank reconciliation — service + router | **Done** | #158 (TR-B3); bank sub-ledger posting fixed #201 |
+| TASK-TR-C04 | Bank reconciliation UI | **Done** | #158 |
+| TASK-TR-C05 | Accounting E2E + retro | **Not found** | No accounting E2E spec or C05 retro on `main` |
 
 ### Backlog — Wave 2 (production depth + returns, W6–W10)
-| ID | Task | Status | Blocked by |
-|----|------|--------|-----------|
-| TASK-TR-A07 | Operation progress (in-house) — state machine, qty in/out, `production_event` | Blocked | A06 |
-| TASK-TR-A08 | Per-operation karigar send-out — challan integration with job-work module | Blocked | A07 |
-| TASK-TR-A09 | Routing DAG flow engine — threshold partial-flow. **Hardest task — buffer it** | Blocked | A07 |
-| TASK-TR-A10 | QC operation — pass/fail/rework, scrap, by-product | Blocked | A09 |
-| TASK-TR-A11 `[$]` | MO completion — finished-goods receipt + WIP cost settlement + GL | Blocked | A10 |
-| TASK-TR-D01 `[$]` | Sales return / credit note — stock + GL reversal | **Ready** | (start after B/C land) |
-| TASK-TR-D02 `[$]` | Purchase return / debit note — stock + GL reversal | Blocked | D01 |
-| TASK-TR-D03 | Returns UI — sales + purchase return screens; wire `/sales/returns` | Blocked | D01, D02 |
+| ID | Task | Status | Evidence / blocked by |
+|----|------|--------|-----------------------|
+| TASK-TR-A07 | Operation progress (in-house) | **Done** | #129, #130, #134 |
+| TASK-TR-A08 | Per-operation karigar send-out | **Done** | #135, #140, #145; reachable via API since #204 |
+| TASK-TR-A09 | Routing DAG flow engine — threshold partial-flow | **Done** | #136, #139, #141 |
+| TASK-TR-A10 | QC operation — pass/fail/rework, scrap, by-product | **Done** | #142, #150 |
+| TASK-TR-A11 `[$]` | MO completion — FG receipt + WIP cost settlement + GL | **Done** | #146, #147; phantom-FG guard #192 |
+| TASK-TR-D01 `[$]` | Sales return / credit note — stock + GL reversal | **Partial** | Full cancellation of a finalized invoice → §34 credit note (#199 via #214). Partial returns not built. Credit-note series/document: #216 |
+| TASK-TR-D02 `[$]` | Purchase return / debit note — stock + GL reversal | **Ready** | Not built |
+| TASK-TR-D03 | Returns UI — sales + purchase return screens; wire `/sales/returns` | Blocked | D01 (partial returns), D02 |
 | TASK-TR-D04 | Returns E2E + retro | Blocked | D03 |
-| TASK-TR-E02 | Backup/restore round-trip proof on the box | Blocked | E01 |
-| TASK-TR-E03 | Monitoring — Sentry (BE+FE), uptime, structured logging review | Blocked | E01 |
-| TASK-TR-Q05 | Customer co-design sessions begin (weekly, W6→) | Blocked | A05 |
+| TASK-TR-E02 | Backup/restore round-trip proof on the box | Blocked | E01. (A scheduled "Backup round-trip test" CI workflow passes weekly; not yet proven on the box) |
+| TASK-TR-E03 | Monitoring — Sentry (BE+FE), uptime, structured logging review | Blocked | E01. (Sentry SDK wired earlier: TASK-066, CUT-405) |
+| TASK-TR-Q05 | Customer co-design sessions (weekly) | **Unknown** | Not tracked in the repo |
 
 ### Backlog — Wave 3 (frontend + hardening + gates, W10–W13)
-| ID | Task | Status | Blocked by |
-|----|------|--------|-----------|
-| TASK-TR-A12 | Manufacturing frontend — replace mock; MO list/detail, Kanban live, BOM/routing editors, QC UI | Blocked | A11 |
-| TASK-TR-A13 | Manufacturing E2E (Playwright) — full design→FG journey | Blocked | A12 |
-| TASK-TR-A14 | Feature-flag wire (`manufacturing.enabled`) + un-hide nav | Blocked | A13 |
-| TASK-TR-E01 (deploy half) | Provision Hetzner CX22, run `deploy.yml`, verify stack + migrations + TLS + Phase F | **Ready** (pre-trial) | Deferred from Wave 0 per Moiz. Follow `docs/ops/hetzner-provisioning-checklist.md` |
-| TASK-TR-E01a | Deploy-artifact repo fixes (`.dockerignore`s, `.env.backup` DB name, runbook sequencing, backup cron) | **Ready** | Small batch PR; can land anytime |
-| TASK-TR-E04 | Error states + onboarding polish (invite→accept→first-login) | Blocked | E01 |
-| TASK-TR-E05 | Staging environment + staging→prod promotion | Blocked | E01 |
-| TASK-TR-Q01 | Security review pass — RLS isolation, permission matrix, idempotency | Blocked | Wave 2 merged |
-| TASK-TR-Q02 | GST + accounting correctness audit — 30 PoS scenarios, balanced-GL all doc types | Blocked | Wave 2 merged |
-| TASK-TR-Q03 | E2E critical-journeys suite — 4 journeys green | Blocked | A13, D04 |
+| ID | Task | Status | Evidence / blocked by |
+|----|------|--------|-----------------------|
+| TASK-TR-A12 | Manufacturing frontend — replace mock | **Done** | #138, UI tasks TR-A1–A5 (#154–#159, #161), masters TR-E1-* (#164–#170) |
+| TASK-TR-A13 | Manufacturing E2E (Playwright) | **Done** | #148 (`manufacturing-pipeline.spec.ts`) |
+| TASK-TR-A14 | Feature-flag wire (`manufacturing.enabled`) + un-hide nav | **Done** | #144, #149 |
+| TASK-TR-E01 (deploy half) | Provision Hetzner CX22, run `deploy.yml`, verify stack + migrations + TLS | **Ready — next ops task** | Needs Moiz: Hetzner account + `taana.in`. Follow `docs/ops/hetzner-provisioning-checklist.md` |
+| TASK-TR-E01a | Deploy-artifact repo fixes | **Done** | #108 |
+| TASK-TR-E04 | Error states + onboarding polish (invite→accept→first-login) | Blocked | E01. (Onboarding lockouts fixed in #208) |
+| TASK-TR-E05 | Staging environment + staging→prod promotion | Blocked | E01. Unmerged scaffolding on branch `task/int-0-staging-bootstrap` |
+| TASK-TR-Q01 | Security review pass — RLS isolation, permission matrix, idempotency | **Ready** | Wave 2 merged. Prior pentest remediation: `docs/reviews/pentest/` |
+| TASK-TR-Q02 | GST + accounting correctness audit | **Blocked on #217** | Run after the CA's answers so the audit checks the confirmed treatments |
+| TASK-TR-Q03 | E2E critical-journeys suite — 4 journeys green | Blocked | D04 (returns journey); other journeys partly covered by `cutover.spec.ts` + `manufacturing-pipeline.spec.ts` |
 | TASK-TR-S01 | *(Stretch)* Sales quotations — service + UI | **Stretch** | only if ahead |
 | TASK-TR-S02 | *(Stretch)* Credit control — receivables-limit enforcement + UI | **Stretch** | only if ahead |
 
 ### Backlog — Wave 4 (buffer + readiness, W13–W15)
 | ID | Task | Status | Blocked by |
 |----|------|--------|-----------|
-| TASK-TR-Q06 | Trial-readiness gate — go/no-go checklist (plan doc §8) | Blocked | Q01, Q02, Q03 |
+| TASK-TR-Q06 | Trial-readiness gate — go/no-go checklist (plan doc §8) | Blocked | Q01, Q02, Q03, #217, E01 |
 | — | Bug-fix capacity from dogfooding + co-design feedback | ongoing | — |
 | — | Customer onboarding rehearsal (their parties+OB import, items session) | Blocked | Q06 |
 
@@ -118,7 +129,7 @@ Four PRs landed together on `main` (`d208ff1` #183 COGS-on-sale, `0b222dc` #186 
 Each PR was merged with a known open item. **None is a live bug today**, but DEBT-01 touches real ledger postings and should not sit indefinitely. Pick these before starting new feature waves.
 
 ### DEBT-01: CA sign-off on the COGS cost basis (weighted average)
-**Status:** Ready — needs Moiz + CA, not code
+**Status:** Folded into **#217** (CA sign-off sheet, item 8). Since #202, lot/batch-tracked items use lot FIFO and other items weighted average; the CA is asked to confirm both under AS-2.
 **Origin:** PR #183, merged CA-review-pending
 **Files touched:** (none yet; outcome may change `app/service/sales_service.py`, `inventory_service.remove_stock` usage)
 
@@ -135,12 +146,12 @@ Each PR was merged with a known open item. **None is a live bug today**, but DEB
 
 **Approximate time:** 1h to prepare the question + CA turnaround
 **Notes:**
-- Design record is in `.forge/20260705-cogs-on-sale-9118/ledger.md` decision D1.
+- Design record: `.forge/20260705-cogs-on-sale-9118/ledger.md` decision D1 (archived 2026-09-27 to `~/fabric-worktrees/.forge-archive-2026-09-27/`).
 
 ---
 
 ### DEBT-02: Delivery-challan → invoice COGS double-relief guard
-**Status:** Ready
+**Status:** Partial. #198 added the DC-linked COGS branch (no second stock relief, cost from the DC's movements) with tests. **Still open:** `SalesInvoiceCreateRequest` has no `delivery_challan_id`, so the link is never set on the real DC→invoice path. Wire it together with the lock in #209.
 **Blocked by:** nothing (DEBT-01 may change the cost basis but not this linkage)
 **Files touched:** `app/service/sales_service.py`, `app/models/sales.py`, `tests/test_cogs_on_sale.py`
 
