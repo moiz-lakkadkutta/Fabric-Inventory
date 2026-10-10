@@ -26,9 +26,15 @@ const NO_WEBSERVER = process.env.E2E_NO_WEBSERVER === '1';
 export default defineConfig({
   testDir: './__tests__/e2e',
   // The cutover spec runs many `test.step()`s sequentially against a
-  // real backend; bump to 10 min so a single test() can hold the whole
-  // journey. Unit-ish specs still complete well under the default 30s.
-  timeout: 10 * 60_000,
+  // real backend as ONE test(); a green run takes ~10s on CI (PR #185
+  // rerun, 2026-08-01), so 3 min is generous headroom. Unit-ish specs
+  // still complete well under the default 30s.
+  //
+  // DEBT-04: this used to be 10 min with no actionTimeout, so a single
+  // wedged `locator.click()` silently burned the whole 10 min (twice,
+  // with the CI retry). Keep these bounded so a wedge fails in seconds
+  // and the trace/screenshot says where.
+  timeout: 3 * 60_000,
   expect: {
     // Longer assertion timeout for live-backend retries.
     timeout: 15_000,
@@ -40,6 +46,11 @@ export default defineConfig({
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
     baseURL: BASE_URL,
+    // DEBT-04: no single click/fill/goto legitimately needs more than a
+    // few seconds against the compose stack. Steps that wait on a slow
+    // backend mutation pass an explicit, larger timeout (30s max today).
+    actionTimeout: 20_000,
+    navigationTimeout: 30_000,
     // Trace on retry/failure so CI surfaces it as an uploaded artifact
     // without bloating the green-path runs.
     trace: 'retain-on-failure',
