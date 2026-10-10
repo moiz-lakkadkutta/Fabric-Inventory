@@ -196,7 +196,7 @@ def _sales_in_range(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
-            SalesInvoice.lifecycle_status.in_(_NON_CANCELLED_LIFECYCLES),
+            SalesInvoice.lifecycle_status.in_(_OPEN_AR_LIFECYCLES),
             SalesInvoice.invoice_date >= start,
             SalesInvoice.invoice_date <= end,
         )
@@ -224,7 +224,7 @@ def _gst_collected_in_range(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
-            SalesInvoice.lifecycle_status.in_(_NON_CANCELLED_LIFECYCLES),
+            SalesInvoice.lifecycle_status.in_(_OPEN_AR_LIFECYCLES),
             SalesInvoice.invoice_date >= start,
             SalesInvoice.invoice_date <= end,
         )
