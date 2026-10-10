@@ -19,9 +19,9 @@ This section supersedes the 2026-05-10 cutover block for task selection. The `TA
 - **Trial blockers, in order:**
   1. **CA sign-off** on the GST/accounting treatments merged in #214 (**#217**; includes DEBT-01). The treatments are live without CA review.
   2. **Deployment never run** (E01 deploy half). This blocks E02–E05.
-  3. **Quality gates Q01–Q06** not started.
+  3. **Quality gates:** Q01 security review done and its P1s fixed on `fixes-2026-10-10` (pending sign-off, see `docs/retros/task-batch-2026-10-10.md`); Q02–Q06 not started.
 - **Not built:** partial sales/purchase returns (D01–D04). Only full cancellation of a finalized invoice exists, via the §34 credit note (#199 / #214).
-- **Open issues:** #209 (DC→invoice lock, with DEBT-02), #215 (GSTIN prefix not a state code), #216 (credit-note series/document; SEZ reporting), #210 (test gap). Debt: DEBT-02 to DEBT-04 and FUP-205-A to C below.
+- **Open issues:** #209, #215 and #216 items 1–2 are fixed on the integration branch `fixes-2026-10-10` (2026-10-10, PENDING MOIZ/CA sign-off; not on `main`). Still open: #216 items 3–4 (SEZ reporting, buyer-GSTIN snapshot), #210 (test gap), and Q01 P2/P3 findings (`docs/reviews/security/q01-security-review.md`). Debt: DEBT-02/03 fixed on `fixes-2026-10-10`; DEBT-04 fixed on `fix/debt-04` (separate PR); FUP-205-A to C below.
 - **Open decisions for Moiz:** an LUT flag for exports/SEZ (always IGST today); widening `place_of_supply_state` (VARCHAR(2)) for the portal's "96" export code.
 
 ### Locked decisions (see plan doc §2)
@@ -103,7 +103,7 @@ Per CLAUDE.md: each task gets its own `task/<id>-slug` branch. Self-review + mer
 | TASK-TR-E01a | Deploy-artifact repo fixes | **Done** | #108 |
 | TASK-TR-E04 | Error states + onboarding polish (invite→accept→first-login) | Blocked | E01. (Onboarding lockouts fixed in #208) |
 | TASK-TR-E05 | Staging environment + staging→prod promotion | Blocked | E01. Unmerged scaffolding on branch `task/int-0-staging-bootstrap` |
-| TASK-TR-Q01 | Security review pass — RLS isolation, permission matrix, idempotency | **Ready** | Wave 2 merged. Prior pentest remediation: `docs/reviews/pentest/` |
+| TASK-TR-Q01 | Security review pass — RLS isolation, permission matrix, idempotency | **In review** | Report `docs/reviews/security/q01-security-review.md` (0 P0 / 2 P1 / 4 P2 / 7 P3). P1s (Q01-01, Q01-02) + Q01-04/11 fixed on `fixes-2026-10-10`, PENDING MOIZ SIGN-OFF. Q01-03/05 + P3s open |
 | TASK-TR-Q02 | GST + accounting correctness audit | **Blocked on #217** | Run after the CA's answers so the audit checks the confirmed treatments |
 | TASK-TR-Q03 | E2E critical-journeys suite — 4 journeys green | Blocked | D04 (returns journey); other journeys partly covered by `cutover.spec.ts` + `manufacturing-pipeline.spec.ts` |
 | TASK-TR-S01 | *(Stretch)* Sales quotations — service + UI | **Stretch** | only if ahead |
@@ -151,7 +151,7 @@ Each PR was merged with a known open item. **None is a live bug today**, but DEB
 ---
 
 ### DEBT-02: Delivery-challan → invoice COGS double-relief guard
-**Status:** Partial. #198 added the DC-linked COGS branch (no second stock relief, cost from the DC's movements) with tests. **Still open:** `SalesInvoiceCreateRequest` has no `delivery_challan_id`, so the link is never set on the real DC→invoice path. Wire it together with the lock in #209.
+**Status:** In review — fixed with #209 on `fixes-2026-10-10` (PENDING MOIZ SIGN-OFF). `delivery_challan_id` is on the real create path (API + "Create invoice" from DC), DC row lock + partial unique index (migration `209_dc_invoice_link`). Retro: `docs/retros/task-batch-2026-10-10.md`.
 **Blocked by:** nothing (DEBT-01 may change the cost basis but not this linkage)
 **Files touched:** `app/service/sales_service.py`, `app/models/sales.py`, `tests/test_cogs_on_sale.py`
 
@@ -161,9 +161,9 @@ Each PR was merged with a known open item. **None is a live bug today**, but DEB
 - Wire the DC → invoice linkage, then prove the guard: DC-dispatched stock must be relieved exactly once, and COGS posted exactly once.
 
 **Acceptance:**
-- [ ] Integration test: DC issue → invoice finalize relieves stock ONCE and posts ONE COGS voucher.
-- [ ] Integration test: direct invoice (no DC) still relieves + posts as today.
-- [ ] `delivery_challan_id` is populated on the real DC→invoice path.
+- [x] Integration test: DC issue → invoice finalize relieves stock ONCE and posts ONE COGS voucher.
+- [x] Integration test: direct invoice (no DC) still relieves + posts as today.
+- [x] `delivery_challan_id` is populated on the real DC→invoice path.
 
 **Approximate time:** 2-4h
 **Notes:**
@@ -172,7 +172,7 @@ Each PR was merged with a known open item. **None is a live bug today**, but DEB
 ---
 
 ### DEBT-03: `auth.forgot` rate limit is the next one to trip
-**Status:** Ready
+**Status:** In review — fixed on `fixes-2026-10-10` (PENDING MOIZ SIGN-OFF).
 **Files touched:** `app/routers/auth.py`, `app/config.py`, `docker-compose.e2e.yml`, `backend/tests/test_config.py`
 
 **Scope:**
@@ -181,9 +181,9 @@ Each PR was merged with a known open item. **None is a live bug today**, but DEB
 - Apply the same pattern: configurable, secure default, non-dev boot refusal, E2E overlay override, test pinning the strict default.
 
 **Acceptance:**
-- [ ] `auth.forgot` limit sourced from settings with the current value as the secure default.
-- [ ] Loosening it outside `ENVIRONMENT=dev` is a boot failure.
-- [ ] Test asserts the strict default holds for staging/prod.
+- [x] `auth.forgot` limit sourced from settings with the current value as the secure default.
+- [x] Loosening it outside `ENVIRONMENT=dev` is a boot failure.
+- [x] Test asserts the strict default holds for staging/prod.
 
 **Approximate time:** 1-2h
 **Notes:**
