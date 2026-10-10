@@ -256,6 +256,72 @@ async def test_signup_limit_is_settings_driven_at_request_time(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# DEBT-03 — Forgot rate limit: 5 req / 60s per IP, settings-driven
+# (test_auth_forgot_rate_limit.py covers the envelope/IP-keying against a
+# synthetic dep; these pin the PRODUCTION dep's default + override path.)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def forgot_http(fake_redis: fakeredis.aioredis.FakeRedis) -> AsyncIterator[AsyncClient]:
+    from app.routers.auth import _FORGOT_RATE_LIMIT
+
+    app = _build_app(fake_redis, [("/auth/forgot", _FORGOT_RATE_LIMIT)])
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
+    finally:
+        set_redis_client_for_testing(None)
+
+
+async def test_forgot_sixth_request_returns_429(
+    forgot_http: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DEFAULT policy, no env override: first 5 forgot requests from one IP
+    pass; the 6th returns 429. The E2E acceptance stack raises the ceiling
+    via `docker-compose.e2e.yml`; nothing else may."""
+    monkeypatch.delenv("FORGOT_RATE_LIMIT_MAX_REQUESTS", raising=False)
+    monkeypatch.delenv("FORGOT_RATE_LIMIT_WINDOW_SECONDS", raising=False)
+    reset_settings()
+
+    payload = {"email": "stranger@example.com", "org_name": "no-such-org"}
+    for i in range(5):
+        resp = await forgot_http.post("/auth/forgot", json=payload)
+        assert resp.status_code != 429, f"request {i + 1} throttled too early"
+
+    sixth = await forgot_http.post("/auth/forgot", json=payload)
+    assert sixth.status_code == 429, sixth.text
+    assert sixth.json()["code"] == "RATE_LIMIT_EXCEEDED"
+    retry_after = int(sixth.headers["Retry-After"])
+    assert 1 <= retry_after <= 60
+    reset_settings()
+
+
+async def test_forgot_limit_is_settings_driven_at_request_time(
+    forgot_http: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The E2E override path: raising FORGOT_RATE_LIMIT_MAX_REQUESTS lifts the
+    ceiling, and the limiter still enforces the NEW value (a bigger budget,
+    not a bypass). Resolution is per request, not at router import."""
+    monkeypatch.setenv("FORGOT_RATE_LIMIT_MAX_REQUESTS", "7")
+    monkeypatch.setenv("FORGOT_RATE_LIMIT_WINDOW_SECONDS", "60")
+    reset_settings()
+    try:
+        payload = {"email": "e2e@example.com", "org_name": "X"}
+        for i in range(7):
+            resp = await forgot_http.post("/auth/forgot", json=payload)
+            assert resp.status_code != 429, f"request {i + 1} throttled too early: {resp.text}"
+
+        eighth = await forgot_http.post("/auth/forgot", json=payload)
+        assert eighth.status_code == 429, eighth.text
+        assert eighth.json()["code"] == "RATE_LIMIT_EXCEEDED"
+    finally:
+        monkeypatch.undo()
+        reset_settings()
+
+
+# ──────────────────────────────────────────────────────────────────────
 # DOS-01 — Reset rate limit: 5 req / 60s per IP
 # ──────────────────────────────────────────────────────────────────────
 

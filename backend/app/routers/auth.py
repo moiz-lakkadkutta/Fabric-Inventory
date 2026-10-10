@@ -820,12 +820,31 @@ def mfa_confirm(
 # ──────────────────────────────────────────────────────────────────────
 
 
-# Per-IP sliding window: 5 requests per 60s, 6th gets 429 + Retry-After.
-# Per CUT-501a brief / CUT-303 retro follow-up #1. Threshold is generous
-# vs legitimate use (a user fat-fingering their own email + retrying
+# Per-IP sliding window: 5 requests per 60s by default, 6th gets 429 +
+# Retry-After. Per CUT-501a brief / CUT-303 retro follow-up #1. Threshold is
+# generous vs legitimate use (a user fat-fingering their own email + retrying
 # under typical latency lands well under 5/min) but tight against the
 # email-pump abuse vector.
-_FORGOT_RATE_LIMIT = rate_limit(bucket="auth.forgot", max_requests=5, window_seconds=60)
+#
+# DEBT-03: thresholds resolve from Settings per request (same pattern as
+# `_SIGNUP_RATE_LIMIT`) so the E2E acceptance stack (`docker-compose.e2e.yml`),
+# where every request arrives from one docker-network IP, can run with
+# headroom. The SECURE values are the defaults, and
+# `Settings._reject_loose_forgot_rate_limit_outside_dev` refuses to boot
+# staging/prod with anything looser.
+def _forgot_max_requests() -> int:
+    return get_settings().forgot_rate_limit_max_requests
+
+
+def _forgot_window_seconds() -> int:
+    return get_settings().forgot_rate_limit_window_seconds
+
+
+_FORGOT_RATE_LIMIT = rate_limit(
+    bucket="auth.forgot",
+    max_requests=_forgot_max_requests,
+    window_seconds=_forgot_window_seconds,
+)
 
 
 @router.post(
