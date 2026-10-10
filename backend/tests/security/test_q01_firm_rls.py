@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -196,42 +197,91 @@ def test_q01_02_writes_into_an_out_of_scope_firm_are_rejected(
             )
 
 
-def test_q01_02_empirical_sweep_every_firm_table(su_engine: Engine, app_engine: Engine) -> None:
-    """For every firm-scoped table holding data (the DB is populated by the
-    suite), pick a real (org, firm) pair: under that org with a scope naming a
-    DIFFERENT firm, its rows are invisible; with its own firm they're visible
-    (so the policy isn't vacuous)."""
-    leaks: dict[str, int] = {}
-    proven = 0
-    with su_engine.connect() as su, app_engine.connect() as conn:
-        for table in _migration_tables():
-            row = su.execute(
-                text(f'SELECT org_id, firm_id FROM "{table}" WHERE firm_id IS NOT NULL LIMIT 1')
-            ).first()
-            if row is None:
-                continue
-            with conn.begin():
+# NOT NULL, no-default columns of a table (enum → its first label).
+_REQUIRED_COLS = text(
+    """
+    SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS typ, t.typtype,
+           (SELECT e.enumlabel FROM pg_enum e WHERE e.enumtypid = a.atttypid
+             ORDER BY e.enumsortorder LIMIT 1) AS first_label
+      FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
+     WHERE a.attrelid = CAST(:t AS regclass) AND a.attnum > 0 AND NOT a.attisdropped
+       AND a.attnotnull AND NOT a.atthasdef AND a.attidentity = '' AND a.attgenerated = ''
+    """
+)
+# Per-table extras a CHECK constraint needs beyond "every NOT NULL column".
+_ROW_OVERRIDES: dict[str, dict[str, object]] = {
+    # chk_payment_alloc_one_target: exactly one of the two invoice ids.
+    "payment_allocation": {"sales_invoice_id": "00000000-0000-0000-0000-000000000001"},
+}
+
+
+def _synthetic_value(typ: str, typtype: str, first_label: str | None) -> object:
+    if typtype == "e":
+        return first_label
+    if typ == "uuid":
+        return str(uuid.uuid4())
+    if typ.startswith(("character", "text")):
+        size = re.search(r"\((\d+)\)", typ)
+        return ("Q" + uuid.uuid4().hex)[: int(size.group(1)) if size else 12]
+    if typ.startswith(("numeric", "integer", "smallint", "bigint", "double", "real")):
+        return 1
+    if typ == "boolean":
+        return False
+    if typ.startswith(("timestamp", "date")):
+        return "2026-04-01"
+    if typ.startswith("json") or typ.endswith("[]"):
+        return "{}"
+    if typ == "bytea":
+        return b"\x00"
+    raise AssertionError(f"teach _synthetic_value about column type {typ!r}")
+
+
+def test_q01_02_empirical_sweep_every_firm_table(su_engine: Engine) -> None:
+    """Self-contained sweep over EVERY firm-scoped table (no reliance on rows
+    left by earlier tests — a fresh CI DB has almost none).
+
+    In ONE superuser transaction that is rolled back at the end: seed one
+    synthetic row per table in a private org, firm F2 (FK triggers off via
+    ``session_replication_role = replica`` — the rows only need to exist),
+    then ``SET LOCAL ROLE fabric_app`` so RLS applies exactly as for the app,
+    and check each table: scope = another firm → the F2 row is invisible;
+    scope = F2 → visible (the policy isn't vacuous); scope unset → invisible.
+    """
+    org, f1, f2 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    tables = _migration_tables()
+    leaks: dict[str, str] = {}
+    with su_engine.connect() as conn:
+        tx = conn.begin()
+        try:
+            conn.execute(text("SET LOCAL session_replication_role = replica"))
+            for table in tables:
+                row: dict[str, object] = {"org_id": str(org), "firm_id": str(f2)}
+                for c in conn.execute(_REQUIRED_COLS, {"t": table}):
+                    row.setdefault(c.attname, _synthetic_value(c.typ, c.typtype, c.first_label))
+                row.update(_ROW_OVERRIDES.get(table, {}))
+                cols = ", ".join(f'"{k}"' for k in row)
+                params = ", ".join(f":{k}" for k in row)
+                conn.execute(text(f'INSERT INTO "{table}" ({cols}) VALUES ({params})'), row)
+            conn.execute(text("SET LOCAL session_replication_role = origin"))
+            conn.execute(text("SET LOCAL ROLE fabric_app"))
+            conn.execute(text("SELECT set_config('app.current_org_id', :v, true)"), {"v": str(org)})
+
+            def count(table: str, scope: str) -> int:
                 conn.execute(
-                    text("SELECT set_config('app.current_org_id', :v, true)"), {"v": str(row[0])}
+                    text("SELECT set_config('app.current_firm_scope', :v, true)"), {"v": scope}
                 )
-                conn.execute(
-                    text("SELECT set_config('app.current_firm_scope', :v, true)"),
-                    {"v": str(uuid.uuid4())},
+                return int(
+                    conn.execute(
+                        text(f'SELECT count(*) FROM "{table}" WHERE firm_id = :f'),
+                        {"f": str(f2)},
+                    ).scalar_one()
                 )
-                n = conn.execute(
-                    text(f'SELECT count(*) FROM "{table}" WHERE firm_id = :f'),
-                    {"f": row[1]},
-                ).scalar_one()
-                if n:
-                    leaks[table] = n
-                conn.execute(
-                    text("SELECT set_config('app.current_firm_scope', :v, true)"),
-                    {"v": str(row[1])},
-                )
-                if conn.execute(
-                    text(f'SELECT count(*) FROM "{table}" WHERE firm_id = :f'),
-                    {"f": row[1]},
-                ).scalar_one():
-                    proven += 1
-    assert leaks == {}, f"rows of an out-of-scope firm visible: {leaks}"
-    assert proven >= 10, "sweep is vacuous — run the suite once to populate the DB"
+
+            for table in tables:
+                seen = (count(table, str(f1)), count(table, ""), count(table, str(f2)))
+                if seen != (0, 0, 1):
+                    leaks[table] = f"(other firm, unset, own firm) = {seen}"
+        finally:
+            tx.rollback()
+    assert leaks == {}, f"firm-scope policy wrong on: {leaks}"
+    assert len(tables) >= 60
