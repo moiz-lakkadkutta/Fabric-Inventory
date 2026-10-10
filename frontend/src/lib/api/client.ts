@@ -100,7 +100,7 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
  * status, or the last in-progress 409 once the cap is hit. Each attempt goes
  * through the caller's 401 handling unchanged because this sits below it.
  */
-async function fetchWithInProgressRetry(url: string, init: RequestInit): Promise<Response> {
+export async function fetchWithInProgressRetry(url: string, init: RequestInit): Promise<Response> {
   const method = (init.method ?? 'GET').toUpperCase();
   let response = await fetch(url, init);
   if (!MUTATING.has(method)) return response;
