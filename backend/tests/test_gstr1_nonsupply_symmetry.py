@@ -83,7 +83,11 @@ def _branch_transfer_org(
 
 
 def _transfer(
-    db_session: OrmSession, org_id: uuid.UUID, firm_id: uuid.UUID, item_id: uuid.UUID, party: uuid.UUID
+    db_session: OrmSession,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    item_id: uuid.UUID,
+    party: uuid.UUID,
 ) -> SalesInvoice:
     inv = _invoice(
         db_session,
@@ -267,7 +271,7 @@ _INVOICE_TYPES = [
 def test_invoice_side_and_note_side_are_symmetric(
     db_session: OrmSession, tax_type: str | None, invoice_type: str | None
 ) -> None:
-    """For each tax_type × invoice_type, three invoices dated 20-Sep: live,
+    """For each tax_type x invoice_type, three invoices dated 20-Sep: live,
     cancelled the same month, cancelled 10-Oct. The stored type pair is
     forced (legacy / imported rows can hold any pair) before the cancel, so
     posting decides CN vs CXL on it exactly as in production."""
@@ -339,6 +343,4 @@ def test_s34_predicate_is_built_on_reportable_supply(
         invoice_date=_SEP20,
         invoice_type=invoice_type,
         tax_type=tax_type,
-    ) is accounting_service.is_gstr1_reportable_supply(
-        invoice_type=invoice_type, tax_type=tax_type
-    )
+    ) is accounting_service.is_gstr1_reportable_supply(invoice_type=invoice_type, tax_type=tax_type)
