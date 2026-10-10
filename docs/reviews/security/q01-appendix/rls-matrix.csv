@@ -1,0 +1,107 @@
+table_name,has_org_id,has_firm_id,rls_enabled,rls_forced,owner,policies,using_clause,with_check,policy_cmd,app_select,app_insert,app_update,app_delete
+alembic_version,f,f,f,f,fabric,0,"","",,t,t,t,t
+api_idempotency,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+app_user,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+audit_log,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,f,f
+bank_account,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+bom,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+bom_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+budget,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+cheque,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+coa_group,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+commission_scheme,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+consignment_shipment,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+cost_centre,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+customer_credit_profile,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+dc_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+delivery_challan,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+design,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+device,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+document_series,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+electronic_cash_ledger,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+electronic_credit_ledger,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+eway_bill,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+expense_category,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+feature_flag,f,t,t,f,fabric,1,firm_id IN firms(GUC org),same as USING,*,t,t,t,t
+firm,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+fixed_asset,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+grn,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+grn_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+gstr_filing,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+hsn,t,f,f,f,fabric,0,"","",,t,t,t,t
+inter_firm_relationship,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+invoice_share,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+irn,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+itc04_entry,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+item,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+item_uom_alt,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+job_work_order,t,t,t,f,fabric,1,org_id=GUC (no missing_ok; raises if unset),"implicit (=USING, FOR ALL)",*,t,t,t,t
+job_work_order_line,t,t,t,f,fabric,1,org_id=GUC (no missing_ok; raises if unset),"implicit (=USING, FOR ALL)",*,t,t,t,t
+job_work_receipt,t,t,t,f,fabric,1,org_id=GUC (no missing_ok; raises if unset),"implicit (=USING, FOR ALL)",*,t,t,t,t
+job_work_receipt_line,t,t,t,f,fabric,1,org_id=GUC (no missing_ok; raises if unset),"implicit (=USING, FOR ALL)",*,t,t,t,t
+labour_slip,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+landed_cost_entry,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+ledger,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+loan,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+location,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+lot,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+manufacturing_order,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+material_issue,t,t,t,f,fabric,1,org_id=GUC (no missing_ok; raises if unset),"implicit (=USING, FOR ALL)",*,t,t,t,t
+material_issue_line,t,f,t,f,fabric,1,org_id=GUC (no missing_ok; raises if unset),"implicit (=USING, FOR ALL)",*,t,t,t,t
+mo_material_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+mo_operation,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+notification,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+operation_master,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+organization,t,f,f,f,fabric,0,"","",,t,t,t,t
+outbound_message,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+overhead_rate,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+party,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+party_address,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+party_bank,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+party_kyc,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+password_reset_token,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+payment_allocation,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+permission,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+pi_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+pick_wave,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+pick_wave_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+plan,f,f,f,f,fabric,0,"","",,t,t,t,t
+po_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+pr_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+price_list,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+price_list_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+production_event,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+purchase_invoice,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+purchase_order,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+purchase_return,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+qc_plan,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+qc_result,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+quotation,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+quote_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+role,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+role_permission,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+routing,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+routing_edge,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+sales_invoice,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+sales_order,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+sales_return,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+scheduled_report,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+session,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+si_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+sku,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+so_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+sr_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+stock_adjustment,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+stock_ledger,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+stock_position,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+stock_take,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+stock_take_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+subscription,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+tds_entry,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+uom,t,f,f,f,fabric,0,"","",,t,t,t,t
+user_firm_scope,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+user_invite,t,t,t,f,fabric,1,org_id=GUC OR invite_lookup_mode=on,org_id=GUC (missing_ok),*,t,t,t,t
+user_migration,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+user_role,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+voucher,t,t,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
+voucher_line,t,f,t,f,fabric,1,org_id=GUC (missing_ok),same as USING,*,t,t,t,t
