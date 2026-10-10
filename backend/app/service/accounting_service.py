@@ -26,7 +26,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import Integer, case, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.exceptions import AppValidationError, InvoiceStateError
 from app.models import (
@@ -42,7 +42,8 @@ from app.models import (
     VoucherLine,
 )
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
-from app.service import audit_service
+from app.models.sales import InvoiceLifecycleStatus
+from app.service import audit_service, gst_service
 
 # Ledger codes seeded by `seed_service.seed_coa`. Don't change without
 # updating the seed in lockstep — the COA is the contract.
@@ -1284,7 +1285,19 @@ def reverse_sales_invoice_gl(
     them all. Each reversal is a CREDIT_NOTE (party_id set) mirroring the
     original's legs (CR AR / DR Sales / DR GST). Returns the reversal
     vouchers (existing ones are returned unchanged — idempotent).
+
+    #216 numbering: a CROSS-period reversal is a CGST §34 credit note and is
+    numbered in the firm's credit-note series ``CN/<FY of the note date>``
+    (gapless per FY). A SAME-period reversal is a true cancellation — no
+    credit note is issued or reported — so it takes the internal
+    ``CXL/<FY>`` series and never consumes a CN serial. The period test
+    mirrors ``sales_service.cancel_invoice`` and ``compute_gstr1``.
     """
+    note_date = voucher_date or datetime.datetime.now(tz=datetime.UTC).date()
+    if gst_service.is_later_gst_period(note_date, invoice.invoice_date):
+        series = gst_service.credit_note_series(note_date)
+    else:
+        series = gst_service.cancellation_reversal_series(note_date)
     originals = list(
         session.execute(
             select(Voucher).where(
@@ -1303,14 +1316,52 @@ def reverse_sales_invoice_gl(
                 session,
                 original=original,
                 voucher_type=VoucherType.CREDIT_NOTE,
-                series=original.series,
+                series=series,
                 party_id=invoice.party_id,
-                narration=f"Reversal of invoice {original.series}/{original.number} · {reason}",
+                narration=f"Reversal of invoice {invoice.series}/{invoice.number} · {reason}",
                 posted_by=posted_by,
-                voucher_date=voucher_date,
+                voucher_date=note_date,
             )
         )
     return reversals
+
+
+def find_sales_credit_note(session: Session, *, invoice: SalesInvoice) -> Voucher | None:
+    """Return the §34 credit note issued for ``invoice``, or None (#216).
+
+    A credit note exists only when the invoice was cancelled in a LATER GST
+    period than its own: its CREDIT_NOTE reversal is dated in a later month
+    (the same test ``compute_gstr1`` uses to report CDNR / CDNUR / B2CS
+    net-off). A same-period cancellation also posts a CREDIT_NOTE-typed GL
+    reversal, but that is a true cancellation, not a credit note — None.
+
+    A pre-#190 duplicate-finalize invoice can carry several reversals; like
+    GSTR-1 we pick one deterministically (earliest date, number, id).
+    """
+    if invoice.lifecycle_status != InvoiceLifecycleStatus.CANCELLED:
+        return None
+    orig = aliased(Voucher)
+    candidates = session.execute(
+        select(Voucher)
+        .join(orig, orig.voucher_id == Voucher.reference_id)
+        .where(
+            Voucher.org_id == invoice.org_id,
+            Voucher.firm_id == invoice.firm_id,
+            Voucher.voucher_type == VoucherType.CREDIT_NOTE,
+            Voucher.reference_type == _SALES_REVERSAL_REF_TYPE,
+            Voucher.deleted_at.is_(None),
+            orig.org_id == invoice.org_id,
+            orig.voucher_type == VoucherType.SALES_INVOICE,
+            orig.reference_type == "sales_invoice",
+            orig.reference_id == invoice.sales_invoice_id,
+            orig.deleted_at.is_(None),
+        )
+        .order_by(Voucher.voucher_date.asc(), Voucher.number.asc(), Voucher.voucher_id.asc())
+    ).scalars()
+    for cn in candidates:
+        if gst_service.is_later_gst_period(cn.voucher_date, invoice.invoice_date):
+            return cn
+    return None
 
 
 def reverse_cogs_sale_gl(

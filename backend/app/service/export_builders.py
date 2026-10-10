@@ -508,10 +508,11 @@ GSTR1_HSN_COLUMNS: Sequence[Column] = (
 # #199: credit notes (cross-period cancels, CGST Act §34). Amounts positive;
 # "Note type" = C carries the sign (GSTN portal convention).
 _GSTR1_CDN_COMMON: tuple[Column, ...] = (
-    Column("note_number", "Note #"),
+    # #216: full numbers ("CN/26-27/0001"), not the bare serial.
+    Column("note_no", "Note #"),
     Column("note_date", "Note date", "date"),
     Column("note_type", "Note type"),
-    Column("invoice_number", "Original invoice #"),
+    Column("invoice_no", "Original invoice #"),
     Column("invoice_date", "Original invoice date", "date"),
     Column("party_name", "Party"),
 )

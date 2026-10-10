@@ -147,6 +147,41 @@ def credit_note_deadline(invoice_date: datetime.date) -> datetime.date:
     return datetime.date(fy_end_year, 11, 30)
 
 
+# ── #216: credit-note document series ──────────────────────────────────────
+# A §34 credit note is its own document with "a consecutive serial number not
+# exceeding sixteen characters ... unique for a financial year" (Rule 53(1A)(b)).
+# Moiz's locked decision: one series per firm, ``CN/<FY>`` (e.g. CN/26-27), the
+# counter running per (org, firm, CREDIT_NOTE, series) — so it restarts every
+# 1 April. Full number ``CN/26-27/0001`` = 13 chars. The GST financial year is
+# statutory (1 Apr - 31 Mar) and deliberately ignores a firm's configurable
+# ``fy_start_month``.
+CREDIT_NOTE_SERIES_PREFIX = "CN"
+# A SAME-period cancellation is a true cancellation, not a §34 credit note
+# (#199 / #214 CA sheet item 4): no document is issued and nothing is reported
+# in GSTR-1. Its GL reversal therefore must not consume a CN serial (that would
+# leave gaps in the CN series reported in CDNR/CDNUR); it gets this internal
+# series instead.
+CANCELLATION_REVERSAL_SERIES_PREFIX = "CXL"
+
+
+def indian_fy_label(d: datetime.date) -> str:
+    """Short Indian financial-year label (1 Apr - 31 Mar) for *d*:
+    2026-10-10 → "26-27"; 2027-03-31 → "26-27"; 2027-04-01 → "27-28"."""
+    start = d.year if d.month >= 4 else d.year - 1
+    return f"{start % 100:02d}-{(start + 1) % 100:02d}"
+
+
+def credit_note_series(note_date: datetime.date) -> str:
+    """Series for a §34 credit note dated *note_date*, e.g. "CN/26-27"."""
+    return f"{CREDIT_NOTE_SERIES_PREFIX}/{indian_fy_label(note_date)}"
+
+
+def cancellation_reversal_series(reversal_date: datetime.date) -> str:
+    """Internal series for a same-period cancellation's GL reversal, e.g.
+    "CXL/26-27". Not a GST document."""
+    return f"{CANCELLATION_REVERSAL_SERIES_PREFIX}/{indian_fy_label(reversal_date)}"
+
+
 # ── GST rate slab allow-list ───────────────────────────────────────────────
 # Statutory ad-valorem GST rates per the GST Council rate schedule.
 # CA-VALIDATED-PENDING: confirm with CA whether 1.5% or 7.5% special/
