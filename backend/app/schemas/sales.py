@@ -218,6 +218,16 @@ class SalesInvoiceListItem(BaseModel):
     created_at: datetime.datetime
 
 
+class InvoiceCreditNoteRef(BaseModel):
+    """#216: the CGST §34 credit note issued against a cancelled invoice
+    (cross-period cancel). ``number`` is the full document number, e.g.
+    "CN/26-27/0001"; the PDF is at GET /invoices/{id}/credit-note/pdf."""
+
+    voucher_id: uuid.UUID
+    number: str
+    note_date: datetime.date
+
+
 class SalesInvoiceResponse(BaseModel):
     sales_invoice_id: uuid.UUID
     org_id: uuid.UUID
@@ -245,6 +255,10 @@ class SalesInvoiceResponse(BaseModel):
     lines: list[SiLineResponse]
     created_at: datetime.datetime
     updated_at: datetime.datetime
+    # #216: set only on a CANCELLED invoice whose cancel was a §34 credit
+    # note (later GST period). None for a same-period cancellation (a true
+    # cancellation — no credit note is issued) and for every other status.
+    credit_note: InvoiceCreditNoteRef | None = None
 
 
 class SalesInvoiceListResponse(BaseModel):

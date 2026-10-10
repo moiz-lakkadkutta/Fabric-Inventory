@@ -1,4 +1,4 @@
-import { ArrowLeft, AlertCircle, Check, IndianRupee, Printer } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Check, FileMinus, IndianRupee, Printer } from 'lucide-react';
 import * as React from 'react';
 import { Link, useParams } from 'react-router-dom';
 
@@ -44,6 +44,7 @@ export default function InvoiceDetail() {
   const [recordError, setRecordError] = React.useState<string | null>(null);
   const [printError, setPrintError] = React.useState<string | null>(null);
   const [printPending, setPrintPending] = React.useState(false);
+  const [creditNotePending, setCreditNotePending] = React.useState(false);
 
   if (invoiceQuery.isPending) {
     return (
@@ -99,20 +100,20 @@ export default function InvoiceDetail() {
   // headers don't carry on plain `<a href>` so apiBlob() does the auth
   // dance and hands us bytes. Click-dummy mode falls back to the disabled
   // path with a clear message — there's no PDF without a backend.
-  const onPrint = async () => {
+  const downloadPdf = async (path: string, filename: string, setPending: (v: boolean) => void) => {
     setPrintError(null);
     if (!IS_LIVE) {
       setPrintError('Live mode required to download a GST-compliant PDF.');
       return;
     }
-    setPrintPending(true);
+    setPending(true);
     try {
-      const blob = await apiBlob(`/invoices/${inv.invoice_id}/pdf`);
+      const blob = await apiBlob(path);
       const url = URL.createObjectURL(blob);
       try {
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${inv.number.replace(/\//g, '_')}.pdf`;
+        a.download = `${filename.replace(/\//g, '_')}.pdf`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -129,8 +130,22 @@ export default function InvoiceDetail() {
             : 'Could not download the PDF.';
       setPrintError(msg);
     } finally {
-      setPrintPending(false);
+      setPending(false);
     }
+  };
+
+  const onPrint = () => downloadPdf(`/invoices/${inv.invoice_id}/pdf`, inv.number, setPrintPending);
+
+  // #216: a cancelled invoice whose cancel was a §34 credit note (later GST
+  // period) has a Rule 53(1A) credit-note document to hand the buyer.
+  const creditNote = inv.status === 'CANCELLED' ? (inv.credit_note ?? null) : null;
+  const onDownloadCreditNote = () => {
+    if (!creditNote) return;
+    void downloadPdf(
+      `/invoices/${inv.invoice_id}/credit-note/pdf`,
+      creditNote.number,
+      setCreditNotePending,
+    );
   };
 
   const outstandingPaise = Math.max(inv.total - inv.paid, 0);
@@ -207,6 +222,17 @@ export default function InvoiceDetail() {
             <Printer size={14} />
             {printPending ? 'Preparing…' : 'Print'}
           </Button>
+          {creditNote && (
+            <Button
+              variant="outline"
+              onClick={onDownloadCreditNote}
+              disabled={creditNotePending}
+              title={`Credit note ${creditNote.number} dated ${formatDateShort(creditNote.date)}`}
+            >
+              <FileMinus size={14} />
+              {creditNotePending ? 'Preparing…' : 'Download credit note'}
+            </Button>
+          )}
           {inv.status === 'DRAFT' && (
             <Button onClick={onFinalize} disabled={finalize.isPending}>
               <Check size={14} />
@@ -355,6 +381,12 @@ export default function InvoiceDetail() {
             <Meta label="Document type" value={prettyDocType(inv.doc_type)} />
             <Meta label="Issue date" value={formatDateShort(inv.date)} />
             <Meta label="Due date" value={formatDateShort(inv.due_date)} />
+            {creditNote && (
+              <Meta
+                label="Credit note (§34)"
+                value={`${creditNote.number} · ${formatDateShort(creditNote.date)}`}
+              />
+            )}
           </div>
 
           <table className="w-full text-left">

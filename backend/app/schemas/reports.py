@@ -354,6 +354,10 @@ class _Gstr1CreditNoteRowBase(BaseModel):
     cgst: Decimal
     sgst: Decimal
     igst: Decimal
+    # #216: full document numbers, e.g. note_no "CN/26-27/0001" and
+    # invoice_no "RT/2526/0042" (series + "/" + number).
+    note_no: str
+    invoice_no: str
 
 
 class Gstr1CdnrRow(_Gstr1CreditNoteRowBase):

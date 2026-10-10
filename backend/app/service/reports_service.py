@@ -47,7 +47,7 @@ from app.models import (
 )
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.sales import InvoiceLifecycleStatus, SiLine
-from app.service import gst_service
+from app.service import accounting_service, gst_service
 from app.service.gst_service import TaxType
 from app.utils import crypto
 from app.utils.gst_states import normalize_state_code
@@ -1375,6 +1375,10 @@ class _Gstr1CdnRow:
     cgst: Decimal
     sgst: Decimal
     igst: Decimal
+    # #216: full document numbers ("CN/26-27/0001", "RT/2526/0042") — what
+    # the buyer's copy, the portal upload and the xlsx export must show.
+    note_no: str
+    invoice_no: str
 
 
 @dataclass(frozen=True)
@@ -1873,8 +1877,9 @@ def compute_gstr1(
             SalesInvoice.deleted_at.is_(None),
             SiLine.deleted_at.is_(None),
             SalesInvoice.lifecycle_status == InvoiceLifecycleStatus.CANCELLED,
-            func.date_trunc("month", cn.voucher_date)
-            > func.date_trunc("month", SalesInvoice.invoice_date),
+            # #216: the ONE shared "is this reversal a §34 credit note?"
+            # predicate (also used by posting + the credit-note PDF).
+            accounting_service.s34_credit_note_clause(cn, SalesInvoice),
         )
         .group_by(
             cn.voucher_id,
@@ -1973,6 +1978,8 @@ def compute_gstr1(
             cgst=split.cgst,
             sgst=split.sgst,
             igst=split.igst,
+            note_no=f"{r.note_series}/{r.note_number}",
+            invoice_no=f"{r.series}/{r.number}",
         )
         (cdnr if bucket == "b2b" else cdnur).append(note)
 

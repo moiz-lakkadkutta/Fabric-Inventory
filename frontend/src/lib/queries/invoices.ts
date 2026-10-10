@@ -112,6 +112,9 @@ function mapDetail(b: BackendSalesInvoice): Invoice {
     lines: b.lines.map(mapLine),
     doc_type: mapDocType(b.tax_type, b.invoice_type),
     delivery_challan_id: b.delivery_challan_id ?? null,
+    credit_note: b.credit_note
+      ? { number: b.credit_note.number, date: b.credit_note.note_date }
+      : null,
   };
 }
 

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ doc_title }} — {{ credit_note.full_number }}</title>
+  <style>
+{% include "_document_styles.css.jinja" %}
+    .against {
+      border: 1px solid #ddd;
+      padding: 3mm 4mm;
+      margin-bottom: 6mm;
+      border-radius: 2px;
+      font-size: 9.5pt;
+    }
+    .against .label {
+      display: block;
+      font-size: 8pt;
+      color: #777;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      margin-bottom: 1mm;
+    }
+  </style>
+</head>
+<body>
+
+<div class="invoice">
+
+  {# Rule 53(1A)(b) — nature of the document #}
+  <div class="doc-title">
+    {{ doc_title }}
+    <span class="alt">Issued under Section 34 of the CGST Act, 2017 read with Rule 53(1A) · Original for Recipient · Duplicate for Supplier</span>
+  </div>
+
+  <div class="parties">
+
+    {# Rule 53(1A)(a) — supplier name, address, GSTIN #}
+    <div class="party">
+      <div class="name">{{ seller.name }}</div>
+      <div class="meta">
+        {% if seller.gstin %}<div><span class="label">GSTIN:</span> {{ seller.gstin }}</div>{% endif %}
+        {% if seller.state_code %}<div><span class="label">State Code:</span> {{ seller.state_code }}{% if seller.state_name %} ({{ seller.state_name }}){% endif %}</div>{% endif %}
+        {% if seller.address %}<div><span class="label">Address:</span> {{ seller.address }}</div>{% endif %}
+        {% if seller.email %}<div><span class="label">Email:</span> {{ seller.email }}</div>{% endif %}
+      </div>
+    </div>
+
+    {# Rule 53(1A)(e)/(f) — recipient #}
+    <div class="party">
+      <div class="name">{{ buyer.name }}</div>
+      <div class="meta">
+        {% if buyer.registered %}
+        <div><span class="label">GSTIN / UIN:</span> {{ buyer.gstin }}</div>
+        {% else %}
+        <div><span class="label">GSTIN / UIN:</span> Unregistered</div>
+        {% endif %}
+        {% if buyer.address %}<div><span class="label">Address:</span> {{ buyer.address }}</div>{% endif %}
+        {% if not buyer.registered and buyer.place_of_delivery %}<div><span class="label">Place of Delivery:</span> {{ buyer.place_of_delivery }}</div>{% endif %}
+        {% if buyer.state_code %}<div><span class="label">State:</span> {{ buyer.state_name or buyer.state_code }} (Code {{ buyer.state_code }})</div>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# Rule 53(1A)(c)/(d) — serial number + date of issue #}
+  <div class="meta-grid">
+    <div class="cell">
+      <span class="k">Credit Note No.</span>
+      <span class="v">{{ credit_note.full_number }}</span>
+    </div>
+    <div class="cell">
+      <span class="k">Credit Note Date</span>
+      <span class="v">{{ credit_note.date_display }}</span>
+    </div>
+    <div class="cell">
+      <span class="k">Place of Supply</span>
+      <span class="v">{{ invoice.place_of_supply_state or '—' }}{% if invoice.place_of_supply_name %} — {{ invoice.place_of_supply_name }}{% endif %}</span>
+    </div>
+    <div class="cell">
+      <span class="k">Tax Type</span>
+      <span class="v">{{ invoice.tax_type_label }}</span>
+    </div>
+  </div>
+
+  {# Rule 53(1A)(g) — serial number and date of the corresponding tax invoice #}
+  <div class="against">
+    <span class="label">Against {{ credit_note.against_doc_title }}</span>
+    No. <strong>{{ credit_note.against_invoice_number }}</strong> dated <strong>{{ credit_note.against_invoice_date }}</strong>
+    {% if credit_note.reason %}<br />Reason: {{ credit_note.reason }}{% endif %}
+  </div>
+
+  {# Rule 53(1A)(h) — value of goods, taxable value, rate, tax credited #}
+  <table class="lines">
+    <thead>
+      <tr>
+        <th class="c" style="width:7mm;">#</th>
+        <th class="desc" style="width:60mm;">Item / Description</th>
+        <th class="hsn c" style="width:14mm;">HSN</th>
+        <th class="r" style="width:12mm;">Qty</th>
+        <th class="c" style="width:10mm;">UOM</th>
+        <th class="r" style="width:14mm;">Rate (₹)</th>
+        <th class="r" style="width:14mm;">Taxable (₹)</th>
+        {% if show_gst %}
+        <th class="c" style="width:10mm;">GST %</th>
+        {% if tax_split_label == 'IGST' %}
+        <th class="r" style="width:14mm;">IGST (₹)</th>
+        {% else %}
+        <th class="r" style="width:12mm;">CGST (₹)</th>
+        <th class="r" style="width:12mm;">SGST (₹)</th>
+        {% endif %}
+        {% endif %}
+        <th class="r" style="width:18mm;">Value (₹)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in lines %}
+      <tr>
+        <td class="c">{{ line.sequence }}</td>
+        <td class="desc">{{ line.item_name }}</td>
+        <td class="hsn c">{{ line.hsn_code or '—' }}</td>
+        <td class="r">{{ line.qty }}</td>
+        <td class="c">{{ line.uom }}</td>
+        <td class="r">{{ line.rate }}</td>
+        <td class="r">{{ line.taxable }}</td>
+        {% if show_gst %}
+        <td class="c">{{ line.gst_rate }}</td>
+        {% if tax_split_label == 'IGST' %}
+        <td class="r">{{ line.igst }}</td>
+        {% else %}
+        <td class="r">{{ line.cgst }}</td>
+        <td class="r">{{ line.sgst }}</td>
+        {% endif %}
+        {% endif %}
+        <td class="r">{{ line.line_total }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="totals-row">
+    <div class="totals-side">
+      <div class="in-words">
+        <span class="label">Amount Credited in Words</span>
+        <div class="value">{{ totals.in_words }}</div>
+      </div>
+    </div>
+
+    <div class="totals">
+      <dl>
+        <dt>Taxable Value Credited</dt>      <dd>₹ {{ totals.subtotal }}</dd>
+        {% if show_gst %}
+        <dt>IGST Credited</dt>               <dd>₹ {{ totals.igst }}</dd>
+        <dt>CGST Credited</dt>               <dd>₹ {{ totals.cgst }}</dd>
+        <dt>SGST Credited</dt>               <dd>₹ {{ totals.sgst }}</dd>
+        <dt>Total Tax Credited</dt>          <dd>₹ {{ totals.gst }}</dd>
+        {% endif %}
+        <dt>Round-off</dt>                   <dd>₹ {{ totals.round_off }}</dd>
+      </dl>
+      <dl class="grand">
+        <dt>Total Credited (₹)</dt>          <dd>₹ {{ totals.grand_total }}</dd>
+      </dl>
+    </div>
+  </div>
+
+  {# Rule 53(1A)(i) — signature of the supplier / authorised representative #}
+  <div class="footer">
+    <div class="qr-slot"></div>
+    <div class="signature">
+      <div class="firm">For {{ seller.name }}</div>
+      <div class="role">Authorised Signatory</div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

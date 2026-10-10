@@ -17,7 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query, Response, status
 
 from app.dependencies import SyncDBSession, require_permission
-from app.models import DCLine, DeliveryChallan, SalesInvoice, SalesOrder, SiLine, SOLine
+from app.models import DCLine, DeliveryChallan, SalesInvoice, SalesOrder, SiLine, SOLine, Voucher
 from app.models.sales import DCStatus, InvoiceLifecycleStatus, SalesOrderStatus
 from app.schemas.sales import (
     DCCreateRequest,
@@ -25,6 +25,7 @@ from app.schemas.sales import (
     DCListResponse,
     DCResponse,
     InvoiceCancelRequest,
+    InvoiceCreditNoteRef,
     SalesInvoiceCreateRequest,
     SalesInvoiceListItem,
     SalesInvoiceListResponse,
@@ -35,7 +36,7 @@ from app.schemas.sales import (
     SOListResponse,
     SOResponse,
 )
-from app.service import pdf_service, sales_service
+from app.service import accounting_service, pdf_service, sales_service
 from app.service.export_builders import INVOICE_COLUMNS, filename_for, invoice_export_rows
 from app.service.export_service import (
     CSV_MEDIA_TYPE,
@@ -403,6 +404,7 @@ def _invoice_to_response(
     *,
     party_name: str | None,
     item_meta: dict[uuid.UUID, tuple[str, str]],
+    credit_note: Voucher | None = None,
 ) -> SalesInvoiceResponse:
     return SalesInvoiceResponse(
         sales_invoice_id=invoice.sales_invoice_id,
@@ -441,6 +443,15 @@ def _invoice_to_response(
         ),
         created_at=invoice.created_at,
         updated_at=invoice.updated_at,
+        credit_note=(
+            InvoiceCreditNoteRef(
+                voucher_id=credit_note.voucher_id,
+                number=f"{credit_note.series}/{credit_note.number}",
+                note_date=credit_note.voucher_date,
+            )
+            if credit_note is not None
+            else None
+        ),
     )
 
 
@@ -592,7 +603,10 @@ def get_invoice(
         db, org_id=current_user.org_id, item_ids=[line.item_id for line in invoice.lines]
     )
     return _invoice_to_response(
-        invoice, party_name=party_names.get(invoice.party_id), item_meta=item_meta
+        invoice,
+        party_name=party_names.get(invoice.party_id),
+        item_meta=item_meta,
+        credit_note=accounting_service.find_sales_credit_note(db, invoice=invoice),
     )
 
 
@@ -692,6 +706,42 @@ def get_invoice_pdf(
     )
 
 
+@invoice_router.get(
+    "/{sales_invoice_id}/credit-note/pdf",
+    summary="Render the CGST §34 credit note issued against a cancelled invoice (Rule 53(1A))",
+    responses={
+        200: {
+            "content": {"application/pdf": {}},
+            "description": "PDF stream of the credit note.",
+        },
+        404: {
+            "description": (
+                "Invoice not found in the caller's org, or it has no credit note "
+                "(not cancelled, cancelled in the same GST period, or not a tax "
+                "invoice for a supply: Bill of Supply, Cash Memo, Estimate, "
+                "branch transfer)."
+            )
+        },
+    },
+)
+def get_invoice_credit_note_pdf(
+    sales_invoice_id: uuid.UUID,
+    db: SyncDBSession,
+    current_user: Annotated[TokenPayload, Depends(require_permission("sales.invoice.read"))],
+) -> Response:
+    """#216: stream the credit note issued when a finalized invoice was
+    cancelled in a later GST period. Same permission as the invoice PDF;
+    RLS makes a cross-org id a 404."""
+    pdf_bytes, filename = pdf_service.render_credit_note_pdf(
+        db, invoice_id=sales_invoice_id, org_id=current_user.org_id
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @invoice_router.post(
     "/{sales_invoice_id}/finalize",
     response_model=SalesInvoiceResponse,
@@ -755,4 +805,5 @@ def cancel_invoice(
         invoice,
         party_name=party_names.get(invoice.party_id),
         item_meta=item_meta,
+        credit_note=accounting_service.find_sales_credit_note(db, invoice=invoice),
     )

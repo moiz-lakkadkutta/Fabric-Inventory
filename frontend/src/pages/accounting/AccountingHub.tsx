@@ -16,13 +16,8 @@ import {
   useVouchers,
 } from '@/lib/queries/accounts';
 import { formatINRCompact } from '@/lib/format';
-import type {
-  Receipt,
-  ReceiptStatus,
-  Voucher,
-  VoucherKind,
-  VoucherTypeRaw,
-} from '@/lib/mock/accounts';
+import type { Receipt, ReceiptStatus, Voucher, VoucherKind } from '@/lib/mock/accounts';
+import { voucherTypeLabel } from '@/lib/voucherLabels';
 
 import { NewBankAccountDialog } from './NewBankAccountDialog';
 import { NewChequeDialog } from './NewChequeDialog';
@@ -42,21 +37,6 @@ const VOUCHER_KIND_PILL: Record<VoucherKind, { kind: PillKind; label: string }> 
   PAYMENT: { kind: 'karigar', label: 'Payment' },
   CONTRA: { kind: 'draft', label: 'Contra' },
   EXPENSE: { kind: 'overdue', label: 'Expense' },
-};
-
-// Display label per backend voucher_type — keeps the live Vouchers tab
-// honest about whether a row is a RECEIPT vs PAYMENT etc., even though
-// they collapse to the same `kind` palette today.
-const VOUCHER_TYPE_LABEL: Record<VoucherTypeRaw, string> = {
-  SALES_INVOICE: 'Sales invoice',
-  PURCHASE_INVOICE: 'Purchase invoice',
-  PAYMENT: 'Payment',
-  RECEIPT: 'Receipt',
-  JOURNAL: 'Journal',
-  CONTRA: 'Contra',
-  DEBIT_NOTE: 'Debit note',
-  CREDIT_NOTE: 'Credit note',
-  OPENING_BAL: 'Opening balance',
 };
 
 export default function AccountingHub() {
@@ -386,7 +366,9 @@ function VoucherTable({ rows }: { rows: Voucher[] }) {
       <tbody>
         {rows.map((v) => {
           const pill = VOUCHER_KIND_PILL[v.kind];
-          const typeLabel = v.voucher_type ? VOUCHER_TYPE_LABEL[v.voucher_type] : pill.label;
+          const typeLabel = v.voucher_type
+            ? voucherTypeLabel(v.voucher_type, v.number)
+            : pill.label;
           return (
             <tr key={v.voucher_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
               <td className="px-3 py-3">
