@@ -55,6 +55,8 @@ class ErrorCode(StrEnum):
     # Idempotency (Q7)
     IDEMPOTENCY_KEY_REQUIRED = "IDEMPOTENCY_KEY_REQUIRED"
     IDEMPOTENCY_KEY_PAYLOAD_MISMATCH = "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH"
+    # Q01-01: a request with the same key (same principal) is still executing.
+    IDEMPOTENCY_REQUEST_IN_PROGRESS = "IDEMPOTENCY_REQUEST_IN_PROGRESS"
 
     # Business
     INVOICE_STATE_ERROR = "INVOICE_STATE_ERROR"
@@ -127,6 +129,16 @@ class IdempotencyConflictError(AppError):
 
     code = ErrorCode.IDEMPOTENCY_KEY_PAYLOAD_MISMATCH
     title = "Idempotency key payload mismatch"
+    http_status = 409
+
+
+class IdempotencyInProgressError(AppError):
+    """Q01-01: a concurrent request with the same Idempotency-Key (same
+    principal, method and path) holds the in-flight reservation. The client
+    should retry shortly; the retry is replayed once the first one finishes."""
+
+    code = ErrorCode.IDEMPOTENCY_REQUEST_IN_PROGRESS
+    title = "Request already in progress"
     http_status = 409
 
 

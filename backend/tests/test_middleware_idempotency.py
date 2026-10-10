@@ -31,6 +31,13 @@ from app.middleware import (
 )
 
 
+def _auth_headers() -> dict[str, str]:
+    """Q01-04: replay/caching only applies to a verified principal."""
+    from tests.conftest import mint_access_token
+
+    return {"Authorization": f"Bearer {mint_access_token()}"}
+
+
 @pytest.fixture
 async def fake_redis() -> AsyncIterator[fakeredis.aioredis.FakeRedis]:
     """In-memory async Redis replacement scoped to one test."""
@@ -86,7 +93,9 @@ async def client(
         node = getattr(node, "app", None)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=_auth_headers()
+    ) as c:
         yield c
 
 
@@ -231,7 +240,7 @@ async def test_401_responses_are_not_cached(
         node = getattr(node, "app", None)
 
     transport = ASGITransport(app=app)
-    async with HxClient(transport=transport, base_url="http://test") as c:
+    async with HxClient(transport=transport, base_url="http://test", headers=_auth_headers()) as c:
         key = str(uuid.uuid4())
         first = await c.post("/maybe-401", json={"x": 1}, headers={"Idempotency-Key": key})
         assert first.status_code == 401

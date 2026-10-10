@@ -157,16 +157,43 @@ async def test_q01_03_owner_without_mfa_cannot_get_a_session(sync_engine: Engine
 @pytest.mark.xfail(
     strict=True, reason="Q01-10: refresh rotation has no row lock — a token can be redeemed twice"
 )
-async def test_q01_10_refresh_token_single_use_under_concurrency(sync_engine: Engine) -> None:
+async def test_q01_10_refresh_token_single_use_under_concurrency(
+    sync_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Two concurrent /auth/refresh calls with the SAME refresh token must
     yield at most one new pair. Today both succeed (SELECT … then UPDATE by
-    PK, no FOR UPDATE / conditional UPDATE), forking the token family."""
+    PK, no FOR UPDATE / conditional UPDATE), forking the token family.
+
+    The race window is widened deterministically: every refresh parks at a
+    barrier right after its "not revoked" check (the first ``_now_utc`` call
+    on that thread), so all of them have read the row before any commits.
+    Without this the outcome depended on commit timing (Q01-11 moved COMMIT
+    before the response, which shrank the window and made it flaky). If a
+    fix serialises the reads (FOR UPDATE), the barrier times out and the
+    waiting requests proceed, so the secure behaviour still passes."""
     import asyncio
+    import contextlib
+    import threading
+
+    from app.service import identity_service
 
     _ = sync_engine
     async with q01_client() as client:
         owner = await signup(client)
         rt = owner["refresh_token"]
+
+        barrier = threading.Barrier(4, timeout=3)
+        seen = threading.local()
+        real_now = identity_service._now_utc
+
+        def _parked_now() -> object:
+            if not getattr(seen, "hit", False):
+                seen.hit = True
+                with contextlib.suppress(threading.BrokenBarrierError):
+                    barrier.wait()
+            return real_now()
+
+        monkeypatch.setattr(identity_service, "_now_utc", _parked_now)
         results = await asyncio.gather(
             *[client.post("/auth/refresh", json={"refresh_token": rt}) for _ in range(4)]
         )

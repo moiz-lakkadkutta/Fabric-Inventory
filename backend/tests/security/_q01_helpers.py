@@ -28,8 +28,11 @@ PASSWORD = "strong-password-1"
 
 
 @asynccontextmanager
-async def q01_client(*, raise_app_exceptions: bool = True) -> AsyncIterator[AsyncClient]:
-    """Full app over ASGI with the idempotency cache on a private fakeredis."""
+async def q01_client_and_redis(
+    *, raise_app_exceptions: bool = True
+) -> AsyncIterator[tuple[AsyncClient, fakeredis.aioredis.FakeRedis]]:
+    """Full app over ASGI with the idempotency cache on a private fakeredis;
+    yields the fake too so tests can inspect what was (not) cached."""
     reset_settings()
     from main import create_app
 
@@ -50,8 +53,15 @@ async def q01_client(*, raise_app_exceptions: bool = True) -> AsyncIterator[Asyn
         transport=ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions),
         base_url="http://test",
     ) as c:
-        yield c
+        yield c, fake
     await fake.aclose()
+
+
+@asynccontextmanager
+async def q01_client(*, raise_app_exceptions: bool = True) -> AsyncIterator[AsyncClient]:
+    """Full app over ASGI with the idempotency cache on a private fakeredis."""
+    async with q01_client_and_redis(raise_app_exceptions=raise_app_exceptions) as (c, _fake):
+        yield c
 
 
 def bearer(token: str) -> dict[str, str]:
