@@ -21,6 +21,7 @@ later is covered without editing this file:
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from typing import Any
@@ -61,6 +62,13 @@ _NO_PERMISSION_ROUTES = {
 }
 
 _FIRM_DENIED_TITLE = "No access to that firm"
+# Media types FastAPI decodes as a JSON body (fastapi/routing.py: maintype
+# "application" and subtype "json" or "*+json", parsed case-insensitively).
+_JSON_CONTENT_TYPES = (
+    "application/json",
+    "Application/JSON; charset=utf-8",
+    "application/vnd.api+json",
+)
 
 
 def _uses_require_permission(route: APIRoute) -> bool:
@@ -138,22 +146,38 @@ async def test_q01_02_every_guarded_route_refuses_an_ungranted_firm_target(
         for method, path, route in _routes():
             if not _uses_require_permission(route):
                 continue
-            kwargs: dict[str, Any] = {
-                "params": {"firm_id": ctx["f2"]},
-                "headers": bearer(ctx["token"]),
-            }
+            # Every way a request can name the firm must be caught on its own:
+            # the query string, and (writes) a body-only JSON firm_id under
+            # each media type FastAPI parses as JSON (B2: case variants and
+            # application/*+json must not slip past the check).
+            variants: list[tuple[str, dict[str, Any]]] = [
+                ("query", {"params": {"firm_id": ctx["f2"]}, "headers": bearer(ctx["token"])})
+            ]
             if method in {"POST", "PUT", "PATCH", "DELETE"}:
-                kwargs["headers"] = {**kwargs["headers"], **idem()}
-                kwargs["json"] = {"firm_id": ctx["f2"]}
-            resp = await client.request(method, _fill_path(path), **kwargs)
-            checked += 1
-            title = (
-                resp.json().get("title")
-                if resp.headers.get("content-type", "").startswith("application/json")
-                else None
-            )
-            if resp.status_code != 403 or title != _FIRM_DENIED_TITLE:
-                wrong[f"{method} {path}"] = f"{resp.status_code} {resp.text[:120]}"
+                for ctype in _JSON_CONTENT_TYPES:
+                    variants.append(
+                        (
+                            f"body[{ctype}]",
+                            {
+                                "headers": {
+                                    **bearer(ctx["token"]),
+                                    **idem(),
+                                    "Content-Type": ctype,
+                                },
+                                "content": json.dumps({"firm_id": ctx["f2"]}),
+                            },
+                        )
+                    )
+                variants[0][1]["headers"] = {**variants[0][1]["headers"], **idem()}
+            for label, kwargs in variants:
+                resp = await client.request(method, _fill_path(path), **kwargs)
+                checked += 1
+                try:
+                    title = resp.json().get("title")
+                except ValueError:
+                    title = None
+                if resp.status_code != 403 or title != _FIRM_DENIED_TITLE:
+                    wrong[f"{method} {path} via {label}"] = f"{resp.status_code} {resp.text[:120]}"
         assert checked >= 150, f"route walk looks vacuous: only {checked} routes"
         assert wrong == {}, f"routes that did not refuse an ungranted firm_id: {wrong}"
 

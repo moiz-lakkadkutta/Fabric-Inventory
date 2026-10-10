@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import email.message
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Annotated
@@ -182,19 +183,35 @@ async def get_current_user(
 CurrentUser = Annotated[TokenPayload, Depends(get_current_user)]
 
 
+def _fastapi_parses_as_json(content_type: str | None) -> bool:
+    """Q01-02 B2: the SAME decision FastAPI makes before decoding a body as
+    JSON (`fastapi/routing.py` get_request_handler): media type parsed
+    case-insensitively via `email.message.Message`, maintype ``application``
+    and subtype ``json`` or ``*+json``. A missing Content-Type is treated as
+    JSON too (FastAPI does so when strict_content_type is off) — over-reading
+    is harmless, under-reading would let a body firm_id skip the check."""
+    if not content_type:
+        return True
+    message = email.message.Message()
+    message["content-type"] = content_type
+    if message.get_content_maintype() != "application":
+        return False
+    subtype = message.get_content_subtype()
+    return subtype == "json" or subtype.endswith("+json")
+
+
 async def _request_firm_targets(request: Request) -> frozenset[UUID]:
     """Q01-02: every firm a request explicitly names — path param, query
     string (``?firm_id=``, repeatable) or the top-level ``firm_id`` of a JSON
     body. Malformed ids are ignored here (the route's own validation 422s).
     FastAPI has already read and cached a JSON body before dependencies run,
-    so re-reading it is free; non-JSON bodies (multipart uploads) are never
-    touched."""
+    so re-reading it is free; bodies FastAPI would not decode as JSON
+    (multipart uploads) are never touched."""
     raw: list[object] = []
     raw.append(request.path_params.get("firm_id"))
     raw.extend(request.query_params.getlist("firm_id"))
-    content_type = request.headers.get("content-type", "")
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and content_type.startswith(
-        "application/json"
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and _fastapi_parses_as_json(
+        request.headers.get("content-type")
     ):
         try:
             body = json.loads(await request.body() or b"null")
