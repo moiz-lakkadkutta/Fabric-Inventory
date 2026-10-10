@@ -167,14 +167,31 @@ components:
             $ref: '#/components/schemas/ProblemDetails'
 
     Forbidden:
-      description: Insufficient permissions
+      description: |
+        Insufficient permissions. Permissions are granted per firm (or
+        org-wide). Firm scope (Q01-02): when the request names a `firm_id`
+        (path, query string or top-level JSON body) other than the token's
+        active firm, the endpoint's `x-permission` must ALSO be granted in
+        that firm (firm-scoped role or org-wide role); otherwise 403 with
+        title "No access to that firm". A `firm_id` that does not exist in
+        the caller's organisation is never answered with this 403 — the
+        endpoint responds exactly as for any unknown firm (404/422), so firm
+        existence in other orgs is not revealed. Invites / role changes /
+        custom-role edits are capped by the actor's permissions in the scope
+        being granted (org-wide grants need an org-wide admin).
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetails'
 
     NotFound:
-      description: Resource not found
+      description: |
+        Resource not found. Also returned (never 403) for a resource that
+        exists in the caller's org but in a firm outside the caller's firm
+        scope (Q01-02, enforced by RESTRICTIVE firm RLS) — the same
+        invisibility as a cross-org id. List endpoints without a `firm_id`
+        filter likewise return only rows of firms in scope (plus org-shared
+        masters with no firm).
       content:
         application/problem+json:
           schema:

@@ -836,13 +836,33 @@ def update_custom_role(
         # PRIV-1: ceiling check — actor cannot update a role to include
         # permissions they don't themselves hold. Skip for system/seed path
         # (actor_user_id is None).
+        #
+        # Q01-02: editing a role re-grants it everywhere it is ALREADY
+        # assigned, so the ceiling must hold in each of those scopes (org-wide
+        # = None) as well as the actor's active firm. Otherwise a firm-scoped
+        # admin could widen a role that others hold org-wide or in firms the
+        # actor doesn't administer.
         if actor_user_id is not None:
-            actor_effective = get_user_permissions(
-                session, user_id=actor_user_id, firm_id=actor_firm_id
+            assigned_scopes = set(
+                session.execute(
+                    select(UserRole.firm_id).where(UserRole.role_id == role.role_id).distinct()
+                ).scalars()
             )
-            offending = sorted(set(requested) - actor_effective)
-            if offending:
-                raise PermissionDeniedError(f"Cannot grant permissions you don't hold: {offending}")
+            for scope in {actor_firm_id} | assigned_scopes:
+                actor_effective = get_user_permissions(
+                    session, user_id=actor_user_id, firm_id=scope
+                )
+                offending = sorted(set(requested) - actor_effective)
+                if offending:
+                    where = (
+                        ""
+                        if scope == actor_firm_id
+                        else " where this role is assigned"
+                        + (" (org-wide)" if scope is None else " (another firm)")
+                    )
+                    raise PermissionDeniedError(
+                        f"Cannot grant permissions you don't hold{where}: {offending}"
+                    )
 
         # Replace grants — delete-then-insert. Cleaner than diffing, and
         # `role_permission` is exempt from audit so the churn doesn't

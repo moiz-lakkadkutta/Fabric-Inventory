@@ -56,6 +56,8 @@ _INVITE_TTL_DAYS = 7
 _TOKEN_BYTES = 32
 
 OWNER_ROLE_CODE = "OWNER"
+# Q01-02: the permission that administers users (gates the admin routes).
+_USER_MANAGE_PERMISSION = "admin.user.manage"
 
 
 @dataclass(frozen=True)
@@ -114,8 +116,9 @@ def create_invite(
       - (PRIV-1) invited role's permission set ⊆ `invited_by`'s effective
         permissions derived SERVER-SIDE from the DB (not from the JWT).
 
-    `actor_firm_id` scopes the actor's permission lookup; pass the firm
-    the caller authenticated against (None = org-level only).
+    `actor_firm_id` is accepted for call-site compatibility but no longer
+    drives the ceiling (Q01-02): the actor's permissions are measured in the
+    scope being granted — `firm_id`, or org-wide when it is None.
 
     Audit: emits `user_invite.create` with `{after: {email, role_id,
     firm_id, expires_at}}`.
@@ -147,14 +150,21 @@ def create_invite(
     # permissions (derived SERVER-SIDE — not from the JWT which can be stale).
     # This prevents a low-priv caller from conferring permissions they don't
     # themselves hold to the invitee via role selection.
+    #
+    # Q01-02: the ceiling is measured in the scope the role will be GRANTED
+    # in — the invite's `firm_id`, or org-wide when it is None — not the
+    # actor's active firm. A firm-scoped admin therefore cannot mint an
+    # org-wide grant (their org-wide permission set is empty) nor a grant
+    # in a firm where they don't hold the permissions themselves.
     invited_role_perms = rbac_service.get_role_permission_codes(session, role_id=role_id)
     actor_effective = rbac_service.get_user_permissions(
-        session, user_id=invited_by, firm_id=actor_firm_id
+        session, user_id=invited_by, firm_id=firm_id
     )
     offending = sorted(invited_role_perms - actor_effective)
     if offending:
+        where = "org-wide" if firm_id is None else "in that firm"
         raise PermissionDeniedError(
-            f"Cannot invite into a role with permissions you don't hold: {offending}"
+            f"Cannot invite into a role with permissions you don't hold {where}: {offending}"
         )
 
     # Already a live user with that email?
@@ -400,8 +410,10 @@ def change_user_role(
     replacement of all UserRole rows for this user/org. Custom roles +
     multi-role-per-user is Wave-5+.
 
-    `actor_firm_id` scopes the actor's permission lookup (pass the firm
-    the caller authenticated against; None = org-level only).
+    `actor_firm_id` is accepted for call-site compatibility but no longer
+    drives the checks (Q01-02): the ceiling is measured in the scope the new
+    role is granted in, and the actor must hold `admin.user.manage` in every
+    scope the target currently holds a role in.
 
     Audit emits `identity.user.change_role` with before/after role codes.
     """
@@ -423,9 +435,26 @@ def change_user_role(
 
     # PRIV-1 / IDM-1 Vector C-b: permission ceiling on the new role.
     # A caller cannot assign a role whose permission set exceeds their own.
+    #
+    # Q01-02: measured in the scope the new role will be granted in (see the
+    # replacement below: org-wide for Owner, else the target's prior firm,
+    # else org-wide), not the actor's active firm — so a firm-scoped admin
+    # can't mint an org-wide grant or a grant in another firm.
+    current_user_roles = list(
+        session.execute(
+            select(UserRole).where(UserRole.org_id == org_id, UserRole.user_id == target_user_id)
+        ).scalars()
+    )
+    prior_firm_id: uuid.UUID | None = None
+    for ur in current_user_roles:
+        if ur.firm_id is not None:
+            prior_firm_id = ur.firm_id
+            break
+    target_firm_id: uuid.UUID | None = None if new_role.code == OWNER_ROLE_CODE else prior_firm_id
+
     new_role_perms = rbac_service.get_role_permission_codes(session, role_id=new_role_id)
     actor_effective = rbac_service.get_user_permissions(
-        session, user_id=actor_user_id, firm_id=actor_firm_id
+        session, user_id=actor_user_id, firm_id=target_firm_id
     )
     offending = sorted(new_role_perms - actor_effective)
     if offending:
@@ -442,11 +471,21 @@ def change_user_role(
             f"Cannot assign a role with permissions you don't hold: {offending}"
         )
 
-    current_user_roles = list(
-        session.execute(
-            select(UserRole).where(UserRole.org_id == org_id, UserRole.user_id == target_user_id)
-        ).scalars()
-    )
+    # Q01-02: the change replaces EVERY grant the target holds, so the actor
+    # must administer users in every scope it touches — each firm the target
+    # holds a role in (org-wide = None) and the scope of the new grant. A
+    # firm-scoped admin cannot rewrite an org-wide user or another firm's.
+    for scope in {ur.firm_id for ur in current_user_roles} | {target_firm_id}:
+        scope_perms = rbac_service.get_user_permissions(
+            session, user_id=actor_user_id, firm_id=scope
+        )
+        if _USER_MANAGE_PERMISSION not in scope_perms:
+            raise PermissionDeniedError(
+                "Cannot change the role of a user whose access extends beyond the firms "
+                "you administer"
+                + (" (they hold an org-wide role)" if scope is None else "")
+                + ". Ask an org-wide admin."
+            )
     current_role_codes = {
         session.execute(select(Role.code).where(Role.role_id == ur.role_id)).scalar_one()
         for ur in current_user_roles
@@ -486,17 +525,9 @@ def change_user_role(
     # leave the new row firm_id=None (Owner is org-wide); for any other
     # role we preserve the prior firm_id if there was one (most invites
     # set this at creation time; role-change just swaps the role).
-    prior_firm_id: uuid.UUID | None = None
-    for ur in current_user_roles:
-        if ur.firm_id is not None:
-            prior_firm_id = ur.firm_id
-            break
-
     for ur in current_user_roles:
         session.delete(ur)
     session.flush()
-
-    target_firm_id: uuid.UUID | None = None if new_role.code == OWNER_ROLE_CODE else prior_firm_id
 
     # TS-05/IDM-5: `assign_role` bumps the target user's permissions_version
     # inside the same transaction, so any outstanding JWTs carrying the old
