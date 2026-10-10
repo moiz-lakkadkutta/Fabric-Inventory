@@ -76,6 +76,7 @@ def _add_invoice(
     paid_amount: Decimal = Decimal("0"),
     due_date: datetime.date | None = None,
     lifecycle: InvoiceLifecycleStatus = InvoiceLifecycleStatus.FINALIZED,
+    gst_amount: Decimal = Decimal("0"),
 ) -> uuid.UUID:
     inv = SalesInvoice(
         org_id=org_id,
@@ -85,7 +86,7 @@ def _add_invoice(
         party_id=party_id,
         invoice_date=invoice_date,
         invoice_amount=invoice_amount,
-        gst_amount=Decimal("0"),
+        gst_amount=gst_amount,
         paid_amount=paid_amount,
         due_date=due_date,
         lifecycle_status=lifecycle,
@@ -386,3 +387,105 @@ def test_get_activity_returns_recent_audit_rows(db_session: OrmSession) -> None:
     assert len(items) == 2
     # Most-recent first by created_at.
     assert items[0].kind in {"sales.invoice.finalize", "auth.session.switch_firm"}
+
+
+def test_dashboard_kpis_exclude_draft_invoices(db_session: OrmSession) -> None:
+    """Draft invoices should not contribute to sales_today, sales_mtd, or gst_collected_mtd."""
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    # Draft invoice for today
+    draft_inv = _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="DRAFT-001",
+        invoice_date=today,
+        invoice_amount=Decimal("10498.95"),
+        gst_amount=Decimal("499.95"),
+        lifecycle=InvoiceLifecycleStatus.DRAFT,
+    )
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(kpis, "sales_today").value == Decimal("0")
+    assert _kpi_by_key(kpis, "sales_mtd").value == Decimal("0")
+    assert _kpi_by_key(kpis, "gst_collected_mtd").value == Decimal("0")
+
+    # Now finalize the invoice (change lifecycle to FINALIZED)
+    db_session.query(SalesInvoice).filter_by(sales_invoice_id=draft_inv).update(
+        {"lifecycle_status": InvoiceLifecycleStatus.FINALIZED}
+    )
+    db_session.flush()
+    dashboard_service.invalidate_firm(firm_id)  # bypass cache
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(kpis, "sales_today").value == Decimal("10498.95")
+    assert _kpi_by_key(kpis, "sales_mtd").value == Decimal("10498.95")
+    assert _kpi_by_key(kpis, "gst_collected_mtd").value == Decimal("499.95")
+
+
+def test_outstanding_overdue_ar_still_exclude_drafts_regression(db_session: OrmSession) -> None:
+    """Draft invoices should not affect outstanding_ar or overdue_ar (regression guard)."""
+    dashboard_service.clear_cache()
+    org_id, firm_id, party_id, item_id = _seed_org_firm(db_session)
+    today = datetime.date(2026, 4, 30)
+
+    # Draft invoice (any date) should not count toward AR
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="DRAFT-AR-001",
+        invoice_date=today,
+        invoice_amount=Decimal("5000"),
+        paid_amount=Decimal("1000"),
+        due_date=datetime.date(2026, 5, 15),  # future
+        lifecycle=InvoiceLifecycleStatus.DRAFT,
+    )
+
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    assert _kpi_by_key(kpis, "outstanding_ar").value == Decimal("0")
+    assert _kpi_by_key(kpis, "overdue_ar").value == Decimal("0")
+
+    # Finalized invoice (outstanding, not overdue)
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="FIN-OUT-001",
+        invoice_date=today,
+        invoice_amount=Decimal("5000"),
+        paid_amount=Decimal("1000"),
+        due_date=datetime.date(2026, 5, 15),
+        lifecycle=InvoiceLifecycleStatus.FINALIZED,
+    )
+    # Finalized invoice (overdue)
+    _add_invoice(
+        db_session,
+        org_id=org_id,
+        firm_id=firm_id,
+        party_id=party_id,
+        item_id=item_id,
+        number="FIN-OVR-001",
+        invoice_date=datetime.date(2026, 4, 1),
+        invoice_amount=Decimal("3000"),
+        paid_amount=Decimal("0"),
+        due_date=datetime.date(2026, 4, 10),
+        lifecycle=InvoiceLifecycleStatus.FINALIZED,
+    )
+
+    dashboard_service.invalidate_firm(firm_id)
+    kpis = dashboard_service.get_kpis(db_session, org_id=org_id, firm_id=firm_id, today=today)
+    outstanding = _kpi_by_key(kpis, "outstanding_ar")
+    overdue = _kpi_by_key(kpis, "overdue_ar")
+    # Outstanding: (5000-1000) + (3000-0) = 7000
+    assert outstanding.value == Decimal("7000")
+    # Overdue: only the second invoice = 3000
+    assert overdue.value == Decimal("3000")
