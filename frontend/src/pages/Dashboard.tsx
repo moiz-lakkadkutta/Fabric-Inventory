@@ -20,6 +20,7 @@ const STATUS_PILL: Record<
   PARTIALLY_PAID: { kind: 'due', label: 'Part-paid' },
   OVERDUE: { kind: 'overdue', label: 'Overdue' },
   CANCELLED: { kind: 'scrap', label: 'Cancelled' },
+  DISCARDED: { kind: 'scrap', label: 'Discarded' },
 };
 
 export default function Dashboard() {

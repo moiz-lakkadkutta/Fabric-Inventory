@@ -40,7 +40,7 @@ describe('invoices live-mode mappers', () => {
     expect(mapStatus('PARTIALLY_PAID')).toBe('PARTIALLY_PAID');
     expect(mapStatus('PAID')).toBe('PAID');
     expect(mapStatus('OVERDUE')).toBe('OVERDUE');
-    expect(mapStatus('DISCARDED')).toBe('CANCELLED');
+    expect(mapStatus('DISCARDED')).toBe('DISCARDED');
     expect(mapStatus('something-else')).toBe('DRAFT');
   });
 
