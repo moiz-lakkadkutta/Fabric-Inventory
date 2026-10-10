@@ -444,3 +444,78 @@ async def test_q01_02_firm_scoped_admin_cannot_rewrite_org_wide_user_or_widen_or
             json={"permissions": ["masters.party.read", "masters.party.create"]},
         )
         assert widen.status_code == 403, widen.text
+
+
+# ── B3: inline permission checks follow the firm the request acts in ──
+
+
+async def test_q01_02_pii_is_masked_when_crossing_into_a_firm_without_pii_read(
+    sync_engine: Engine,
+) -> None:
+    """{party.read, pii.read} in F1 but only {party.read} in F2: reading F2
+    parties via ?firm_id=F2 must use F2's grants — PII masked — on the by-id
+    GET and on the list (both gate PII inline on `current_user.permissions`)."""
+    async with q01_client() as client:
+        owner = await signup(client)
+        f1 = owner["firm_id"]
+        f2 = str(add_sibling_firm(sync_engine, uuid.UUID(owner["org_id"])))
+        phone = "+919812345678"
+        created = await client.post(
+            "/parties",
+            headers={**bearer(owner["access_token"]), **idem()},
+            json={
+                "code": "Q01-PII",
+                "name": "pii",
+                "is_customer": True,
+                "firm_id": f2,
+                "phone": phone,
+            },
+        )
+        assert created.status_code == 201, created.text
+        pid = created.json()["party_id"]
+        user = await _user_in(client, owner, ["masters.party.read", "masters.party.pii.read"], [f1])
+        # Grant ONLY party.read in F2 (a second, narrower role).
+        narrow = await create_role(
+            client, owner["access_token"], f"q01_n_{uuid.uuid4().hex[:6]}", ["masters.party.read"]
+        )
+        from sqlalchemy import select
+
+        from app.models import AppUser
+        from app.service import rbac_service
+        from tests.conftest import org_scoped_session
+
+        engine = _engine()
+        with org_scoped_session(engine, uuid.UUID(owner["org_id"])) as s:
+            uid = s.execute(
+                select(AppUser.user_id).where(AppUser.email == user["email"])
+            ).scalar_one()
+            rbac_service.assign_role(
+                s,
+                user_id=uid,
+                role_id=uuid.UUID(narrow),
+                firm_id=uuid.UUID(f2),
+                org_id=uuid.UUID(owner["org_id"]),
+            )
+        engine.dispose()
+        relog = await login(client, email=user["email"], org_name=owner["_org_name"])
+        sw = await client.post(
+            "/auth/switch-firm",
+            headers={**bearer(relog["access_token"]), **idem()},
+            json={"firm_id": f1},
+        )
+        token = sw.json()["access_token"]
+        me = await client.get("/auth/me", headers=bearer(token))
+        assert "masters.party.pii.read" in me.json()["permissions"]  # active F1 has it
+
+        by_id = await client.get(f"/parties/{pid}", params={"firm_id": f2}, headers=bearer(token))
+        assert by_id.status_code == 200, by_id.text
+        assert by_id.json()["phone"] != phone, f"PII leaked under F1's grant: {by_id.json()}"
+        lst = await client.get("/parties", params={"firm_id": f2}, headers=bearer(token))
+        assert lst.status_code == 200, lst.text
+        row = next(p for p in lst.json()["items"] if p["party_id"] == pid)
+        assert row["phone"] != phone, f"PII leaked in list under F1's grant: {row}"
+        # Control: the Owner (pii.read org-wide) sees it in clear.
+        own = await client.get(
+            f"/parties/{pid}", params={"firm_id": f2}, headers=bearer(owner["access_token"])
+        )
+        assert own.json()["phone"] == phone

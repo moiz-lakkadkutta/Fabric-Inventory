@@ -267,8 +267,13 @@ def require_permission(permission_code: str) -> Callable[..., TokenPayload]:
             )
         }
         if crossed:
-            firm_scope_service.pin_request_firms(
-                db, crossed | (firm_targets & {current_user.firm_id})
+            pinned = crossed | (firm_targets & {current_user.firm_id})
+            firm_scope_service.pin_request_firms(db, pinned)
+            # B3: the request now acts in `pinned`, so every permission the
+            # handler consults inline (e.g. `masters.party.pii.read`) must
+            # hold in ALL of those firms — never the active firm's alone.
+            return firm_scope_service.principal_for_firms(
+                db, current_user=current_user, firm_ids=pinned
             )
         return current_user
 

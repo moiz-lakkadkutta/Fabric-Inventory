@@ -40,6 +40,7 @@ with no grants at all gets ``''``.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 
 from sqlalchemy import select, text
@@ -179,6 +180,23 @@ def authorize_firm(
     return True
 
 
+def principal_for_firms(
+    session: Session, *, current_user: TokenPayload, firm_ids: set[uuid.UUID]
+) -> TokenPayload:
+    """The principal a cross-firm request runs as: the token's identity with
+    ``permissions`` = the INTERSECTION of the user's permissions in every firm
+    the request is pinned to (org-wide roles count in each). Handlers that
+    check a permission inline therefore judge it in the firm(s) the data
+    belongs to, not the token's active firm."""
+    effective: set[str] | None = None
+    for firm_id in firm_ids:
+        granted = rbac_service.get_user_permissions(
+            session, user_id=current_user.user_id, firm_id=firm_id
+        )
+        effective = granted if effective is None else effective & granted
+    return dataclasses.replace(current_user, permissions=tuple(sorted(effective or set())))
+
+
 def pin_request_firms(session: Session, firm_ids: set[uuid.UUID]) -> None:
     """The request explicitly acts in ``firm_ids`` (each authorised by
     :func:`authorize_firm`): re-point the transaction's DB scope to exactly
@@ -197,4 +215,5 @@ __all__ = [
     "authorize_firm",
     "current_firm_scope",
     "pin_request_firms",
+    "principal_for_firms",
 ]
