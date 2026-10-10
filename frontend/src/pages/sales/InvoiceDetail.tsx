@@ -1,8 +1,9 @@
-import { ArrowLeft, AlertCircle, Check, FileMinus, IndianRupee, Printer } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Check, FileMinus, IndianRupee, Printer, Trash2 } from 'lucide-react';
 import * as React from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
+import { Dialog } from '@/components/ui/dialog';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Pill, type PillKind } from '@/components/ui/pill';
@@ -15,7 +16,7 @@ import {
   ReceiptBankAccountField,
   useReceiptBankAccount,
 } from '@/pages/accounting/ReceiptBankAccountField';
-import { useFinalizeInvoice, useInvoice } from '@/lib/queries/invoices';
+import { useDiscardInvoice, useFinalizeInvoice, useInvoice } from '@/lib/queries/invoices';
 import { formatDateShort, formatINRCompact } from '@/lib/format';
 import type { Invoice } from '@/lib/mock/types';
 
@@ -26,6 +27,7 @@ const STATUS_PILL: Record<Invoice['status'], { kind: PillKind; label: string }> 
   PARTIALLY_PAID: { kind: 'due', label: 'Part-paid' },
   OVERDUE: { kind: 'overdue', label: 'Overdue' },
   CANCELLED: { kind: 'scrap', label: 'Cancelled' },
+  DISCARDED: { kind: 'scrap', label: 'Discarded' },
 };
 
 export default function InvoiceDetail() {
@@ -45,6 +47,7 @@ export default function InvoiceDetail() {
   const [printError, setPrintError] = React.useState<string | null>(null);
   const [printPending, setPrintPending] = React.useState(false);
   const [creditNotePending, setCreditNotePending] = React.useState(false);
+  const [discardOpen, setDiscardOpen] = React.useState(false);
 
   if (invoiceQuery.isPending) {
     return (
@@ -214,7 +217,7 @@ export default function InvoiceDetail() {
           <Button
             variant="outline"
             onClick={onPrint}
-            disabled={printPending || inv.status === 'DRAFT'}
+            disabled={printPending || inv.status === 'DRAFT' || inv.status === 'DISCARDED'}
             title={
               inv.status === 'DRAFT' ? 'Finalize the invoice before printing the PDF.' : undefined
             }
@@ -239,6 +242,12 @@ export default function InvoiceDetail() {
               Finalize
             </Button>
           )}
+          {inv.status === 'DRAFT' && (
+            <Button variant="outline" onClick={() => setDiscardOpen(true)}>
+              <Trash2 size={14} />
+              Discard draft
+            </Button>
+          )}
           {canRecordPayment && (
             <Button onClick={() => setRecordOpen((v) => !v)}>
               <IndianRupee size={14} />
@@ -247,6 +256,14 @@ export default function InvoiceDetail() {
           )}
         </div>
       </header>
+
+      {discardOpen && (
+        <DiscardDraftDialog
+          invoiceId={inv.invoice_id}
+          number={inv.number}
+          onClose={() => setDiscardOpen(false)}
+        />
+      )}
 
       {recordOpen && canRecordPayment && (
         <form
@@ -531,5 +548,78 @@ function Row({ label, value, big }: { label: string; value: string; big?: boolea
         {value}
       </span>
     </div>
+  );
+}
+
+/*
+ * DRAFT → DISCARDED confirmation. Nothing has posted for a draft, so there is
+ * nothing to reverse; the number it was given stays on the record as a voided
+ * number (the backend keeps the row). A linked delivery challan is released.
+ */
+function DiscardDraftDialog({
+  invoiceId,
+  number,
+  onClose,
+}: {
+  invoiceId: string;
+  number: string;
+  onClose: () => void;
+}) {
+  const discard = useDiscardInvoice();
+  const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
+  const [error, setError] = React.useState<string | null>(null);
+
+  const onConfirm = () => {
+    setError(null);
+    discard.mutate(
+      { invoiceId, idempotencyKey },
+      {
+        onSuccess: () => {
+          resetKey();
+          onClose();
+        },
+        onError: (err) => {
+          resetKey();
+          setError(err instanceof ApiError ? err.detail || err.title || err.message : err.message);
+        },
+      },
+    );
+  };
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="Discard draft invoice?"
+      description={`Draft ${number} will be discarded. Nothing has been posted, so nothing needs reversing.`}
+      footer={
+        <>
+          <Button variant="outline" type="button" onClick={onClose}>
+            Keep draft
+          </Button>
+          <Button
+            variant="destructive"
+            type="button"
+            onClick={onConfirm}
+            disabled={discard.isPending}
+          >
+            <Trash2 size={14} />
+            {discard.isPending ? 'Discarding…' : 'Discard draft'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-2" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+        <p>
+          The number {number} stays on record as discarded and will not be reused. If this draft
+          bills a delivery challan, the challan becomes available to invoice again.
+        </p>
+        {error && (
+          <div role="alert" style={{ color: 'var(--danger-text)', fontSize: 12.5 }}>
+            {error}
+          </div>
+        )}
+      </div>
+    </Dialog>
   );
 }

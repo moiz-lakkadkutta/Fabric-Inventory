@@ -78,7 +78,8 @@ export type InvoiceStatus =
   | 'PAID'
   | 'PARTIALLY_PAID'
   | 'OVERDUE'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'DISCARDED';
 
 export interface InvoiceLine {
   item_id: ItemId;

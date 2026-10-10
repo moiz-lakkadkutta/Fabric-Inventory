@@ -58,7 +58,7 @@ const STATUS_MAP: Record<string, InvoiceStatus> = {
   PAID: 'PAID',
   OVERDUE: 'OVERDUE',
   CANCELLED: 'CANCELLED',
-  DISCARDED: 'CANCELLED',
+  DISCARDED: 'DISCARDED',
 };
 
 function mapStatus(lifecycle: string): InvoiceStatus {
@@ -280,6 +280,49 @@ export function useFinalizeInvoice() {
         (prev) => prev?.map((i) => (i.invoice_id === next.invoice_id ? next : i)) ?? prev,
       );
       qc.setQueryData([...KEY, next.invoice_id], next);
+    },
+  });
+}
+
+async function liveDiscard(invoiceId: string, idempotencyKey: string): Promise<Invoice> {
+  const data = await api<BackendSalesInvoice>(`/invoices/${invoiceId}/discard`, {
+    method: 'POST',
+    idempotencyKey,
+    body: {},
+  });
+  return mapDetail(data);
+}
+
+export interface DiscardInput {
+  invoiceId: string;
+  idempotencyKey: string;
+}
+
+/**
+ * DRAFT → DISCARDED (POST /invoices/{id}/discard). The backend keeps the row
+ * (its number stays as a voided number) and hides it from the default list,
+ * and releases any linked delivery challan — so invalidate the list, the
+ * dashboard and the DC caches, and seed the detail cache with the result.
+ */
+export function useDiscardInvoice() {
+  const qc = useQueryClient();
+  return useMutation<Invoice, ApiError | Error, DiscardInput>({
+    mutationFn: async ({ invoiceId, idempotencyKey }) => {
+      if (IS_LIVE) return liveDiscard(invoiceId, idempotencyKey);
+      return fakeFetch(() => {
+        const list = ensureStore();
+        const idx = list.findIndex((i) => i.invoice_id === invoiceId);
+        if (idx === -1) throw new Error(`Invoice ${invoiceId} not found`);
+        const next: Invoice = { ...list[idx], status: 'DISCARDED' };
+        store = [...list.slice(0, idx), ...list.slice(idx + 1)];
+        return next;
+      });
+    },
+    onSuccess: (next) => {
+      qc.setQueryData([...KEY, next.invoice_id], next);
+      qc.invalidateQueries({ queryKey: KEY, exact: true });
+      qc.invalidateQueries({ queryKey: ['dashboard'] });
+      qc.invalidateQueries({ queryKey: ['delivery-challans'] });
     },
   });
 }

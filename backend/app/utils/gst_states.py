@@ -30,6 +30,8 @@ CA-VALIDATED-PENDING: confirm with CA:
 
 from __future__ import annotations
 
+import re
+
 # ── Complete numeric-code-to-canonical-alpha mapping ──────────────────────
 # Covers all codes assigned by the GST Council (01-38, 97).
 # Code 38 = Ladakh (carved out of J&K in 2019); included per S1 requirement.
@@ -166,9 +168,58 @@ def validate_state_code(v: str | None) -> str | None:
     return normalised
 
 
+# ── GSTIN (normal taxpayer) ────────────────────────────────────────────────
+# 15 chars: 2 state + 5 PAN-letters + 4 PAN-digits + 1 PAN-letter
+# + 1 entity-code (1-9 or A-Z) + literal Z + 1 checksum (alphanumeric).
+GSTIN_FORMAT_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[A-Z\d]$")
+
+
+def normalize_gstin(raw: str | None) -> str | None:
+    """Strip whitespace and uppercase a GSTIN; empty / whitespace-only -> None.
+
+    Applied BEFORE validation and storage on every party write path (API +
+    Vyapar import) so " 27aabcm1234c1z9 " is accepted and stored canonically.
+    """
+    if raw is None:
+        return None
+    cleaned = raw.strip().upper()
+    return cleaned or None
+
+
+def gstin_validation_error(gstin: str) -> str | None:
+    """Return an actionable error message if *gstin* is not acceptable, else None.
+
+    Shared by the party API (``masters_service``) and the Vyapar importer so
+    both hold a GSTIN to the same rule (#215):
+      - 15-char normal-taxpayer format (``GSTIN_FORMAT_RE``);
+      - the first two digits must be a GST state/UT code in
+        ``_NUMERIC_TO_ALPHA`` (01-38, 97). Prefixes such as 00 / 99 / 96 are
+        rejected: a party with such a GSTIN and no recorded state used to
+        resolve to NIL_NOT_A_SUPPLY with Rs 0 GST.
+
+    Out of scope (not validated anywhere yet): the mod-36 checksum digit.
+    UIN / OIDAR / TDS / TCS / NRTP identifiers don't match the
+    normal-taxpayer format and are rejected by the format check.
+    """
+    if not GSTIN_FORMAT_RE.fullmatch(gstin):
+        return f"Invalid GSTIN format: {gstin!r}"
+    prefix = gstin[:2]
+    if prefix not in _NUMERIC_TO_ALPHA:
+        return (
+            f"GSTIN state code '{prefix}' is not a valid Indian state/UT code "
+            f"(GSTIN {gstin!r}). The first two digits of a GSTIN must be the "
+            "GST state code of registration (01-38 or 97, e.g. '27' for "
+            "Maharashtra). Check the GSTIN on the party's registration certificate."
+        )
+    return None
+
+
 __all__ = [
+    "GSTIN_FORMAT_RE",
     "VALID_GST_STATE_CODES",
+    "gstin_validation_error",
     "is_valid_state_code",
+    "normalize_gstin",
     "normalize_state_code",
     "validate_state_code",
 ]

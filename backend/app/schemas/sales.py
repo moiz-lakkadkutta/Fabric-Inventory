@@ -281,6 +281,13 @@ class InvoiceCancelRequest(BaseModel):
         return v.strip()
 
 
+class InvoiceDiscardRequest(BaseModel):
+    """Optional body for POST /invoices/{id}/discard — a free-text reason that
+    is recorded on the audit log (the voided number stays on the row)."""
+
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class SiLineCreateRequest(BaseModel):
     item_id: uuid.UUID
     # BL-02: upper bound prevents values that would overflow NUMERIC(15,4)
