@@ -715,6 +715,26 @@ components:
         updated_at:
           type: string
           format: date-time
+        credit_note:
+          description: >-
+            (#216) The CGST Act §34 credit note issued against this invoice —
+            set only when it was CANCELLED in a later GST period than its
+            invoice date. Null for a same-period cancellation (a true
+            cancellation; no credit note is issued) and for every other
+            status. PDF at GET /invoices/{invoice_id}/credit-note/pdf.
+          nullable: true
+          type: object
+          properties:
+            voucher_id:
+              type: string
+              format: uuid
+            number:
+              type: string
+              maxLength: 16
+              description: Full credit-note number, e.g. "CN/26-27/0001".
+            note_date:
+              type: string
+              format: date
 
     InvoiceLine:
       type: object
@@ -4369,6 +4389,13 @@ paths:
         cross-period cancel after 30 November following the end of the
         invoice's financial year (April-March) is refused with 409 (§34(2)
         time limit).
+        NUMBERING (#216): a cross-period (§34) credit note is numbered in the
+        firm's own credit-note series `CN/<FY>/<serial>` (e.g. CN/26-27/0001;
+        FY = Indian financial year, 1 April - 31 March, of the note date;
+        gapless, restarting each 1 April; ≤16 chars per Rule 53(1A)(b)). A
+        same-period cancellation's GL reversal is an internal `CXL/<FY>`
+        voucher and never consumes a credit-note serial. The response's
+        `credit_note` carries the note number and date.
       operationId: cancelInvoice
       tags:
         - sales
@@ -4409,6 +4436,42 @@ paths:
             linked to a delivery challan, or (#199) a cross-period cancel past
             the §34 credit-note time limit (30-Nov after the invoice's FY end).
       x-permission: sales.invoice.cancel
+
+  /invoices/{invoice_id}/credit-note/pdf:
+    get:
+      summary: Download the §34 credit note issued against a cancelled invoice
+      description: >-
+        (#216) Renders the credit note (CGST Rule 53(1A)) for an invoice that
+        was cancelled in a later GST period: supplier name/address/GSTIN,
+        "Credit Note", serial number (CN/<FY>/NNNN) and date of issue,
+        recipient name/address/GSTIN (or, unregistered, address, place of
+        delivery and state), the original invoice number and date, per-line
+        taxable value, rate and CGST/SGST/IGST credited, and the signature
+        block. 404 when the invoice is not visible to the caller's org or has
+        no credit note (not cancelled, or a same-period cancellation).
+      operationId: getInvoiceCreditNotePdf
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: PDF stream of the credit note.
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: sales.invoice.read
 
   /invoices/{invoice_id}/send-whatsapp:
     post:
@@ -5280,7 +5343,10 @@ paths:
             EXPWOP), or, for a B2CS original, a negative adjustment netted
             into that month's `b2cs` row for the same (state, rate) — a
             negative row with `invoice_count` 0 if there were no sales. Each
-            credit-note row is per (note, slab rate) with note number/date,
+            credit-note row is per (note, slab rate) with note number/date
+            (#216: `note_no` / `invoice_no` carry the FULL numbers, e.g.
+            "CN/26-27/0001", and the XLSX "Note #" / "Original invoice #"
+            columns use them),
             original invoice number/date, place of supply, `note_value`,
             `taxable_value`, CGST/SGST/IGST and `note_type` "C"; amounts are
             POSITIVE (the note type carries the sign). `hsn` is net of every

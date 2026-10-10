@@ -3314,6 +3314,10 @@
             "title": "Invoice Date",
             "type": "string"
           },
+          "invoice_no": {
+            "title": "Invoice No",
+            "type": "string"
+          },
           "invoice_number": {
             "title": "Invoice Number",
             "type": "string"
@@ -3325,6 +3329,10 @@
           "note_date": {
             "format": "date",
             "title": "Note Date",
+            "type": "string"
+          },
+          "note_no": {
+            "title": "Note No",
             "type": "string"
           },
           "note_number": {
@@ -3404,6 +3412,8 @@
           "cgst",
           "sgst",
           "igst",
+          "note_no",
+          "invoice_no",
           "gstin"
         ],
         "title": "Gstr1CdnrRow",
@@ -3432,6 +3442,10 @@
             "title": "Invoice Date",
             "type": "string"
           },
+          "invoice_no": {
+            "title": "Invoice No",
+            "type": "string"
+          },
           "invoice_number": {
             "title": "Invoice Number",
             "type": "string"
@@ -3443,6 +3457,10 @@
           "note_date": {
             "format": "date",
             "title": "Note Date",
+            "type": "string"
+          },
+          "note_no": {
+            "title": "Note No",
             "type": "string"
           },
           "note_number": {
@@ -3526,6 +3544,8 @@
           "cgst",
           "sgst",
           "igst",
+          "note_no",
+          "invoice_no",
           "ur_type"
         ],
         "title": "Gstr1CdnurRow",
@@ -4208,6 +4228,32 @@
           "reason"
         ],
         "title": "InvoiceCancelRequest",
+        "type": "object"
+      },
+      "InvoiceCreditNoteRef": {
+        "description": "#216: the CGST \u00a734 credit note issued against a cancelled invoice\n(cross-period cancel). ``number`` is the full document number, e.g.\n\"CN/26-27/0001\"; the PDF is at GET /invoices/{id}/credit-note/pdf.",
+        "properties": {
+          "note_date": {
+            "format": "date",
+            "title": "Note Date",
+            "type": "string"
+          },
+          "number": {
+            "title": "Number",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "number",
+          "note_date"
+        ],
+        "title": "InvoiceCreditNoteRef",
         "type": "object"
       },
       "InvoiceLifecycleStatus": {
@@ -13344,6 +13390,16 @@
             "title": "Created At",
             "type": "string"
           },
+          "credit_note": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InvoiceCreditNoteRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "delivery_challan_id": {
             "anyOf": [
               {
@@ -19369,6 +19425,53 @@
           }
         },
         "summary": "Cancel a finalized invoice (posts a reversing GL voucher)",
+        "tags": [
+          "sales",
+          "invoices"
+        ]
+      }
+    },
+    "/invoices/{sales_invoice_id}/credit-note/pdf": {
+      "get": {
+        "description": "#216: stream the credit note issued when a finalized invoice was\ncancelled in a later GST period. Same permission as the invoice PDF;\nRLS makes a cross-org id a 404.",
+        "operationId": "get_invoice_credit_note_pdf_invoices__sales_invoice_id__credit_note_pdf_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sales_invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Sales Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/pdf": {}
+            },
+            "description": "PDF stream of the credit note."
+          },
+          "404": {
+            "description": "Invoice not found in the caller's org, or it has no credit note (not cancelled, or cancelled in the same GST period)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Render the CGST \u00a734 credit note issued against a cancelled invoice (Rule 53(1A))",
         "tags": [
           "sales",
           "invoices"

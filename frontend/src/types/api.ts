@@ -1025,6 +1025,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/invoices/{sales_invoice_id}/credit-note/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Render the CGST §34 credit note issued against a cancelled invoice (Rule 53(1A))
+         * @description #216: stream the credit note issued when a finalized invoice was
+         *     cancelled in a later GST period. Same permission as the invoice PDF;
+         *     RLS makes a cross-org id a 404.
+         */
+        get: operations["get_invoice_credit_note_pdf_invoices__sales_invoice_id__credit_note_pdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/invoices/{sales_invoice_id}/finalize": {
         parameters: {
             query?: never;
@@ -3900,6 +3922,8 @@ export interface components {
              * Format: date
              */
             invoice_date: string;
+            /** Invoice No */
+            invoice_no: string;
             /** Invoice Number */
             invoice_number: string;
             /** Invoice Series */
@@ -3909,6 +3933,8 @@ export interface components {
              * Format: date
              */
             note_date: string;
+            /** Note No */
+            note_no: string;
             /** Note Number */
             note_number: string;
             /** Note Series */
@@ -3959,6 +3985,8 @@ export interface components {
              * Format: date
              */
             invoice_date: string;
+            /** Invoice No */
+            invoice_no: string;
             /** Invoice Number */
             invoice_number: string;
             /** Invoice Series */
@@ -3968,6 +3996,8 @@ export interface components {
              * Format: date
              */
             note_date: string;
+            /** Note No */
+            note_no: string;
             /** Note Number */
             note_number: string;
             /** Note Series */
@@ -4343,6 +4373,26 @@ export interface components {
         InvoiceCancelRequest: {
             /** Reason */
             reason: string;
+        };
+        /**
+         * InvoiceCreditNoteRef
+         * @description #216: the CGST §34 credit note issued against a cancelled invoice
+         *     (cross-period cancel). ``number`` is the full document number, e.g.
+         *     "CN/26-27/0001"; the PDF is at GET /invoices/{id}/credit-note/pdf.
+         */
+        InvoiceCreditNoteRef: {
+            /**
+             * Note Date
+             * Format: date
+             */
+            note_date: string;
+            /** Number */
+            number: string;
+            /**
+             * Voucher Id
+             * Format: uuid
+             */
+            voucher_id: string;
         };
         /**
          * InvoiceLifecycleStatus
@@ -8052,6 +8102,7 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            credit_note?: components["schemas"]["InvoiceCreditNoteRef"] | null;
             /** Delivery Challan Id */
             delivery_challan_id: string | null;
             /** Due Date */
@@ -11065,6 +11116,45 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SalesInvoiceResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_invoice_credit_note_pdf_invoices__sales_invoice_id__credit_note_pdf_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sales_invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description PDF stream of the credit note. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/pdf": unknown;
+                };
+            };
+            /** @description Invoice not found in the caller's org, or it has no credit note (not cancelled, or cancelled in the same GST period). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

@@ -111,6 +111,9 @@ function mapDetail(b: BackendSalesInvoice): Invoice {
     ageing_days: ageingDays(b.due_date),
     lines: b.lines.map(mapLine),
     doc_type: mapDocType(b.tax_type, b.invoice_type),
+    credit_note: b.credit_note
+      ? { number: b.credit_note.number, date: b.credit_note.note_date }
+      : null,
   };
 }
 
