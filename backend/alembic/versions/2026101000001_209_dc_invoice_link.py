@@ -59,10 +59,14 @@ _LIVE_PREDICATE = (
     "'CANCELLED'::invoice_lifecycle_status, 'DISCARDED'::invoice_lifecycle_status)"
 )
 
-_DUP_DETECT_SQL = f"""
+# Same predicate as _LIVE_PREDICATE, written out literally (static SQL).
+_DUP_DETECT_SQL = """
     SELECT delivery_challan_id::text, count(*)
     FROM sales_invoice
-    WHERE {_LIVE_PREDICATE}
+    WHERE delivery_challan_id IS NOT NULL
+      AND deleted_at IS NULL
+      AND lifecycle_status NOT IN (
+          'CANCELLED'::invoice_lifecycle_status, 'DISCARDED'::invoice_lifecycle_status)
     GROUP BY delivery_challan_id
     HAVING count(*) > 1
     ORDER BY delivery_challan_id

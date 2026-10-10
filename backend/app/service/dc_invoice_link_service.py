@@ -167,9 +167,7 @@ def _check_lines_match_dc(
     items and quantities. SERVICE lines on either side are ignored."""
     inv_lines = list(invoice_lines)
     dc_lines = [ln for ln in dc.lines if ln.deleted_at is None]
-    item_ids = {uuid.UUID(str(ln["item_id"])) for ln in inv_lines} | {
-        ln.item_id for ln in dc_lines
-    }
+    item_ids = {uuid.UUID(str(ln["item_id"])) for ln in inv_lines} | {ln.item_id for ln in dc_lines}
     items = {
         it.item_id: it
         for it in session.execute(

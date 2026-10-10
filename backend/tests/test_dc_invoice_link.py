@@ -203,11 +203,11 @@ def test_dc_invoice_relieves_stock_once_and_posts_one_cogs(
     assert [(r.reference_type, r.reference_id) for r in outs] == [("DC", dc.delivery_challan_id)]
     assert _on_hand(db_session, fresh_org_id, firm, item) == Decimal("15")
 
-    # Exactly one COGS voucher, at the DC's cost (10 × 40).
+    # Exactly one COGS voucher, at the DC's cost (10 x 40).
     cogs = _cogs_vouchers(db_session, fresh_org_id, invoice.sales_invoice_id)
     assert len(cogs) == 1
-    assert Decimal(cogs[0].total_debit) == Decimal("400.00")
-    assert Decimal(cogs[0].total_credit) == Decimal("400.00")
+    assert Decimal(cogs[0].total_debit or 0) == Decimal("400.00")
+    assert Decimal(cogs[0].total_credit or 0) == Decimal("400.00")
 
 
 def test_direct_invoice_still_relieves_and_posts_cogs(
@@ -236,7 +236,7 @@ def test_direct_invoice_still_relieves_and_posts_cogs(
     assert _on_hand(db_session, fresh_org_id, firm, item) == Decimal("21")
     cogs = _cogs_vouchers(db_session, fresh_org_id, invoice.sales_invoice_id)
     assert len(cogs) == 1
-    assert Decimal(cogs[0].total_debit) == Decimal("160.00")
+    assert Decimal(cogs[0].total_debit or 0) == Decimal("160.00")
 
 
 def test_dc_invoice_may_add_service_lines(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
@@ -264,7 +264,7 @@ def test_dc_invoice_may_add_service_lines(db_session: OrmSession, fresh_org_id: 
         ],
     )
     assert invoice.delivery_challan_id == dc.delivery_challan_id
-    assert Decimal(invoice.invoice_amount) == Decimal("1290.00")
+    assert Decimal(invoice.invoice_amount or 0) == Decimal("1290.00")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -463,7 +463,10 @@ def test_link_rejects_qty_mismatch(
         party_id=party.party_id,
         lines=[{"item_id": item.item_id, "qty_dispatched": "5", "price": "90"}],
     )
-    with pytest.raises(AppValidationError, match=r"Cotton Fabric 44in: invoice bills .* but challan .* dispatched 5"):
+    with pytest.raises(
+        AppValidationError,
+        match=r"Cotton Fabric 44in: invoice bills .* but challan .* dispatched 5",
+    ):
         _invoice_on_dc(
             db_session,
             org_id=fresh_org_id,
@@ -608,12 +611,18 @@ def test_unique_index_counts_drafts_and_releases_cancelled(
     )
     dc_id = dc.delivery_challan_id
     # Released rows never collide with each other or with a live one.
-    db_session.add(_raw_invoice(fresh_org_id, firm, party, dc_id, "1", InvoiceLifecycleStatus.CANCELLED))
-    db_session.add(_raw_invoice(fresh_org_id, firm, party, dc_id, "2", InvoiceLifecycleStatus.DISCARDED))
+    db_session.add(
+        _raw_invoice(fresh_org_id, firm, party, dc_id, "1", InvoiceLifecycleStatus.CANCELLED)
+    )
+    db_session.add(
+        _raw_invoice(fresh_org_id, firm, party, dc_id, "2", InvoiceLifecycleStatus.DISCARDED)
+    )
     deleted = _raw_invoice(fresh_org_id, firm, party, dc_id, "3", InvoiceLifecycleStatus.DRAFT)
     deleted.deleted_at = datetime.datetime.now(tz=datetime.UTC)
     db_session.add(deleted)
-    db_session.add(_raw_invoice(fresh_org_id, firm, party, dc_id, "4", InvoiceLifecycleStatus.DRAFT))
+    db_session.add(
+        _raw_invoice(fresh_org_id, firm, party, dc_id, "4", InvoiceLifecycleStatus.DRAFT)
+    )
     db_session.flush()
 
     # A second live row (even a DRAFT) trips the index.
@@ -628,6 +637,21 @@ def test_unique_index_counts_drafts_and_releases_cancelled(
 # ──────────────────────────────────────────────────────────────────────
 # Cancel: DC freed for re-invoicing; stock stays out; COGS nets to one sale
 # ──────────────────────────────────────────────────────────────────────
+
+
+def _cogs_net(session: OrmSession, org_id: uuid.UUID) -> Decimal:
+    """Net debit balance of ledger 5000 (COGS) across all live vouchers."""
+    value = session.execute(
+        text(
+            "SELECT coalesce(sum(CASE WHEN vl.line_type = 'DR' THEN vl.amount "
+            "ELSE -vl.amount END), 0) "
+            "FROM voucher_line vl JOIN voucher v ON v.voucher_id = vl.voucher_id "
+            "JOIN ledger l ON l.ledger_id = vl.ledger_id "
+            "WHERE v.org_id = :o AND l.code = '5000' AND v.deleted_at IS NULL"
+        ),
+        {"o": str(org_id)},
+    ).scalar_one()
+    return Decimal(value)
 
 
 def test_cancel_dc_invoice_frees_dc_and_keeps_stock_out(
@@ -667,23 +691,18 @@ def test_cancel_dc_invoice_frees_dc_and_keeps_stock_out(
     restored = db_session.execute(
         select(func.count())
         .select_from(StockLedger)
-        .where(StockLedger.org_id == fresh_org_id, StockLedger.qty_in > 0,
-               StockLedger.reference_type == "sales_invoice_cancel")
+        .where(
+            StockLedger.org_id == fresh_org_id,
+            StockLedger.qty_in > 0,
+            StockLedger.reference_type == "sales_invoice_cancel",
+        )
     ).scalar_one()
     assert restored == 0
     db_session.refresh(dc)
     assert dc.status == DCStatus.ISSUED.value
 
     # COGS of the cancelled invoice was reversed (net zero).
-    cogs_net = db_session.execute(
-        text(
-            "SELECT coalesce(sum(CASE WHEN vl.line_type = 'DR' THEN vl.amount ELSE -vl.amount END), 0) "
-            "FROM voucher_line vl JOIN voucher v ON v.voucher_id = vl.voucher_id "
-            "JOIN ledger l ON l.ledger_id = vl.ledger_id "
-            "WHERE v.org_id = :o AND l.code = '5000' AND v.deleted_at IS NULL"
-        ),
-        {"o": str(fresh_org_id)},
-    ).scalar_one()
+    cogs_net = _cogs_net(db_session, fresh_org_id)
     assert Decimal(cogs_net) == Decimal("0")
 
     # The DC can be billed again; the re-invoice posts COGS once more.
@@ -699,15 +718,7 @@ def test_cancel_dc_invoice_frees_dc_and_keeps_stock_out(
         db_session, org_id=fresh_org_id, sales_invoice_id=second.sales_invoice_id
     )
     assert len(_cogs_vouchers(db_session, fresh_org_id, second.sales_invoice_id)) == 1
-    cogs_net = db_session.execute(
-        text(
-            "SELECT coalesce(sum(CASE WHEN vl.line_type = 'DR' THEN vl.amount ELSE -vl.amount END), 0) "
-            "FROM voucher_line vl JOIN voucher v ON v.voucher_id = vl.voucher_id "
-            "JOIN ledger l ON l.ledger_id = vl.ledger_id "
-            "WHERE v.org_id = :o AND l.code = '5000' AND v.deleted_at IS NULL"
-        ),
-        {"o": str(fresh_org_id)},
-    ).scalar_one()
+    cogs_net = _cogs_net(db_session, fresh_org_id)
     assert Decimal(cogs_net) == Decimal("400.00"), "COGS must net to exactly one sale of the DC"
     # Still exactly one physical relief.
     outs = _out_rows(db_session, fresh_org_id, item.item_id)
@@ -719,7 +730,9 @@ def test_cancel_dc_invoice_frees_dc_and_keeps_stock_out(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _seed_issued_dc_committed(engine: Engine) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+def _seed_issued_dc_committed(
+    engine: Engine,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
     org_id, firm_id, party_id, item_id = _seed_org_firm_party_item(engine)
     with _new_session(engine, org_id) as s:
         location = inventory_service.get_or_create_default_location(
@@ -796,20 +809,26 @@ def _bill_and_finalize(
             lines=[{"item_id": item_id, "qty": "10", "price": "100", "gst_rate": "0"}],
             delivery_challan_id=dc_id,
         )
-        return sales_service.finalize_invoice(s, org_id=org_id, sales_invoice_id=inv.sales_invoice_id)
+        return sales_service.finalize_invoice(
+            s, org_id=org_id, sales_invoice_id=inv.sales_invoice_id
+        )
 
     return fn
 
 
 def _assert_single_billing(engine: Engine, org_id: uuid.UUID, dc_id: uuid.UUID) -> None:
     with _new_session(engine, org_id) as s:
-        live = s.execute(
-            text(
-                "SELECT sales_invoice_id FROM sales_invoice WHERE delivery_challan_id = :d "
-                "AND deleted_at IS NULL"
-            ),
-            {"d": str(dc_id)},
-        ).scalars().all()
+        live = (
+            s.execute(
+                text(
+                    "SELECT sales_invoice_id FROM sales_invoice WHERE delivery_challan_id = :d "
+                    "AND deleted_at IS NULL"
+                ),
+                {"d": str(dc_id)},
+            )
+            .scalars()
+            .all()
+        )
         assert len(live) == 1, f"expected one invoice on the DC, got {live}"
         cogs = s.execute(
             text(
@@ -938,7 +957,9 @@ def test_post_invoice_with_dc_links_and_rejects_double_billing(
         ),
     ).json()
     dc_id = dc["delivery_challan_id"]
-    assert http_client.post(f"/delivery-challans/{dc_id}/issue", headers=_auth(tok)).status_code == 200
+    assert (
+        http_client.post(f"/delivery-challans/{dc_id}/issue", headers=_auth(tok)).status_code == 200
+    )
 
     body = {
         "firm_id": me["firm_id"],
@@ -966,7 +987,9 @@ def test_post_invoice_with_dc_links_and_rejects_double_billing(
             qty_dispatched="10",
         ),
     ).json()
-    http_client.post(f"/delivery-challans/{other_dc['delivery_challan_id']}/issue", headers=_auth(tok))
+    http_client.post(
+        f"/delivery-challans/{other_dc['delivery_challan_id']}/issue", headers=_auth(tok)
+    )
     wrong_qty["delivery_challan_id"] = other_dc["delivery_challan_id"]
     resp = http_client.post("/invoices", headers=_auth(tok), json=wrong_qty)
     assert resp.status_code == 422, resp.text
