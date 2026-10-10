@@ -844,6 +844,11 @@ def list_sales_invoices(
         stmt = stmt.where(SalesInvoice.party_id == party_id)
     if lifecycle_status is not None:
         stmt = stmt.where(SalesInvoice.lifecycle_status == lifecycle_status)
+    else:
+        # Discarded drafts are hidden from the default view (and therefore
+        # from the dashboard's recent list and the CSV/XLSX export); ask for
+        # `status=DISCARDED` explicitly to see the voided numbers.
+        stmt = stmt.where(SalesInvoice.lifecycle_status != InvoiceLifecycleStatus.DISCARDED)
     if q:
         # Search by invoice number or party name. Join Party once if needed.
         like = f"%{q.lower()}%"
@@ -1410,6 +1415,102 @@ def finalize_invoice(
     return invoice
 
 
+# Lifecycle states a discard may act on (invoice-lifecycle spec §2:
+# DRAFT --> DISCARDED, CONFIRMED --> DISCARDED). Nothing has posted yet —
+# no GL voucher, no stock movement — so no reversal is needed.
+_DISCARDABLE_LIFECYCLE = frozenset({InvoiceLifecycleStatus.DRAFT, InvoiceLifecycleStatus.CONFIRMED})
+
+
+def discard_invoice(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    sales_invoice_id: uuid.UUID,
+    reason: str | None = None,
+    discarded_by: uuid.UUID | None = None,
+) -> SalesInvoice:
+    """DRAFT / CONFIRMED -> DISCARDED (a state event, not a delete).
+
+    The row is KEPT — not soft-deleted — with its ``number`` retained.
+    Numbers are allocated at draft time (``_allocate_si_number``, max+1), so
+    a discarded draft leaves its number "used": the series shows a DISCARDED
+    row (audit trail of the voided number) rather than a silent gap, and the
+    allocator never reuses it. PENDING MOIZ+CA: the spec says DRAFT has no
+    doc number; a discard therefore creates a visible gap in the series.
+
+    DISCARDED is outside every billed-state allow-list (GSTR-1, AR, ageing,
+    dashboards) and the invoice list's default view, and it releases a linked
+    delivery challan (#209 index + ``RELEASED_INVOICE_STATUSES``) so the DC
+    can be billed again.
+
+    Idempotent: discarding an already-DISCARDED invoice returns it unchanged.
+    Any other state raises ``InvoiceStateError`` (409) pointing to cancel.
+    """
+    # Same row lock as finalize/cancel so a discard racing a finalize
+    # serializes: the loser re-reads the winner's state and gets a 409.
+    invoice = session.execute(
+        select(SalesInvoice)
+        .options(selectinload(SalesInvoice.lines))
+        .where(
+            SalesInvoice.sales_invoice_id == sales_invoice_id,
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.deleted_at.is_(None),
+        )
+        .with_for_update(of=SalesInvoice)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise NotFoundError(f"Sales invoice {sales_invoice_id} not found.")
+
+    if invoice.lifecycle_status == InvoiceLifecycleStatus.DISCARDED:
+        return invoice
+
+    if invoice.lifecycle_status not in _DISCARDABLE_LIFECYCLE:
+        raise InvoiceStateError(
+            f"Cannot discard invoice {invoice.series}/{invoice.number}: status is "
+            f"{invoice.lifecycle_status.value}. Only a DRAFT invoice can be "
+            "discarded; a finalized invoice must be cancelled instead (Cancel "
+            "posts the reversing entries).",
+            title="Invoice cannot be discarded",
+        )
+
+    before_status = invoice.lifecycle_status.value
+    now = datetime.datetime.now(tz=datetime.UTC)
+    invoice.lifecycle_status = InvoiceLifecycleStatus.DISCARDED
+    invoice.updated_at = now
+    if discarded_by is not None:
+        invoice.updated_by = discarded_by
+
+    clean_reason = reason.strip() if reason and reason.strip() else None
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=invoice.firm_id,
+        user_id=discarded_by,
+        entity_type="sales.invoice",
+        entity_id=invoice.sales_invoice_id,
+        action="discard",
+        changes={
+            "before": {"lifecycle_status": before_status},
+            "after": {
+                "lifecycle_status": InvoiceLifecycleStatus.DISCARDED.value,
+                "discarded_at": now.isoformat(),
+                # The voided number stays on the row; recorded here too so the
+                # audit trail explains the gap in the series.
+                "number": f"{invoice.series}/{invoice.number}",
+                "delivery_challan_id": (
+                    str(invoice.delivery_challan_id) if invoice.delivery_challan_id else None
+                ),
+            },
+        },
+        reason=clean_reason,
+    )
+    session.flush()
+
+    dashboard_service.invalidate_firm(invoice.firm_id)
+    return invoice
+
+
 # Lifecycle states a cancel may act on: the invoice is finalized into the
 # GL but not yet settled by a receipt. PARTIALLY_PAID / PAID are blocked by
 # the paid_amount guard below (unwind the receipt via the credit-note flow).
@@ -1462,8 +1563,8 @@ def cancel_invoice(
     reversal is a CREDIT_NOTE and how it avoids #190's posting index.
 
     Guards (raise InvoiceStateError → 409):
-      - not in {FINALIZED, POSTED, OVERDUE} (DRAFT is discarded via other
-        flows; a re-cancel of a CANCELLED invoice is an idempotent no-op);
+      - not in {FINALIZED, POSTED, OVERDUE} (a DRAFT is discarded via
+        ``discard_invoice``; a re-cancel of a CANCELLED invoice is an idempotent no-op);
       - ``paid_amount > 0`` — a receipt was applied; unwind it first.
 
     DC-linked invoices (DEBT-02 / #209) CAN be cancelled: revenue and COGS are
@@ -1507,7 +1608,12 @@ def cancel_invoice(
         raise InvoiceStateError(
             f"Cannot cancel invoice {sales_invoice_id}: status is "
             f"{invoice.lifecycle_status.value}. Only a finalized, unpaid invoice "
-            "can be cancelled.",
+            "can be cancelled."
+            + (
+                " A draft has posted nothing — discard it instead."
+                if invoice.lifecycle_status in _DISCARDABLE_LIFECYCLE
+                else ""
+            ),
             title="Invoice cannot be cancelled",
         )
 

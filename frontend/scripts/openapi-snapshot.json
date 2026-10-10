@@ -4210,6 +4210,25 @@
         "title": "InvoiceCancelRequest",
         "type": "object"
       },
+      "InvoiceDiscardRequest": {
+        "description": "Optional body for POST /invoices/{id}/discard \u2014 a free-text reason that\nis recorded on the audit log (the voided number stays on the row).",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "InvoiceDiscardRequest",
+        "type": "object"
+      },
       "InvoiceLifecycleStatus": {
         "description": "Richer per-document lifecycle for sales invoices, layered on top\nof the basic `voucher_status` (which the DDL keeps as a parallel\ncolumn for backwards compatibility). Bound to the\n`invoice_lifecycle_status` Postgres enum (DDL line 2020).",
         "enum": [
@@ -19382,6 +19401,83 @@
           }
         },
         "summary": "Cancel a finalized invoice (posts a reversing GL voucher)",
+        "tags": [
+          "sales",
+          "invoices"
+        ]
+      }
+    },
+    "/invoices/{sales_invoice_id}/discard": {
+      "post": {
+        "operationId": "discard_invoice_invoices__sales_invoice_id__discard_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sales_invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Sales Invoice Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/InvoiceDiscardRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesInvoiceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Discard a DRAFT invoice (DRAFT \u2192 DISCARDED; nothing to reverse)",
         "tags": [
           "sales",
           "invoices"

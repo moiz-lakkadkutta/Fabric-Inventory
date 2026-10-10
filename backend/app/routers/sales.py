@@ -25,6 +25,7 @@ from app.schemas.sales import (
     DCListResponse,
     DCResponse,
     InvoiceCancelRequest,
+    InvoiceDiscardRequest,
     SalesInvoiceCreateRequest,
     SalesInvoiceListItem,
     SalesInvoiceListResponse,
@@ -742,6 +743,42 @@ def cancel_invoice(
         sales_invoice_id=sales_invoice_id,
         reason=body.reason,
         cancelled_by=current_user.user_id,
+    )
+    party_names = sales_service.party_name_map(
+        db, org_id=current_user.org_id, party_ids=[invoice.party_id]
+    )
+    item_meta = sales_service.item_meta_map(
+        db,
+        org_id=current_user.org_id,
+        item_ids=[line.item_id for line in invoice.lines],
+    )
+    return _invoice_to_response(
+        invoice,
+        party_name=party_names.get(invoice.party_id),
+        item_meta=item_meta,
+    )
+
+
+@invoice_router.post(
+    "/{sales_invoice_id}/discard",
+    response_model=SalesInvoiceResponse,
+    summary="Discard a DRAFT invoice (DRAFT → DISCARDED; nothing to reverse)",
+)
+def discard_invoice(
+    sales_invoice_id: uuid.UUID,
+    db: SyncDBSession,
+    # No dedicated discard permission exists in the catalog; reuse cancel's
+    # (voiding a numbered document is the same authority level).
+    current_user: Annotated[TokenPayload, Depends(require_permission("sales.invoice.cancel"))],
+    body: InvoiceDiscardRequest | None = None,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> SalesInvoiceResponse:
+    invoice = sales_service.discard_invoice(
+        db,
+        org_id=current_user.org_id,
+        sales_invoice_id=sales_invoice_id,
+        reason=body.reason if body is not None else None,
+        discarded_by=current_user.user_id,
     )
     party_names = sales_service.party_name_map(
         db, org_id=current_user.org_id, party_ids=[invoice.party_id]

@@ -1025,6 +1025,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/invoices/{sales_invoice_id}/discard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Discard a DRAFT invoice (DRAFT → DISCARDED; nothing to reverse) */
+        post: operations["discard_invoice_invoices__sales_invoice_id__discard_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/invoices/{sales_invoice_id}/finalize": {
         parameters: {
             query?: never;
@@ -4343,6 +4360,15 @@ export interface components {
         InvoiceCancelRequest: {
             /** Reason */
             reason: string;
+        };
+        /**
+         * InvoiceDiscardRequest
+         * @description Optional body for POST /invoices/{id}/discard — a free-text reason that
+         *     is recorded on the audit log (the voided number stays on the row).
+         */
+        InvoiceDiscardRequest: {
+            /** Reason */
+            reason?: string | null;
         };
         /**
          * InvoiceLifecycleStatus
@@ -11059,6 +11085,43 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["InvoiceCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SalesInvoiceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    discard_invoice_invoices__sales_invoice_id__discard_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                sales_invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["InvoiceDiscardRequest"] | null;
             };
         };
         responses: {

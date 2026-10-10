@@ -4427,6 +4427,60 @@ paths:
             the §34 credit-note time limit (30-Nov after the invoice's FY end).
       x-permission: sales.invoice.cancel
 
+  /invoices/{invoice_id}/discard:
+    post:
+      summary: Discard a DRAFT invoice (DRAFT → DISCARDED; nothing to reverse)
+      description: >-
+        invoice-lifecycle §2 DRAFT/CONFIRMED → DISCARDED. Nothing has posted
+        (no GL voucher, no stock movement), so nothing is reversed. The row is
+        KEPT with status DISCARDED and its number retained (numbers are
+        allocated at draft time, so the series shows the voided number rather
+        than a silent gap; the allocator never reuses it — PENDING MOIZ+CA).
+        Discarded invoices are excluded from GSTR-1, AR / ageing, dashboards
+        and the invoice list's default view (`?status=DISCARDED` lists them),
+        and a linked delivery challan is released for re-billing (#209).
+        Idempotent: discarding a DISCARDED invoice returns it unchanged.
+        No dedicated discard permission exists; it reuses `sales.invoice.cancel`.
+      operationId: discardInvoice
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  nullable: true
+                  maxLength: 500
+                  description: Optional reason, recorded on the audit log.
+      responses:
+        '200':
+          description: Invoice discarded (or already discarded)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            Invoice is past DRAFT (FINALIZED / paid / CANCELLED) — cancel it
+            instead.
+      x-permission: sales.invoice.cancel
+
   /invoices/{invoice_id}/send-whatsapp:
     post:
       summary: Send invoice via WhatsApp

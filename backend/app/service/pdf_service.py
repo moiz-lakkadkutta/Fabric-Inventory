@@ -406,6 +406,11 @@ def _load_invoice_for_render(
             "Cannot render PDF for a DRAFT invoice — finalize first.",
             title="Invoice not finalized",
         )
+    if invoice.lifecycle_status == InvoiceLifecycleStatus.DISCARDED:
+        raise InvoiceStateError(
+            "Cannot render PDF for a DISCARDED invoice — it was never issued.",
+            title="Invoice discarded",
+        )
 
     firm = session.execute(
         select(Firm).where(Firm.firm_id == invoice.firm_id, Firm.org_id == org_id)
