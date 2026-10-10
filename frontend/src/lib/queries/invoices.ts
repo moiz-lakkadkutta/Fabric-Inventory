@@ -111,6 +111,7 @@ function mapDetail(b: BackendSalesInvoice): Invoice {
     ageing_days: ageingDays(b.due_date),
     lines: b.lines.map(mapLine),
     doc_type: mapDocType(b.tax_type, b.invoice_type),
+    delivery_challan_id: b.delivery_challan_id ?? null,
   };
 }
 
@@ -211,6 +212,9 @@ function buildCreateBody(
     due_date: draft.due_date || null,
     series: 'RT/2526',
     ship_to_state: draft.party_state || null,
+    // DEBT-02: bill a delivery challan (BE validates party/items/qty and
+    // posts COGS from the challan without relieving stock twice).
+    delivery_challan_id: draft.delivery_challan_id ?? null,
     lines: draft.lines.map((line, idx) => ({
       item_id: line.item_id,
       qty: line.qty.toString(),

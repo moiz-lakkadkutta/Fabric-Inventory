@@ -263,6 +263,37 @@ describe('buildCreateBody (T-INT-4)', () => {
     expect(body.lines[0].price).toBe('1000.00'); // 100000 paise → "1000.00"
     expect(body.lines[0].gst_rate).toBe('5');
     expect(body.lines[0].sequence).toBe(1);
+    // DEBT-02: a direct invoice sends no challan link.
+    expect(body.delivery_challan_id ?? null).toBeNull();
+  });
+
+  it('forwards delivery_challan_id when billing a delivery challan (DEBT-02)', () => {
+    authStore.setMe({
+      user_id: 'u',
+      org_id: 'o',
+      firm_id: 'f1',
+      email: 'fixture@example.com',
+      permissions: ['sales.invoice.create'],
+      flags: {},
+      available_firms: [{ firm_id: 'f1', code: 'RT', name: 'Rajesh Textiles' }],
+      token_expires_at: '2099-01-01T00:00:00Z',
+    });
+    const body = buildCreateBody({
+      date: '2026-04-30',
+      due_date: '2026-05-15',
+      party_id: 'p_1',
+      party_name: 'Anjali',
+      party_state: 'MH',
+      subtotal: 0,
+      gst_total: 0,
+      total: 0,
+      paid: 0,
+      ageing_days: 0,
+      lines: [],
+      doc_type: 'TAX_INVOICE',
+      delivery_challan_id: 'dc_1',
+    });
+    expect(body.delivery_challan_id).toBe('dc_1');
   });
 });
 

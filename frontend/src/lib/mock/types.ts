@@ -107,6 +107,8 @@ export interface Invoice {
   ageing_days: number; // negative = upcoming, positive = overdue
   lines: InvoiceLine[];
   doc_type: 'TAX_INVOICE' | 'BILL_OF_SUPPLY' | 'CASH_MEMO' | 'ESTIMATE';
+  /** DEBT-02: the delivery challan this invoice bills (null = direct sale). */
+  delivery_challan_id?: string | null;
 }
 
 export interface Kpi {
