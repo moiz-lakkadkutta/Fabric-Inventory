@@ -22,7 +22,7 @@ from app.exceptions import AppValidationError
 from app.models.accounting import JournalLineType
 from app.models.banking import BankAccount, Cheque, ChequeStatus
 from app.models.masters import Ledger
-from app.service.common_guards import assert_firm_in_org
+from app.service.common_guards import assert_firm_in_org, unique_violation_as_422
 from app.utils.crypto import encrypt_pii, get_org_dek
 
 # BANK-6 (Fix 5): Opening-balance difference ledger used as the contra
@@ -136,8 +136,18 @@ def create_bank_account(
         balance=balance,
         last_reconciled_date=last_reconciled_date,
     )
-    session.add(account)
-    session.flush()
+    # Q01-02 M1: the pre-check above only sees firms in the caller's scope;
+    # the index sees every firm. Same answer either way, naming nothing.
+    with unique_violation_as_422(
+        session,
+        constraint="uq_bank_account_ledger",
+        message=(
+            f"Ledger {ledger_id} is already linked to a bank account; each bank account "
+            "must use its own sub-ledger."
+        ),
+    ):
+        session.add(account)
+        session.flush()
 
     # S1: post an opening GL JV when a non-zero initial balance is supplied.
     # This keeps the denormalized `balance` column in lockstep with the GL

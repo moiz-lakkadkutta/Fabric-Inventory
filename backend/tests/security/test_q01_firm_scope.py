@@ -553,3 +553,43 @@ async def test_q01_02_rls_refusal_maps_to_403_without_leaking_policy(
             "/parties", params={"firm_id": ctx["f2"]}, headers=bearer(ctx["owner"]["access_token"])
         )
         assert "Q01-M2" not in {p["code"] for p in lst.json()["items"]}
+
+
+# ── M1: a uniqueness clash with a HIDDEN row is a neutral 422, not a 500 ──
+
+
+async def test_q01_02_bank_account_ledger_clash_with_hidden_firm_is_neutral_422(
+    sync_engine: Engine,
+) -> None:
+    """An org-shared ledger already bound to a bank account in F2: an F1-only
+    user (who can't see F2's account, so the service pre-check passes) binding
+    it in F1 must get a 422 that reveals nothing about the hidden binding."""
+    async with q01_client(raise_app_exceptions=False) as client:
+        owner = await signup(client)
+        f1 = owner["firm_id"]
+        f2 = str(add_sibling_firm(sync_engine, uuid.UUID(owner["org_id"]), name="HiddenCo"))
+        ot = owner["access_token"]
+        groups = await client.get("/coa/groups", headers=bearer(ot))
+        group = groups.json()["items"][0]["coa_group_id"]
+        ledger = await client.post(
+            "/ledgers",
+            headers={**bearer(ot), **idem()},
+            json={"code": "Q01-BANK", "name": "Shared bank ledger", "coa_group_id": group},
+        )
+        assert ledger.status_code == 201, ledger.text
+        lid = ledger.json()["ledger_id"]
+        hidden = await client.post(
+            "/bank-accounts",
+            headers={**bearer(ot), **idem()},
+            json={"firm_id": f2, "ledger_id": lid, "bank_name": "Hidden bank"},
+        )
+        assert hidden.status_code == 201, hidden.text
+        user = await _user_in(client, owner, ["banking.bank.create", "banking.bank.read"], [f1])
+        resp = await client.post(
+            "/bank-accounts",
+            headers={**bearer(user["token"]), **idem()},
+            json={"firm_id": f1, "ledger_id": lid, "bank_name": "Mine"},
+        )
+        assert resp.status_code == 422, resp.text
+        for leak in (hidden.json()["bank_account_id"], f2, "HiddenCo", "Hidden bank", "uq_"):
+            assert leak not in resp.text, f"{leak!r} leaked: {resp.text}"

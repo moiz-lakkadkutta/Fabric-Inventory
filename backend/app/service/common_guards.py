@@ -11,8 +11,11 @@ proceeds.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError
@@ -54,3 +57,25 @@ def assert_firm_in_org(session: Session, *, org_id: uuid.UUID, firm_id: uuid.UUI
 
     if firm is None:
         raise AppValidationError(f"Firm {firm_id} not found in this organization.")
+
+
+@contextmanager
+def unique_violation_as_422(session: Session, *, constraint: str, message: str) -> Iterator[None]:
+    """Q01-02 M1: turn a unique-index clash on ``constraint`` raised inside
+    the block into a 422 with a NEUTRAL ``message``.
+
+    Firm-scope RLS hides other firms' rows, so a service's "already exists?"
+    pre-check only sees the caller's firms while an org-wide unique index
+    still sees every row. A clash with a hidden row would otherwise surface
+    as a 500 (and its constraint name would hint that a hidden row exists).
+    The block runs in a SAVEPOINT so the session stays usable. Any other
+    IntegrityError propagates unchanged.
+    """
+    try:
+        with session.begin_nested():
+            yield
+    except IntegrityError as exc:
+        diag = getattr(exc.orig, "diag", None)
+        if getattr(diag, "constraint_name", None) == constraint:
+            raise AppValidationError(message) from None
+        raise
