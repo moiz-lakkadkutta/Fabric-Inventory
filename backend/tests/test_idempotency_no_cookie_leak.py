@@ -53,6 +53,13 @@ from tests.conftest import IdempotentTestClient
 _PASSWORD = "PasswordOk123"
 
 
+def _auth_headers() -> dict[str, str]:
+    """Q01-04: replay/caching only applies to a verified principal."""
+    from tests.conftest import mint_access_token
+
+    return {"Authorization": f"Bearer {mint_access_token()}"}
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Test #1 — defense-in-depth: cached headers strip Set-Cookie + Authorization
 # ──────────────────────────────────────────────────────────────────────
@@ -120,7 +127,9 @@ async def cookie_echo_client(
         node = getattr(node, "app", None)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=_auth_headers()
+    ) as c:
         yield c
 
 
@@ -143,8 +152,11 @@ async def test_cached_response_has_no_set_cookie_header(
     # Sanity: the cookie WAS set on the wire (caller still gets it).
     assert "set-cookie" in {h.lower() for h in resp.headers}
 
-    # The audit reproducer: redis-cli get idem:/echo-cookie:<key>
-    cached = await fake_redis.get(f"idem:/echo-cookie:{key}")
+    # The audit reproducer: redis-cli get idem:...:/echo-cookie:<key>
+    # (Q01-04: v2 keys are idem:v2:{org}:{user}:{method}:{path}:{key}).
+    matches = [k async for k in fake_redis.scan_iter(f"idem:v2:*:POST:/echo-cookie:{key}")]
+    assert len(matches) == 1, matches
+    cached = await fake_redis.get(matches[0])
     assert cached is not None, "Idempotency middleware should cache 200 responses."
 
     payload = json.loads(cached)

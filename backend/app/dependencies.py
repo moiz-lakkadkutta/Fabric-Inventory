@@ -74,7 +74,20 @@ def get_db_sync(request: Request) -> Iterator[Session]:
             raise
 
 
-SyncDBSession = Annotated[Session, Depends(get_db_sync)]
+# Q01-11: scope="function" (FastAPI >= 0.121) tears the dependency down —
+# i.e. runs `session.commit()` — right after the endpoint returns and its
+# response model is serialised, but BEFORE the response is sent
+# (`fastapi.routing.request_response`: the function AsyncExitStack closes
+# around `await f(request)`, the request stack around `await response(...)`).
+# With the default request scope the 2xx went out first and COMMIT ran
+# afterwards, so a COMMIT failure was acknowledged as success and then
+# cached by the idempotency middleware. Now a COMMIT failure propagates as
+# an exception → 5xx, which the idempotency middleware never caches.
+#
+# Every route must use this alias (not a bare `Depends(get_db_sync)`):
+# FastAPI's dependency cache key includes the scope, so mixing the two in
+# one request would open two sessions.
+SyncDBSession = Annotated[Session, Depends(get_db_sync, scope="function")]
 
 
 async def get_current_user(

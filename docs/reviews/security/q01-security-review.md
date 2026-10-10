@@ -78,6 +78,16 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
   - Never serve a replay to an unauthenticated request on an authenticated route.
   - Add `/auth/switch-firm`, `/auth/mfa-verify`, `/auth/mfa/setup` and `/auth/mfa/confirm` (and `/auth/logout`) to the by-design exempt list, or redact token and secret fields before caching.
 - **Gate:** **Moiz** (security/auth). The change is small and lives in the same file as Q01-01; fix both together.
+- **Fix status (Q01-01 + Q01-04, branch `fix/q01-idempotency`, PENDING MOIZ SIGN-OFF):**
+  - The key is reserved with `SET NX` before the handler runs (30 s TTL, extended by a heartbeat).
+  - A concurrent duplicate gets 409 `IDEMPOTENCY_REQUEST_IN_PROGRESS` with `Retry-After`. The FE `api()` wrapper waits and re-sends the same request, at most 8 retries and about 16 s.
+  - The cache key is `idem:v2:{org}:{user}:{method}:{path}:{key}`, and the principal comes from a verified access JWT.
+  - Requests with no valid token never touch the cache.
+  - Token and secret responses are never cached.
+- **Known limitations (accepted for now):**
+  1. **Replays skip the DB-backed principal checks.** Before a replay, the middleware verifies the JWT signature, expiry and type and checks the `jti` denylist. It does not re-run the DB-backed checks in `get_current_user`: `permissions_version`, suspended and inactive. A user suspended (or re-roled) while still holding an unexpired access token can therefore get back their *own* cached 2xx for a key they already used. They cannot replay anyone else's result, and nothing executes.
+  2. **Lock release is not atomic.** It is a GET of the lock, an owner-token compare, then a DEL. A Lua compare-and-delete would be atomic, but `fakeredis` has no Lua (`lupa`) in the test environment. The race needs the lock to have expired and been re-acquired by another request between the GET and the DEL. That cannot happen while the heartbeat is alive, so in practice it requires a stalled event loop of more than 30 s. If it did happen, one concurrent duplicate could run.
+  3. **No dedupe for unauthenticated mutating routes.** A mutating request with no valid access token is never deduplicated or replayed: the key is still required, but the handler always runs. Authenticated routes return 401, so this matters only for the public non-exempt routes (`/auth/mfa-verify`, and `/auth/logout` without a bearer). Neither causes harm when executed twice.
 
 ### Q01-05 · P2 · A delegated user manager can demote an Owner
 

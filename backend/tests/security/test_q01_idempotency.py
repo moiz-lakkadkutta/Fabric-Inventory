@@ -1,9 +1,9 @@
-"""TASK-TR-Q01 — idempotency findings (Q01-01, Q01-04).
+"""TASK-TR-Q01 — idempotency findings (Q01-01, Q01-04, Q01-11).
 
-Each ``xfail(strict=True)`` test asserts the SECURE behaviour and fails
-today; when the fix lands the test XPASSes, strict mode turns that into a
-failure, and the fixer removes the marker. The un-marked tests are controls
-that pin behaviour that already holds.
+These were ``xfail(strict=True)`` reproductions; the markers were removed
+when the fixes landed (fix/q01-idempotency), so they now pin the secure
+behaviour as regressions. See ``test_q01_idempotency_hardening.py`` for the
+broader coverage of the fixes.
 
 Run:  uv run pytest tests/security/test_q01_idempotency.py -q
 """
@@ -62,10 +62,6 @@ async def test_q01_control_sequential_replay_returns_same_voucher(sync_engine: E
         assert first.json()["voucher_id"] == second.json()["voucher_id"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Q01-01: no in-flight lock — concurrent same-key requests all execute",
-)
 async def test_q01_01_concurrent_same_key_posts_one_voucher(sync_engine: Engine) -> None:
     """Q01-01: a client that retries while the first attempt is still in
     flight (the exact case Idempotency-Key exists for) must get ONE voucher.
@@ -90,10 +86,6 @@ async def test_q01_01_concurrent_same_key_posts_one_voucher(sync_engine: Engine)
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Q01-04: idempotency cache key is path+key only — not scoped to org/user",
-)
 async def test_q01_04_other_tenant_replay_gets_its_own_response(sync_engine: Engine) -> None:
     """Q01-04: org B reusing org A's Idempotency-Key (and identical body) on
     the same path must NOT be served org A's cached response."""
@@ -120,10 +112,6 @@ async def test_q01_04_other_tenant_replay_gets_its_own_response(sync_engine: Eng
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Q01-04: cached 2xx is replayed before authentication runs",
-)
 async def test_q01_04_unauthenticated_replay_is_rejected(sync_engine: Engine) -> None:
     """Q01-04: the replay branch runs in middleware BEFORE get_current_user,
     so a request with NO Authorization header but a known key+body gets the
@@ -144,10 +132,6 @@ async def test_q01_04_unauthenticated_replay_is_rejected(sync_engine: Engine) ->
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Q01-04: token-bearing /auth/switch-firm body is cached and replayed without auth",
-)
 async def test_q01_04_switch_firm_tokens_not_replayable_without_auth(sync_engine: Engine) -> None:
     """/auth/switch-firm is NOT in IDEMPOTENT_BY_DESIGN_PATHS, so its 200 body
     (a fresh access_token AND refresh_token) is stored in Redis in plaintext
@@ -173,10 +157,6 @@ async def test_q01_04_switch_firm_tokens_not_replayable_without_auth(sync_engine
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Q01-11: get_db_sync commits AFTER the response is sent (request-scoped yield dep)",
-)
 async def test_q01_11_commit_failure_is_not_acknowledged_or_cached(
     sync_engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

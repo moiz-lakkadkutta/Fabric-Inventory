@@ -136,6 +136,34 @@ async def client() -> AsyncIterator[AsyncClient]:
 # `Idempotency-Key=""` explicitly or use a raw TestClient.
 
 
+def mint_access_token(*, org_id: uuid.UUID | None = None, user_id: uuid.UUID | None = None) -> str:
+    """Signed ACCESS JWT for middleware-only tests (synthetic apps, no DB).
+
+    Q01-04: the idempotency cache only serves / stores for a verified
+    principal, so synthetic-route tests that exercise replay must present a
+    token the middleware's verifier (`identity_service.verify_jwt`) accepts.
+    """
+    import datetime as _dt
+
+    import jwt as _jwt
+
+    from app.config import get_settings
+
+    now = _dt.datetime.now(tz=_dt.UTC)
+    claims: dict[str, object] = {
+        "sub": str(user_id or uuid.uuid4()),
+        "org_id": str(org_id or uuid.uuid4()),
+        "firm_id": None,
+        "permissions": [],
+        "jti": uuid.uuid4().hex,
+        "iat": int(now.timestamp()),
+        "exp": int((now + _dt.timedelta(minutes=15)).timestamp()),
+        "token_type": "access",
+        "pv": 1,
+    }
+    return _jwt.encode(claims, get_settings().jwt_secret, algorithm="HS256")
+
+
 class IdempotentTestClient(TestClient):
     """TestClient that auto-injects an Idempotency-Key on mutating requests."""
 

@@ -109,10 +109,29 @@ components:
       in: header
       required: false
       description: |
-        Client-supplied key (UUID or opaque up to 100 chars) to make mutating requests
-        idempotent. If the same key is retried within 14 days, the server returns the
-        original response instead of creating a duplicate. Critical for offline Android
-        sync and flaky-network retries.
+        Client-generated UUID v4 that makes a mutating request idempotent. Required on
+        every POST/PATCH/PUT/DELETE except the auth-by-design routes (/auth/login,
+        /auth/signup, /auth/refresh, /auth/forgot, /auth/reset, /admin/invites/accept);
+        missing or non-UUID → 400 IDEMPOTENCY_KEY_REQUIRED. Critical for offline
+        Android sync and flaky-network retries.
+
+        Semantics (Q01-01/Q01-04, implemented in the idempotency middleware):
+        - Scope: the key is namespaced per authenticated principal (org + user, taken
+          from the verified access token — so a retry after a token refresh still
+          dedupes), HTTP method and path. Requests without a valid access token are
+          never deduplicated or replayed; the handler runs and returns 401.
+        - Retry of a completed 2xx with the same body (within 24 h) → the original
+          response is replayed; the handler does not run again.
+        - Same key, different body → 409 IDEMPOTENCY_KEY_PAYLOAD_MISMATCH.
+        - Same key while the first request is still executing → 409
+          IDEMPOTENCY_REQUEST_IN_PROGRESS with a Retry-After header; retry shortly and
+          the retry is replayed once the first request finishes.
+        - Non-2xx outcomes are not replayed: 4xx (except 401/403) keep only a body
+          hash for mismatch detection and the retry re-executes; 401/403/5xx (incl. a
+          failed commit) store nothing.
+        - Responses carrying credentials or secrets (/auth/switch-firm,
+          /auth/mfa-verify, /auth/mfa/setup, /auth/mfa/confirm, /auth/logout, or any
+          body with token/secret fields) are never cached; a retry re-executes.
       schema:
         type: string
         maxLength: 100
@@ -162,7 +181,10 @@ components:
             $ref: '#/components/schemas/ProblemDetails'
 
     Conflict:
-      description: Conflict (e.g., duplicate, invalid state)
+      description: |
+        Conflict (e.g., duplicate, invalid state), or an Idempotency-Key conflict:
+        IDEMPOTENCY_KEY_PAYLOAD_MISMATCH (same key, different body) or
+        IDEMPOTENCY_REQUEST_IN_PROGRESS (same key still executing; honour Retry-After).
       content:
         application/problem+json:
           schema:
