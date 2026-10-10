@@ -1500,9 +1500,9 @@ def discard_invoice(
     if invoice.lifecycle_status not in _DISCARDABLE_LIFECYCLE:
         raise InvoiceStateError(
             f"Cannot discard invoice {invoice.series}/{invoice.number}: status is "
-            f"{invoice.lifecycle_status.value}. Only a DRAFT invoice can be "
-            "discarded; a finalized invoice must be cancelled instead (Cancel "
-            "posts the reversing entries).",
+            f"{invoice.lifecycle_status.value}. Only a DRAFT or CONFIRMED "
+            "(not yet finalized) invoice can be discarded; a finalized invoice "
+            "must be cancelled instead (Cancel posts the reversing entries).",
             title="Invoice cannot be discarded",
         )
 

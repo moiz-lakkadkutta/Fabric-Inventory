@@ -19477,7 +19477,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Discard a DRAFT invoice (DRAFT \u2192 DISCARDED; nothing to reverse)",
+        "summary": "Discard a DRAFT or CONFIRMED invoice (\u2192 DISCARDED; nothing to reverse)",
         "tags": [
           "sales",
           "invoices"

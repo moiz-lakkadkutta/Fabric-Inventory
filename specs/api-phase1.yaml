@@ -4429,7 +4429,7 @@ paths:
 
   /invoices/{invoice_id}/discard:
     post:
-      summary: Discard a DRAFT invoice (DRAFT → DISCARDED; nothing to reverse)
+      summary: Discard a DRAFT or CONFIRMED invoice (→ DISCARDED; nothing to reverse)
       description: >-
         invoice-lifecycle §2 DRAFT/CONFIRMED → DISCARDED. Nothing has posted
         (no GL voucher, no stock movement), so nothing is reversed. The row is
@@ -4477,8 +4477,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: >-
-            Invoice is past DRAFT (FINALIZED / paid / CANCELLED) — cancel it
-            instead.
+            Invoice is past DRAFT/CONFIRMED (FINALIZED / paid / CANCELLED) —
+            only a not-yet-finalized invoice can be discarded; cancel it instead.
       x-permission: sales.invoice.cancel
 
   /invoices/{invoice_id}/send-whatsapp:

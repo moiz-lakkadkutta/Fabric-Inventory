@@ -184,6 +184,10 @@ def test_discard_refused_after_finalize_points_to_cancel(
         )
     assert status.value in str(exc.value)
     assert "cancel" in str(exc.value).lower()
+    # CONFIRMED is discardable too — the refusal must not claim DRAFT-only.
+    assert "Only a DRAFT or CONFIRMED (not yet finalized) invoice can be discarded" in str(
+        exc.value
+    )
 
 
 def test_finalize_after_discard_is_refused(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:
@@ -436,9 +440,16 @@ def test_discard_endpoint_finalized_is_409(http_client: TestClient, sync_engine:
 
 
 def test_discard_endpoint_unknown_404(http_client: TestClient) -> None:
+    """The 404 must come from the discard handler (service NotFoundError →
+    Q8a envelope naming the invoice), not the router's generic
+    ``{"detail": "Not Found"}`` for an unmatched route."""
     me = _signup_owner(http_client)
-    resp = http_client.post(f"/invoices/{uuid.uuid4()}/discard", headers=_auth(me["access_token"]))
+    missing = uuid.uuid4()
+    resp = http_client.post(f"/invoices/{missing}/discard", headers=_auth(me["access_token"]))
     assert resp.status_code == 404, resp.text
+    body = resp.json()
+    assert body["code"] == "NOT_FOUND", body
+    assert body["detail"] == f"Sales invoice {missing} not found.", body
 
 
 def test_discard_endpoint_requires_cancel_permission(
@@ -454,9 +465,13 @@ def test_discard_endpoint_requires_cancel_permission(
     assert resp.status_code == 403, resp.text
 
 
-def test_discard_endpoint_requires_idempotency_key(
+def test_discard_route_is_covered_by_idempotency_middleware(
     http_client: TestClient, sync_engine: Engine
 ) -> None:
+    """Contract test only: the global IdempotencyMiddleware rejects a mutating
+    request without an Idempotency-Key (400) before any handler runs. This
+    proves the new route sits behind the middleware — it does NOT exercise
+    discard logic (that's covered by the tests above)."""
     me = _signup_owner(http_client)
     party_id, item_id = _seed_party_and_item(
         sync_engine, org_id=uuid.UUID(me["org_id"]), firm_id=uuid.UUID(me["firm_id"])

@@ -762,7 +762,7 @@ def cancel_invoice(
 @invoice_router.post(
     "/{sales_invoice_id}/discard",
     response_model=SalesInvoiceResponse,
-    summary="Discard a DRAFT invoice (DRAFT → DISCARDED; nothing to reverse)",
+    summary="Discard a DRAFT or CONFIRMED invoice (→ DISCARDED; nothing to reverse)",
 )
 def discard_invoice(
     sales_invoice_id: uuid.UUID,

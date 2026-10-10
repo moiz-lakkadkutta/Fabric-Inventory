@@ -1034,7 +1034,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Discard a DRAFT invoice (DRAFT → DISCARDED; nothing to reverse) */
+        /** Discard a DRAFT or CONFIRMED invoice (→ DISCARDED; nothing to reverse) */
         post: operations["discard_invoice_invoices__sales_invoice_id__discard_post"];
         delete?: never;
         options?: never;
