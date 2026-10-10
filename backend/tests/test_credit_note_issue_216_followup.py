@@ -5,7 +5,7 @@ document, GSTR-1 CDNR/CDNUR) only when ALL of:
   * it is dated in a LATER GST month than the invoice (#199), and
   * the original was a TAX INVOICE that is a taxable/zero-rated supply — not
     a Bill of Supply (non-GST firm, tax_type NIL), not a branch transfer
-    (NIL_NOT_A_SUPPLY / DELIVERY_CHALLAN), not a Cash Memo / Estimate, and
+    (DELIVERY_CHALLAN), not a Cash Memo / Estimate, and
   * it is the FIRST reversal of the invoice (pre-#190 duplicates get CXL).
 Everything else takes the internal CXL/<FY> series. One shared predicate
 decides this for posting, ``find_sales_credit_note`` and the GSTR-1 query.
@@ -164,7 +164,9 @@ def test_tax_invoice_cancel_still_a_credit_note_and_predicates_agree(
         ("RT/2526", "TAX_INVOICE", "CGST_SGST", True),  # legacy note, invoice series
         ("RT/2526", None, "IGST", True),  # legacy invoice_type NULL
         ("RT/2526", "TAX_INVOICE", "NIL_LUT", True),  # zero-rated export
-        ("RT/2526", "TAX_INVOICE", "NIL_NOT_A_SUPPLY", False),
+        # pre-#215 ₹0 "no destination" fallback: a real sale, so a §34 note
+        # (GSTR-1 symmetry follow-up; CA to confirm, firm should amend).
+        ("RT/2526", "TAX_INVOICE", "NIL_NOT_A_SUPPLY", True),
         ("RT/2526", "DELIVERY_CHALLAN", "NIL_NOT_A_SUPPLY", False),
         ("RT/2526", "BILL_OF_SUPPLY", "NIL", False),
         ("RT/2526", "CASH_MEMO", "CGST_SGST", False),

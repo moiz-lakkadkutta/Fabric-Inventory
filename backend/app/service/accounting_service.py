@@ -1291,9 +1291,11 @@ def _utcnow() -> datetime.datetime:
 #      legacy rows) — §34(1) applies where "a tax invoice has been issued";
 #      a Bill of Supply (non-GST firm), Cash Memo, Estimate or a branch-
 #      transfer challan is not one;
-#   4. the original is a supply: tax_type is not NIL (non-GST firm) or
-#      NIL_NOT_A_SUPPLY (same-GSTIN branch transfer). NIL_LUT (zero-rated
-#      export under LUT) IS a tax invoice and stays eligible.
+#   4. the original is a supply: tax_type is not NIL (non-GST firm). A
+#      same-GSTIN branch transfer is excluded by condition 3 (it is a
+#      DELIVERY_CHALLAN). NIL_LUT (zero-rated export under LUT) and the
+#      pre-#215 TAX_INVOICE + NIL_NOT_A_SUPPLY ₹0 fallback stay eligible
+#      (see ``is_gstr1_reportable_supply``).
 # Conditions 3 + 4 also cover legacy (pre-#216) notes numbered in the
 # invoice series, so those keep reporting exactly as before — except
 # branch-transfer / Bill-of-Supply reversals, which #199 wrongly reported.
@@ -1302,7 +1304,6 @@ def _utcnow() -> datetime.datetime:
 
 _CXL_SERIES_PREFIX = f"{gst_service.CANCELLATION_REVERSAL_SERIES_PREFIX}/"
 _S34_INVOICE_TYPE = "TAX_INVOICE"
-_NON_S34_TAX_TYPES = ("NIL", "NIL_NOT_A_SUPPLY")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1315,22 +1316,39 @@ _NON_S34_TAX_TYPES = ("NIL", "NIL_NOT_A_SUPPLY")
 # invoice is reported in its own month iff a later-month cancel of it is
 # reported as a §34 note — the two can no longer diverge.
 #
+# Reportable  ⇔  invoice_type IN (TAX_INVOICE, NULL legacy)
+#              AND tax_type IS DISTINCT FROM 'NIL'.
+#
 # Not reportable (absent from every GSTR-1 section, both sides):
-#   * tax_type NIL_NOT_A_SUPPLY — a same-GSTIN branch transfer is not a
-#     supply (Sch. I para 2 covers DISTINCT persons only). Not reported in
-#     Table 8 (nil / exempt / non-GST) either — PENDING CA confirmation
-#     (CA question 4). GSTR-1 here has no Table 8 / Table 13 sections yet;
-#     if they are added they must reuse this predicate.
+#   * invoice_type DELIVERY_CHALLAN — a same-GSTIN branch transfer is not a
+#     supply (Sch. I para 2 covers DISTINCT persons only), whatever its
+#     tax_type. The branch transfer is identified by the DOCUMENT type, not
+#     by tax_type alone. Not reported in Table 8 (nil / exempt / non-GST)
+#     either — PENDING CA confirmation (CA question 4). GSTR-1 here has no
+#     Table 8 / Table 13 sections yet; if they are added they must reuse
+#     this predicate.
 #   * tax_type NIL — a Bill of Supply issued while the firm was not GST-
 #     registered (#194; GSTR-1 itself is refused for a non-GST firm). Only
 #     reaches a GSTR-1 when the firm registers later.
-#   * invoice_type other than TAX_INVOICE (or NULL legacy) — Bill of Supply,
-#     Delivery Challan, Cash Memo, Estimate. The app only ever writes
-#     TAX_INVOICE / BILL_OF_SUPPLY / DELIVERY_CHALLAN (from the PoS engine);
-#     Cash Memo / Estimate exist only as legacy / imported values.
-# NIL_LUT (zero-rated export under LUT) IS a reportable supply.
+#   * any other invoice_type — Bill of Supply, Cash Memo, Estimate. The app
+#     only ever writes TAX_INVOICE / BILL_OF_SUPPLY / DELIVERY_CHALLAN (from
+#     the PoS engine); Cash Memo / Estimate exist only as legacy / imported
+#     values.
+#
+# Reportable, notably:
+#   * NIL_LUT (zero-rated export under LUT).
+#   * TAX_INVOICE + NIL_NOT_A_SUPPLY — the pre-#215 "no usable place of
+#     supply" fallback: a REAL sale to a real buyer, mis-priced at ₹0 GST.
+#     It is REPORTED, with ₹0 tax, because the original invoice was
+#     mis-priced (pre-#215); excluding it would hide a supply, and under-
+#     reporting is the riskier error. CA to confirm; the firm should amend
+#     the invoice. Its cross-period cancel is a §34 note (CN serial, CDNR /
+#     CDNUR / B2CS net-off), symmetric with the invoice side.
+#   * an unknown / forward-compat tax_type string — fails toward REPORTING.
 # GATED — PENDING MOIZ + CA SIGN-OFF.
 # ──────────────────────────────────────────────────────────────────────
+
+_BILL_OF_SUPPLY_TAX_TYPE = "NIL"  # Bill of Supply (#194)
 
 
 def is_gstr1_reportable_supply(*, invoice_type: str | None, tax_type: str | None) -> bool:
@@ -1338,7 +1356,7 @@ def is_gstr1_reportable_supply(*, invoice_type: str | None, tax_type: str | None
     GSTR-1 (and therefore able to carry a §34 credit note)."""
     if invoice_type is not None and invoice_type != _S34_INVOICE_TYPE:
         return False
-    return tax_type not in _NON_S34_TAX_TYPES
+    return tax_type != _BILL_OF_SUPPLY_TAX_TYPE
 
 
 def gstr1_reportable_supply_clause(invoice: Any) -> Any:
@@ -1346,7 +1364,7 @@ def gstr1_reportable_supply_clause(invoice: Any) -> Any:
     SalesInvoice entity or an alias of it."""
     return and_(
         or_(invoice.invoice_type.is_(None), invoice.invoice_type == _S34_INVOICE_TYPE),
-        or_(invoice.tax_type.is_(None), invoice.tax_type.not_in(_NON_S34_TAX_TYPES)),
+        invoice.tax_type.is_distinct_from(_BILL_OF_SUPPLY_TAX_TYPE),
     )
 
 
