@@ -958,31 +958,55 @@ def _classify_buyer(party: Party) -> BuyerStatus:
     return BuyerStatus.CONSUMER
 
 
-def _refuse_nil_not_a_supply_for_registered_buyer(
-    *, tax_type: str, document_type: str, buyer_gstin: str | None, party: Party
-) -> None:
-    """#215 guard (create_draft_invoice + finalize_invoice).
+def _is_unpriced_registered_nil(
+    *, tax_type: str | None, document_type: str | None, buyer_gstin: str | None
+) -> bool:
+    """#215: NIL_NOT_A_SUPPLY on a non-DC document for a GSTIN-bearing buyer.
 
     NIL_NOT_A_SUPPLY on a TAX_INVOICE is the PoS engine's "no usable
-    destination" fallback. For a GSTIN-bearing buyer that means a B2B sale
-    would go out with ₹0 GST — raise a 422 telling the user how to fix it.
-    The same-GSTIN branch transfer (document_type DELIVERY_CHALLAN) is a
-    legitimate non-supply and is allowed.
-
-    PENDING MOIZ+CA SIGN-OFF.
+    destination" fallback; for a registered buyer that is a B2B sale at ₹0
+    GST. The same-GSTIN branch transfer (document_type DELIVERY_CHALLAN) is a
+    legitimate non-supply and is excluded. PENDING MOIZ+CA SIGN-OFF.
     """
-    if tax_type != gst_service.TaxType.NIL_NOT_A_SUPPLY.value:
+    return (
+        tax_type == gst_service.TaxType.NIL_NOT_A_SUPPLY.value
+        and document_type != gst_service.DocumentType.DELIVERY_CHALLAN.value
+        and bool(buyer_gstin)
+    )
+
+
+def _refuse_unpriced_registered_draft(
+    *,
+    tax_type: str,
+    document_type: str,
+    buyer_gstin: str | None,
+    party: Party,
+    ship_to_state: str | None,
+) -> None:
+    """Create-time guard: 422 naming only the facts that actually hold."""
+    if not _is_unpriced_registered_nil(
+        tax_type=tax_type, document_type=document_type, buyer_gstin=buyer_gstin
+    ):
         return
-    if document_type == gst_service.DocumentType.DELIVERY_CHALLAN.value:
-        return
-    if not buyer_gstin:
-        return
+    assert buyer_gstin is not None
+    reasons: list[str] = []
+    if normalize_state_code(party.state_code) is None:
+        if party.state_code and party.state_code.strip():
+            reasons.append(
+                f"the party's recorded state {party.state_code!r} is not a valid GST state code"
+            )
+        else:
+            reasons.append("the party has no state recorded")
+    if ship_to_state and normalize_state_code(ship_to_state) is None:
+        reasons.append(f"the ship-to state {ship_to_state!r} is not a valid GST state code")
+    prefix = buyer_gstin[:2]
+    if normalize_state_code(prefix) is None:
+        reasons.append(f"the GSTIN prefix {prefix!r} is not a valid GST state code")
     raise AppValidationError(
         f"Cannot determine the place of supply for party {party.name!r} "
-        f"(GSTIN {buyer_gstin}): the party has no state recorded and the "
-        f"GSTIN prefix {buyer_gstin[:2]!r} is not a valid GST state code, so "
-        "GST would be charged as ₹0. Set the party's state in Masters → Party "
-        "(or correct its GSTIN), or enter a ship-to state on the invoice."
+        f"(GSTIN {buyer_gstin}): {' and '.join(reasons)}, so GST would be charged "
+        "as ₹0. Set the party's state in Masters → Party (or correct its GSTIN), "
+        "or enter a ship-to state on the invoice."
     )
 
 
@@ -1159,11 +1183,12 @@ def create_draft_invoice(
     # (document_type DELIVERY_CHALLAN). Reached when neither the party, the
     # invoice's ship-to, nor the GSTIN prefix yields a state (e.g. a legacy
     # GSTIN starting "99"/"00"). Refuse rather than silently under-charge.
-    _refuse_nil_not_a_supply_for_registered_buyer(
+    _refuse_unpriced_registered_draft(
         tax_type=pos_decision.tax_type.value,
         document_type=pos_decision.document_type.value,
         buyer_gstin=buyer_gstin_plain,
         party=party,
+        ship_to_state=ship_to_state,
     )
 
     # #195: SECOND PASS — now that tax_type is known, compute each line's
@@ -1344,12 +1369,19 @@ def finalize_invoice(
             if fin_party.gstin
             else None
         )
-        _refuse_nil_not_a_supply_for_registered_buyer(
+        if _is_unpriced_registered_nil(
             tax_type=invoice.tax_type,
-            document_type=invoice.invoice_type or "",
+            document_type=invoice.invoice_type,
             buyer_gstin=fin_gstin,
-            party=fin_party,
-        )
+        ):
+            # tax_type is frozen on the draft, so fixing the party now can't
+            # re-price it — the only remedy is discard + recreate.
+            raise AppValidationError(
+                f"Cannot finalize invoice {invoice.series}/{invoice.number}: this "
+                "draft was priced with ₹0 GST because no place of supply could be "
+                "determined when it was created. Discard it and create a new "
+                "invoice (after correcting the party's state/GSTIN if needed)."
+            )
 
     # #209: for a DC-linked invoice, lock + re-validate the DC row now —
     # BEFORE post_invoice_to_gl locks the firm row for voucher numbering

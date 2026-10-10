@@ -52,7 +52,7 @@ import openpyxl
 from openpyxl.utils.exceptions import InvalidFileException
 
 from app.exceptions import AppValidationError
-from app.utils.gst_states import gstin_validation_error
+from app.utils.gst_states import gstin_validation_error, normalize_gstin
 
 from .intermediate import (
     IntermediateOpeningBalance,
@@ -438,7 +438,7 @@ class VyaparExcelAdapter:
             kinds = _resolve_kinds(raw.get("_party_type"), raw.get("_balance_type"))
             raw_code = _normalize_str(raw.get("code"))
             code = raw_code if raw_code else _derive_code(name, source_idx)
-            gstin = _normalize_str(raw.get("gstin"))
+            gstin = normalize_gstin(_normalize_str(raw.get("gstin")))
             # Pre-validate GSTIN with the SAME rule as masters_service
             # (format + state-code prefix, #215); otherwise the commit-step's
             # create_party would reject the row and abort the whole migration.
@@ -572,7 +572,7 @@ class VyaparExcelAdapter:
                 )
                 warnings += 1
 
-            gstin = _normalize_str(raw.get("gstin"))
+            gstin = normalize_gstin(_normalize_str(raw.get("gstin")))
             gstin_error = gstin_validation_error(gstin) if gstin else None
             if gstin_error is not None:
                 rows.append(

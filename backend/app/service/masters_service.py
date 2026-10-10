@@ -28,7 +28,7 @@ from app.models.masters import TaxStatus
 from app.service import audit_service
 from app.service.common_guards import assert_firm_in_org
 from app.utils.crypto import decrypt_pii, encrypt_pii, get_org_dek
-from app.utils.gst_states import gstin_validation_error, normalize_state_code
+from app.utils.gst_states import gstin_validation_error, normalize_gstin, normalize_state_code
 
 
 def _canonical_state_code(state_code: str | None) -> str | None:
@@ -109,6 +109,7 @@ def create_party(
     if firm_id is not None:
         assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
 
+    gstin = normalize_gstin(gstin)  # #215: strip + uppercase before validate/store
     _validate_gstin(gstin)
     _validate_pan(pan)
     state_code = _canonical_state_code(state_code)
@@ -312,8 +313,12 @@ def update_party(
         party.tax_status = tax_status
     if gstin is not None:
         assert dek is not None  # narrow type for mypy
-        new_gstin = gstin if gstin != "" else None
-        current_gstin = decrypt_pii(party.gstin, dek=dek, org_id=org_id) if party.gstin else None
+        # Normalise both sides (strip + uppercase; blank -> None) so re-sending
+        # a legacy value with different case/whitespace counts as unchanged.
+        new_gstin = normalize_gstin(gstin)
+        current_gstin = normalize_gstin(
+            decrypt_pii(party.gstin, dek=dek, org_id=org_id) if party.gstin else None
+        )
         # #215: validate only when the GSTIN actually changes. The edit form
         # re-sends the unchanged GSTIN on every save; a legacy party holding a
         # GSTIN that predates a tightened rule must stay editable (fix it by

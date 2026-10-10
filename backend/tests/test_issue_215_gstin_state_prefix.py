@@ -103,6 +103,32 @@ def test_create_party_accepts_ladakh_other_territory_and_states(
     assert decrypt_pii(party.gstin, dek=dek, org_id=fresh_org_id) == gstin
 
 
+def test_create_party_normalizes_gstin_case_and_whitespace(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    party = _create(db_session, fresh_org_id, gstin=" 27aabcm1234c1z9 ")
+    dek = get_org_dek(db_session, org_id=fresh_org_id)
+    assert decrypt_pii(party.gstin, dek=dek, org_id=fresh_org_id) == GOOD_MH
+
+
+def test_update_party_normalizes_gstin_case_and_whitespace(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    party = _create(db_session, fresh_org_id)
+    updated = masters_service.update_party(
+        db_session, org_id=fresh_org_id, party_id=party.party_id, gstin="27aabcm1234c1z9 "
+    )
+    dek = get_org_dek(db_session, org_id=fresh_org_id)
+    assert decrypt_pii(updated.gstin, dek=dek, org_id=fresh_org_id) == GOOD_MH
+
+
+def test_create_party_whitespace_only_gstin_is_none(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    party = _create(db_session, fresh_org_id, gstin="   ")
+    assert party.gstin is None
+
+
 def test_update_party_rejects_new_non_state_gstin_prefix(
     db_session: OrmSession, fresh_org_id: uuid.UUID
 ) -> None:
@@ -157,6 +183,22 @@ def test_legacy_bad_gstin_party_resending_unchanged_gstin_still_works(
     assert decrypt_pii(updated.gstin, dek=dek, org_id=fresh_org_id) == BAD_99
 
 
+def test_legacy_bad_gstin_resent_with_different_case_whitespace_counts_unchanged(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    party = _legacy_bad_party(db_session, fresh_org_id)
+    updated = masters_service.update_party(
+        db_session,
+        org_id=fresh_org_id,
+        party_id=party.party_id,
+        gstin=f"  {BAD_99.lower()} ",
+        state_code="MH",
+    )
+    assert updated.state_code == "MH"
+    dek = get_org_dek(db_session, org_id=fresh_org_id)
+    assert decrypt_pii(updated.gstin, dek=dek, org_id=fresh_org_id) == BAD_99
+
+
 def test_legacy_bad_gstin_party_can_be_corrected(
     db_session: OrmSession, fresh_org_id: uuid.UUID
 ) -> None:
@@ -202,6 +244,13 @@ def test_vyapar_import_drops_non_state_gstin_with_warning() -> None:
     parties = list(adapter.extract_parties(src))
     assert len(parties) == 1
     assert parties[0].gstin is None
+
+
+def test_vyapar_import_normalizes_gstin_case_and_whitespace() -> None:
+    src = _vyapar_xlsx(" 27aabcm1234c1z9 ")
+    adapter = VyaparExcelAdapter()
+    assert not [r for r in adapter.validate(src).rows if r.code == "GSTIN_FORMAT_INVALID"]
+    assert next(iter(adapter.extract_parties(src))).gstin == GOOD_MH
 
 
 def test_vyapar_import_keeps_valid_gstin() -> None:
@@ -274,10 +323,13 @@ def test_draft_invoice_for_bad_prefix_gstin_buyer_without_state_is_422(
     party = _legacy_bad_party(db_session, fresh_org_id)
     with pytest.raises(AppValidationError) as exc:
         _draft(db_session, fresh_org_id, firm, item, party)
-    msg = str(exc.value)
-    assert "place of supply" in msg.lower()
-    assert "Legacy Bad GSTIN" in msg
-    assert "state" in msg.lower()
+    assert exc.value.message == (
+        "Cannot determine the place of supply for party 'Legacy Bad GSTIN' "
+        f"(GSTIN {BAD_99}): the party has no state recorded and the GSTIN "
+        "prefix '99' is not a valid GST state code, so GST would be charged as "
+        "₹0. Set the party's state in Masters → Party (or correct its GSTIN), "
+        "or enter a ship-to state on the invoice."
+    )
     # Nothing persisted.
     count = db_session.execute(
         select(SalesInvoice).where(SalesInvoice.org_id == fresh_org_id)
@@ -339,10 +391,70 @@ def test_finalize_refuses_pre_fix_nil_draft_for_gstin_buyer(
     inv.invoice_type = DocumentType.TAX_INVOICE.value
     inv.gst_amount = Decimal("0")
     db_session.flush()
-    with pytest.raises(AppValidationError, match=r"(?i)place of supply"):
+    with pytest.raises(AppValidationError) as exc:
         sales_service.finalize_invoice(
             db_session, org_id=fresh_org_id, sales_invoice_id=inv.sales_invoice_id
         )
+    assert exc.value.message == _finalize_msg(inv)
+
+
+def _finalize_msg(inv: SalesInvoice) -> str:
+    return (
+        f"Cannot finalize invoice {inv.series}/{inv.number}: this draft was priced "
+        "with ₹0 GST because no place of supply could be determined when it was "
+        "created. Discard it and create a new invoice (after correcting the "
+        "party's state/GSTIN if needed)."
+    )
+
+
+def test_finalize_message_for_pre_fix_draft_with_now_valid_party(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """Verifier case: buyer GSTIN prefix 24 (valid) + state GJ. The finalize
+    message must not claim the state is missing or the prefix invalid — the
+    draft's frozen ₹0 pricing is the problem, so it says discard + recreate."""
+    firm, item = _seed(db_session, fresh_org_id)
+    dek = get_org_dek(db_session, org_id=fresh_org_id)
+    party = Party(
+        org_id=fresh_org_id,
+        code=f"G{uuid.uuid4().hex[:6]}",
+        name="Gujarat Buyer",
+        is_customer=True,
+        state_code="GJ",
+        gstin=encrypt_pii("24AABCG1234C1Z9", dek=dek, org_id=fresh_org_id),
+    )
+    db_session.add(party)
+    db_session.flush()
+    inv = _draft(db_session, fresh_org_id, firm, item, party)
+    inv.tax_type = TaxType.NIL_NOT_A_SUPPLY.value
+    inv.invoice_type = DocumentType.TAX_INVOICE.value
+    inv.gst_amount = Decimal("0")
+    db_session.flush()
+    with pytest.raises(AppValidationError) as exc:
+        sales_service.finalize_invoice(
+            db_session, org_id=fresh_org_id, sales_invoice_id=inv.sales_invoice_id
+        )
+    assert exc.value.message == _finalize_msg(inv)
+    assert "not a valid" not in exc.value.message
+    assert "no state recorded" not in exc.value.message
+
+
+def test_create_message_only_states_true_facts_when_state_is_junk(
+    db_session: OrmSession, fresh_org_id: uuid.UUID
+) -> None:
+    """Prefix 99 + a junk legacy state_code ('XX', not normalisable): the
+    message names both facts that actually hold."""
+    firm, item = _seed(db_session, fresh_org_id)
+    party = _legacy_bad_party(db_session, fresh_org_id, state_code="XX")
+    with pytest.raises(AppValidationError) as exc:
+        _draft(db_session, fresh_org_id, firm, item, party)
+    assert exc.value.message == (
+        "Cannot determine the place of supply for party 'Legacy Bad GSTIN' "
+        f"(GSTIN {BAD_99}): the party's recorded state 'XX' is not a valid GST "
+        "state code and the GSTIN prefix '99' is not a valid GST state code, so "
+        "GST would be charged as ₹0. Set the party's state in Masters → Party "
+        "(or correct its GSTIN), or enter a ship-to state on the invoice."
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -401,7 +513,7 @@ def test_create_invoice_endpoint_422_for_bad_prefix_buyer(
         },
     )
     assert resp.status_code == 422, resp.text
-    assert "place of supply" in resp.text.lower()
+    assert resp.json()["detail"].startswith("Cannot determine the place of supply for party")
 
     # Party API rejects the same GSTIN on create.
     bad = http_client.post(

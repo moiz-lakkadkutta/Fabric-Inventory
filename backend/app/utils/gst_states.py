@@ -174,6 +174,18 @@ def validate_state_code(v: str | None) -> str | None:
 GSTIN_FORMAT_RE = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[A-Z\d]$")
 
 
+def normalize_gstin(raw: str | None) -> str | None:
+    """Strip whitespace and uppercase a GSTIN; empty / whitespace-only -> None.
+
+    Applied BEFORE validation and storage on every party write path (API +
+    Vyapar import) so " 27aabcm1234c1z9 " is accepted and stored canonically.
+    """
+    if raw is None:
+        return None
+    cleaned = raw.strip().upper()
+    return cleaned or None
+
+
 def gstin_validation_error(gstin: str) -> str | None:
     """Return an actionable error message if *gstin* is not acceptable, else None.
 
@@ -207,6 +219,7 @@ __all__ = [
     "VALID_GST_STATE_CODES",
     "gstin_validation_error",
     "is_valid_state_code",
+    "normalize_gstin",
     "normalize_state_code",
     "validate_state_code",
 ]
