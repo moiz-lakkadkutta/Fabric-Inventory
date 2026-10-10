@@ -244,6 +244,12 @@ def _doc_title_for(invoice: SalesInvoice, firm: Firm) -> str:
     return "Tax Invoice"
 
 
+def original_document_title(invoice: SalesInvoice, firm: Firm) -> str:
+    """#216: title of the ORIGINAL document a credit note is issued against
+    (Rule 53(1A)(g)) — the same title its own PDF carries."""
+    return _doc_title_for(invoice, firm)
+
+
 def _tax_split_label(invoice: SalesInvoice) -> str:
     """Drives whether the line table shows IGST or CGST+SGST columns."""
     if invoice.tax_type == TaxType.IGST.value:
@@ -508,6 +514,7 @@ def _build_credit_note_context(
     session: Session, *, invoice: SalesInvoice, firm: Firm, party: Party, note: Voucher
 ) -> dict[str, Any]:
     context = _build_context(session, invoice=invoice, firm=firm, party=party)
+    against_doc_title = context["doc_title"]  # the original's title, before overwrite
     buyer = context["buyer"]
     registered = bool(buyer["gstin"])
     pos_code = context["invoice"]["place_of_supply_state"]
@@ -522,6 +529,7 @@ def _build_credit_note_context(
         "full_number": f"{note.series}/{note.number}",
         "date_display": _fmt_date(note.voucher_date),
         "reason": invoice.cancel_reason,
+        "against_doc_title": against_doc_title,
         "against_invoice_number": context["invoice"]["full_number"],
         "against_invoice_date": context["invoice"]["date_display"],
     }
@@ -562,6 +570,7 @@ def render_credit_note_pdf(
 
 __all__ = [
     "filename_for",
+    "original_document_title",
     "render_credit_note_html",
     "render_credit_note_pdf",
     "render_invoice_html",

@@ -716,7 +716,9 @@ def get_invoice_pdf(
         404: {
             "description": (
                 "Invoice not found in the caller's org, or it has no credit note "
-                "(not cancelled, or cancelled in the same GST period)."
+                "(not cancelled, cancelled in the same GST period, or not a tax "
+                "invoice for a supply: Bill of Supply, Cash Memo, Estimate, "
+                "branch transfer)."
             )
         },
     },

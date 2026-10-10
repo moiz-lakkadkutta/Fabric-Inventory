@@ -83,7 +83,7 @@
 
   {# Rule 53(1A)(g) — serial number and date of the corresponding tax invoice #}
   <div class="against">
-    <span class="label">Against Tax Invoice</span>
+    <span class="label">Against {{ credit_note.against_doc_title }}</span>
     No. <strong>{{ credit_note.against_invoice_number }}</strong> dated <strong>{{ credit_note.against_invoice_date }}</strong>
     {% if credit_note.reason %}<br />Reason: {{ credit_note.reason }}{% endif %}
   </div>

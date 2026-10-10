@@ -4392,9 +4392,14 @@ paths:
         NUMBERING (#216): a cross-period (§34) credit note is numbered in the
         firm's own credit-note series `CN/<FY>/<serial>` (e.g. CN/26-27/0001;
         FY = Indian financial year, 1 April - 31 March, of the note date;
-        gapless, restarting each 1 April; ≤16 chars per Rule 53(1A)(b)). A
-        same-period cancellation's GL reversal is an internal `CXL/<FY>`
-        voucher and never consumes a credit-note serial. The response's
+        gapless, restarting each 1 April; ≤16 chars per Rule 53(1A)(b)). Only
+        a TAX INVOICE for a supply can carry a §34 note: a cross-period cancel
+        of a Bill of Supply (non-GST firm), Cash Memo, Estimate or same-GSTIN
+        branch transfer (NIL_NOT_A_SUPPLY) is not a credit note. Those, a
+        same-period cancellation, and any pre-#190 duplicate reversal beyond
+        the first, are internal `CXL/<FY>` vouchers ("Cancellation
+        reversal") that never consume a credit-note serial and never appear
+        in GSTR-1 CDNR / CDNUR. The response's
         `credit_note` carries the note number and date.
       operationId: cancelInvoice
       tags:
@@ -4448,7 +4453,9 @@ paths:
         delivery and state), the original invoice number and date, per-line
         taxable value, rate and CGST/SGST/IGST credited, and the signature
         block. 404 when the invoice is not visible to the caller's org or has
-        no credit note (not cancelled, or a same-period cancellation).
+        no credit note (not cancelled, a same-period cancellation, or not a
+        tax invoice for a supply — Bill of Supply, Cash Memo, Estimate,
+        branch transfer).
       operationId: getInvoiceCreditNotePdf
       tags:
         - sales

@@ -47,7 +47,7 @@ from app.models import (
 )
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.sales import InvoiceLifecycleStatus, SiLine
-from app.service import gst_service
+from app.service import accounting_service, gst_service
 from app.service.gst_service import TaxType
 from app.utils import crypto
 from app.utils.gst_states import normalize_state_code
@@ -1877,8 +1877,9 @@ def compute_gstr1(
             SalesInvoice.deleted_at.is_(None),
             SiLine.deleted_at.is_(None),
             SalesInvoice.lifecycle_status == InvoiceLifecycleStatus.CANCELLED,
-            func.date_trunc("month", cn.voucher_date)
-            > func.date_trunc("month", SalesInvoice.invoice_date),
+            # #216: the ONE shared "is this reversal a §34 credit note?"
+            # predicate (also used by posting + the credit-note PDF).
+            accounting_service.s34_credit_note_clause(cn, SalesInvoice),
         )
         .group_by(
             cn.voucher_id,
