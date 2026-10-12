@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import re
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -22,6 +21,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DBAPIError
+
+from tests.security._q01_helpers import insert_synthetic_row
 
 # Tables with firm_id that are deliberately NOT firm-scoped (reasons in the
 # migration docstring). Anything else with firm_id must carry the policy.
@@ -197,45 +198,6 @@ def test_q01_02_writes_into_an_out_of_scope_firm_are_rejected(
             )
 
 
-# NOT NULL, no-default columns of a table (enum → its first label).
-_REQUIRED_COLS = text(
-    """
-    SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS typ, t.typtype,
-           (SELECT e.enumlabel FROM pg_enum e WHERE e.enumtypid = a.atttypid
-             ORDER BY e.enumsortorder LIMIT 1) AS first_label
-      FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
-     WHERE a.attrelid = CAST(:t AS regclass) AND a.attnum > 0 AND NOT a.attisdropped
-       AND a.attnotnull AND NOT a.atthasdef AND a.attidentity = '' AND a.attgenerated = ''
-    """
-)
-# Per-table extras a CHECK constraint needs beyond "every NOT NULL column".
-_ROW_OVERRIDES: dict[str, dict[str, object]] = {
-    # chk_payment_alloc_one_target: exactly one of the two invoice ids.
-    "payment_allocation": {"sales_invoice_id": "00000000-0000-0000-0000-000000000001"},
-}
-
-
-def _synthetic_value(typ: str, typtype: str, first_label: str | None) -> object:
-    if typtype == "e":
-        return first_label
-    if typ == "uuid":
-        return str(uuid.uuid4())
-    if typ.startswith(("character", "text")):
-        size = re.search(r"\((\d+)\)", typ)
-        return ("Q" + uuid.uuid4().hex)[: int(size.group(1)) if size else 12]
-    if typ.startswith(("numeric", "integer", "smallint", "bigint", "double", "real")):
-        return 1
-    if typ == "boolean":
-        return False
-    if typ.startswith(("timestamp", "date")):
-        return "2026-04-01"
-    if typ.startswith("json") or typ.endswith("[]"):
-        return "{}"
-    if typ == "bytea":
-        return b"\x00"
-    raise AssertionError(f"teach _synthetic_value about column type {typ!r}")
-
-
 def test_q01_02_empirical_sweep_every_firm_table(su_engine: Engine) -> None:
     """Self-contained sweep over EVERY firm-scoped table (no reliance on rows
     left by earlier tests — a fresh CI DB has almost none).
@@ -255,13 +217,7 @@ def test_q01_02_empirical_sweep_every_firm_table(su_engine: Engine) -> None:
         try:
             conn.execute(text("SET LOCAL session_replication_role = replica"))
             for table in tables:
-                row: dict[str, object] = {"org_id": str(org), "firm_id": str(f2)}
-                for c in conn.execute(_REQUIRED_COLS, {"t": table}):
-                    row.setdefault(c.attname, _synthetic_value(c.typ, c.typtype, c.first_label))
-                row.update(_ROW_OVERRIDES.get(table, {}))
-                cols = ", ".join(f'"{k}"' for k in row)
-                params = ", ".join(f":{k}" for k in row)
-                conn.execute(text(f'INSERT INTO "{table}" ({cols}) VALUES ({params})'), row)
+                insert_synthetic_row(conn, table, {"org_id": str(org), "firm_id": str(f2)})
             conn.execute(text("SET LOCAL session_replication_role = origin"))
             conn.execute(text("SET LOCAL ROLE fabric_app"))
             conn.execute(text("SELECT set_config('app.current_org_id', :v, true)"), {"v": str(org)})

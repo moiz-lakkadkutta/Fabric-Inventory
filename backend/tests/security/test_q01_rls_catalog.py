@@ -18,8 +18,10 @@ from collections.abc import Iterator
 
 import pytest
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DBAPIError, ProgrammingError
+
+from tests.security._q01_helpers import insert_synthetic_row
 
 # Tables that legitimately carry no org-scoped RLS. Each needs a reason.
 _RLS_EXEMPT = {
@@ -145,48 +147,86 @@ def _app_engine(su: Engine) -> Engine:
     return create_engine(url)
 
 
-def test_q01_foreign_org_guc_sees_zero_rows_in_every_rls_table(su_engine: Engine) -> None:
-    """Empirical sweep (passes today): as fabric_app pinned to an org that
-    owns nothing, every RLS-protected table returns 0 rows, while the
-    superuser sees data in them (the DB is populated by prior test runs)."""
-    tables = _tables(su_engine)
-    rls_tables = sorted(n for n, t in tables.items() if t["relrowsecurity"])
-    app = _app_engine(su_engine)
-    leaks: dict[str, int] = {}
-    populated = 0
-    try:
-        with app.connect() as conn, su_engine.connect() as su:
+def _two_org_sweep(su: Engine, tables: list[str]) -> dict[str, tuple[int, int]]:
+    """Self-contained: in ONE superuser transaction that is rolled back, seed
+    two orgs A and B (an organization + firm row each) and one synthetic row
+    per table in each org (FKs off via ``session_replication_role = replica``;
+    the rows only need to exist). Then ``SET LOCAL ROLE fabric_app`` with the
+    org GUC pinned to B and every firm in scope, and count, per table, the
+    rows that belong to A (must be 0) and to B (must be 1: the policy isn't
+    vacuously hiding everything). No reliance on rows left by other tests."""
+    orgs = {"A": (uuid.uuid4(), uuid.uuid4()), "B": (uuid.uuid4(), uuid.uuid4())}
+    out: dict[str, tuple[int, int]] = {}
+    with su.connect() as conn:
+        tx = conn.begin()
+        try:
+            conn.execute(text("SET LOCAL session_replication_role = replica"))
+            for org, firm in orgs.values():
+                insert_synthetic_row(conn, "organization", {"org_id": str(org)})
+                insert_synthetic_row(conn, "firm", {"org_id": str(org), "firm_id": str(firm)})
+                for table in tables:
+                    if table in ("organization", "firm"):
+                        continue
+                    cols = _columns(conn, table)
+                    base: dict[str, object] = {}
+                    if "org_id" in cols:
+                        base["org_id"] = str(org)
+                    if "firm_id" in cols:
+                        base["firm_id"] = str(firm)
+                    insert_synthetic_row(conn, table, base)
+            conn.execute(text("SET LOCAL session_replication_role = origin"))
+            conn.execute(text("SET LOCAL ROLE fabric_app"))
             conn.execute(
-                text("SELECT set_config('app.current_org_id', :v, false)"),
-                {"v": str(uuid.uuid4())},
+                text("SELECT set_config('app.current_org_id', :v, true)"),
+                {"v": str(orgs["B"][0])},
             )
-            for name in rls_tables:
-                n = conn.execute(text(f'SELECT count(*) FROM "{name}"')).scalar_one()
-                if n:
-                    leaks[name] = n
-                if su.execute(text(f'SELECT EXISTS (SELECT 1 FROM "{name}")')).scalar_one():
-                    populated += 1
-    finally:
-        app.dispose()
-    assert leaks == {}, f"rows visible to a foreign org: {leaks}"
-    assert populated >= 10, "sweep is vacuous — run the suite once to populate the DB"
+            conn.execute(text("SELECT set_config('app.current_firm_scope', '*', true)"))
+            for table in tables:
+                key = "org_id" if "org_id" in _columns(conn, table) else "firm_id"
+                idx = 0 if key == "org_id" else 1
+
+                def visible(label: str, table: str = table, key: str = key, idx: int = idx) -> int:
+                    return int(
+                        conn.execute(
+                            text(f'SELECT count(*) FROM "{table}" WHERE "{key}" = :v'),
+                            {"v": str(orgs[label][idx])},
+                        ).scalar_one()
+                    )
+
+                out[table] = (visible("A"), visible("B"))
+        finally:
+            tx.rollback()
+    return out
+
+
+def _columns(conn: Connection, table: str) -> set[str]:
+    return {
+        r[0]
+        for r in conn.execute(
+            text(
+                "SELECT attname FROM pg_attribute WHERE attrelid = CAST(:t AS regclass) "
+                "AND attnum > 0 AND NOT attisdropped"
+            ),
+            {"t": table},
+        )
+    }
+
+
+def test_q01_foreign_org_guc_sees_zero_rows_in_every_rls_table(su_engine: Engine) -> None:
+    """Empirical sweep over EVERY RLS-protected table: as fabric_app pinned to
+    org B, org A's row is invisible and B's own row is visible."""
+    tables = sorted(n for n, t in _tables(su_engine).items() if t["relrowsecurity"])
+    seen = _two_org_sweep(su_engine, tables)
+    wrong = {t: f"(foreign, own) = {v}" for t, v in seen.items() if v != (0, 1)}
+    assert wrong == {}, f"org RLS wrong on: {wrong}"
+    assert len(seen) >= 100, f"sweep looks vacuous: only {len(seen)} RLS tables"
 
 
 def test_q01_06_foreign_org_guc_sees_zero_catalog_rows(su_engine: Engine) -> None:
-    app = _app_engine(su_engine)
-    try:
-        with app.connect() as conn:
-            conn.execute(
-                text("SELECT set_config('app.current_org_id', :v, false)"),
-                {"v": str(uuid.uuid4())},
-            )
-            counts = {
-                t: conn.execute(text(f"SELECT count(*) FROM {t}")).scalar_one()
-                for t in ("uom", "hsn")
-            }
-    finally:
-        app.dispose()
-    assert counts == {"uom": 0, "hsn": 0}, f"cross-org catalog rows visible: {counts}"
+    """uom / hsn (RLS since 211): seeded in both orgs inside the test, so it
+    can't pass vacuously on an empty DB."""
+    seen = _two_org_sweep(su_engine, ["uom", "hsn"])
+    assert seen == {"uom": (0, 1), "hsn": (0, 1)}, f"(foreign, own) per catalog: {seen}"
 
 
 def test_q01_07_all_policies_use_missing_ok_guc(su_engine: Engine) -> None:
