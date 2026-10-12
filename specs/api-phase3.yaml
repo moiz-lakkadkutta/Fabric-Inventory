@@ -6,6 +6,13 @@ info:
     Manufacturing pipeline, job work, QC, design library, labour, and overhead management
     for multi-tenant ladies-suit / fabric trade ERP.
     Supports state machines for MOs, operations, and stock stages; event sourcing; Kanban views.
+
+    DESIGN DOCUMENT, NOT THE IMPLEMENTED CONTRACT. These `/manufacturing/...` paths,
+    operations and `x-permission` codes describe the original Phase 3 design. The
+    manufacturing routes the app actually serves (designs, BOMs, routings, operation
+    masters, cost centres, job-work orders, `/manufacturing/mo...`) are specified in
+    `specs/api-phase1.yaml` with the permissions they enforce, guarded by
+    `backend/tests/test_spec_permission_parity.py` (Q01-12, FUP-205-C).
   contact:
     name: Fabric ERP Team
   license:
@@ -374,7 +381,7 @@ components:
           type: object
           additionalProperties:
             type: integer
-          description: Size/variant split (e.g., {M: 40, L: 40, XL: 20})
+          description: "Size/variant split (e.g., {M: 40, L: 40, XL: 20})"
         status:
           $ref: '#/components/schemas/MOStatus'
         routing_id:
