@@ -30,7 +30,8 @@ export default function MfaEnroll() {
   const { key: confirmKey, reset: resetConfirmKey } = useIdempotencyKey();
   const [code, setCode] = React.useState('');
   const [error, setError] = React.useState<string | null>(null);
-  const [done, setDone] = React.useState(false);
+  const [backupCodes, setBackupCodes] = React.useState<string[] | null>(null);
+  const done = backupCodes !== null;
   const started = React.useRef(false);
 
   // Confirm signs out (clears the token) just before `done` flips, so a
@@ -70,6 +71,34 @@ export default function MfaEnroll() {
               <CheckCircle2 size={16} color="var(--accent)" />
               <span>Your account is now protected with a second factor.</span>
             </div>
+            {backupCodes && backupCodes.length > 0 && (
+              <div className="flex flex-col gap-2" style={{ fontSize: 13 }}>
+                <strong>Save your backup codes</strong>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  If you lose your phone, each code signs you in once. They are shown only now —
+                  write them down or store them in a password manager.
+                </span>
+                <ul
+                  data-testid="mfa-backup-codes"
+                  className="num grid grid-cols-2 gap-1"
+                  style={{
+                    padding: '8px 10px',
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-default)',
+                    borderRadius: 6,
+                    letterSpacing: '0.08em',
+                  }}
+                >
+                  {backupCodes.map((c) => (
+                    <li key={c}>{c}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+              When you sign in, wait for a new code in your app — the one you just used won't work
+              twice.
+            </span>
             <Link to="/login" style={{ color: 'var(--accent)', fontWeight: 500 }}>
               Sign in again
             </Link>
@@ -85,7 +114,7 @@ export default function MfaEnroll() {
     confirm.mutate(
       { code, idempotencyKey: confirmKey },
       {
-        onSuccess: () => setDone(true),
+        onSuccess: (result) => setBackupCodes(result.backup_codes),
         onError: () => {
           resetConfirmKey();
           setError("That code didn't match. Use the current code from your app.");

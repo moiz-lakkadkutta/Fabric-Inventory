@@ -130,6 +130,9 @@ _SECRET_BODY_FIELDS = frozenset(
         "password",
         "totp_secret",
         "backup_codes",
+        # Q01-03: the MFA-enrolment-only bearer token in /auth/login.
+        "enrollment_token",
+        "backup_code",
     }
 )
 

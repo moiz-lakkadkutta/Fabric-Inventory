@@ -101,7 +101,10 @@ describe('MFA enrolment required (live mode)', () => {
         const body = JSON.parse(String(init?.body)) as { code: string };
         const auth = (init?.headers as Record<string, string>)['Authorization'];
         if (body.code === '123456' && auth === 'Bearer enrol-token') {
-          return jsonResponse(200, { ok: true });
+          return jsonResponse(200, {
+            ok: true,
+            backup_codes: ['aaaaa-bbbbb', 'ccccc-ddddd'],
+          });
         }
         return jsonResponse(400, {
           code: 'INVALID_MFA_CODE',
@@ -120,6 +123,8 @@ describe('MFA enrolment required (live mode)', () => {
     fireEvent.click(screen.getByRole('button', { name: /turn on two-factor/i }));
 
     expect(await screen.findByText(/two-factor authentication is on/i)).toBeInTheDocument();
+    expect(screen.getByTestId('mfa-backup-codes')).toHaveTextContent('aaaaa-bbbbb');
+    expect(screen.getByText(/wait for a new code/i)).toBeInTheDocument();
     await waitFor(() => expect(authStore.get().accessToken).toBeNull());
     expect(calls().some((u) => u.endsWith('/auth/logout'))).toBe(true);
     expect(screen.getByRole('link', { name: /sign in again/i })).toHaveAttribute('href', '/login');

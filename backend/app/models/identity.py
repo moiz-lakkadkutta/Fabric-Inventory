@@ -179,6 +179,9 @@ class AppUser(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         Boolean, server_default=text("false"), nullable=True
     )
     mfa_secret: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # encrypted
+    # Q01-03 / migration 211: one-time backup codes, bcrypt-hashed:
+    # [{"h": hash, "used_at": iso8601 | None}, ...]. See identity_service.
+    mfa_backup_codes: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     last_login_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

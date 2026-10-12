@@ -1,5 +1,5 @@
 """Q01-10 + two-tab refresh race: refresh-token families, rotation links and
-a grace-interval successor envelope on ``session``.
+a grace-interval successor envelope on ``session``; Q01-03 MFA backup codes.
 
 Adds three columns to ``session``:
 
@@ -24,10 +24,20 @@ Adds three columns to ``session``:
 
 Plus ``ix_session_family_id`` for the family-wide revocation UPDATE.
 
+Q01-03 follow-up (same migration — one per batch): ``app_user`` gains
+
+  mfa_backup_codes        JSONB NULL
+      The user's one-time MFA backup codes, issued at /auth/mfa/confirm:
+      ``[{"h": <bcrypt hash>, "used_at": <iso8601 | null>}, ...]``. Codes are
+      never stored in plaintext; a used code keeps its row with ``used_at``
+      set (audit trail). Cleared by ``scripts/reset_mfa.py``. Covered by
+      ``app_user``'s existing org RLS policy.
+
 No RLS change: ``session`` keeps its org policy; the new columns are covered.
 Backward-compatible: additive; the NOT NULL is applied after the backfill and
 the only writer (``identity_service.issue_tokens``) sets the column.
-Downgrade drops the index and the three columns.
+Downgrade drops the index, the three ``session`` columns and
+``app_user.mfa_backup_codes``.
 
 Revision ID: 211_refresh_rotation
 Revises: 210_firm_scope_rls
@@ -68,9 +78,14 @@ def upgrade() -> None:
         "session", "family_id", nullable=False, server_default=sa.text("gen_random_uuid()")
     )
     op.create_index("ix_session_family_id", "session", ["family_id"])
+    op.add_column(
+        "app_user",
+        sa.Column("mfa_backup_codes", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("app_user", "mfa_backup_codes")
     op.drop_index("ix_session_family_id", table_name="session")
     op.drop_column("session", "grace_successor_ct")
     op.drop_column("session", "replaced_by_session_id")

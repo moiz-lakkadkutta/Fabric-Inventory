@@ -5750,6 +5750,8 @@ export interface components {
          * @description POST /auth/mfa/confirm response — ok=True means MFA is now active.
          */
         MfaConfirmResponse: {
+            /** Backup Codes */
+            backup_codes?: string[];
             /**
              * Ok
              * @default true
@@ -5774,6 +5776,8 @@ export interface components {
          * @description Re-presents email+password alongside the TOTP code. See module docstring.
          */
         MfaVerifyRequest: {
+            /** Backup Code */
+            backup_code?: string | null;
             /**
              * Email
              * Format: email
@@ -5784,7 +5788,7 @@ export interface components {
             /** Password */
             password: string;
             /** Totp Code */
-            totp_code: string;
+            totp_code?: string | null;
         };
         /** MigrationListResponse */
         MigrationListResponse: {

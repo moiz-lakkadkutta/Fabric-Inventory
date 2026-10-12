@@ -73,6 +73,10 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
   - After `/auth/mfa/confirm`, the next login returns `requires_mfa` and goes through `/auth/mfa-verify`. The FE `/mfa/enroll` screen signs out after confirming.
   - Setting `MFA_REQUIRED_FOR_ADMIN` defaults to true. False is a boot refusal outside `ENVIRONMENT=dev`. The E2E overlay sets it false. The pytest suite turns the policy off at the `mfa_policy_service.is_enforced` seam unless a test carries `@pytest.mark.mfa_policy_enforced`.
   - Logout now denylists the presented bearer (access or enrolment token) on every path, not only after a successful refresh revocation.
+  - **Recovery (verifier round 1):**
+    - `/auth/mfa/confirm` issues 10 one-time backup codes, stored as bcrypt hashes in `app_user.mfa_backup_codes` (migration 211). `/auth/mfa-verify` accepts `backup_code` in place of `totp_code`; each code works once, the user row is locked while it is spent, and every use is audited as `mfa_backup_code_used`.
+    - Ops break-glass: `scripts/reset_mfa.py --email --org --reason` clears the enrolment, bumps `permissions_version`, revokes all of the user's sessions and audits `mfa_reset`. See `docs/ops/mfa-reset-runbook.md`.
+    - `enrollment_token` and `backup_code` are added to the idempotency never-cache fields.
 
 ### Q01-04 · P2 · Idempotency cache is not principal-scoped and is replayed before authentication (including token-bearing responses)
 
@@ -153,6 +157,13 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
   - Reuse detection: a rotated token presented after the window revokes its whole family (`session.family_id`; the user's other logins are untouched). It is audited as `refresh_reuse_detected` and committed before the uniform 401.
   - Logout revokes the whole family and wipes the grace envelopes.
   - Repro: 4 concurrent redemptions went from 4 distinct pairs to 1 pair, returned to all 4 callers.
+  - **Verifier round 1 follow-up:**
+    - `revoke_family` and `refresh_token` both lock the whole family (`FOR UPDATE`, `session_id` order) first. A successor being minted concurrently is now revoked by reuse detection and by logout, and the shared lock order means no lock-order deadlock.
+    - Rotation wipes every older envelope, so a family has at most one. The envelope key is peppered: `HMAC(HKDF(JWT_SECRET), label || token)`.
+    - Logout's DB work runs in the threadpool. It used to run on the event loop, where it deadlocked against a refresh holding the lock.
+    - The app engines set `lock_timeout` (`DB_LOCK_TIMEOUT_MS`, default 5000). A lock wait past it returns 503 `LOCK_TIMEOUT`.
+    - The `refresh_reuse_detected` audit is kept when `sessions_revoked=0`, with a detail saying the family was already revoked.
+    - Other `async def` routes doing sync DB work, not changed: `migrations.upload_migration` and `migrations.approve_migration`.
 
 ### Q01-12 · P3 · The OpenAPI `x-permission` contract has drifted from the code
 

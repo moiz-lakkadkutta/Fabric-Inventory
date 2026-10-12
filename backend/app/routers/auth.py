@@ -708,7 +708,24 @@ def mfa_verify(
         # Don't admit "MFA isn't on for that user"; treat as a generic auth fail.
         raise InvalidCredentialsError("Invalid email or password")
 
-    if not identity_service.verify_totp(db, user_id=user.user_id, code=body.totp_code):
+    if body.backup_code is not None:
+        # Q01-03 follow-up: lost-authenticator recovery. One-time; audited.
+        remaining = identity_service.consume_backup_code(
+            db, user_id=user.user_id, code=body.backup_code
+        )
+        if remaining is None:
+            raise InvalidCredentialsError("Invalid email or password")
+        audit_service.emit(
+            db,
+            org_id=user.org_id,
+            firm_id=None,
+            user_id=user.user_id,
+            entity_type="auth.mfa",
+            entity_id=user.user_id,
+            action="mfa_backup_code_used",
+            changes={"after": {"backup_codes_remaining": remaining}},
+        )
+    elif not identity_service.verify_totp(db, user_id=user.user_id, code=body.totp_code or ""):
         raise InvalidCredentialsError("Invalid email or password")
 
     user.last_login_at = datetime.datetime.now(tz=datetime.UTC)
@@ -837,6 +854,8 @@ def mfa_confirm(
         _select(_AppUser).where(_AppUser.user_id == current_user.user_id)
     ).scalar_one()
     user.mfa_enabled = True
+    # Q01-03 follow-up: recovery codes for a lost authenticator, shown once.
+    backup_codes = identity_service.issue_backup_codes(db, user=user)
 
     audit_service.emit(
         db,
@@ -846,10 +865,10 @@ def mfa_confirm(
         entity_type="auth.mfa",
         entity_id=current_user.user_id,
         action="mfa_confirm",
-        changes={"after": {"mfa_enabled": True}},
+        changes={"after": {"mfa_enabled": True, "backup_codes_issued": len(backup_codes)}},
     )
     db.flush()
-    return MfaConfirmResponse(ok=True)
+    return MfaConfirmResponse(ok=True, backup_codes=backup_codes)
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import hashlib
+import secrets
 import uuid
 from dataclasses import dataclass
 from typing import Any, Final, Literal
@@ -38,7 +39,7 @@ from typing import Any, Final, Literal
 import bcrypt
 import jwt
 import pyotp
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -559,6 +560,83 @@ def enable_mfa(session: Session, *, user_id: uuid.UUID) -> MfaEnrollment:
 
     session.flush()
     return MfaEnrollment(secret=secret, provisioning_uri=provisioning_uri)
+
+
+# Q01-03 follow-up: one-time backup codes (lost-authenticator recovery).
+_BACKUP_CODE_COUNT: Final[int] = 10
+# 10 chars from a 32-symbol alphabet = 50 bits per code. bcrypt at 10 rounds
+# (~60 ms) keeps a full scan of 10 hashes well under a second; the codes'
+# entropy, not the work factor, is what resists guessing, and /mfa-verify is
+# rate-limited + needs the password too.
+_BACKUP_CODE_ROUNDS: Final[int] = 10
+_BACKUP_CODE_ALPHABET: Final[str] = "abcdefghjkmnpqrstuvwxyz23456789"
+
+
+def _normalize_backup_code(code: str) -> str:
+    return "".join(ch for ch in code.lower() if ch.isalnum())
+
+
+def issue_backup_codes(session: Session, *, user: AppUser) -> list[str]:
+    """Replace the user's backup codes with 10 fresh ones and return the
+    plaintext ONCE. Only bcrypt hashes are stored (``app_user.mfa_backup_codes``)."""
+    codes: list[str] = []
+    stored: list[dict[str, Any]] = []
+    for _ in range(_BACKUP_CODE_COUNT):
+        raw = "".join(secrets.choice(_BACKUP_CODE_ALPHABET) for _ in range(10))
+        codes.append(f"{raw[:5]}-{raw[5:]}")
+        digest = bcrypt.hashpw(raw.encode("utf-8"), bcrypt.gensalt(rounds=_BACKUP_CODE_ROUNDS))
+        stored.append({"h": digest.decode("utf-8"), "used_at": None})
+    user.mfa_backup_codes = stored
+    session.flush()
+    return codes
+
+
+def consume_backup_code(session: Session, *, user_id: uuid.UUID, code: str) -> int | None:
+    """Spend one backup code. Returns the number of unused codes left, or
+    ``None`` if ``code`` matches no unused code. The user row is locked so
+    two concurrent sign-ins cannot spend the same code twice."""
+    normalized = _normalize_backup_code(code)
+    if len(normalized) != 10:
+        return None
+    user = session.execute(
+        select(AppUser).where(AppUser.user_id == user_id).with_for_update()
+    ).scalar_one_or_none()
+    if user is None or not user.mfa_backup_codes:
+        return None
+    entries = [dict(e) for e in user.mfa_backup_codes]
+    hit = None
+    for entry in entries:
+        if entry.get("used_at") is None and bcrypt.checkpw(
+            normalized.encode("utf-8"), str(entry["h"]).encode("utf-8")
+        ):
+            hit = entry
+            break
+    if hit is None:
+        return None
+    hit["used_at"] = _now_utc().isoformat()
+    user.mfa_backup_codes = entries  # new list → JSONB change detected
+    session.flush()
+    return sum(1 for e in entries if e.get("used_at") is None)
+
+
+def reset_mfa(session: Session, *, user: AppUser, now: datetime.datetime) -> int:
+    """Ops recovery (``scripts/reset_mfa.py``): clear TOTP enrolment and
+    backup codes, bump ``permissions_version`` (outstanding access tokens
+    die on their next request) and revoke every live refresh session.
+    Returns the number of sessions revoked. Caller audits + commits."""
+    user.mfa_enabled = False
+    user.mfa_secret = None
+    user.mfa_backup_codes = None
+    user.permissions_version = (user.permissions_version or 0) + 1
+    revoked = session.execute(
+        update(DbSession)
+        .where(DbSession.user_id == user.user_id, DbSession.revoked_at.is_(None))
+        .values(revoked_at=now, grace_successor_ct=None)
+        .returning(DbSession.session_id)
+        .execution_options(synchronize_session=False)
+    ).all()
+    session.flush()
+    return len(revoked)
 
 
 def prepare_mfa_enrollment(session: Session, *, user_id: uuid.UUID) -> MfaEnrollment:

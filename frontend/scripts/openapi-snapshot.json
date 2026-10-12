@@ -7507,6 +7507,13 @@
       "MfaConfirmResponse": {
         "description": "POST /auth/mfa/confirm response \u2014 ok=True means MFA is now active.",
         "properties": {
+          "backup_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Backup Codes",
+            "type": "array"
+          },
           "ok": {
             "default": true,
             "title": "Ok",
@@ -7538,6 +7545,19 @@
       "MfaVerifyRequest": {
         "description": "Re-presents email+password alongside the TOTP code. See module docstring.",
         "properties": {
+          "backup_code": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "minLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup Code"
+          },
           "email": {
             "format": "email",
             "title": "Email",
@@ -7554,18 +7574,24 @@
             "type": "string"
           },
           "totp_code": {
-            "maxLength": 6,
-            "minLength": 6,
-            "pattern": "^\\d{6}$",
-            "title": "Totp Code",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 6,
+                "minLength": 6,
+                "pattern": "^\\d{6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totp Code"
           }
         },
         "required": [
           "email",
           "password",
-          "org_name",
-          "totp_code"
+          "org_name"
         ],
         "title": "MfaVerifyRequest",
         "type": "object"

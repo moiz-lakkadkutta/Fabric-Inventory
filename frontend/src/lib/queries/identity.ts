@@ -211,7 +211,9 @@ export interface MfaVerifyInput {
   email: string;
   password: string;
   org_name: string;
-  totp_code: string;
+  /** Exactly one of totp_code / backup_code (Q01-03 follow-up). */
+  totp_code?: string;
+  backup_code?: string;
   idempotencyKey: string;
 }
 
@@ -223,7 +225,7 @@ async function liveMfaVerify(input: MfaVerifyInput): Promise<LoginEnvelope> {
       email: input.email,
       password: input.password,
       org_name: input.org_name,
-      totp_code: input.totp_code,
+      ...(input.backup_code ? { backup_code: input.backup_code } : { totp_code: input.totp_code }),
     },
   });
   if (data.access_token) authStore.setAccessToken(data.access_token);
@@ -360,8 +362,16 @@ export function useMfaSetup() {
   });
 }
 
-async function liveMfaConfirm(input: { code: string; idempotencyKey: string }): Promise<void> {
-  await api('/auth/mfa/confirm', {
+export interface MfaConfirmResult {
+  /** 10 one-time backup codes — shown ONCE (Q01-03 follow-up). */
+  backup_codes: string[];
+}
+
+async function liveMfaConfirm(input: {
+  code: string;
+  idempotencyKey: string;
+}): Promise<MfaConfirmResult> {
+  const data = await api<MfaConfirmResult>('/auth/mfa/confirm', {
     method: 'POST',
     idempotencyKey: input.idempotencyKey,
     body: { code: input.code },
@@ -377,15 +387,19 @@ async function liveMfaConfirm(input: { code: string; idempotencyKey: string }): 
   } finally {
     authStore.clear();
   }
+  return { backup_codes: data.backup_codes ?? [] };
 }
 
-async function mockMfaConfirm(input: { code: string }): Promise<void> {
+async function mockMfaConfirm(input: { code: string }): Promise<MfaConfirmResult> {
   if (input.code === '000000') {
     await fakeFetch(undefined);
     throw new Error('INVALID_MFA_CODE');
   }
   await fakeFetch(undefined);
   authStore.clear();
+  return {
+    backup_codes: Array.from({ length: 10 }, (_, i) => `mock${i}-codes`),
+  };
 }
 
 export function useMfaConfirm() {

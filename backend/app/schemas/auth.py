@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime
 import uuid
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 from app.utils.gst_states import validate_state_code
 
@@ -117,7 +117,16 @@ class MfaVerifyRequest(BaseModel):
     email: EmailStr
     password: str
     org_name: str = Field(min_length=1, max_length=255)
-    totp_code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    # Exactly one of the two (Q01-03 follow-up): the authenticator's 6-digit
+    # code, or a one-time backup code issued at /auth/mfa/confirm.
+    totp_code: str | None = Field(default=None, min_length=6, max_length=6, pattern=r"^\d{6}$")
+    backup_code: str | None = Field(default=None, min_length=10, max_length=20)
+
+    @model_validator(mode="after")
+    def _exactly_one_factor(self) -> MfaVerifyRequest:
+        if (self.totp_code is None) == (self.backup_code is None):
+            raise ValueError("Provide exactly one of totp_code or backup_code")
+        return self
 
 
 class RefreshRequest(BaseModel):
@@ -216,6 +225,9 @@ class MfaConfirmResponse(BaseModel):
     """POST /auth/mfa/confirm response — ok=True means MFA is now active."""
 
     ok: bool = True
+    # Q01-03 follow-up: 10 one-time backup codes, shown ONCE. Store them
+    # somewhere safe; each signs in once via /auth/mfa-verify `backup_code`.
+    backup_codes: list[str] = Field(default_factory=list)
 
 
 class MeResponse(BaseModel):
