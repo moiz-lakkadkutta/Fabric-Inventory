@@ -6,8 +6,9 @@ Endpoints:
   POST   /admin/invites/accept              — invitee consumes (PUBLIC, no JWT)
   PATCH  /admin/users/{user_id}/role        — Owner swaps a user's role
 
-All authenticated endpoints require the `admin.user.manage` permission
-per the RBAC catalog (`backend/app/service/rbac_service.py`).
+The user endpoints require the `admin.user.manage` permission per the RBAC
+catalog (`backend/app/service/rbac_service.py`); the role read endpoints
+require `identity.role.read`.
 
 The `/admin/invites/accept` endpoint is the one exception: the invitee
 doesn't have a session yet. AuthMiddleware is a pass-through today, but
@@ -279,7 +280,11 @@ def update_user_role(
 # GET /admin/roles — list system roles so the FE can render a dropdown
 #
 # Surface needed by `InviteUserDialog` + the role-change <select> on the
-# users table. Permission-gated on `admin.user.manage` for parity.
+# users table. Q01-13: gated on `identity.role.read`, like GET
+# /admin/roles/{id} and GET /admin/permissions (it was `admin.user.manage`).
+# Migration 211 granted identity.role.read to every role holding
+# admin.user.manage, so user managers keep their dropdown; a NEW custom role
+# for user management needs both codes.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -289,7 +294,7 @@ def update_user_role(
 )
 def list_roles(
     db: SyncDBSession,
-    current_user: Annotated[TokenPayload, Depends(require_permission("admin.user.manage"))],
+    current_user: Annotated[TokenPayload, Depends(require_permission("identity.role.read"))],
 ) -> dict[str, list[dict[str, object]]]:
     """Returns `{ items: [{ role_id, code, name, description, is_system_role }, ...] }`.
 

@@ -6586,7 +6586,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-      x-permission: admin.user.manage
+      x-permission: identity.role.read
 
     post:
       summary: Create a custom role with permission grants

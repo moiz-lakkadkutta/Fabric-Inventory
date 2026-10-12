@@ -46,7 +46,10 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 # (old permission code, new permission code) — the route moved from old to new.
-PERMISSION_SWITCHES: tuple[tuple[str, str], ...] = ()
+PERMISSION_SWITCHES: tuple[tuple[str, str], ...] = (
+    # GET /admin/roles — now gated like GET /admin/roles/{id}.
+    ("admin.user.manage", "identity.role.read"),
+)
 
 
 def _split(code: str) -> tuple[str, str]:
