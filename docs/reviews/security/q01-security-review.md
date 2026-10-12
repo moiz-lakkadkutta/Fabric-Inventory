@@ -115,12 +115,14 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
 - **Repro:** `test_q01_rls_catalog.py::test_q01_06_foreign_org_guc_sees_zero_catalog_rows` shows `{'uom': 2330, 'hsn': 2330}` visible under a foreign org. `test_q01_06_every_tenant_table_has_rls` fails on `{'hsn','uom'}`.
 - **Fix:** One migration: `ENABLE ROW LEVEL SECURITY` plus the standard NULLIF org policy (USING and WITH CHECK). Then remove `_KNOWN_NO_RLS`.
 - **Gate:** **Moiz** (schema).
+- **Fix (branch `fu/dbh`, migration `211_db_hardening`, PENDING MOIZ SIGN-OFF):** both tables have only per-org rows (no `org_id IS NULL` globals, no `firm_id`), so they get the plain INT-9 org policy on USING and WITH CHECK; no FORCE (consistent with every other table). `_KNOWN_NO_RLS` removed. `app.cli.seed` now pins the org GUC + system firm scope (it was already broken for COA under `fabric_app`).
 
 ### Q01-07 · P3 · Six policies use `current_setting()` without missing_ok/NULLIF and have no explicit WITH CHECK
 
 - **Where:** `job_work_order`, `job_work_order_line`, `job_work_receipt`, `job_work_receipt_line`, `material_issue`, `material_issue_line` (migrations `2026051100001_task_cut_305_jobwork.py`, `2026051500002_task_tr_a06_material_issue.py`, both post-INT-9). For `FOR ALL` policies, WITH CHECK falls back to USING, so writes are still constrained. The only effect is that an unset GUC **raises** (`unrecognized configuration parameter` → 500) instead of returning 0 rows. The policies fail closed and do not leak.
 - **Repro:** `test_q01_rls_catalog.py::test_q01_07_all_policies_use_missing_ok_guc`.
 - **Fix:** Re-create the policies with the INT-9 NULLIF form and an explicit WITH CHECK. **Gate:** Moiz (schema).
+- **Fix (branch `fu/dbh`, migration `211_db_hardening`, PENDING MOIZ SIGN-OFF):** the six re-created in the INT-9 form. A `pg_policies` sweep found no other raising GUC read. The migration aborts if any policy still uses the one-argument form, and `test_q01_07_*` guard the catalog (missing_ok + NULLIF), explicit WITH CHECK, and behaviour (unset and empty GUC → 0 rows, no error, on every RLS table).
 
 ### Q01-08 · P3 · Soft-deleted roles are still assignable and still grant permissions
 
@@ -133,6 +135,7 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
 - **Where:** `alembic/versions/2026050600001_task_int_9_app_role_split.py:95` grants on ALL TABLES, and the default privileges do the same. An app-level SQL bug could corrupt migration state.
 - **Repro:** `test_q01_rls_catalog.py::test_q01_09_runtime_role_cannot_write_alembic_version`.
 - **Fix:** `REVOKE INSERT, UPDATE, DELETE ON alembic_version FROM fabric_app`. **Gate:** Moiz (schema/grants).
+- **Fix (branch `fu/dbh`, migration `211_db_hardening`, PENDING MOIZ SIGN-OFF):** revokes INSERT/UPDATE/DELETE/TRUNCATE; SELECT kept (the test harness reads the revision as `fabric_app`; `/ready` is `SELECT 1`). Also `REVOKE CREATE ON SCHEMA public FROM PUBLIC` in the same migration (no-op on PG 16, closes the PG 14 default); downgrade does not re-grant it.
 
 ### Q01-10 · P3 · Refresh-token rotation race: one refresh token can be redeemed several times concurrently
 

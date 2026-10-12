@@ -225,9 +225,12 @@ def test_q01_09_runtime_role_write_to_alembic_version_is_refused(su_engine: Engi
             "DELETE FROM alembic_version",
             "TRUNCATE alembic_version",
         ):
-            with app.connect() as conn, conn.begin():
-                with pytest.raises(ProgrammingError, match="permission denied"):
-                    conn.execute(text(stmt))
+            with (
+                app.connect() as conn,
+                conn.begin(),
+                pytest.raises(ProgrammingError, match="permission denied"),
+            ):
+                conn.execute(text(stmt))
     finally:
         app.dispose()
 
@@ -360,9 +363,11 @@ def test_q01_06_catalog_write_requires_current_org(su_engine: Engine, table: str
                 )
                 conn.execute(text(insert), {"org": org_a})  # own org: allowed
                 assert conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 1
-                with pytest.raises(ProgrammingError, match="row-level security"):
-                    with conn.begin_nested():
-                        conn.execute(text(insert), {"org": org_b})
+                with (
+                    pytest.raises(ProgrammingError, match="row-level security"),
+                    conn.begin_nested(),
+                ):
+                    conn.execute(text(insert), {"org": org_b})
             finally:
                 trans.rollback()
     finally:
