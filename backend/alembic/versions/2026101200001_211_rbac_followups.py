@@ -49,6 +49,15 @@ depends_on: str | Sequence[str] | None = None
 PERMISSION_SWITCHES: tuple[tuple[str, str], ...] = (
     # GET /admin/roles — now gated like GET /admin/roles/{id}.
     ("admin.user.manage", "identity.role.read"),
+    # POST /receipts, POST /payments — they post RECEIPT/PAYMENT vouchers;
+    # the catalog's accounting.voucher.post is "Post journal vouchers /
+    # payments / receipts". NOTE: a CUSTOM role holding banking.bank.create
+    # without accounting.voucher.post also gains POST /vouchers/journal
+    # (no system role changes: only OWNER/ACCOUNTANT hold banking.bank.*).
+    ("banking.bank.create", "accounting.voucher.post"),
+    # GET /receipts, GET /payments — voucher lists. Same caveat: such a
+    # custom role also gains GET /vouchers + POST /bank-reconciliation/preview.
+    ("banking.bank.read", "accounting.voucher.read"),
 )
 
 

@@ -47,6 +47,10 @@ def _migration() -> Any:
 # (method, path, old permission, new permission, request body or None)
 SWITCHED_ROUTES: list[tuple[str, str, str, str, dict[str, Any] | None]] = [
     ("GET", "/admin/roles", "admin.user.manage", "identity.role.read", None),
+    ("POST", "/receipts", "banking.bank.create", "accounting.voucher.post", {}),
+    ("GET", "/receipts", "banking.bank.read", "accounting.voucher.read", None),
+    ("POST", "/payments", "banking.bank.create", "accounting.voucher.post", {}),
+    ("GET", "/payments", "banking.bank.read", "accounting.voucher.read", None),
 ]
 
 
