@@ -400,11 +400,13 @@ def change_user_role(
           the actor lacks) → PermissionDeniedError with a self-specific message.
           Self-DEMOTION (new role's perms ⊆ yours) is allowed, so an Owner can
           step down once a second Owner exists.
+      (c) Q01-05: the target's CURRENT permissions ⊆ the actor's, in every
+          scope the target holds a role in (`assert_actor_outranks_target`).
+          A delegated user manager cannot demote an Owner or anyone else who
+          outranks them.
 
-    Last-Owner-demotion protection: if the target currently carries the
-    Owner role AND the new role is NOT Owner AND they are the only Owner
-    in the org, raise AppValidationError. Better to make the org create
-    a second Owner first than risk an unrecoverable state.
+    Last-Owner protection (`assert_not_last_owner`): demoting an Owner needs
+    another live, active, unsuspended Owner in the org.
 
     For MVP we use a one-role-per-user model: the change is a wholesale
     replacement of all UserRole rows for this user/org. Custom roles +
@@ -486,6 +488,17 @@ def change_user_role(
                 + (" (they hold an org-wide role)" if scope is None else "")
                 + ". Ask an org-wide admin."
             )
+
+    # Q01-05: the actor must also outrank the target's CURRENT grants, not
+    # just the new role — otherwise a delegated user manager can demote an
+    # Owner (or anyone else more privileged than themselves).
+    assert_actor_outranks_target(
+        session,
+        actor_user_id=actor_user_id,
+        target_user_id=target_user_id,
+        scopes={ur.firm_id for ur in current_user_roles},
+    )
+
     current_role_codes = {
         session.execute(select(Role.code).where(Role.role_id == ur.role_id)).scalar_one()
         for ur in current_user_roles
@@ -495,31 +508,7 @@ def change_user_role(
     # the new role is not Owner. We compare by role CODE (system roles)
     # rather than name — code is the stable identifier.
     if OWNER_ROLE_CODE in current_role_codes and new_role.code != OWNER_ROLE_CODE:
-        # Count distinct Owners (other than the target) in this org.
-        owner_role_id = session.execute(
-            select(Role.role_id).where(Role.org_id == org_id, Role.code == OWNER_ROLE_CODE)
-        ).scalar_one()
-        other_owner_count = session.execute(
-            text(
-                """
-                SELECT COUNT(DISTINCT user_id)
-                FROM user_role
-                WHERE org_id = :org_id
-                  AND role_id = :owner_role_id
-                  AND user_id <> :target_user_id
-                """
-            ),
-            {
-                "org_id": str(org_id),
-                "owner_role_id": str(owner_role_id),
-                "target_user_id": str(target_user_id),
-            },
-        ).scalar_one()
-        if int(other_owner_count) == 0:
-            raise AppValidationError(
-                "Cannot demote the last Owner. Promote another user to Owner first.",
-                title="Last Owner cannot be demoted",
-            )
+        assert_not_last_owner(session, org_id=org_id, target_user_id=target_user_id)
 
     # Replace assignments wholesale. For Owner-target invite-via-firm we
     # leave the new row firm_id=None (Owner is org-wide); for any other
@@ -556,6 +545,91 @@ def change_user_role(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Guards shared by every "act on another user" path (Q01-05)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def assert_actor_outranks_target(
+    session: Session,
+    *,
+    actor_user_id: uuid.UUID,
+    target_user_id: uuid.UUID,
+    scopes: set[uuid.UUID | None],
+) -> None:
+    """Raise PermissionDeniedError (403) unless, in every scope the target
+    holds a role in (a firm, or None = org-wide), the target's CURRENT
+    effective permissions are a subset of the actor's there.
+
+    This is the PRIV-1 ceiling applied to the person being acted on: you can
+    only re-role (and, when those endpoints exist, suspend / deactivate /
+    remove) someone whose access you could have granted yourself. A
+    self-change always passes (equal sets). Use it for any future
+    user-lifecycle endpoint too.
+    """
+    if actor_user_id == target_user_id:
+        return
+    for scope in scopes:
+        target_perms = rbac_service.get_user_permissions(
+            session, user_id=target_user_id, firm_id=scope
+        )
+        actor_perms = rbac_service.get_user_permissions(
+            session, user_id=actor_user_id, firm_id=scope
+        )
+        beyond = sorted(target_perms - actor_perms)
+        if beyond:
+            where = "org-wide" if scope is None else "in that firm"
+            raise PermissionDeniedError(
+                "Cannot change the access of a user who holds permissions you don't hold "
+                f"{where}: {beyond}. Ask an Owner (or an admin who holds them) to do it."
+            )
+
+
+def assert_not_last_owner(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    target_user_id: uuid.UUID,
+) -> None:
+    """The Owner-code business invariant (Q01-13 notes it is not an
+    authorization check): an org always keeps at least one USABLE Owner.
+
+    Raise AppValidationError (422) when no other Owner of the org is live
+    (not soft-deleted), active and not suspended — an inactive or suspended
+    Owner cannot log in to recover the org, so they don't count. Call before
+    demoting, deactivating, suspending or removing `target_user_id`.
+    """
+    other_owner_count = session.execute(
+        text(
+            """
+            SELECT COUNT(DISTINCT ur.user_id)
+            FROM user_role ur
+            JOIN role r ON r.role_id = ur.role_id
+            JOIN app_user u ON u.user_id = ur.user_id
+            WHERE ur.org_id = :org_id
+              AND r.org_id = :org_id
+              AND r.code = :owner_code
+              AND r.deleted_at IS NULL
+              AND ur.user_id <> :target_user_id
+              AND u.deleted_at IS NULL
+              AND COALESCE(u.is_active, true)
+              AND NOT COALESCE(u.is_suspended, false)
+            """
+        ),
+        {
+            "org_id": str(org_id),
+            "owner_code": OWNER_ROLE_CODE,
+            "target_user_id": str(target_user_id),
+        },
+    ).scalar_one()
+    if int(other_owner_count) == 0:
+        raise AppValidationError(
+            "Cannot demote or remove the last active Owner. Promote another active user "
+            "to Owner first.",
+            title="Last Owner cannot be demoted",
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────
 
@@ -566,6 +640,8 @@ __all__ = [
     "InviteResult",
     "_frontend_invite_url",
     "accept_invite",
+    "assert_actor_outranks_target",
+    "assert_not_last_owner",
     "change_user_role",
     "create_invite",
 ]

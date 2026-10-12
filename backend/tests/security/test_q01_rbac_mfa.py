@@ -31,14 +31,18 @@ def _user_id(engine: Engine, org_id: str, email: str) -> str:
         return str(s.execute(select(AppUser.user_id).where(AppUser.email == email)).scalar_one())
 
 
-def _owner_role_id(engine: Engine, org_id: str) -> str:
+def _role_id(engine: Engine, org_id: str, code: str) -> str:
     with OrmSession(engine) as s:
         s.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         return str(
             s.execute(
-                select(Role.role_id).where(Role.org_id == uuid.UUID(org_id), Role.code == "OWNER")
+                select(Role.role_id).where(Role.org_id == uuid.UUID(org_id), Role.code == code)
             ).scalar_one()
         )
+
+
+def _owner_role_id(engine: Engine, org_id: str) -> str:
+    return _role_id(engine, org_id, "OWNER")
 
 
 async def _owner_and_delegated_user_manager(
@@ -63,16 +67,13 @@ async def _owner_and_delegated_user_manager(
     return {
         "org_id": org_id,
         "owner_token": owner["access_token"],
+        "owner_id": str(owner["user_id"]),
         "owner2_id": _user_id(sync_engine, org_id, owner2_email),
         "mgr_role": mgr_role,
         "mgr_token": mgr["access_token"],
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Q01-05: change_user_role ceilings the NEW role only, never the target's CURRENT role",
-)
 async def test_q01_05_user_manager_cannot_demote_an_owner(sync_engine: Engine) -> None:
     """A delegate holding admin.user.manage + one read perm must not be able
     to strip an Owner (whose permissions are a strict superset of the
@@ -87,6 +88,70 @@ async def test_q01_05_user_manager_cannot_demote_an_owner(sync_engine: Engine) -
         assert resp.status_code == 403, (
             f"user-manager demoted an Owner: {resp.status_code} {resp.text[:200]}"
         )
+
+
+async def test_q01_05_delegate_cannot_rerole_a_user_who_outranks_them(
+    sync_engine: Engine,
+) -> None:
+    """Not just Owners: any target whose CURRENT permissions are not a subset
+    of the actor's is off-limits (here an Accountant), even when the new role
+    is within the actor's ceiling. The 403 says why."""
+    async with q01_client() as client:
+        ctx = await _owner_and_delegated_user_manager(client, sync_engine)
+        acct_role = _role_id(sync_engine, ctx["org_id"], "ACCOUNTANT")
+        acct_email = await invite_and_accept(
+            client, inviter_token=ctx["owner_token"], role_id=acct_role, firm_id=None
+        )
+        acct_id = _user_id(sync_engine, ctx["org_id"], acct_email)
+        resp = await client.patch(
+            f"/admin/users/{acct_id}/role",
+            headers={**bearer(ctx["mgr_token"]), **idem()},
+            json={"role_id": ctx["mgr_role"]},
+        )
+        assert resp.status_code == 403, resp.text
+        assert "permissions you don't hold" in resp.json()["detail"], resp.text
+
+
+async def test_q01_05_delegate_can_still_rerole_a_subordinate(sync_engine: Engine) -> None:
+    """Control: a target whose permissions are within the actor's is fine."""
+    async with q01_client() as client:
+        ctx = await _owner_and_delegated_user_manager(client, sync_engine)
+        reader = await create_role(
+            client, ctx["owner_token"], "q01_party_reader", ["masters.party.read"]
+        )
+        empty = await create_role(client, ctx["owner_token"], "q01_nothing", [])
+        email = await invite_and_accept(
+            client, inviter_token=ctx["owner_token"], role_id=reader, firm_id=None
+        )
+        target = _user_id(sync_engine, ctx["org_id"], email)
+        resp = await client.patch(
+            f"/admin/users/{target}/role",
+            headers={**bearer(ctx["mgr_token"]), **idem()},
+            json={"role_id": empty},
+        )
+        assert resp.status_code == 204, resp.text
+
+
+async def test_q01_05_last_owner_guard_ignores_unusable_owners(sync_engine: Engine) -> None:
+    """The org must keep at least one USABLE Owner. A second Owner who is
+    soft-deleted or deactivated does not count, so the remaining Owner
+    cannot step down."""
+    async with q01_client() as client:
+        ctx = await _owner_and_delegated_user_manager(client, sync_engine)
+        with OrmSession(sync_engine) as s:
+            s.execute(text(f"SET LOCAL app.current_org_id = '{ctx['org_id']}'"))
+            s.execute(
+                text("UPDATE app_user SET is_active = false WHERE user_id = :u"),
+                {"u": ctx["owner2_id"]},
+            )
+            s.commit()
+        resp = await client.patch(
+            f"/admin/users/{ctx['owner_id']}/role",
+            headers={**bearer(ctx["owner_token"]), **idem()},
+            json={"role_id": ctx["mgr_role"]},
+        )
+        assert resp.status_code == 422, resp.text
+        assert "last active owner" in resp.json()["detail"].lower()
 
 
 async def test_q01_control_user_manager_cannot_promote_self_to_owner(sync_engine: Engine) -> None:
