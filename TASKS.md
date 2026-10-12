@@ -193,7 +193,7 @@ Each PR was merged with a known open item. **None is a live bug today**, but DEB
 ---
 
 ### DEBT-04: E2E acceptance stack wedges intermittently
-**Status:** Ready (investigation)
+**Status:** In review (`fix/debt-04`): root-caused, see findings below
 **Files touched:** `docker-compose.yml`, `docker-compose.e2e.yml`, `.github/workflows/ci.yml`, `frontend/__tests__/e2e/`
 
 **Scope:**
@@ -209,6 +209,15 @@ Each PR was merged with a known open item. **None is a live bug today**, but DEB
 **Approximate time:** 2-4h
 **Notes:**
 - Cost a false red on #185 and ~23 minutes of CI. Will keep eroding trust in the E2E signal.
+
+**DEBT-04 findings (2026-10-10, branch `fix/debt-04`):**
+- **Status:** root-caused (high confidence) + fixed; CI made fail-fast and diagnosable. Awaiting a few green CI runs to confirm.
+- **Evidence.** Run 30696670939 / job 91360626670 (push run for #185 @ `f12e7a8`; the PR-event run of the *same* commit, job 91360630784, passed in 1m55s on another runner at the same moment). Stack was healthy throughout: `/ready` green after 4 polls, Vite up first poll, healthcheck `/ready` kept returning 200 in ~4 ms until teardown, no restarts, no 5xx, Postgres quiet. On the retry, API traffic was: `refresh 401, 401` (page boot, no cookie) → signup → me → switch-firm → dashboard queries → spec's API login → guest `/admin` probe `refresh 401, 401` → `page.goto('/masters/parties')` → **`POST /auth/refresh 200` (17 ms) then `POST /auth/refresh 401` (9 ms) 6 ms apart** → *no further API requests for 10.5 min*. The button never rendered because the browser was no longer signed in, not because anything was slow. Both failures (`new receipt` L363, `new party` L226) are the first click after a `page.goto()`, i.e. right after a fresh SPA boot.
+- **Root cause.** `useAuthBootstrap` fired `POST /auth/refresh` from a `useEffect`. The E2E stack serves the Vite **dev** server, where `<StrictMode>` runs every effect twice, so every full page load sent two refreshes with the same cookie. `identity_service.refresh_token` revokes the presented session row (no row lock), so whichever request commits second gets 401. When the loser is the live (second-mount) request, the hook calls `authStore.clear()` → user bounced to `/login` → test waits forever for a button. Overlapping requests usually both succeed (both read `revoked_at IS NULL`), hence intermittent. Reproduced deterministically in `src/hooks/__tests__/useAuthBootstrap.strictmode.test.tsx` (red before the fix: user ends `unauthenticated`). Production builds don't double-run effects, but two tabs booting at once could hit the same race.
+- **History.** Out of 202 E2E jobs (2026-05-23 → 2026-10-10, median 1.95 min), 4 more show the 10-min wedge signature (~12.5 min): 27916939843, 28317354363 (failed), 26391191987 (*passed* after 12.4 min, so the first attempt timed out and the retry passed). Their logs have expired, so they are consistent with this cause but not proven.
+- **Ruled out by the #185 logs:** health-gating (already present and green), api crash/OOM/restart, DB pool exhaustion or rate limiting (no 429/5xx, requests fast), Vite on-demand compile (no traffic gap before the refresh pair; the page booted and called the API).
+- **Changes.** (1) FE: single-flight bootstrap refresh shared across StrictMode effect runs. (2) Playwright: `actionTimeout` 20s, `navigationTimeout` 30s, test timeout 10 → 3 min (green cutover run is ~10s). (3) CI: job `timeout-minutes: 20`, 8-min cap per Playwright step, an extra gate on the browser path (`:5173/api/live` through the Vite proxy) plus a Vite warm-up of `/src/main.tsx`, `if: always()` capture of full timestamped per-service compose logs, `compose ps`, container OOMKilled/restart counts, `docker stats`, host memory and dmesg OOM lines into `e2e-logs/`, uploaded as `e2e-compose-logs` on failure or cancel with the Playwright report and traces. (4) Vite ignores `test-results/` and `playwright-report/` in its polling watcher.
+- **Not done.** Backend refresh rotation still has no row lock or reuse grace window, so concurrent refreshes from two tabs can still log one out. Changing it is an auth change and needs Moiz's sign-off.
 
 ---
 

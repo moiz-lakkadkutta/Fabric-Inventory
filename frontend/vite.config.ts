@@ -36,6 +36,14 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    // The compose `web` service bind-mounts ./frontend and polls it
+    // (CHOKIDAR_USEPOLLING), so Playwright's traces/videos/report under
+    // test-results/ and playwright-report/ would otherwise be watched —
+    // CI logged `[vite] page reload playwright-report/index.html` on
+    // PR #185. Keep test output out of the dev server's watcher.
+    watch: {
+      ignored: ['**/test-results/**', '**/playwright-report/**'],
+    },
     proxy: {
       '/api': {
         target: API_TARGET,
