@@ -31,14 +31,18 @@ def _user_id(engine: Engine, org_id: str, email: str) -> str:
         return str(s.execute(select(AppUser.user_id).where(AppUser.email == email)).scalar_one())
 
 
-def _owner_role_id(engine: Engine, org_id: str) -> str:
+def _role_id(engine: Engine, org_id: str, code: str) -> str:
     with OrmSession(engine) as s:
         s.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
         return str(
             s.execute(
-                select(Role.role_id).where(Role.org_id == uuid.UUID(org_id), Role.code == "OWNER")
+                select(Role.role_id).where(Role.org_id == uuid.UUID(org_id), Role.code == code)
             ).scalar_one()
         )
+
+
+def _owner_role_id(engine: Engine, org_id: str) -> str:
+    return _role_id(engine, org_id, "OWNER")
 
 
 async def _owner_and_delegated_user_manager(
@@ -63,16 +67,13 @@ async def _owner_and_delegated_user_manager(
     return {
         "org_id": org_id,
         "owner_token": owner["access_token"],
+        "owner_id": str(owner["user_id"]),
         "owner2_id": _user_id(sync_engine, org_id, owner2_email),
         "mgr_role": mgr_role,
         "mgr_token": mgr["access_token"],
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Q01-05: change_user_role ceilings the NEW role only, never the target's CURRENT role",
-)
 async def test_q01_05_user_manager_cannot_demote_an_owner(sync_engine: Engine) -> None:
     """A delegate holding admin.user.manage + one read perm must not be able
     to strip an Owner (whose permissions are a strict superset of the
@@ -89,6 +90,70 @@ async def test_q01_05_user_manager_cannot_demote_an_owner(sync_engine: Engine) -
         )
 
 
+async def test_q01_05_delegate_cannot_rerole_a_user_who_outranks_them(
+    sync_engine: Engine,
+) -> None:
+    """Not just Owners: any target whose CURRENT permissions are not a subset
+    of the actor's is off-limits (here an Accountant), even when the new role
+    is within the actor's ceiling. The 403 says why."""
+    async with q01_client() as client:
+        ctx = await _owner_and_delegated_user_manager(client, sync_engine)
+        acct_role = _role_id(sync_engine, ctx["org_id"], "ACCOUNTANT")
+        acct_email = await invite_and_accept(
+            client, inviter_token=ctx["owner_token"], role_id=acct_role, firm_id=None
+        )
+        acct_id = _user_id(sync_engine, ctx["org_id"], acct_email)
+        resp = await client.patch(
+            f"/admin/users/{acct_id}/role",
+            headers={**bearer(ctx["mgr_token"]), **idem()},
+            json={"role_id": ctx["mgr_role"]},
+        )
+        assert resp.status_code == 403, resp.text
+        assert "permissions you don't hold" in resp.json()["detail"], resp.text
+
+
+async def test_q01_05_delegate_can_still_rerole_a_subordinate(sync_engine: Engine) -> None:
+    """Control: a target whose permissions are within the actor's is fine."""
+    async with q01_client() as client:
+        ctx = await _owner_and_delegated_user_manager(client, sync_engine)
+        reader = await create_role(
+            client, ctx["owner_token"], "q01_party_reader", ["masters.party.read"]
+        )
+        empty = await create_role(client, ctx["owner_token"], "q01_nothing", [])
+        email = await invite_and_accept(
+            client, inviter_token=ctx["owner_token"], role_id=reader, firm_id=None
+        )
+        target = _user_id(sync_engine, ctx["org_id"], email)
+        resp = await client.patch(
+            f"/admin/users/{target}/role",
+            headers={**bearer(ctx["mgr_token"]), **idem()},
+            json={"role_id": empty},
+        )
+        assert resp.status_code == 204, resp.text
+
+
+async def test_q01_05_last_owner_guard_ignores_unusable_owners(sync_engine: Engine) -> None:
+    """The org must keep at least one USABLE Owner. A second Owner who is
+    soft-deleted or deactivated does not count, so the remaining Owner
+    cannot step down."""
+    async with q01_client() as client:
+        ctx = await _owner_and_delegated_user_manager(client, sync_engine)
+        with OrmSession(sync_engine) as s:
+            s.execute(text(f"SET LOCAL app.current_org_id = '{ctx['org_id']}'"))
+            s.execute(
+                text("UPDATE app_user SET is_active = false WHERE user_id = :u"),
+                {"u": ctx["owner2_id"]},
+            )
+            s.commit()
+        resp = await client.patch(
+            f"/admin/users/{ctx['owner_id']}/role",
+            headers={**bearer(ctx["owner_token"]), **idem()},
+            json={"role_id": ctx["mgr_role"]},
+        )
+        assert resp.status_code == 422, resp.text
+        assert "last active owner" in resp.json()["detail"].lower()
+
+
 async def test_q01_control_user_manager_cannot_promote_self_to_owner(sync_engine: Engine) -> None:
     """Control (PRIV-1/IDM-1 fix holds): the delegate cannot assign Owner."""
     async with q01_client() as client:
@@ -102,9 +167,6 @@ async def test_q01_control_user_manager_cannot_promote_self_to_owner(sync_engine
         assert resp.status_code == 403, resp.text
 
 
-@pytest.mark.xfail(
-    strict=True, reason="Q01-08: soft-deleted roles are still assignable and still grant perms"
-)
 async def test_q01_08_soft_deleted_role_cannot_be_assigned(sync_engine: Engine) -> None:
     async with q01_client() as client:
         owner = await signup(client)
@@ -126,9 +188,110 @@ async def test_q01_08_soft_deleted_role_cannot_be_assigned(sync_engine: Engine) 
             headers={**bearer(owner["access_token"]), **idem()},
             json={"role_id": ghost},
         )
-        assert resp.status_code in (404, 422), (
+        assert resp.status_code == 422, (
             f"deleted role was assigned: {resp.status_code} {resp.text[:200]}"
         )
+        assert "deleted" in resp.json()["detail"].lower()
+
+
+async def test_q01_08_soft_deleted_role_cannot_be_invited_into(sync_engine: Engine) -> None:
+    _ = sync_engine
+    async with q01_client() as client:
+        owner = await signup(client)
+        ghost = await create_role(client, owner["access_token"], "q01_ghost2", [])
+        deleted = await client.delete(
+            f"/admin/roles/{ghost}", headers={**bearer(owner["access_token"]), **idem()}
+        )
+        assert deleted.status_code == 204, deleted.text
+        resp = await client.post(
+            "/admin/invites",
+            headers={**bearer(owner["access_token"]), **idem()},
+            json={"email": f"q01-g-{uuid.uuid4().hex[:8]}@example.com", "role_id": ghost},
+        )
+        assert resp.status_code == 422, resp.text
+        assert "deleted" in resp.json()["detail"].lower()
+
+
+async def test_q01_08_invite_for_a_role_deleted_later_cannot_be_accepted(
+    sync_engine: Engine,
+) -> None:
+    """An invite minted before its role was deleted must not grant it."""
+    _ = sync_engine
+    async with q01_client() as client:
+        owner = await signup(client)
+        ghost = await create_role(client, owner["access_token"], "q01_ghost3", [])
+        inv = await client.post(
+            "/admin/invites",
+            headers={**bearer(owner["access_token"]), **idem()},
+            json={"email": f"q01-g-{uuid.uuid4().hex[:8]}@example.com", "role_id": ghost},
+        )
+        assert inv.status_code == 201, inv.text
+        token = inv.json()["invite_link"].rsplit("/", 1)[-1]
+        deleted = await client.delete(
+            f"/admin/roles/{ghost}", headers={**bearer(owner["access_token"]), **idem()}
+        )
+        assert deleted.status_code == 204, deleted.text
+        acc = await client.post(
+            "/admin/invites/accept",
+            json={"token": token, "name": "Ghost", "password": "strong-password-1"},
+        )
+        assert acc.status_code == 422, acc.text
+        assert "deleted" in acc.json()["detail"].lower()
+
+
+async def test_q01_08_deleting_an_assigned_role_is_blocked_with_a_count(
+    sync_engine: Engine,
+) -> None:
+    """Decision: block (422), never cascade — a cascade would silently strip
+    users' access. The message says how many users to reassign."""
+    async with q01_client() as client:
+        owner = await signup(client)
+        role = await create_role(client, owner["access_token"], "q01_inuse", [])
+        for _ in range(2):
+            await invite_and_accept(
+                client, inviter_token=owner["access_token"], role_id=role, firm_id=None
+            )
+        resp = await client.delete(
+            f"/admin/roles/{role}", headers={**bearer(owner["access_token"]), **idem()}
+        )
+        assert resp.status_code == 422, resp.text
+        assert "assigned to 2 users" in resp.json()["detail"], resp.text
+        _ = sync_engine
+
+
+def test_q01_08_soft_deleted_role_grants_no_permissions(sync_engine: Engine) -> None:
+    """Defence in depth for rows assigned before the fix: a UserRole that
+    points at a soft-deleted role contributes nothing to the effective set
+    (and so nothing to a freshly minted token)."""
+    from app.service import identity_service, rbac_service
+
+    with OrmSession(sync_engine) as s:
+        org_id = s.execute(text("SELECT org_id FROM organization LIMIT 1")).scalar_one()
+        s.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        user = identity_service.register_user(
+            s,
+            email=f"q01-zombie-{uuid.uuid4().hex[:8]}@example.com",
+            password="strong-password-1",
+            org_id=org_id,
+        )
+        role = rbac_service.create_custom_role(
+            s,
+            org_id=org_id,
+            code=f"q01_zombie_{uuid.uuid4().hex[:6]}",
+            name="Zombie",
+            permission_codes=["masters.party.read"],
+        )
+        rbac_service.assign_role(
+            s, user_id=user.user_id, role_id=role.role_id, firm_id=None, org_id=org_id
+        )
+        assert rbac_service.get_user_permissions(s, user_id=user.user_id, firm_id=None) == {
+            "masters.party.read"
+        }
+        s.execute(
+            text("UPDATE role SET deleted_at = now() WHERE role_id = :r"), {"r": role.role_id}
+        )
+        assert rbac_service.get_user_permissions(s, user_id=user.user_id, firm_id=None) == set()
+        s.rollback()
 
 
 @pytest.mark.xfail(strict=True, reason="Q01-03: MFA is not mandatory for Owner/Admin logins")

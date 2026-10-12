@@ -392,7 +392,7 @@ def test_delete_role_with_assigned_users_blocked(
     )
     assert del_resp.status_code == 422, del_resp.text
     assert del_resp.json()["code"] == "VALIDATION_ERROR"
-    assert "users still assigned" in del_resp.json()["detail"]
+    assert "assigned to 1 user" in del_resp.json()["detail"]
 
 
 # Sentinel — keeps the linter happy when imports rearrange.

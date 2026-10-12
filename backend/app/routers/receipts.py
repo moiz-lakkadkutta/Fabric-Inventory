@@ -1,4 +1,10 @@
-"""Receipts router — POST /v1/receipts + GET /v1/receipts (T-INT-5)."""
+"""Receipts router — POST /v1/receipts + GET /v1/receipts (T-INT-5).
+
+Q01-13: gated by ``accounting.voucher.post`` (create) / ``accounting.voucher.read``
+(list), which the catalog defines as covering payments and receipts. These were
+``banking.bank.create`` / ``banking.bank.read`` before; migration
+``211_rbac_followups`` granted the new codes to every role holding the old ones.
+"""
 
 from __future__ import annotations
 
@@ -66,7 +72,7 @@ def _voucher_to_response(
 def post_receipt(
     body: ReceiptCreateRequest,
     db: SyncDBSession,
-    current_user: Annotated[TokenPayload, Depends(require_permission("banking.bank.create"))],
+    current_user: Annotated[TokenPayload, Depends(require_permission("accounting.voucher.post"))],
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> ReceiptResponse:
     if current_user.firm_id is None:
@@ -125,7 +131,7 @@ def post_receipt(
 )
 def list_receipts(
     db: SyncDBSession,
-    current_user: Annotated[TokenPayload, Depends(require_permission("banking.bank.read"))],
+    current_user: Annotated[TokenPayload, Depends(require_permission("accounting.voucher.read"))],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
     export_format: Annotated[
