@@ -146,6 +146,13 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
 - **Where:** `app/service/identity_service.py:374-394`. The code SELECTs the session row, checks `revoked_at`, then updates by primary key, with no `FOR UPDATE` and no conditional `UPDATE … WHERE revoked_at IS NULL RETURNING`. There is also no reuse detection: presenting a revoked refresh token does not revoke the token family.
 - **Repro:** `test_q01_rbac_mfa.py::test_q01_10_refresh_token_single_use_under_concurrency` gives `one refresh token redeemed 4 times`.
 - **Fix:** `UPDATE session SET revoked_at=now() WHERE … AND revoked_at IS NULL RETURNING session_id`, and continue only if a row comes back. Optionally revoke all of the user's sessions when a revoked token is presented. **Gate:** Moiz (auth).
+- **Fix (branch `fu/auth`, migration `211_refresh_rotation`, PENDING MOIZ SIGN-OFF):**
+  - `refresh_token` locks the presented session row (`SELECT … FOR UPDATE`), so concurrent redemptions serialise and exactly one successor is minted.
+  - Reuse interval (`REFRESH_REUSE_GRACE_SECONDS`, default 20, max 60): a token rotated inside the window gets back the SAME successor pair. This also fixes the cross-tab half of DEBT-04 (two tabs booting at once both stay logged in) without forking the family.
+  - The successor pair is stored only as AES-256-GCM ciphertext (`session.grace_successor_ct`), keyed by HMAC-SHA256 of the predecessor token. The DB holds only `sha256(token)`, so a DB read cannot open it.
+  - Reuse detection: a rotated token presented after the window revokes its whole family (`session.family_id`; the user's other logins are untouched). It is audited as `refresh_reuse_detected` and committed before the uniform 401.
+  - Logout revokes the whole family and wipes the grace envelopes.
+  - Repro: 4 concurrent redemptions went from 4 distinct pairs to 1 pair, returned to all 4 callers.
 
 ### Q01-12 · P3 · The OpenAPI `x-permission` contract has drifted from the code
 
