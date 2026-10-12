@@ -11,10 +11,12 @@ Run:  uv run pytest tests/security/test_q01_rls_catalog.py -q
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -412,3 +414,51 @@ def test_q01_06_catalog_write_requires_current_org(su_engine: Engine, table: str
                 trans.rollback()
     finally:
         app.dispose()
+
+
+def _guard_sql() -> str:
+    path = next(Path(__file__).parents[2].glob("alembic/versions/*_211_db_hardening.py"))
+    spec = importlib.util.spec_from_file_location("_m211", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return str(mod.RAISING_GUC_GUARD_SQL)
+
+
+@pytest.mark.parametrize(
+    ("expr", "raises"),
+    [
+        ("current_setting('app.q01_probe')", True),
+        ("current_setting('app.q01_probe', false)", True),
+        ("current_setting('app.q01_probe', FALSE)", True),
+        ("current_setting('app.q01_probe', true)", False),
+    ],
+    ids=["one-arg", "false", "FALSE", "true"],
+)
+def test_q01_07_migration_guard_catches_every_raising_guc_form(
+    su_engine: Engine, expr: str, raises: bool
+) -> None:
+    """211's upgrade guard (a DO block) must refuse a policy reading a GUC in
+    the raising form — the one-argument call AND an explicit missing_ok =
+    false — and accept missing_ok = true. Runs the migration's own SQL against
+    a throwaway policy in a rolled-back transaction."""
+    guard = _guard_sql()
+    with su_engine.connect() as conn:
+        tx = conn.begin()
+        try:
+            conn.execute(text("CREATE TABLE public.q01_guard_probe (v text)"))
+            conn.execute(
+                text(
+                    f"CREATE POLICY q01_guard_probe_p ON public.q01_guard_probe USING (v = {expr})"
+                )
+            )
+            if raises:
+                with (
+                    pytest.raises(DBAPIError, match=re.escape("q01_guard_probe.q01_guard_probe_p")),
+                    conn.begin_nested(),
+                ):
+                    conn.execute(text(guard))
+            else:
+                conn.execute(text(guard))
+        finally:
+            tx.rollback()
