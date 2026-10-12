@@ -46,11 +46,12 @@ from app.exceptions import (
     AppValidationError,
     InvalidCredentialsError,
     MfaAlreadyEnabledError,
+    RefreshTokenReuseError,
     TokenInvalidError,
 )
 from app.models import AppUser
 from app.models import Session as DbSession
-from app.service import rbac_service
+from app.service import rbac_service, session_family_service
 from app.utils import crypto
 
 # ──────────────────────────────────────────────────────────────────────
@@ -245,8 +246,21 @@ def issue_tokens(
 ) -> TokenPair:
     """Generate access + refresh tokens. Persists a `session` row holding
     the SHA-256 hash of both tokens + the refresh expiry as the outer
-    envelope.
+    envelope. Starts a new refresh-token family (see `refresh_token`).
     """
+    pair, _row = _issue_session(session, user=user, firm_id=firm_id, family_id=None)
+    return pair
+
+
+def _issue_session(
+    session: Session,
+    *,
+    user: AppUser,
+    firm_id: uuid.UUID | None,
+    family_id: uuid.UUID | None,
+) -> tuple[TokenPair, DbSession]:
+    """Mint a token pair + its `session` row. ``family_id=None`` starts a new
+    family (the row's own id); a rotation passes the predecessor's family."""
     permissions = sorted(
         rbac_service.get_user_permissions(session, user_id=user.user_id, firm_id=firm_id)
     )
@@ -264,21 +278,25 @@ def issue_tokens(
         token_type="refresh",  # noqa: S106 — JWT type discriminator, not a credential
         ttl_seconds=_REFRESH_TOKEN_TTL_SECONDS,
     )
+    session_id = uuid.uuid4()
     db_session_row = DbSession(
+        session_id=session_id,
         org_id=user.org_id,
         user_id=user.user_id,
         access_token_hash=_hash_token(access_jwt),
         refresh_token_hash=_hash_token(refresh_jwt),
         expires_at=refresh_exp,
+        family_id=family_id if family_id is not None else session_id,
     )
     session.add(db_session_row)
     session.flush()
-    return TokenPair(
+    pair = TokenPair(
         access_token=access_jwt,
         refresh_token=refresh_jwt,
         access_expires_at=access_exp,
         refresh_expires_at=refresh_exp,
     )
+    return pair, db_session_row
 
 
 def verify_jwt(token: str) -> TokenPayload:
@@ -354,7 +372,21 @@ def login(
 
 
 def refresh_token(session: Session, *, refresh_token: str) -> TokenPair:
-    """Validate a refresh token, revoke the old session row, issue a fresh pair.
+    """Redeem a refresh token: single-use rotation with a short reuse interval.
+
+    Q01-10 + the two-tab refresh race. The presented session row is locked
+    (``SELECT … FOR UPDATE``) so concurrent redemptions serialise:
+
+    * **Live row** → rotate: mint ONE successor in the same family, mark the
+      row revoked + ``replaced_by_session_id``, and seal the successor pair
+      under a key only the presented token can derive
+      (`session_family_service.seal_successor`).
+    * **Rotated within ``refresh_reuse_grace_seconds``** → idempotent re-issue
+      of the SAME successor pair (no new session, no 401). This is what two
+      tabs booting at once, or a retried request, need.
+    * **Rotated longer ago** → refresh-token reuse: revoke the whole family
+      and raise `RefreshTokenReuseError` (the router audits + commits it).
+    * **Revoked by logout / reuse detection** → plain 401.
 
     Raises `TokenInvalidError` for missing/expired/revoked tokens or if the
     presented token is an access token.
@@ -371,28 +403,98 @@ def refresh_token(session: Session, *, refresh_token: str) -> TokenPair:
     # session row.
     session.execute(text(f"SET LOCAL app.current_org_id = '{payload.org_id}'"))
 
+    # Row lock: a concurrent redemption of the same token blocks here until
+    # this transaction commits, then re-reads the row (READ COMMITTED
+    # re-evaluates locked rows) and takes the rotated branch below.
     db_session_row = session.execute(
-        select(DbSession).where(
+        select(DbSession)
+        .where(
             DbSession.user_id == payload.user_id,
             DbSession.refresh_token_hash == _hash_token(refresh_token),
         )
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if db_session_row is None:
         raise TokenInvalidError("Refresh token not found")
+
+    now = _now_utc()
     if db_session_row.revoked_at is not None:
-        raise TokenInvalidError("Refresh token has been revoked")
-    if db_session_row.expires_at < _now_utc():
+        return _redeem_rotated(
+            session, row=db_session_row, presented=refresh_token, user_id=payload.user_id, now=now
+        )
+    if db_session_row.expires_at < now:
         raise TokenInvalidError("Refresh token has expired")
 
-    user = session.execute(
-        select(AppUser).where(AppUser.user_id == payload.user_id)
-    ).scalar_one_or_none()
+    user = _active_user(session, payload.user_id)
+    pair, successor = _issue_session(
+        session, user=user, firm_id=payload.firm_id, family_id=db_session_row.family_id
+    )
+    db_session_row.revoked_at = now
+    db_session_row.replaced_by_session_id = successor.session_id
+    db_session_row.grace_successor_ct = session_family_service.seal_successor(
+        presented_refresh_token=refresh_token,
+        session_id=db_session_row.session_id,
+        pair=pair,
+    )
+    session.flush()
+    return pair
+
+
+def _active_user(session: Session, user_id: uuid.UUID) -> AppUser:
+    user = session.execute(select(AppUser).where(AppUser.user_id == user_id)).scalar_one_or_none()
     if user is None or not user.is_active or user.is_suspended:
         raise TokenInvalidError("User is no longer active")
+    return user
 
-    db_session_row.revoked_at = _now_utc()
-    session.flush()
-    return issue_tokens(session, user=user, firm_id=payload.firm_id)
+
+def _redeem_rotated(
+    session: Session,
+    *,
+    row: DbSession,
+    presented: str,
+    user_id: uuid.UUID,
+    now: datetime.datetime,
+) -> TokenPair:
+    """A revoked row was presented: grace re-issue, reuse detection, or 401."""
+    if row.replaced_by_session_id is None or row.revoked_at is None:
+        # Revoked by logout / a previous reuse detection — not a rotation.
+        raise TokenInvalidError("Refresh token has been revoked")
+
+    grace = datetime.timedelta(seconds=get_settings().refresh_reuse_grace_seconds)
+    if now - row.revoked_at > grace:
+        revoked = session_family_service.revoke_family(session, family_id=row.family_id, now=now)
+        session.flush()
+        raise RefreshTokenReuseError(
+            "Refresh token has been revoked",
+            org_id=row.org_id,
+            user_id=user_id,
+            family_id=row.family_id,
+            sessions_revoked=revoked,
+        )
+
+    successor = session.execute(
+        select(DbSession).where(DbSession.session_id == row.replaced_by_session_id)
+    ).scalar_one_or_none()
+    if (
+        successor is None
+        or successor.revoked_at is not None
+        or successor.expires_at < now
+        or row.grace_successor_ct is None
+    ):
+        # The successor was logged out / rotated again / expired: nothing
+        # to hand back. Not a theft signal inside the window — plain 401.
+        raise TokenInvalidError("Refresh token has been revoked")
+
+    _active_user(session, user_id)
+    pair = session_family_service.open_successor(
+        presented_refresh_token=presented,
+        session_id=row.session_id,
+        blob=row.grace_successor_ct,
+    )
+    if pair is None:
+        raise TokenInvalidError("Refresh token has been revoked")
+    return pair
 
 
 # ──────────────────────────────────────────────────────────────────────

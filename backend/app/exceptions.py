@@ -23,6 +23,7 @@ from the OpenAPI spec, which embeds this enum.
 
 from __future__ import annotations
 
+import uuid
 from enum import StrEnum
 
 
@@ -184,6 +185,29 @@ class TokenInvalidError(AppError):
     code = ErrorCode.TOKEN_INVALID
     title = "Token invalid"
     http_status = 401
+
+
+class RefreshTokenReuseError(TokenInvalidError):
+    """Q01-10: a refresh token rotated longer ago than the reuse (grace)
+    interval was presented again. The service has already revoked the token
+    family; the router audits the event, COMMITS (so the revocation survives
+    the error rollback) and returns the same uniform 401 as any other
+    invalid refresh token."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        org_id: uuid.UUID,
+        user_id: uuid.UUID,
+        family_id: uuid.UUID,
+        sessions_revoked: int,
+    ) -> None:
+        super().__init__(message)
+        self.org_id = org_id
+        self.user_id = user_id
+        self.family_id = family_id
+        self.sessions_revoked = sessions_revoked
 
 
 class MfaError(AppError):

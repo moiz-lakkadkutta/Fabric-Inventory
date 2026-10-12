@@ -108,6 +108,13 @@ class Settings(BaseSettings):
         default=SECURE_FORGOT_RATE_LIMIT_WINDOW_SECONDS, ge=1
     )
 
+    # Q01-10 + two-tab refresh race: how long a JUST-rotated refresh token
+    # may be re-presented and still get the SAME successor pair (idempotent
+    # re-issue for concurrent tabs / a retried request). After this window a
+    # re-presented rotated token is treated as reuse and revokes its family.
+    # Hard-capped at 60s: a longer window widens the stolen-token replay gap.
+    refresh_reuse_grace_seconds: int = Field(default=20, ge=0, le=60)
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _parse_cors_origins(cls, v: Any) -> Any:

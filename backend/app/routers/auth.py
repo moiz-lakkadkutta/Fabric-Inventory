@@ -27,6 +27,7 @@ from app.exceptions import (
     InvalidResetTokenError,
     NotFoundError,
     PermissionDeniedError,
+    RefreshTokenReuseError,
     TokenInvalidError,
 )
 from app.middleware.rate_limit import _client_ip, _get_redis, rate_limit
@@ -63,6 +64,7 @@ from app.service import (
     password_reset_service,
     rbac_service,
     seed_service,
+    session_family_service,
 )
 from app.utils.crypto import encrypt_pii, generate_dek, wrap_dek
 
@@ -959,6 +961,24 @@ def refresh(
 
     try:
         pair = identity_service.refresh_token(db, refresh_token=refresh_token)
+    except RefreshTokenReuseError as reuse:
+        # Q01-10: a rotated token re-presented after the grace interval. The
+        # service revoked the family; audit it and COMMIT before raising so
+        # the revocation survives the dependency's rollback-on-error (same
+        # commit-before-raise pattern as login_failed). Uniform 401.
+        audit_service.emit(
+            db,
+            org_id=reuse.org_id,
+            firm_id=None,
+            user_id=reuse.user_id,
+            entity_type="auth.session",
+            entity_id=reuse.family_id,
+            action="refresh_reuse_detected",
+            changes={"after": {"sessions_revoked": reuse.sessions_revoked}},
+        )
+        db.commit()
+        _clear_refresh_cookie(response)
+        raise
     except TokenInvalidError:
         # All token-invalid cases (expired, revoked, unknown, malformed) ->
         # uniform 401 to avoid information leakage.
@@ -1036,11 +1056,18 @@ async def logout(
             DbSession.refresh_token_hash == identity_service._hash_token(refresh_token),
         )
     ).scalar_one_or_none()
-    if db_session_row is None or db_session_row.revoked_at is not None:
+    if db_session_row is None:
         return LogoutResponse(revoked=False)
 
-    db_session_row.revoked_at = datetime.datetime.now(tz=datetime.UTC)
+    # Q01-10: revoke the whole refresh-token family (the live successor and
+    # every grace envelope), not just the presented row — so a just-rotated
+    # predecessor in another tab can't be re-issued the pair after logout.
+    revoked_count = session_family_service.revoke_family(
+        db, family_id=db_session_row.family_id, now=datetime.datetime.now(tz=datetime.UTC)
+    )
     db.flush()
+    if revoked_count == 0:
+        return LogoutResponse(revoked=False)
 
     # TS-04: jti denylist — push the access token's jti to Redis so
     # subsequent requests using the same access token return 401 immediately,

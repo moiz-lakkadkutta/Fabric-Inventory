@@ -154,15 +154,19 @@ async def test_q01_03_owner_without_mfa_cannot_get_a_session(sync_engine: Engine
         )
 
 
-@pytest.mark.xfail(
-    strict=True, reason="Q01-10: refresh rotation has no row lock — a token can be redeemed twice"
-)
 async def test_q01_10_refresh_token_single_use_under_concurrency(
     sync_engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two concurrent /auth/refresh calls with the SAME refresh token must
-    yield at most one new pair. Today both succeed (SELECT … then UPDATE by
-    PK, no FOR UPDATE / conditional UPDATE), forking the token family.
+    """Concurrent /auth/refresh calls with the SAME refresh token must
+    rotate it ONCE: at most one new pair exists. Before the fix all four
+    succeeded with four DIFFERENT pairs (SELECT … then UPDATE by PK, no
+    FOR UPDATE), forking the token family.
+
+    Fixed (row lock + reuse interval): the first redemption rotates; the
+    others, serialised behind the lock and inside the grace interval, are
+    handed the SAME successor pair (so two browser tabs booting at once both
+    stay logged in). "Redeemed once" is therefore asserted as "exactly one
+    distinct successor pair", not "one 200".
 
     The race window is widened deterministically: every refresh parks at a
     barrier right after its "not revoked" check (the first ``_now_utc`` call
@@ -198,4 +202,5 @@ async def test_q01_10_refresh_token_single_use_under_concurrency(
             *[client.post("/auth/refresh", json={"refresh_token": rt}) for _ in range(4)]
         )
         ok = [r for r in results if r.status_code == 200]
-        assert len(ok) <= 1, f"one refresh token redeemed {len(ok)} times"
+        pairs = {(r.json()["access_token"], r.json()["refresh_token"]) for r in ok}
+        assert len(pairs) <= 1, f"one refresh token redeemed into {len(pairs)} distinct pairs"

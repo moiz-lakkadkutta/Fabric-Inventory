@@ -1272,6 +1272,16 @@ paths:
   /auth/refresh:
     post:
       summary: Refresh JWT token
+      description: |
+        Single-use rotation with a reuse interval (Q01-10). The presented
+        refresh token's session row is locked, so concurrent redemptions
+        serialise and exactly one successor pair is minted. Re-presenting a
+        token rotated less than `REFRESH_REUSE_GRACE_SECONDS` (default 20s,
+        max 60s) ago returns the SAME successor pair (two tabs booting at
+        once both stay logged in). Re-presenting it later is treated as
+        refresh-token reuse: the whole token family is revoked and the
+        response is the uniform 401. The refresh token may come from the
+        `fabric_refresh` HttpOnly cookie (canonical) or the body.
       operationId: refreshToken
       tags:
         - identity
@@ -1307,6 +1317,10 @@ paths:
   /auth/logout:
     post:
       summary: Logout and revoke token
+      description: |
+        Revokes the presented refresh token's whole family (its live
+        successor and any reuse-interval envelopes), so a just-rotated
+        predecessor in another tab cannot be re-issued tokens afterwards.
       operationId: logoutUser
       tags:
         - identity
