@@ -133,29 +133,37 @@ def _race_role_changes(
     return results
 
 
+# Both Owners demoted to the SAME role also contend on that role's row lock
+# (`_assignable_role` … FOR UPDATE), which alone serializes them. Demotions to
+# DIFFERENT roles lock different rows, so only the per-org advisory lock
+# (`lock_org_role_changes`) stands between them and a zero-Owner org.
+ROLE_MIXES = {
+    "same_role": ("ACCOUNTANT", "ACCOUNTANT"),
+    "different_roles": ("ACCOUNTANT", "SALESPERSON"),
+}
+
+
 @pytest.mark.parametrize("pause_after_guard", [False, True])
 @pytest.mark.parametrize("direction", ["demote_each_other", "both_self_demote"])
+@pytest.mark.parametrize("role_mix", sorted(ROLE_MIXES))
 async def test_concurrent_owner_demotions_leave_exactly_one_owner(
     sync_engine: Engine,
     monkeypatch: pytest.MonkeyPatch,
     pause_after_guard: bool,
     direction: str,
+    role_mix: str,
 ) -> None:
     org, a, b = await _two_owners(sync_engine)
-    acct = _rid(sync_engine, org, "ACCOUNTANT")
+    r1, r2 = (_rid(sync_engine, org, code) for code in ROLE_MIXES[role_mix])
     jobs = (
-        [(a, b, acct), (b, a, acct)]
-        if direction == "demote_each_other"
-        else [
-            (a, a, acct),
-            (b, b, acct),
-        ]
+        [(a, b, r1), (b, a, r2)] if direction == "demote_each_other" else [(a, a, r1), (b, b, r2)]
     )
     results = _race_role_changes(
         sync_engine, org, jobs, pause_after_guard=pause_after_guard, monkeypatch=monkeypatch
     )
     # Exactly one wins. The loser hits the last-Owner guard (422), or, when
     # it was the one demoted first, no longer holds admin.user.manage (403).
+    assert _owner_count(sync_engine, org) == 1, results
     assert results.count("ok") == 1, results
     loser = next(r for r in results if r != "ok")
     expected = (
@@ -164,13 +172,14 @@ async def test_concurrent_owner_demotions_leave_exactly_one_owner(
         else {"AppValidationError"}
     )
     assert loser in expected, results
-    assert _owner_count(sync_engine, org) == 1
 
 
+@pytest.mark.parametrize("direction", ["demote_each_other", "both_self_demote"])
+@pytest.mark.parametrize("role_mix", sorted(ROLE_MIXES))
 async def test_concurrent_owner_demotions_over_http_never_zero_owners(
-    sync_engine: Engine,
+    sync_engine: Engine, direction: str, role_mix: str
 ) -> None:
-    for _ in range(3):
+    for _ in range(3):  # signup is rate-limited to 3 per test
         async with q01_client() as c:
             o = await signup(c)
             org = str(o["org_id"])
@@ -181,26 +190,30 @@ async def test_concurrent_owner_demotions_over_http_never_zero_owners(
                 firm_id=None,
             )
             t2 = (await login(c, email=e2, org_name=o["_org_name"]))["access_token"]
-            b = _uid(sync_engine, org, e2)
-            acct = str(_rid(sync_engine, org, "ACCOUNTANT"))
-            r1, r2 = await asyncio.gather(
-                c.patch(
-                    f"/admin/users/{b}/role",
-                    headers={**bearer(o["access_token"]), **idem()},
-                    json={"role_id": acct},
-                ),
-                c.patch(
-                    f"/admin/users/{o['user_id']}/role",
-                    headers={**bearer(t2), **idem()},
-                    json={"role_id": acct},
-                ),
+            a = str(o["user_id"])
+            b = str(_uid(sync_engine, org, e2))
+            ra, rb = (str(_rid(sync_engine, org, code)) for code in ROLE_MIXES[role_mix])
+            # (token, target, new role) for each of the two concurrent PATCHes.
+            if direction == "demote_each_other":
+                calls = [(o["access_token"], b, ra), (t2, a, rb)]
+            else:
+                calls = [(o["access_token"], a, ra), (t2, b, rb)]
+            resps = await asyncio.gather(
+                *[
+                    c.patch(
+                        f"/admin/users/{target}/role",
+                        headers={**bearer(tok), **idem()},
+                        json={"role_id": role},
+                    )
+                    for tok, target, role in calls
+                ]
             )
-            codes = sorted([r1.status_code, r2.status_code])
+            assert _owner_count(sync_engine, org) == 1, [r.text for r in resps]
+            codes = sorted(r.status_code for r in resps)
             # The loser hits the last-Owner guard (422), or, if the winner
             # demoted it first, its stale token (401) or its lost
             # admin.user.manage (403).
-            assert codes in ([204, 401], [204, 403], [204, 422]), (r1.text, r2.text)
-            assert _owner_count(sync_engine, org) == 1
+            assert codes in ([204, 401], [204, 403], [204, 422]), [r.text for r in resps]
 
 
 # ── role delete vs role assignment ─────────────────────────────────────
