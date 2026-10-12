@@ -141,7 +141,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="customer",
         state_code="MH",
         tax_status=TaxStatus.REGULAR,
-        gstin="27ABCDE1234F1Z5",
+        gstin="27ABCDE1234F1Z0",
         phone="9820011001",
         legal_name="Lakshmi Saree Centre Pvt Ltd",
     ),
@@ -151,7 +151,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="customer",
         state_code="GJ",
         tax_status=TaxStatus.REGULAR,
-        gstin="24ABCDE5678G1Z3",
+        gstin="24ABCDE5678G1ZG",
         phone="9879022002",
     ),
     _PartySpec(
@@ -160,7 +160,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="customer",
         state_code="DL",
         tax_status=TaxStatus.REGULAR,
-        gstin="07ABCDE9012H1Z1",
+        gstin="07ABCDE9012H1ZQ",
         phone="9810033003",
     ),
     _PartySpec(
@@ -169,7 +169,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="customer",
         state_code="KA",
         tax_status=TaxStatus.REGULAR,
-        gstin="29ABCDE3456J1Z9",
+        gstin="29ABCDE3456J1ZB",
         phone="9844044004",
     ),
     _PartySpec(
@@ -186,7 +186,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="customer",
         state_code="RJ",
         tax_status=TaxStatus.REGULAR,
-        gstin="08ABCDE7890K1Z7",
+        gstin="08ABCDE7890K1ZZ",
         phone="9829066006",
     ),
     _PartySpec(
@@ -203,7 +203,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="customer",
         state_code="MP",
         tax_status=TaxStatus.REGULAR,
-        gstin="23ABCDE2345L1Z5",
+        gstin="23ABCDE2345L1ZP",
         phone="9826088008",
     ),
     _PartySpec(
@@ -220,7 +220,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="customer",
         state_code="MH",
         tax_status=TaxStatus.REGULAR,
-        gstin="27ROOPA1234X1Z3",
+        gstin="27ROOPA1234X1ZU",
         phone="9820010010",
     ),
     # Suppliers (fabric mills, lace traders)
@@ -230,7 +230,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="supplier",
         state_code="GJ",
         tax_status=TaxStatus.REGULAR,
-        gstin="24SURAT4567M1Z9",
+        gstin="24SURAT4567M1Z0",
         phone="9825001001",
         legal_name="Surat Silk Mills Pvt Ltd",
     ),
@@ -240,7 +240,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="supplier",
         state_code="GJ",
         tax_status=TaxStatus.REGULAR,
-        gstin="24AHMED1234N1Z3",
+        gstin="24AHMED1234N1Z2",
         phone="9879002002",
     ),
     _PartySpec(
@@ -249,7 +249,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="supplier",
         state_code="MH",
         tax_status=TaxStatus.REGULAR,
-        gstin="27MUMBA5678P1Z1",
+        gstin="27MUMBA5678P1ZA",
         phone="9820003003",
     ),
     _PartySpec(
@@ -258,7 +258,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="supplier",
         state_code="RJ",
         tax_status=TaxStatus.REGULAR,
-        gstin="08JAIPR9012S1Z9",
+        gstin="08JAIPR9012S1ZM",
         phone="9829004004",
     ),
     _PartySpec(
@@ -267,7 +267,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="supplier",
         state_code="TN",
         tax_status=TaxStatus.REGULAR,
-        gstin="33TIRUP3456T1Z7",
+        gstin="33TIRUP3456T1ZF",
         phone="9840005005",
     ),
     # Karigars (tailoring + embroidery)
@@ -295,7 +295,7 @@ _PARTIES: tuple[_PartySpec, ...] = (
         kind="transporter",
         state_code="MH",
         tax_status=TaxStatus.REGULAR,
-        gstin="27MUMRO7890R1Z5",
+        gstin="27MUMRO7890R1ZT",
         phone="9820077777",
     ),
 )
