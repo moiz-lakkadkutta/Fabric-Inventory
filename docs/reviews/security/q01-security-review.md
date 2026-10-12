@@ -100,6 +100,7 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
 - **Repro:** `test_q01_rbac_mfa.py::test_q01_05_user_manager_cannot_demote_an_owner` sets up an org with 2 Owners and a custom role `{admin.user.manage, masters.party.read}`. `PATCH /admin/users/{owner2}/role` returns 204. Control: the same delegate cannot invite into Owner (403), so the PRIV-1/IDM-1 fix holds.
 - **Suggested fix:** In `change_user_role`, require `target_current_perms ⊆ actor_effective` (an actor cannot modify a user who outranks them), and apply the same rule to any future suspend/deactivate endpoint.
 - **Gate:** **Moiz** (RBAC/security).
+- **Fix (branch `fu/rbac`, PENDING MOIZ SIGN-OFF):** `invite_service.assert_actor_outranks_target` requires the target's current permissions ⊆ the actor's in every scope the target holds a role in (403, names the permissions). `assert_not_last_owner` (the Owner-code invariant) now counts only live, active, unsuspended Owners (422). Both are public helpers for the suspend/deactivate/remove endpoints, none of which exist yet.
 
 ### Q01-11 · P2 · Writes are acknowledged (and idempotency-cached) before COMMIT
 
@@ -127,6 +128,7 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
 - **Where:** `invite_service.py:418-419` and `:133` look up the role without `Role.deleted_at IS NULL`, and `rbac_service.get_user_permissions` (`:645`) never filters deleted roles. A deleted role can be assigned, grants its permissions, and is hidden from `GET /admin/roles`.
 - **Repro:** `test_q01_rbac_mfa.py::test_q01_08_soft_deleted_role_cannot_be_assigned` gets 204.
 - **Fix:** Add a `deleted_at IS NULL` filter in both lookups and join `Role` with that filter in `get_user_permissions`. **Gate:** Moiz (RBAC), XS effort.
+- **Fix (branch `fu/rbac`, PENDING MOIZ SIGN-OFF):** `get_user_permissions` ignores deleted roles. Invite create, invite accept and role change return 422 for a deleted role, so an invite minted before its role was deleted can't be accepted either. Deleting a role that is still assigned is **blocked** (422 "assigned to N users. Reassign them first"), never cascaded. Migration `211_rbac_followups` bumps `permissions_version` for anyone still holding a deleted role.
 
 ### Q01-09 · P3 · Runtime role has INSERT/UPDATE/DELETE on `alembic_version`
 
@@ -164,6 +166,12 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
   - `POST /bank-reconciliation/preview` (a read-only preview) is gated by `accounting.voucher.read`. This is the only mutating-verb route behind a read permission, and it is benign.
 - **Role-code logic in code:** `invite_service.py:458,499` uses `OWNER_ROLE_CODE` for the last-Owner guard and for org-wide assignment. This is a business invariant, not an authorization check, and is acceptable, but note it against the CLAUDE.md "no role names" rule.
 - **Gate:** Moiz (permission-model scope).
+- **Fix (branch `fu/rbac`, PENDING MOIZ SIGN-OFF):** routes switched only where a more precise code already existed. Migration `211_rbac_followups` grants the new code to every role holding the old one and bumps those holders' `permissions_version`:
+  - `GET /admin/roles` moves from `admin.user.manage` to `identity.role.read`.
+  - `POST /receipts` and `POST /payments` move from `banking.bank.create` to `accounting.voucher.post`.
+  - `GET /receipts` and `GET /payments` move from `banking.bank.read` to `accounting.voucher.read`.
+  - Caveat: a custom role that held `banking.bank.*` without `accounting.voucher.*` also gains the journal and voucher-list routes. No system role is affected.
+  - Everything else needs a permission code that doesn't exist yet (`*.delete`, `inventory.location.create`, `jobwork.order.receive`, `sales.invoice.delete`). Those, and the 10 dead codes, are left for Moiz.
 
 ---
 
