@@ -100,6 +100,11 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
 - **Repro:** `test_q01_rbac_mfa.py::test_q01_05_user_manager_cannot_demote_an_owner` sets up an org with 2 Owners and a custom role `{admin.user.manage, masters.party.read}`. `PATCH /admin/users/{owner2}/role` returns 204. Control: the same delegate cannot invite into Owner (403), so the PRIV-1/IDM-1 fix holds.
 - **Suggested fix:** In `change_user_role`, require `target_current_perms ⊆ actor_effective` (an actor cannot modify a user who outranks them), and apply the same rule to any future suspend/deactivate endpoint.
 - **Gate:** **Moiz** (RBAC/security).
+- **Verifier follow-ups (branch `fu/rbac`):**
+  - Concurrent Owner demotions can no longer leave zero Owners: `lock_org_role_changes` takes a per-org advisory lock at the top of `change_user_role`.
+  - `PATCH /admin/roles/{id}` and `DELETE /admin/roles/{id}` apply the same outrank rule to the role's CURRENT permissions, in every scope it is assigned in.
+  - A role delete and an assignment of that role serialize on a `FOR UPDATE` lock of the role row.
+  - Soft-deleted users no longer block a role delete.
 - **Fix (branch `fu/rbac`, PENDING MOIZ SIGN-OFF):** `invite_service.assert_actor_outranks_target` requires the target's current permissions ⊆ the actor's in every scope the target holds a role in (403, names the permissions). `assert_not_last_owner` (the Owner-code invariant) now counts only live, active, unsuspended Owners (422). Both are public helpers for the suspend/deactivate/remove endpoints, none of which exist yet.
 
 ### Q01-11 · P2 · Writes are acknowledged (and idempotency-cached) before COMMIT
@@ -170,7 +175,11 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
   - `GET /admin/roles` moves from `admin.user.manage` to `identity.role.read`.
   - `POST /receipts` and `POST /payments` move from `banking.bank.create` to `accounting.voucher.post`.
   - `GET /receipts` and `GET /payments` move from `banking.bank.read` to `accounting.voucher.read`.
-  - Caveat: a custom role that held `banking.bank.*` without `accounting.voucher.*` also gains the journal and voucher-list routes. No system role is affected.
+  - Caveats (access gained):
+    - ACCOUNTANT already held `identity.role.read`, so it now also gets `GET /admin/roles`. It could already read each role by id.
+    - A custom role holding `identity.role.read` without `admin.user.manage` gains the same list.
+    - A custom role that held `banking.bank.*` without `accounting.voucher.*` also gains the journal and voucher-list routes.
+    - No other system-role access changes.
   - Everything else needs a permission code that doesn't exist yet (`*.delete`, `inventory.location.create`, `jobwork.order.receive`, `sales.invoice.delete`). Those, and the 10 dead codes, are left for Moiz.
 
 ---

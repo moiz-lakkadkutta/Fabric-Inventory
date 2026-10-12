@@ -18,8 +18,13 @@
    ``permissions_version`` bump: their old token lacks ``new`` and would 403;
    the bump turns that into a 401 the client answers with a refresh.
 
-All steps are idempotent (``ON CONFLICT DO NOTHING``; the pv bump only hits
-roles that received a NEW grant in this run, plus deleted-role holders).
+Idempotency: the grants are idempotent (``ON CONFLICT DO NOTHING``), and the
+switch-related pv bump only hits holders of roles that received a NEW grant in
+this run. The Q01-08 deleted-role bump is deliberately NOT idempotent. We
+can't tell which outstanding tokens still carry a deleted role's permissions,
+so every holder of a deleted role is bumped once. Alembic runs it once; a
+manual re-run bumps those users again, which is harmless (one extra token
+refresh, no change to access).
 
 Downgrade: no-op. The added grants are harmless under the previous app
 (its routes check the OLD codes, which are untouched), and revoking them
