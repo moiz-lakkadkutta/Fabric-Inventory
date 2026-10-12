@@ -65,7 +65,7 @@ const FIRM_NAME = 'Cutover HQ';
 // public TLD for the synthetic test account.
 const OWNER_EMAIL = `owner-${STAMP}@example.com`;
 const OWNER_PASSWORD = 'CutoverPass1!';
-const GSTIN = '27AAACR5055K1Z5'; // Maharashtra, valid checksum (synthetic)
+const GSTIN = '27ABCDE1234F1Z0'; // Maharashtra, synthetic, checksum-valid
 const STATE_CODE = '27';
 
 const CUSTOMER_CODE = `CUST-${STAMP}`;
@@ -227,7 +227,7 @@ test.describe('CUT-503 acceptance: Wave 1-5 cutover scenario', () => {
       await page.fill('#np-code', CUSTOMER_CODE);
       await page.fill('#np-name', CUSTOMER_NAME);
       // Role defaults to customer — leave it.
-      await page.fill('#np-gstin', '24ABCDE1234F1Z5');
+      await page.fill('#np-gstin', '24ABCDE1234F1Z6'); // synthetic, checksum-valid
       await page.fill('#np-state-code', '24'); // Gujarat — inter-state w/ MH firm.
       await page.getByRole('button', { name: /^save$/i }).click();
       // Row should appear in the live list after the mutation lands.
