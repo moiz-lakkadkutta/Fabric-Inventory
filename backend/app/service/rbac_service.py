@@ -31,7 +31,7 @@ import uuid
 from collections.abc import Iterable
 from typing import Final, TypedDict
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.exceptions import AppValidationError, PermissionDeniedError
@@ -642,7 +642,13 @@ def get_user_permissions(
         role_filters.append(UserRole.firm_id.is_(None))
     else:
         role_filters.append((UserRole.firm_id == firm_id) | (UserRole.firm_id.is_(None)))
-    role_ids_q = select(UserRole.role_id).where(*role_filters)
+    # Q01-08: a soft-deleted role grants nothing, even if a stale UserRole
+    # row still points at it (assignments made before deletion was blocked).
+    role_ids_q = (
+        select(UserRole.role_id)
+        .join(Role, Role.role_id == UserRole.role_id)
+        .where(*role_filters, Role.deleted_at.is_(None))
+    )
 
     rows = session.execute(
         select(Permission.resource, Permission.action)
@@ -930,9 +936,11 @@ def delete_custom_role(
     Validates:
       - Role exists in this org and isn't already deleted.
       - Role is not a system role.
-      - No live `UserRole` rows reference it — refuse delete if users are
-        still assigned (Admin must reassign first; saves us from leaving
-        users with zero effective permissions).
+      - No `UserRole` rows reference it — refuse (422, with the user count)
+        if users are still assigned. Admin must reassign first; we never
+        cascade, which would silently leave users with no access (Q01-08).
+        Open invites into the role are not blocked here; accepting one
+        fails with 422 once the role is deleted.
 
     `actor_user_id` is used for audit; None is accepted for system paths.
     """
@@ -948,12 +956,17 @@ def delete_custom_role(
     if role.is_system_role:
         raise PermissionDeniedError("System roles cannot be deleted")
 
-    assigned_count = (
-        session.execute(select(UserRole).where(UserRole.role_id == role_id)).scalars().first()
-    )
-    if assigned_count is not None:
+    # Q01-08 decision: BLOCK, never cascade. Cascading would silently strip
+    # every holder's access (and their Owner-reassignment path); blocking
+    # makes the admin reassign them deliberately first.
+    assigned_users = session.execute(
+        select(func.count(func.distinct(UserRole.user_id))).where(UserRole.role_id == role_id)
+    ).scalar_one()
+    if assigned_users:
+        noun = "user" if assigned_users == 1 else "users"
         raise AppValidationError(
-            "Cannot delete a role with users still assigned — reassign users first"
+            f"Cannot delete role {role.name!r}: it is assigned to {assigned_users} {noun}. "
+            "Reassign them to another role first."
         )
 
     import datetime as _dt

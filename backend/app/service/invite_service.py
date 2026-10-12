@@ -81,6 +81,23 @@ def _now_utc() -> datetime.datetime:
     return datetime.datetime.now(tz=datetime.UTC)
 
 
+def _assignable_role(session: Session, *, org_id: uuid.UUID, role_id: uuid.UUID) -> Role:
+    """The role a user can be granted: in this org (404 otherwise) and not
+    soft-deleted (422 — Q01-08: a deleted role must not be assignable)."""
+    role = session.execute(
+        select(Role).where(Role.role_id == role_id, Role.org_id == org_id)
+    ).scalar_one_or_none()
+    if role is None:
+        raise NotFoundError(f"Role {role_id} not found")
+    if role.deleted_at is not None:
+        raise AppValidationError(
+            f"Role {role.name!r} has been deleted and can no longer be assigned. "
+            "Choose an active role.",
+            title="Role deleted",
+        )
+    return role
+
+
 def _frontend_invite_url(token: str) -> str:
     """Build the FE URL the recipient opens. `FRONTEND_URL` defaults to
     `http://localhost:5174` per the task spec; prod sets this via env.
@@ -132,11 +149,7 @@ def create_invite(
     # Verify role belongs to this org (RLS ensures we can't see other orgs
     # but a malformed role_id from a different org would still fail the
     # FK at the row level — surface it cleanly).
-    role = session.execute(
-        select(Role).where(Role.role_id == role_id, Role.org_id == org_id)
-    ).scalar_one_or_none()
-    if role is None:
-        raise NotFoundError(f"Role {role_id} not found")
+    _assignable_role(session, org_id=org_id, role_id=role_id)
 
     # IDM-2: verify firm_id (when supplied) belongs to this org.
     # A cross-org firm_id would be silently persisted on the invite and
@@ -331,6 +344,11 @@ def accept_invite(
         session.flush()
         raise EmailTakenError(f"User with email {invite.email!r} already exists in this org")
 
+    # Q01-08: the role may have been deleted after the invite was minted.
+    # Refuse (the transaction rolls back, so the invite stays unconsumed and
+    # the admin can re-point it at a live role by re-inviting the email).
+    _assignable_role(session, org_id=invite.org_id, role_id=invite.role_id)
+
     user = identity_service.register_user(
         session, email=invite.email, password=password, org_id=invite.org_id
     )
@@ -429,11 +447,7 @@ def change_user_role(
     if target is None:
         raise NotFoundError(f"User {target_user_id} not found")
 
-    new_role = session.execute(
-        select(Role).where(Role.role_id == new_role_id, Role.org_id == org_id)
-    ).scalar_one_or_none()
-    if new_role is None:
-        raise NotFoundError(f"Role {new_role_id} not found")
+    new_role = _assignable_role(session, org_id=org_id, role_id=new_role_id)
 
     # PRIV-1 / IDM-1 Vector C-b: permission ceiling on the new role.
     # A caller cannot assign a role whose permission set exceeds their own.
