@@ -1,4 +1,12 @@
-import { ArrowLeft, AlertCircle, Check, FileMinus, IndianRupee, Printer, Trash2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  AlertCircle,
+  Check,
+  FileMinus,
+  IndianRupee,
+  Printer,
+  Trash2,
+} from 'lucide-react';
 import * as React from 'react';
 import { Link, useParams } from 'react-router-dom';
 
