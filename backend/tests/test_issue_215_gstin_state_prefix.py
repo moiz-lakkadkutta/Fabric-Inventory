@@ -40,10 +40,11 @@ from app.service.gst_service import DocumentType, TaxType
 from app.service.migration import VyaparExcelAdapter
 from app.utils.crypto import decrypt_pii, encrypt_pii, get_org_dek
 from app.utils.gst_states import gstin_validation_error
+from tests._gstin import make_gstin
 
 BAD_99 = "99AABCX1234C1Z5"
 BAD_00 = "00AABCX1234C1Z5"
-GOOD_MH = "27AABCM1234C1Z9"
+GOOD_MH = make_gstin("27", "AABCM1234C")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -61,7 +62,7 @@ def test_validator_rejects_non_state_prefixes(prefix: str) -> None:
 
 @pytest.mark.parametrize("prefix", ["01", "07", "24", "27", "36", "37", "38", "97"])
 def test_validator_accepts_state_prefixes(prefix: str) -> None:
-    assert gstin_validation_error(f"{prefix}AABCX1234C1Z5") is None
+    assert gstin_validation_error(make_gstin(prefix)) is None
 
 
 def test_validator_still_rejects_bad_format() -> None:
@@ -94,7 +95,9 @@ def test_create_party_rejects_non_state_gstin_prefix(
         _create(db_session, fresh_org_id, gstin=gstin)
 
 
-@pytest.mark.parametrize("gstin", ["38AABCL1234C1Z5", "97AABCO1234C1Z5", GOOD_MH])
+@pytest.mark.parametrize(
+    "gstin", [make_gstin("38", "AABCL1234C"), make_gstin("97", "AABCO1234C"), GOOD_MH]
+)
 def test_create_party_accepts_ladakh_other_territory_and_states(
     db_session: OrmSession, fresh_org_id: uuid.UUID, gstin: str
 ) -> None:
@@ -106,7 +109,7 @@ def test_create_party_accepts_ladakh_other_territory_and_states(
 def test_create_party_normalizes_gstin_case_and_whitespace(
     db_session: OrmSession, fresh_org_id: uuid.UUID
 ) -> None:
-    party = _create(db_session, fresh_org_id, gstin=" 27aabcm1234c1z9 ")
+    party = _create(db_session, fresh_org_id, gstin=f" {GOOD_MH.lower()} ")
     dek = get_org_dek(db_session, org_id=fresh_org_id)
     assert decrypt_pii(party.gstin, dek=dek, org_id=fresh_org_id) == GOOD_MH
 
@@ -116,7 +119,7 @@ def test_update_party_normalizes_gstin_case_and_whitespace(
 ) -> None:
     party = _create(db_session, fresh_org_id)
     updated = masters_service.update_party(
-        db_session, org_id=fresh_org_id, party_id=party.party_id, gstin="27aabcm1234c1z9 "
+        db_session, org_id=fresh_org_id, party_id=party.party_id, gstin=f"{GOOD_MH.lower()} "
     )
     dek = get_org_dek(db_session, org_id=fresh_org_id)
     assert decrypt_pii(updated.gstin, dek=dek, org_id=fresh_org_id) == GOOD_MH
@@ -247,7 +250,7 @@ def test_vyapar_import_drops_non_state_gstin_with_warning() -> None:
 
 
 def test_vyapar_import_normalizes_gstin_case_and_whitespace() -> None:
-    src = _vyapar_xlsx(" 27aabcm1234c1z9 ")
+    src = _vyapar_xlsx(f" {GOOD_MH.lower()} ")
     adapter = VyaparExcelAdapter()
     assert not [r for r in adapter.validate(src).rows if r.code == "GSTIN_FORMAT_INVALID"]
     assert next(iter(adapter.extract_parties(src))).gstin == GOOD_MH

@@ -19,10 +19,11 @@ from app.models import Organization
 from app.models.masters import TaxStatus
 from app.service import masters_service
 from app.utils.crypto import decrypt_pii, get_org_dek
+from tests._gstin import make_gstin
 
 # A valid GSTIN for Maharashtra (state code 27). Format only — not a
 # real number; the checksum check is a TASK-047 concern.
-VALID_GSTIN = "27ABCDE1234F1Z5"
+VALID_GSTIN = make_gstin("27", "ABCDE1234F")
 VALID_PAN = "ABCDE1234F"
 
 

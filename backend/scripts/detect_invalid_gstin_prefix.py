@@ -1,5 +1,6 @@
-"""#215 detection (READ-ONLY): list parties whose GSTIN prefix is not a GST
-state/UT code (e.g. "99…", "00…").
+"""#215 detection (READ-ONLY): list parties whose stored GSTIN fails the
+party GSTIN rule — a prefix that is not a GST state/UT code (e.g. "99…",
+"00…") or, since the check-digit follow-up, a wrong mod-36 check digit.
 
 ``party.gstin`` is encrypted per org, so the companion SQL
 (``schema/patches/detect-215-invalid-gstin-prefix.sql``) can only list the
