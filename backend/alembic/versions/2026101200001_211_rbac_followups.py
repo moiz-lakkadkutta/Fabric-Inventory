@@ -32,7 +32,7 @@ could remove access a role legitimately had before (``new`` may have been
 held already). Reverse with a follow-on migration if ever needed.
 
 Revision ID: 211_rbac_followups
-Revises: 210_firm_scope_rls
+Revises: 211_db_hardening (linearized at merge; branch originally revised 210_firm_scope_rls)
 Create Date: 2026-10-12
 """
 
@@ -46,7 +46,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "211_rbac_followups"
-down_revision: str | Sequence[str] | None = "210_firm_scope_rls"
+down_revision: str | Sequence[str] | None = "211_db_hardening"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
