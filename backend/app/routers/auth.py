@@ -61,6 +61,7 @@ from app.service import (
     firm_scope_service,
     identity_service,
     inventory_service,
+    mfa_policy_service,
     password_reset_service,
     rbac_service,
     seed_service,
@@ -566,6 +567,30 @@ def login(
         # email+password alongside the TOTP code).
         return LoginResponse(requires_mfa=True, user_id=user.user_id)
 
+    # Q01-03: MFA is mandatory for admin-class users. Withhold the pair (no
+    # session row, no refresh cookie) and hand out an enrolment-only token.
+    if mfa_policy_service.enrollment_required(db, user_id=user.user_id, mfa_enabled=False):
+        enrollment_token, enrollment_exp = identity_service.issue_mfa_enrollment_token(user=user)
+        audit_service.emit(
+            db,
+            org_id=user.org_id,
+            firm_id=None,
+            user_id=user.user_id,
+            entity_type="auth.session",
+            entity_id=user.user_id,
+            action="login_mfa_enrollment_required",
+            changes={"after": {}},
+        )
+        db.flush()
+        return LoginResponse(
+            requires_mfa=False,
+            requires_mfa_enrollment=True,
+            enrollment_token=enrollment_token,
+            enrollment_token_expires_at=enrollment_exp,
+            user_id=user.user_id,
+            org_id=user.org_id,
+        )
+
     user.last_login_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
 
@@ -1002,6 +1027,24 @@ def refresh(
 # ──────────────────────────────────────────────────────────────────────
 
 
+async def _denylist_bearer(authorization: str | None) -> None:
+    """Denylist the jti of an access / MFA-enrolment bearer token. Missing,
+    expired or invalid tokens are skipped silently (idempotent logout)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return
+    try:
+        bearer = identity_service.verify_jwt(authorization.removeprefix("Bearer ").strip())
+    except TokenInvalidError:
+        return
+    if bearer.token_type not in ("access", "mfa_enrollment"):
+        return
+    remaining = int(bearer.exp - datetime.datetime.now(tz=datetime.UTC).timestamp())
+    if remaining > 0:
+        redis_client = _get_redis()
+        if redis_client is not None:
+            await redis_client.setex(f"jti:{bearer.jti}", remaining, "1")
+
+
 @router.post(
     "/logout",
     response_model=LogoutResponse,
@@ -1019,6 +1062,13 @@ async def logout(
     # Always clear the cookie even if revocation no-ops — local state
     # should match the user's intent.
     _clear_refresh_cookie(response)
+
+    # TS-04: jti denylist — push the presented bearer token's jti to Redis so
+    # subsequent requests using it return 401 immediately rather than waiting
+    # for its TTL. Done up front, independent of the refresh-token outcome:
+    # an MFA-enrolment token (Q01-03) has no refresh token at all, and a
+    # no-op refresh revocation must not leave the bearer token alive.
+    await _denylist_bearer(authorization)
 
     # Body takes precedence when explicitly provided so callers can still
     # detect "access token mistakenly sent" (a 400 case). When body is
@@ -1068,28 +1118,6 @@ async def logout(
     db.flush()
     if revoked_count == 0:
         return LogoutResponse(revoked=False)
-
-    # TS-04: jti denylist — push the access token's jti to Redis so
-    # subsequent requests using the same access token return 401 immediately,
-    # rather than waiting for the 15-minute TTL to expire.
-    # The access token is expected in the Authorization header (the client
-    # sends it alongside the refresh token at logout). If absent or
-    # already-expired, we skip silently — idempotent and safe.
-    if authorization and authorization.startswith("Bearer "):
-        _access_raw = authorization.removeprefix("Bearer ").strip()
-        try:
-            _access_payload = identity_service.verify_jwt(_access_raw)
-            if _access_payload.token_type == "access":  # noqa: S105 — discriminator
-                _remaining = int(
-                    _access_payload.exp - datetime.datetime.now(tz=datetime.UTC).timestamp()
-                )
-                if _remaining > 0:
-                    _redis = _get_redis()
-                    if _redis is not None:
-                        await _redis.setex(f"jti:{_access_payload.jti}", _remaining, "1")
-        except TokenInvalidError:
-            # Already expired or invalid — no need to denylist; skip silently.
-            pass
 
     audit_service.emit(
         db,
@@ -1235,4 +1263,10 @@ def me(current_user: CurrentUser, db: SyncDBSession) -> MeResponse:
         flags=flags,
         available_firms=[MeFirmRef(firm_id=f.firm_id, code=f.code, name=f.name) for f in firms],
         token_expires_at=datetime.datetime.fromtimestamp(current_user.exp, tz=datetime.UTC),
+        mfa_enrollment_required=(
+            current_user.token_type == "mfa_enrollment"  # noqa: S105 — discriminator
+            or mfa_policy_service.enrollment_required(
+                db, user_id=current_user.user_id, mfa_enabled=bool(user_row.mfa_enabled)
+            )
+        ),
     )

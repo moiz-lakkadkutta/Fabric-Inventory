@@ -39,6 +39,9 @@ class ErrorCode(StrEnum):
     MFA_REQUIRED = "MFA_REQUIRED"
     MFA_INVALID = "MFA_INVALID"
     MFA_ALREADY_ENABLED = "MFA_ALREADY_ENABLED"
+    # Q01-03: an admin-class user who has not enrolled TOTP called a route
+    # other than MFA enrolment / me / logout.
+    MFA_ENROLLMENT_REQUIRED = "MFA_ENROLLMENT_REQUIRED"
     TOKEN_INVALID = "TOKEN_INVALID"  # noqa: S105 — error code, not a password
     USER_EMAIL_TAKEN = "USER_EMAIL_TAKEN"
     # CUT-303: a single code covers all reset-token failure modes
@@ -216,6 +219,15 @@ class MfaError(AppError):
     code = ErrorCode.MFA_INVALID
     title = "MFA verification failed"
     http_status = 401
+
+
+class MfaEnrollmentRequiredError(AppError):
+    """Q01-03: the principal must enrol TOTP (POST /auth/mfa/setup, then
+    /auth/mfa/confirm) before this route is available."""
+
+    code = ErrorCode.MFA_ENROLLMENT_REQUIRED
+    title = "MFA enrolment required"
+    http_status = 403
 
 
 class MfaAlreadyEnabledError(AppError):

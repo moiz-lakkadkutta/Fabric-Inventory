@@ -393,3 +393,38 @@ def test_signup_and_forgot_guards_are_independent(env: str) -> None:
 
     with pytest.raises(Exception, match="FORGOT_RATE_LIMIT_MAX_REQUESTS=6"):
         _build_settings()
+
+
+# ---------------------------------------------------------------------------
+# Q01-03: MFA mandatory for admin-class users. Secure default ON; OFF is a
+# dev-only (E2E overlay) knob and a boot refusal anywhere else.
+# ---------------------------------------------------------------------------
+
+
+def test_mfa_required_for_admin_defaults_on() -> None:
+    _dev_base_env()
+    os.environ.pop("MFA_REQUIRED_FOR_ADMIN", None)
+    assert _build_settings().mfa_required_for_admin is True  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_mfa_required_for_admin_defaults_on_in_non_dev(env: str) -> None:
+    _non_dev_base_env(env)
+    os.environ.pop("MFA_REQUIRED_FOR_ADMIN", None)
+    assert _build_settings().mfa_required_for_admin is True  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_mfa_required_for_admin_off_rejected_in_non_dev(env: str) -> None:
+    _non_dev_base_env(env)
+    os.environ["MFA_REQUIRED_FOR_ADMIN"] = "false"
+
+    with pytest.raises(Exception, match="MFA_REQUIRED_FOR_ADMIN=false is not allowed"):
+        _build_settings()
+
+
+def test_mfa_required_for_admin_off_allowed_in_dev() -> None:
+    """The E2E acceptance stack (ENVIRONMENT=dev) may switch it off."""
+    _dev_base_env()
+    os.environ["MFA_REQUIRED_FOR_ADMIN"] = "false"
+    assert _build_settings().mfa_required_for_admin is False  # type: ignore[attr-defined]

@@ -6720,7 +6720,7 @@
         "type": "object"
       },
       "LoginResponse": {
-        "description": "Either tokens (no MFA) or `requires_mfa=True` (caller follows up\nwith /auth/mfa-verify). Never both.\n\nIncludes `org_id`, `firm_id`, and `available_firms` (mirroring\nSignupResponse) so the FE can complete login in a single round-trip\ninstead of chasing /auth/me afterward. `firm_id` is auto-populated\nwhen the user has exactly one firm; null otherwise (multi-firm\naccounts use the firm switcher to pick).",
+        "description": "Either tokens (no MFA), `requires_mfa=True` (caller follows up\nwith /auth/mfa-verify), or `requires_mfa_enrollment=True` with an\nenrolment-only token (Q01-03). Never more than one.\n\nIncludes `org_id`, `firm_id`, and `available_firms` (mirroring\nSignupResponse) so the FE can complete login in a single round-trip\ninstead of chasing /auth/me afterward. `firm_id` is auto-populated\nwhen the user has exactly one firm; null otherwise (multi-firm\naccounts use the firm switcher to pick).",
         "properties": {
           "access_expires_at": {
             "anyOf": [
@@ -6751,6 +6751,29 @@
             },
             "title": "Available Firms",
             "type": "array"
+          },
+          "enrollment_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enrollment Token"
+          },
+          "enrollment_token_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enrollment Token Expires At"
           },
           "firm_id": {
             "anyOf": [
@@ -6801,6 +6824,11 @@
           },
           "requires_mfa": {
             "title": "Requires Mfa",
+            "type": "boolean"
+          },
+          "requires_mfa_enrollment": {
+            "default": false,
+            "title": "Requires Mfa Enrollment",
             "type": "boolean"
           },
           "user_id": {
@@ -7420,6 +7448,11 @@
             },
             "title": "Flags",
             "type": "object"
+          },
+          "mfa_enrollment_required": {
+            "default": false,
+            "title": "Mfa Enrollment Required",
+            "type": "boolean"
           },
           "org_id": {
             "format": "uuid",

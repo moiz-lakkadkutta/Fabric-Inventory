@@ -131,7 +131,7 @@ async def test_q01_08_soft_deleted_role_cannot_be_assigned(sync_engine: Engine) 
         )
 
 
-@pytest.mark.xfail(strict=True, reason="Q01-03: MFA is not mandatory for Owner/Admin logins")
+@pytest.mark.mfa_policy_enforced
 async def test_q01_03_owner_without_mfa_cannot_get_a_session(sync_engine: Engine) -> None:
     """CLAUDE.md: MFA 'optional for users; mandatory for Admin'. An Owner
     who never enrolled TOTP still gets a full access token from password

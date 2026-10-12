@@ -73,7 +73,11 @@ export default function Login() {
       {
         onSuccess: (result) => {
           resetKey();
-          if (result.requires_mfa) {
+          if (result.requires_mfa_enrollment) {
+            // Q01-03: admin without TOTP — enrol before anything else.
+            authStore.setPendingMfa(null);
+            navigate('/mfa/enroll');
+          } else if (result.requires_mfa) {
             authStore.setPendingMfa({
               email: trimmedEmail,
               password,

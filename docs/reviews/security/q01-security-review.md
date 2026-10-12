@@ -66,6 +66,13 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
 - **Repro:** `test_q01_rbac_mfa.py::test_q01_03_owner_without_mfa_cannot_get_a_session` shows a fresh Owner login returning `access_token` from the password alone.
 - **Suggested fix:** If the principal holds any admin-class permission and `mfa_enabled = false`, return `requires_mfa_enrollment` with a short-lived enrolment-only token (scoped to `/auth/mfa/setup|confirm`) instead of a full pair. Add a grace period for existing Owners.
 - **Gate:** **Moiz** (auth/security policy and UX).
+- **Fix (branch `fu/auth`, PENDING MOIZ SIGN-OFF):**
+  - "Admin-class" is decided by permission (`mfa_policy_service.MFA_MANDATORY_PERMISSIONS`): holding `admin.user.manage` or `identity.role.create/update/delete` in any role, org-wide or in any firm. That covers OWNER and any custom delegate.
+  - Login for an admin-class user without TOTP returns `requires_mfa_enrollment: true` plus a 15-minute `enrollment_token` (JWT `token_type="mfa_enrollment"`, no permissions, no firm, no session row, no refresh token, no cookie). `get_current_user` admits it only on `/auth/mfa/setup`, `/auth/mfa/confirm`, `/auth/me` and `/auth/logout` (matched on the route template). Every other route returns 403 `MFA_ENROLLMENT_REQUIRED`. It cannot be refreshed or switched into a full pair.
+  - A full token such a user already holds (signup, a pre-rollout session, a refresh of either) is gated the same way, plus `/auth/switch-firm`, whose output stays gated. Existing owners (Moiz's account) are therefore forced to enrol on their next request, not only on their next login.
+  - After `/auth/mfa/confirm`, the next login returns `requires_mfa` and goes through `/auth/mfa-verify`. The FE `/mfa/enroll` screen signs out after confirming.
+  - Setting `MFA_REQUIRED_FOR_ADMIN` defaults to true. False is a boot refusal outside `ENVIRONMENT=dev`. The E2E overlay sets it false. The pytest suite turns the policy off at the `mfa_policy_service.is_enforced` seam unless a test carries `@pytest.mark.mfa_policy_enforced`.
+  - Logout now denylists the presented bearer (access or enrolment token) on every path, not only after a successful refresh revocation.
 
 ### Q01-04 · P2 · Idempotency cache is not principal-scoped and is replayed before authentication (including token-bearing responses)
 

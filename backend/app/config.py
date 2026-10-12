@@ -115,6 +115,14 @@ class Settings(BaseSettings):
     # Hard-capped at 60s: a longer window widens the stolen-token replay gap.
     refresh_reuse_grace_seconds: int = Field(default=20, ge=0, le=60)
 
+    # Q01-03: MFA is mandatory for admin-class users (anyone holding a
+    # privilege-administration permission — see mfa_policy_service). Secure
+    # default ON. Only an ENVIRONMENT=dev process may turn it off (the E2E
+    # overlay does, because every acceptance test signs up a fresh Owner);
+    # `_reject_mfa_policy_off_outside_dev` makes False a boot refusal in
+    # staging/prod.
+    mfa_required_for_admin: bool = True
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _parse_cors_origins(cls, v: Any) -> Any:
@@ -259,6 +267,21 @@ class Settings(BaseSettings):
                 "(docker-compose.e2e.yml, ENVIRONMENT=dev). Unset them here."
             )
         return self
+
+    @model_validator(mode="after")
+    def _reject_mfa_policy_off_outside_dev(self) -> Settings:
+        """Q01-03 guard: staging/prod may never run with MFA optional for
+        admins. MFA_REQUIRED_FOR_ADMIN=false exists for the E2E acceptance
+        stack (ENVIRONMENT=dev) only; anywhere else it is a boot refusal, so
+        a stray env var or copied compose file cannot silently drop it."""
+        if self.environment == "dev" or self.mfa_required_for_admin:
+            return self
+        raise ValueError(
+            f"MFA_REQUIRED_FOR_ADMIN=false is not allowed when "
+            f"ENVIRONMENT={self.environment!r}: MFA is mandatory for admin-class "
+            "users outside dev. This knob exists only for the E2E acceptance stack "
+            "(docker-compose.e2e.yml, ENVIRONMENT=dev). Unset it here."
+        )
 
 
 _settings: Settings | None = None

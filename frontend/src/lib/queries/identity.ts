@@ -57,6 +57,8 @@ export interface LoginInput {
 
 export interface LoginResult {
   requires_mfa: boolean;
+  /** Q01-03: admin-class user without TOTP — route to /mfa/enroll. */
+  requires_mfa_enrollment?: boolean;
   user_id?: string;
   access_token?: string;
 }
@@ -79,6 +81,17 @@ async function liveLogin(input: LoginInput): Promise<LoginResult> {
       org_name: input.org_name,
     },
   });
+  if (data.requires_mfa_enrollment && data.enrollment_token) {
+    // Q01-03: the enrolment-only token is held like an access token but
+    // only /auth/mfa/{setup,confirm}, /auth/me and /auth/logout accept it.
+    // No /me + firm auto-switch here: switch-firm would 403.
+    authStore.setAccessToken(data.enrollment_token);
+    return {
+      requires_mfa: false,
+      requires_mfa_enrollment: true,
+      user_id: data.user_id ?? undefined,
+    };
+  }
   if (data.access_token) authStore.setAccessToken(data.access_token);
   if (!data.requires_mfa) {
     const me = await api<MeResponse>('/auth/me');
@@ -227,6 +240,7 @@ async function mockMfaVerify(input: MfaVerifyInput): Promise<LoginEnvelope> {
   }
   return fakeFetch({
     requires_mfa: false,
+    requires_mfa_enrollment: false,
     user_id: currentUser.user_id,
     access_token: 'mock-access-token',
   });
@@ -317,6 +331,70 @@ export function useSwitchFirm() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────
+// MFA enrolment (Q01-03) — POST /auth/mfa/setup then /auth/mfa/confirm.
+// Works with the enrolment-only token from login or with a gated full
+// token (signup / pre-rollout session). After confirm the caller signs
+// out; the next login goes through /mfa (TOTP verify).
+// ──────────────────────────────────────────────────────────────────────
+
+export interface MfaSetupResult {
+  secret: string;
+  provisioning_uri: string;
+}
+
+const MOCK_MFA_SECRET = 'JBSWY3DPEHPK3PXP';
+
+export function useMfaSetup() {
+  return useMutation({
+    mutationFn: (input: { idempotencyKey: string }): Promise<MfaSetupResult> =>
+      IS_LIVE
+        ? api<MfaSetupResult>('/auth/mfa/setup', {
+            method: 'POST',
+            idempotencyKey: input.idempotencyKey,
+          })
+        : fakeFetch({
+            secret: MOCK_MFA_SECRET,
+            provisioning_uri: `otpauth://totp/Fabric%20ERP:${currentUser.email}?secret=${MOCK_MFA_SECRET}&issuer=Fabric%20ERP`,
+          }),
+  });
+}
+
+async function liveMfaConfirm(input: { code: string; idempotencyKey: string }): Promise<void> {
+  await api('/auth/mfa/confirm', {
+    method: 'POST',
+    idempotencyKey: input.idempotencyKey,
+    body: { code: input.code },
+  });
+  // Sign out: the enrolment token (or password-only session) must not
+  // carry on — the next login proves the new second factor.
+  try {
+    await api('/auth/logout', {
+      method: 'POST',
+      idempotencyKey: crypto.randomUUID(),
+      body: { refresh_token: '' },
+    });
+  } finally {
+    authStore.clear();
+  }
+}
+
+async function mockMfaConfirm(input: { code: string }): Promise<void> {
+  if (input.code === '000000') {
+    await fakeFetch(undefined);
+    throw new Error('INVALID_MFA_CODE');
+  }
+  await fakeFetch(undefined);
+  authStore.clear();
+}
+
+export function useMfaConfirm() {
+  return useMutation({
+    mutationFn: (input: { code: string; idempotencyKey: string }) =>
+      IS_LIVE ? liveMfaConfirm(input) : mockMfaConfirm(input),
+  });
+}
+
 // Forgot / reset password (CUT-303)
 // ──────────────────────────────────────────────────────────────────────
 

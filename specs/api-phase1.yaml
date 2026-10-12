@@ -1253,12 +1253,34 @@ paths:
                   type: string
       responses:
         '200':
-          description: Login successful
+          description: |
+            Exactly one of three outcomes:
+            - tokens (`access_token`, `refresh_token`, refresh cookie set);
+            - `requires_mfa: true` — follow up with POST /auth/mfa-verify;
+            - `requires_mfa_enrollment: true` (Q01-03) — an admin-class user
+              (holds admin.user.manage or identity.role.create/update/delete)
+              who has not enrolled TOTP while MFA_REQUIRED_FOR_ADMIN is on.
+              No token pair and no cookie; `enrollment_token` (15-min Bearer)
+              works ONLY on /auth/mfa/setup, /auth/mfa/confirm, /auth/me and
+              /auth/logout. Every other route answers 403
+              `MFA_ENROLLMENT_REQUIRED`. After /auth/mfa/confirm the next
+              login returns `requires_mfa: true`.
           content:
             application/json:
               schema:
                 type: object
                 properties:
+                  requires_mfa:
+                    type: boolean
+                  requires_mfa_enrollment:
+                    type: boolean
+                  enrollment_token:
+                    type: string
+                    nullable: true
+                  enrollment_token_expires_at:
+                    type: string
+                    format: date-time
+                    nullable: true
                   access_token:
                     type: string
                   refresh_token:

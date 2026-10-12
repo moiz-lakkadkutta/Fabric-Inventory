@@ -61,6 +61,8 @@ from app.utils import crypto
 
 _ACCESS_TOKEN_TTL_SECONDS: Final[int] = 15 * 60  # 15 min
 _REFRESH_TOKEN_TTL_SECONDS: Final[int] = 14 * 24 * 3600  # 14 days
+# Q01-03: enrolment-only token — long enough to scan a QR and type a code.
+_MFA_ENROLLMENT_TOKEN_TTL_SECONDS: Final[int] = 15 * 60  # 15 min
 _BCRYPT_ROUNDS: Final[int] = 12
 _JWT_ALG: Final[str] = "HS256"  # RS256 + key rotation later.
 _TOTP_ISSUER: Final[str] = "Fabric ERP"
@@ -97,7 +99,7 @@ class TokenPayload:
     jti: str
     iat: int
     exp: int
-    token_type: Literal["access", "refresh"]
+    token_type: Literal["access", "refresh", "mfa_enrollment"]
     # TS-05/IDM-5: permissions_version claim — must match the user's live
     # `permissions_version` column on every authenticated request. Tokens
     # issued before this field existed carry pv=0; since the DB default for
@@ -213,7 +215,7 @@ def _issue_jwt(
     user: AppUser,
     firm_id: uuid.UUID | None,
     permissions: list[str],
-    token_type: Literal["access", "refresh"],
+    token_type: Literal["access", "refresh", "mfa_enrollment"],
     ttl_seconds: int,
 ) -> tuple[str, datetime.datetime, str]:
     """Returns (encoded_jwt, expires_at, jti)."""
@@ -297,6 +299,23 @@ def _issue_session(
         refresh_expires_at=refresh_exp,
     )
     return pair, db_session_row
+
+
+def issue_mfa_enrollment_token(*, user: AppUser) -> tuple[str, datetime.datetime]:
+    """Q01-03: a short-lived, enrolment-only token for an admin-class user
+    who has not enrolled TOTP. ``token_type="mfa_enrollment"``, no
+    permissions, no firm, no `session` row and no refresh token — it cannot
+    be refreshed or switched into a full pair. `dependencies.get_current_user`
+    admits it only on `mfa_policy_service.ENROLLMENT_TOKEN_ROUTES`.
+    Returns ``(jwt, expires_at)``."""
+    token, exp, _ = _issue_jwt(
+        user=user,
+        firm_id=None,
+        permissions=[],
+        token_type="mfa_enrollment",  # noqa: S106 — JWT type discriminator, not a credential
+        ttl_seconds=_MFA_ENROLLMENT_TOKEN_TTL_SECONDS,
+    )
+    return token, exp
 
 
 def verify_jwt(token: str) -> TokenPayload:

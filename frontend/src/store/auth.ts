@@ -27,6 +27,8 @@ export interface MeResponse {
   flags: Record<string, boolean>;
   available_firms: MeFirmRef[];
   token_expires_at: string;
+  /** Q01-03: must enrol TOTP before the app is usable (→ /mfa/enroll). */
+  mfa_enrollment_required?: boolean;
 }
 
 /**

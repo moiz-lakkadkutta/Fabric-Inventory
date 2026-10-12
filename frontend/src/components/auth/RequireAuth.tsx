@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 
-import { useAuthStatus } from '@/store/auth';
+import { useAuthStatus, useMe } from '@/store/auth';
 
 interface RequireAuthProps {
   children?: React.ReactNode;
@@ -28,6 +28,7 @@ interface RequireAuthProps {
  */
 export function RequireAuth({ children, redirectTo = '/login' }: RequireAuthProps) {
   const status = useAuthStatus();
+  const me = useMe();
   const location = useLocation();
 
   if (status === 'unknown') {
@@ -45,6 +46,12 @@ export function RequireAuth({ children, redirectTo = '/login' }: RequireAuthProp
 
   if (status === 'unauthenticated') {
     return <Navigate to={redirectTo} replace state={{ from: location }} />;
+  }
+
+  // Q01-03: an admin-class user without TOTP gets 403 MFA_ENROLLMENT_REQUIRED
+  // from every business route — send them to enrolment instead.
+  if (me?.mfa_enrollment_required) {
+    return <Navigate to="/mfa/enroll" replace />;
   }
 
   return <>{children}</>;

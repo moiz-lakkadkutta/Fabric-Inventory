@@ -5406,8 +5406,9 @@ export interface components {
         };
         /**
          * LoginResponse
-         * @description Either tokens (no MFA) or `requires_mfa=True` (caller follows up
-         *     with /auth/mfa-verify). Never both.
+         * @description Either tokens (no MFA), `requires_mfa=True` (caller follows up
+         *     with /auth/mfa-verify), or `requires_mfa_enrollment=True` with an
+         *     enrolment-only token (Q01-03). Never more than one.
          *
          *     Includes `org_id`, `firm_id`, and `available_firms` (mirroring
          *     SignupResponse) so the FE can complete login in a single round-trip
@@ -5422,6 +5423,10 @@ export interface components {
             access_token?: string | null;
             /** Available Firms */
             available_firms?: components["schemas"]["MeFirmRef"][];
+            /** Enrollment Token */
+            enrollment_token?: string | null;
+            /** Enrollment Token Expires At */
+            enrollment_token_expires_at?: string | null;
             /** Firm Id */
             firm_id?: string | null;
             /** Org Id */
@@ -5432,6 +5437,11 @@ export interface components {
             refresh_token?: string | null;
             /** Requires Mfa */
             requires_mfa: boolean;
+            /**
+             * Requires Mfa Enrollment
+             * @default false
+             */
+            requires_mfa_enrollment: boolean;
             /** User Id */
             user_id?: string | null;
         };
@@ -5703,6 +5713,11 @@ export interface components {
             flags?: {
                 [key: string]: boolean;
             };
+            /**
+             * Mfa Enrollment Required
+             * @default false
+             */
+            mfa_enrollment_required: boolean;
             /**
              * Org Id
              * Format: uuid

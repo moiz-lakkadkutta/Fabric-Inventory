@@ -83,8 +83,9 @@ class MeFirmRef(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    """Either tokens (no MFA) or `requires_mfa=True` (caller follows up
-    with /auth/mfa-verify). Never both.
+    """Either tokens (no MFA), `requires_mfa=True` (caller follows up
+    with /auth/mfa-verify), or `requires_mfa_enrollment=True` with an
+    enrolment-only token (Q01-03). Never more than one.
 
     Includes `org_id`, `firm_id`, and `available_firms` (mirroring
     SignupResponse) so the FE can complete login in a single round-trip
@@ -94,6 +95,12 @@ class LoginResponse(BaseModel):
     """
 
     requires_mfa: bool
+    # Q01-03: admin-class user without TOTP. No access/refresh pair and no
+    # refresh cookie; `enrollment_token` (Bearer) works only on
+    # /auth/mfa/setup, /auth/mfa/confirm, /auth/me and /auth/logout.
+    requires_mfa_enrollment: bool = False
+    enrollment_token: str | None = None
+    enrollment_token_expires_at: datetime.datetime | None = None
     user_id: uuid.UUID | None = None
     access_token: str | None = None
     refresh_token: str | None = None
@@ -236,3 +243,7 @@ class MeResponse(BaseModel):
     flags: dict[str, bool] = Field(default_factory=dict)
     available_firms: list[MeFirmRef] = Field(default_factory=list)
     token_expires_at: datetime.datetime
+    # Q01-03: True when this principal must enrol TOTP before anything but
+    # MFA setup/confirm, /auth/me and logout works (enrolment-only token, or
+    # an admin-class user without MFA). The FE routes to /mfa/enroll.
+    mfa_enrollment_required: bool = False
