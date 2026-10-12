@@ -17,6 +17,7 @@ import json as _json
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select, text, update
 
 from app.config import get_settings
@@ -999,7 +1000,20 @@ def refresh(
             entity_type="auth.session",
             entity_id=reuse.family_id,
             action="refresh_reuse_detected",
-            changes={"after": {"sessions_revoked": reuse.sessions_revoked}},
+            # Kept even when nothing was live (sessions_revoked=0): replaying
+            # a rotated token of a logged-out family is still a theft signal.
+            changes={
+                "after": {
+                    "sessions_revoked": reuse.sessions_revoked,
+                    "detail": (
+                        "rotated refresh token replayed after the reuse interval; "
+                        "token family revoked"
+                        if reuse.sessions_revoked
+                        else "rotated refresh token replayed after the reuse interval; "
+                        "family was already revoked (logged out)"
+                    ),
+                }
+            },
         )
         db.commit()
         _clear_refresh_cookie(response)
@@ -1025,6 +1039,69 @@ def refresh(
 # ──────────────────────────────────────────────────────────────────────
 # Logout — public; idempotent revocation
 # ──────────────────────────────────────────────────────────────────────
+
+
+def _logout_revoke(db: SyncDBSession, refresh_token: str | None) -> bool:
+    """Blocking DB half of logout. Runs in the threadpool (see `logout`):
+    `revoke_family` may wait on a row lock held by a concurrent refresh, and
+    waiting on the event loop would stall every request on the worker —
+    including the refresh that holds the lock (deadlock)."""
+    if not refresh_token:
+        # Nothing to revoke; cookie already cleared above. Idempotent no-op.
+        return False
+
+    # Verify token before lookup so we don't admit row existence on garbage input.
+    try:
+        payload = identity_service.verify_jwt(refresh_token)
+    except TokenInvalidError:
+        # Idempotency: a logout call with an unknown / already-expired token
+        # is a no-op success ("already logged out").
+        return False
+
+    if payload.token_type != "refresh":  # noqa: S105 — JWT type discriminator
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error_code": "validation_error",
+                "detail": "Expected refresh token, got access token",
+            },
+        )
+
+    # Seed RLS GUC so the session lookup works under fabric_app
+    # (NOBYPASSRLS) — pre-INT-9 the runtime role bypassed RLS.
+    db.execute(text(f"SET LOCAL app.current_org_id = '{payload.org_id}'"))
+
+    db_session_row = db.execute(
+        select(DbSession).where(
+            DbSession.user_id == payload.user_id,
+            DbSession.refresh_token_hash == identity_service._hash_token(refresh_token),
+        )
+    ).scalar_one_or_none()
+    if db_session_row is None:
+        return False
+
+    # Q01-10: revoke the whole refresh-token family (the live successor and
+    # every grace envelope), not just the presented row — so a just-rotated
+    # predecessor in another tab can't be re-issued the pair after logout.
+    revoked_count = session_family_service.revoke_family(
+        db, family_id=db_session_row.family_id, now=datetime.datetime.now(tz=datetime.UTC)
+    )
+    db.flush()
+    if revoked_count == 0:
+        return False
+
+    audit_service.emit(
+        db,
+        org_id=payload.org_id,
+        firm_id=payload.firm_id,
+        user_id=payload.user_id,
+        entity_type="auth.session",
+        entity_id=payload.user_id,
+        action="logout",
+    )
+    db.flush()
+
+    return True
 
 
 async def _denylist_bearer(authorization: str | None) -> None:
@@ -1075,62 +1152,8 @@ async def logout(
     # absent, fall back to the HttpOnly cookie (the canonical path now
     # that the FE never sees the token). When neither, no-op.
     refresh_token = body.refresh_token if body and body.refresh_token else fabric_refresh
-    if not refresh_token:
-        # Nothing to revoke; cookie already cleared above. Idempotent no-op.
-        return LogoutResponse(revoked=False)
-
-    # Verify token before lookup so we don't admit row existence on garbage input.
-    try:
-        payload = identity_service.verify_jwt(refresh_token)
-    except TokenInvalidError:
-        # Idempotency: a logout call with an unknown / already-expired token
-        # is a no-op success ("already logged out").
-        return LogoutResponse(revoked=False)
-
-    if payload.token_type != "refresh":  # noqa: S105 — JWT type discriminator
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error_code": "validation_error",
-                "detail": "Expected refresh token, got access token",
-            },
-        )
-
-    # Seed RLS GUC so the session lookup works under fabric_app
-    # (NOBYPASSRLS) — pre-INT-9 the runtime role bypassed RLS.
-    db.execute(text(f"SET LOCAL app.current_org_id = '{payload.org_id}'"))
-
-    db_session_row = db.execute(
-        select(DbSession).where(
-            DbSession.user_id == payload.user_id,
-            DbSession.refresh_token_hash == identity_service._hash_token(refresh_token),
-        )
-    ).scalar_one_or_none()
-    if db_session_row is None:
-        return LogoutResponse(revoked=False)
-
-    # Q01-10: revoke the whole refresh-token family (the live successor and
-    # every grace envelope), not just the presented row — so a just-rotated
-    # predecessor in another tab can't be re-issued the pair after logout.
-    revoked_count = session_family_service.revoke_family(
-        db, family_id=db_session_row.family_id, now=datetime.datetime.now(tz=datetime.UTC)
-    )
-    db.flush()
-    if revoked_count == 0:
-        return LogoutResponse(revoked=False)
-
-    audit_service.emit(
-        db,
-        org_id=payload.org_id,
-        firm_id=payload.firm_id,
-        user_id=payload.user_id,
-        entity_type="auth.session",
-        entity_id=payload.user_id,
-        action="logout",
-    )
-    db.flush()
-
-    return LogoutResponse(revoked=True)
+    revoked = await run_in_threadpool(_logout_revoke, db, refresh_token)
+    return LogoutResponse(revoked=revoked)
 
 
 # ──────────────────────────────────────────────────────────────────────

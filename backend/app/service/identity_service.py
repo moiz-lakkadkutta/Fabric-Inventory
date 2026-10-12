@@ -422,20 +422,26 @@ def refresh_token(session: Session, *, refresh_token: str) -> TokenPair:
     # session row.
     session.execute(text(f"SET LOCAL app.current_org_id = '{payload.org_id}'"))
 
-    # Row lock: a concurrent redemption of the same token blocks here until
-    # this transaction commits, then re-reads the row (READ COMMITTED
-    # re-evaluates locked rows) and takes the rotated branch below.
-    db_session_row = session.execute(
+    lookup = (
         select(DbSession)
         .where(
             DbSession.user_id == payload.user_id,
             DbSession.refresh_token_hash == _hash_token(refresh_token),
         )
-        .with_for_update()
         .execution_options(populate_existing=True)
-    ).scalar_one_or_none()
-    if db_session_row is None:
+    )
+    found = session.execute(lookup).scalar_one_or_none()
+    if found is None:
         raise TokenInvalidError("Refresh token not found")
+
+    # Lock the whole token family, always in session_id order — the same
+    # order logout / reuse detection use (`session_family_service.lock_family`)
+    # — so rotation, grace re-issue, reuse detection and logout serialise per
+    # family without lock-order deadlocks. A concurrent redemption of the same
+    # token blocks here until this transaction commits, then re-reads the row
+    # below (fresh snapshot) and takes the rotated branch.
+    session_family_service.lock_family(session, family_id=found.family_id)
+    db_session_row = session.execute(lookup).scalar_one()
 
     now = _now_utc()
     if db_session_row.revoked_at is not None:
@@ -457,6 +463,10 @@ def refresh_token(session: Session, *, refresh_token: str) -> TokenPair:
         pair=pair,
     )
     session.flush()
+    # At most one grace envelope per family: the one just written.
+    session_family_service.wipe_older_envelopes(
+        session, family_id=db_session_row.family_id, keep=db_session_row.session_id
+    )
     return pair
 
 

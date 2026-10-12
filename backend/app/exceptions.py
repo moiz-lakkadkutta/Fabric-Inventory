@@ -61,6 +61,9 @@ class ErrorCode(StrEnum):
     IDEMPOTENCY_KEY_PAYLOAD_MISMATCH = "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH"
     # Q01-01: a request with the same key (same principal) is still executing.
     IDEMPOTENCY_REQUEST_IN_PROGRESS = "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+    # Q01-10 follow-up: a row lock was not granted within DB_LOCK_TIMEOUT_MS
+    # (SQLSTATE 55P03). Transient; retry after Retry-After.
+    LOCK_TIMEOUT = "LOCK_TIMEOUT"
 
     # Business
     INVOICE_STATE_ERROR = "INVOICE_STATE_ERROR"
