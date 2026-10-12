@@ -150,6 +150,7 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
   - `specs/api-phase3.yaml` **is not valid YAML** (line 377: an unquoted `{M: 40, …}` in a description).
 - **Impact:** None at runtime; enforcement is correct and every route is gated. But CLAUDE.md's "new endpoint is in OpenAPI spec with correct `x-permission`" control is not functioning, so a reviewer cannot use the spec to audit permissions.
 - **Fix:** Generate `x-permission` from the route dependency (the walker script in §7 already extracts it), or delete the hand-written field. Quote line 377. **Gate:** Decide (docs).
+- **Fix (branch `fu/spec`):** `specs/api-phase1.yaml` is now the contract for all 179 served operations, manufacturing included, each with the `x-permission` its route enforces (`public` / `authenticated` for the 14 auth/health routes). 7 spec paths were renamed to the routes' parameter names; 72 designed-but-unserved operations are marked `x-implemented: false`; added operations reference their schemas in `frontend/scripts/openapi-snapshot.json`. `specs/api-phase3.yaml` is quoted at line 377 and labelled a design document. Guard: `backend/tests/test_spec_permission_parity.py`; drift fixer: `uv run python -m scripts.spec_sync --write`.
 
 ### Q01-13 · P3 · Permission-catalog drift and coarse mappings
 
