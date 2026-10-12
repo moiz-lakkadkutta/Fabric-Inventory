@@ -84,8 +84,12 @@ def _now_utc() -> datetime.datetime:
 def _assignable_role(session: Session, *, org_id: uuid.UUID, role_id: uuid.UUID) -> Role:
     """The role a user can be granted: in this org (404 otherwise) and not
     soft-deleted (422 — Q01-08: a deleted role must not be assignable)."""
+    # FOR UPDATE: a concurrent `delete_custom_role` locks the same row, so a
+    # delete and an assignment of one role serialize. Whichever commits
+    # second sees the other's result: the assignment sees deleted_at (422),
+    # or the delete sees the new holder (422 "still assigned").
     role = session.execute(
-        select(Role).where(Role.role_id == role_id, Role.org_id == org_id)
+        select(Role).where(Role.role_id == role_id, Role.org_id == org_id).with_for_update()
     ).scalar_one_or_none()
     if role is None:
         raise NotFoundError(f"Role {role_id} not found")
@@ -96,6 +100,25 @@ def _assignable_role(session: Session, *, org_id: uuid.UUID, role_id: uuid.UUID)
             title="Role deleted",
         )
     return role
+
+
+def lock_org_role_changes(session: Session, *, org_id: uuid.UUID) -> None:
+    """Serialize role changes per org for the rest of the transaction.
+
+    The last-Owner guard is a read (COUNT of other Owners) followed by a
+    write, so two concurrent demotions (A demotes B while B demotes A, or
+    both self-demote) could each see the other as the remaining Owner and
+    leave the org with none. A transaction-scoped advisory lock keyed on the
+    org makes the second change wait, and under READ COMMITTED its guard
+    then sees the first one's committed result. Take it before reading
+    anything the guard depends on, in every path that can remove an Owner.
+    Today that is only `change_user_role`: OWNER is a system role, so it
+    can't be edited or deleted, and invite accept only adds a role.
+    """
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"owner-guard:{org_id}"},
+    )
 
 
 def _frontend_invite_url(token: str) -> str:
@@ -437,6 +460,8 @@ def change_user_role(
 
     Audit emits `identity.user.change_role` with before/after role codes.
     """
+    lock_org_role_changes(session, org_id=org_id)
+
     target = session.execute(
         select(AppUser).where(
             AppUser.user_id == target_user_id,
@@ -658,4 +683,5 @@ __all__ = [
     "assert_not_last_owner",
     "change_user_role",
     "create_invite",
+    "lock_org_role_changes",
 ]

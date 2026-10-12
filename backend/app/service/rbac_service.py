@@ -774,6 +774,31 @@ def create_custom_role(
     return role
 
 
+def _assert_actor_covers_role(
+    session: Session,
+    *,
+    actor_user_id: uuid.UUID,
+    role_id: uuid.UUID,
+    scopes: set[uuid.UUID | None],
+    verb: str,
+) -> None:
+    """The Q01-05 outrank rule applied to a role: to edit or delete a role,
+    the actor must hold every permission it CURRENTLY grants, in each scope
+    (firm, or None = org-wide) it is assigned in plus the actor's own. This
+    stops a role editor from stripping or deleting a role held by someone who
+    outranks them. 403 lists the missing codes, never a firm id or name."""
+    current = get_role_permission_codes(session, role_id=role_id)
+    for scope in scopes:
+        beyond = sorted(
+            current - get_user_permissions(session, user_id=actor_user_id, firm_id=scope)
+        )
+        if beyond:
+            raise PermissionDeniedError(
+                f"Cannot {verb} a role that grants permissions you don't hold: {beyond}. "
+                "Ask an Owner (or an admin who holds them) to do it."
+            )
+
+
 def update_system_role(*_args: object, **_kwargs: object) -> None:
     """System roles are immutable for MVP. Surface a clear error rather than
     a silent success path so callers can adopt a Phase-2 mutable-roles model
@@ -808,16 +833,35 @@ def update_custom_role(
         provided, `permission_codes ⊆ actor's effective permissions`.
     """
     role = session.execute(
-        select(Role).where(
+        select(Role)
+        .where(
             Role.role_id == role_id,
             Role.org_id == org_id,
             Role.deleted_at.is_(None),
         )
+        .with_for_update()
     ).scalar_one_or_none()
     if role is None:
         raise AppValidationError(f"Role {role_id} not found in this organization")
     if role.is_system_role:
         raise PermissionDeniedError("System roles are immutable for MVP")
+
+    assigned_scopes: set[uuid.UUID | None] = set(
+        session.execute(
+            select(UserRole.firm_id).where(UserRole.role_id == role.role_id).distinct()
+        ).scalars()
+    )
+    if actor_user_id is not None:
+        # Outrank rule (verifier follow-up to Q01-05): any edit, renames
+        # included, needs the actor to hold the role's CURRENT permissions
+        # wherever it is assigned.
+        _assert_actor_covers_role(
+            session,
+            actor_user_id=actor_user_id,
+            role_id=role.role_id,
+            scopes={actor_firm_id} | assigned_scopes,
+            verb="edit",
+        )
 
     if name is not None:
         stripped = name.strip()
@@ -849,11 +893,6 @@ def update_custom_role(
         # admin could widen a role that others hold org-wide or in firms the
         # actor doesn't administer.
         if actor_user_id is not None:
-            assigned_scopes = set(
-                session.execute(
-                    select(UserRole.firm_id).where(UserRole.role_id == role.role_id).distinct()
-                ).scalars()
-            )
             for scope in {actor_firm_id} | assigned_scopes:
                 actor_effective = get_user_permissions(
                     session, user_id=actor_user_id, firm_id=scope
@@ -930,37 +969,56 @@ def delete_custom_role(
     org_id: uuid.UUID,
     role_id: uuid.UUID,
     actor_user_id: uuid.UUID | None = None,
+    actor_firm_id: uuid.UUID | None = None,
 ) -> None:
     """Soft-delete a non-system role.
 
     Validates:
       - Role exists in this org and isn't already deleted.
       - Role is not a system role.
-      - No `UserRole` rows reference it — refuse (422, with the user count)
-        if users are still assigned. Admin must reassign first; we never
+      - (outrank) the actor holds every permission the role grants (403).
+      - No live user holds it: refuse (422, with the user count) if users
+        are still assigned. Soft-deleted users don't count. Admin must reassign first; we never
         cascade, which would silently leave users with no access (Q01-08).
         Open invites into the role are not blocked here; accepting one
         fails with 422 once the role is deleted.
 
     `actor_user_id` is used for audit; None is accepted for system paths.
     """
+    # FOR UPDATE pairs with the lock in invite_service._assignable_role: a
+    # delete and a concurrent assignment of this role serialize, so they can
+    # never both succeed and leave a user on a deleted role.
     role = session.execute(
-        select(Role).where(
+        select(Role)
+        .where(
             Role.role_id == role_id,
             Role.org_id == org_id,
             Role.deleted_at.is_(None),
         )
+        .with_for_update()
     ).scalar_one_or_none()
     if role is None:
         raise AppValidationError(f"Role {role_id} not found in this organization")
     if role.is_system_role:
         raise PermissionDeniedError("System roles cannot be deleted")
+    if actor_user_id is not None:
+        _assert_actor_covers_role(
+            session,
+            actor_user_id=actor_user_id,
+            role_id=role.role_id,
+            scopes={actor_firm_id},
+            verb="delete",
+        )
 
     # Q01-08 decision: BLOCK, never cascade. Cascading would silently strip
     # every holder's access (and their Owner-reassignment path); blocking
     # makes the admin reassign them deliberately first.
+    # Soft-deleted users don't count: they can't use the role, and counting
+    # them would make the role undeletable forever.
     assigned_users = session.execute(
-        select(func.count(func.distinct(UserRole.user_id))).where(UserRole.role_id == role_id)
+        select(func.count(func.distinct(UserRole.user_id)))
+        .join(AppUser, AppUser.user_id == UserRole.user_id)
+        .where(UserRole.role_id == role_id, AppUser.deleted_at.is_(None))
     ).scalar_one()
     if assigned_users:
         noun = "user" if assigned_users == 1 else "users"

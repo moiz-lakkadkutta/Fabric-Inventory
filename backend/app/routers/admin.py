@@ -492,6 +492,7 @@ def delete_role(
         org_id=current_user.org_id,
         role_id=role_id,
         actor_user_id=current_user.user_id,
+        actor_firm_id=current_user.firm_id,
     )
     return None
 
