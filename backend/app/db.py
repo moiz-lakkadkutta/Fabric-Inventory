@@ -54,7 +54,8 @@ def get_engine() -> AsyncEngine:
             pool_pre_ping=True,
             connect_args=(
                 {"server_settings": {"lock_timeout": str(settings.db_lock_timeout_ms)}}
-                if settings.database_url.startswith("postgresql+asyncpg://")
+                if settings.db_lock_timeout_ms
+                and settings.database_url.startswith("postgresql+asyncpg://")
                 else {}
             ),
         )
@@ -121,9 +122,13 @@ def get_sync_engine() -> Engine:
             echo=False,
             pool_pre_ping=True,
             future=True,
-            # Q01-10 follow-up: fail fast on lock waits (503 LOCK_TIMEOUT via
-            # middleware/errors.py) rather than hang a worker indefinitely.
-            connect_args={"options": f"-c lock_timeout={settings.db_lock_timeout_ms}"},
+            # Optional engine-wide lock_timeout (DB_LOCK_TIMEOUT_MS, default 0
+            # = off). Auth paths bound their own waits (AUTH_LOCK_TIMEOUT_MS).
+            connect_args=(
+                {"options": f"-c lock_timeout={settings.db_lock_timeout_ms}"}
+                if settings.db_lock_timeout_ms
+                else {}
+            ),
         )
     return _sync_engine
 

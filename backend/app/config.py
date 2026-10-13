@@ -114,11 +114,14 @@ class Settings(BaseSettings):
     # re-presented rotated token is treated as reuse and revokes its family.
     # Hard-capped at 60s: a longer window widens the stolen-token replay gap.
     refresh_reuse_grace_seconds: int = Field(default=20, ge=0, le=60)
-    # Q01-10 follow-up: per-connection Postgres `lock_timeout` for the app's
-    # engines. A request that waits longer than this on a row lock fails fast
-    # with 503 LOCK_TIMEOUT (+ Retry-After) instead of tying up a worker.
-    # 0 disables (Postgres default: wait forever).
-    db_lock_timeout_ms: int = Field(default=5000, ge=0, le=60000)
+    # Engine-wide Postgres `lock_timeout` (ms) for the app's connections.
+    # 0 (default) = Postgres default, wait forever: a long import legitimately
+    # holds the per-org audit-chain lock for many seconds, and a global
+    # timeout turned other users' writes and logins into 503s.
+    db_lock_timeout_ms: int = Field(default=0, ge=0, le=60000)
+    # Q01-10: bound ONLY the wait for a refresh-token family mutex (refresh,
+    # logout, MFA reset). Past it: 503 LOCK_TIMEOUT + Retry-After.
+    auth_lock_timeout_ms: int = Field(default=5000, ge=100, le=60000)
 
     # Q01-03: MFA is mandatory for admin-class users (anyone holding a
     # privilege-administration permission — see mfa_policy_service). Secure

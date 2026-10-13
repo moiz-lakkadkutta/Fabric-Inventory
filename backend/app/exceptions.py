@@ -64,6 +64,9 @@ class ErrorCode(StrEnum):
     # Q01-10 follow-up: a row lock was not granted within DB_LOCK_TIMEOUT_MS
     # (SQLSTATE 55P03). Transient; retry after Retry-After.
     LOCK_TIMEOUT = "LOCK_TIMEOUT"
+    # Defence in depth: Postgres aborted the transaction as a deadlock victim
+    # (SQLSTATE 40P01). Nothing was committed; retry after Retry-After.
+    DEADLOCK_DETECTED = "DEADLOCK_DETECTED"
 
     # Business
     INVOICE_STATE_ERROR = "INVOICE_STATE_ERROR"

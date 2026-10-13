@@ -216,13 +216,29 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(OperationalError)
     async def _handle_operational_error(request: Request, exc: OperationalError) -> JSONResponse:
-        """Q01-10 follow-up: a lock wait that hit the per-connection
-        ``lock_timeout`` (SQLSTATE 55P03, ``db_lock_timeout_ms``) is a
-        transient contention signal, not a bug — 503 + Retry-After so the
-        client retries. The transaction is rolled back by ``get_db_sync``.
+        """Q01-10 follow-up: transient contention, not bugs — 503 +
+        Retry-After so the client retries; ``get_db_sync`` rolls back.
+          * 55P03: a lock wait hit ``lock_timeout`` (the refresh-family mutex
+            wait, AUTH_LOCK_TIMEOUT_MS; or DB_LOCK_TIMEOUT_MS if configured).
+          * 40P01: deadlock victim (defence in depth).
         Every other OperationalError stays a generic 500."""
         orig = exc.orig
         code = getattr(orig, "pgcode", None) or getattr(orig, "sqlstate", None)
+        if code == "40P01":
+            logger.warning("db_deadlock_503", path=request.url.path)
+            return JSONResponse(
+                status_code=503,
+                content=_envelope(
+                    code=str(ErrorCode.DEADLOCK_DETECTED),
+                    title="Busy, please retry",
+                    detail="Two requests collided on the same records. Nothing was saved; "
+                    "retry in a moment.",
+                    status=503,
+                    field_errors={},
+                    request_id=_request_id_for(request),
+                ),
+                headers={"Retry-After": "1"},
+            )
         if code == "55P03":
             logger.warning("db_lock_timeout_503", path=request.url.path)
             return JSONResponse(

@@ -21,9 +21,10 @@ Model
   ciphertext in the family (they belong to tokens already two rotations old,
   whose grace re-issue can no longer succeed anyway). Logout and reuse
   detection wipe all of them.
-* ``revoke_family`` locks the family's rows first, so it waits for a
-  concurrent rotation (which holds its presented row's lock) to commit and
-  then also revokes the successor that rotation minted.
+* Every family mutation takes the family mutex (``lock_family``: one
+  transaction-scoped advisory lock), so ``revoke_family`` waits for a
+  concurrent rotation to commit and then also revokes the successor that
+  rotation minted.
 
 This is the "reuse interval" / "grace period" pattern (Auth0, Okta) with one
 difference: within the interval the caller gets the SAME successor pair, not
@@ -46,7 +47,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from sqlalchemy import select, update
+from sqlalchemy import text, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -117,16 +118,27 @@ def open_successor(
 
 
 def lock_family(session: Session, *, family_id: uuid.UUID) -> None:
-    """``SELECT … FOR UPDATE`` every row of the family, in a fixed order (no
-    lock-order deadlock between two revokers). Blocks while a concurrent
-    rotation holds its presented row; that rotation's successor is then
-    visible to the next statement (READ COMMITTED takes a new snapshot)."""
+    """Take the family MUTEX: a transaction-scoped advisory lock keyed on the
+    family id. Every path that reads-then-writes a family's rows — rotation,
+    grace re-issue, reuse detection, logout, the ops MFA reset — takes it
+    first, so they serialise per family with ONE lock (no row-lock ordering
+    over a growing family: no deadlocks, O(1) per refresh). A successor
+    minted by the previous holder is committed before the mutex is released,
+    so the next holder's statements see it.
+
+    The WAIT for the mutex is bounded by ``AUTH_LOCK_TIMEOUT_MS`` (5s,
+    ``SET LOCAL``); past it Postgres raises 55P03 → 503 LOCK_TIMEOUT. Once
+    held, the timeout goes back to the engine default, so the rest of the
+    transaction — notably the audit row of a reuse detection / logout, which
+    waits on the org's audit-chain lock — is not cut short by a long import
+    (that would roll back the family revocation)."""
+    settings = get_settings()
+    session.execute(text(f"SET LOCAL lock_timeout = {int(settings.auth_lock_timeout_ms)}"))
     session.execute(
-        select(DbSession.session_id)
-        .where(DbSession.family_id == family_id)
-        .order_by(DbSession.session_id)
-        .with_for_update()
-    ).all()
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"session_family:{family_id}"},
+    )
+    session.execute(text(f"SET LOCAL lock_timeout = {int(settings.db_lock_timeout_ms)}"))
 
 
 def revoke_family(session: Session, *, family_id: uuid.UUID, now: datetime.datetime) -> int:

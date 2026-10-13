@@ -39,7 +39,7 @@ from typing import Any, Final, Literal
 import bcrypt
 import jwt
 import pyotp
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -435,12 +435,11 @@ def refresh_token(session: Session, *, refresh_token: str) -> TokenPair:
     if found is None:
         raise TokenInvalidError("Refresh token not found")
 
-    # Lock the whole token family, always in session_id order — the same
-    # order logout / reuse detection use (`session_family_service.lock_family`)
-    # — so rotation, grace re-issue, reuse detection and logout serialise per
-    # family without lock-order deadlocks. A concurrent redemption of the same
-    # token blocks here until this transaction commits, then re-reads the row
-    # below (fresh snapshot) and takes the rotated branch.
+    # Family mutex (`session_family_service.lock_family`): rotation, grace
+    # re-issue, reuse detection and logout of this family serialise here. A
+    # concurrent redemption of the same token waits until this transaction
+    # commits, then re-reads the row below (fresh snapshot, populate_existing)
+    # and takes the rotated branch.
     session_family_service.lock_family(session, family_id=found.family_id)
     db_session_row = session.execute(lookup).scalar_one()
 
@@ -598,8 +597,16 @@ def consume_backup_code(session: Session, *, user_id: uuid.UUID, code: str) -> i
     normalized = _normalize_backup_code(code)
     if len(normalized) != 10:
         return None
+    # populate_existing: the caller (/auth/mfa-verify) already loaded this
+    # user into the identity map; without it the locked re-read would hand
+    # back the STALE codes and concurrent requests could each spend the same
+    # code. FOR NO KEY UPDATE (key_share) still serialises spenders but
+    # doesn't block FK inserts referencing app_user during the bcrypt scan.
     user = session.execute(
-        select(AppUser).where(AppUser.user_id == user_id).with_for_update()
+        select(AppUser)
+        .where(AppUser.user_id == user_id)
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if user is None or not user.mfa_backup_codes:
         return None
@@ -628,15 +635,25 @@ def reset_mfa(session: Session, *, user: AppUser, now: datetime.datetime) -> int
     user.mfa_secret = None
     user.mfa_backup_codes = None
     user.permissions_version = (user.permissions_version or 0) + 1
-    revoked = session.execute(
-        update(DbSession)
-        .where(DbSession.user_id == user.user_id, DbSession.revoked_at.is_(None))
-        .values(revoked_at=now, grace_successor_ct=None)
-        .returning(DbSession.session_id)
-        .execution_options(synchronize_session=False)
-    ).all()
     session.flush()
-    return len(revoked)
+    # Revoke family by family under each family's mutex (sorted: a fixed
+    # order if two resets ever overlap), so a successor being minted by a
+    # concurrent refresh is waited for and revoked too.
+    families = (
+        session.execute(
+            select(DbSession.family_id)
+            .where(DbSession.user_id == user.user_id)
+            .distinct()
+            .order_by(DbSession.family_id)
+        )
+        .scalars()
+        .all()
+    )
+    revoked = sum(
+        session_family_service.revoke_family(session, family_id=f, now=now) for f in families
+    )
+    session.flush()
+    return revoked
 
 
 def prepare_mfa_enrollment(session: Session, *, user_id: uuid.UUID) -> MfaEnrollment:

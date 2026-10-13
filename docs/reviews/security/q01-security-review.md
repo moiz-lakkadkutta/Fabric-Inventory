@@ -77,6 +77,8 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
     - `/auth/mfa/confirm` issues 10 one-time backup codes, stored as bcrypt hashes in `app_user.mfa_backup_codes` (migration 211). `/auth/mfa-verify` accepts `backup_code` in place of `totp_code`; each code works once, the user row is locked while it is spent, and every use is audited as `mfa_backup_code_used`.
     - Ops break-glass: `scripts/reset_mfa.py --email --org --reason` clears the enrolment, bumps `permissions_version`, revokes all of the user's sessions and audits `mfa_reset`. See `docs/ops/mfa-reset-runbook.md`.
     - `enrollment_token` and `backup_code` are added to the idempotency never-cache fields.
+    - **Verifier round 2:** backup codes are now single-use under concurrency. The spend re-reads the user with `populate_existing` under `FOR NO KEY UPDATE`; before, six concurrent requests with one code all got 200.
+    - Failed TOTP and backup-code attempts are audited as `mfa_failed` with the factor type only, never the value. The response stays the generic 401.
 
 ### Q01-04 · P2 · Idempotency cache is not principal-scoped and is replayed before authentication (including token-bearing responses)
 
@@ -164,6 +166,13 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
     - The app engines set `lock_timeout` (`DB_LOCK_TIMEOUT_MS`, default 5000). A lock wait past it returns 503 `LOCK_TIMEOUT`.
     - The `refresh_reuse_detected` audit is kept when `sessions_revoked=0`, with a detail saying the family was already revoked.
     - Other `async def` routes doing sync DB work, not changed: `migrations.upload_migration` and `migrations.approve_migration`.
+  - **Verifier round 2 follow-up:**
+    - The family lock is now ONE mutex: a transaction-scoped advisory lock `pg_advisory_xact_lock(hashtextextended('session_family:' || family_id, 0))`. Refresh, grace re-issue, reuse detection, logout and the ops MFA reset all take it. Row-lock ordering over a growing family had deadlocked (4–18% 40P01) and cost O(family size) per refresh.
+    - Bounded stress (12 iterations × 20 threads, grace 0 and 20 s): 0 deadlocks, 0 lock timeouts, 0 sessions surviving a logout. The row-lock version fails the same test with 40P01.
+    - No engine-wide `lock_timeout` any more (`DB_LOCK_TIMEOUT_MS` now defaults to 0): a long import holding the org audit lock had made other users' writes and logins return 503.
+    - Only the family-mutex wait is bounded, by `AUTH_LOCK_TIMEOUT_MS` (5 s, `SET LOCAL`). The timeout resets once the mutex is held, so a reuse detection's audit row can't roll the revocation back.
+    - 40P01 maps to 503 `DEADLOCK_DETECTED` + `Retry-After`.
+    - The ops MFA reset revokes each of the user's families under that family's mutex.
 
 ### Q01-12 · P3 · The OpenAPI `x-permission` contract has drifted from the code
 

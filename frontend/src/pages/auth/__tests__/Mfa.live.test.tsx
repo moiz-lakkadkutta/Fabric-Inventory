@@ -103,6 +103,17 @@ describe('Mfa (live mode)', () => {
     expect(verifyBodies[0]).not.toHaveProperty('totp_code');
   });
 
+  it('explains single-use backup codes and the admin reset when one is rejected', async () => {
+    renderMfa();
+    fireEvent.click(screen.getByRole('button', { name: /use a backup code/i }));
+    fireEvent.change(screen.getByLabelText(/backup code/i), {
+      target: { value: 'zzzzz-zzzzz' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /verify/i }));
+    expect(await screen.findByText(/each backup code works once/i)).toBeInTheDocument();
+    expect(screen.getByText(/contact your administrator for an mfa reset/i)).toBeInTheDocument();
+  });
+
   it('tells the user to wait for the next code when a TOTP is rejected', async () => {
     renderMfa();
     fireEvent.change(screen.getByLabelText(/verification code/i), {

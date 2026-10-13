@@ -639,6 +639,25 @@ def login(
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _audit_mfa_failed(db: SyncDBSession, *, user: AppUser, factor: str) -> None:
+    """Q01-03 follow-up: a wrong / spent second factor at /auth/mfa-verify
+    (password already verified). Records WHICH factor failed, never the
+    value. Committed before the caller raises (same pattern as
+    login_failed) so the row survives the error rollback. The response stays
+    the generic 401 — no "code already used" oracle."""
+    audit_service.emit(
+        db,
+        org_id=user.org_id,
+        firm_id=None,
+        user_id=user.user_id,
+        entity_type="auth.mfa",
+        entity_id=user.user_id,
+        action="mfa_failed",
+        changes={"after": {"factor": factor}},
+    )
+    db.commit()
+
+
 @router.post(
     "/mfa-verify",
     response_model=TokenPairResponse,
@@ -714,6 +733,7 @@ def mfa_verify(
             db, user_id=user.user_id, code=body.backup_code
         )
         if remaining is None:
+            _audit_mfa_failed(db, user=user, factor="backup_code")
             raise InvalidCredentialsError("Invalid email or password")
         audit_service.emit(
             db,
@@ -726,6 +746,7 @@ def mfa_verify(
             changes={"after": {"backup_codes_remaining": remaining}},
         )
     elif not identity_service.verify_totp(db, user_id=user.user_id, code=body.totp_code or ""):
+        _audit_mfa_failed(db, user=user, factor="totp")
         raise InvalidCredentialsError("Invalid email or password")
 
     user.last_login_at = datetime.datetime.now(tz=datetime.UTC)

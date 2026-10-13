@@ -193,3 +193,85 @@ def test_reset_mfa_cli_unknown_user_fails(capsys: pytest.CaptureFixture[str]) ->
     rc = reset_mfa.main(["--email", "nobody@example.com", "--org", f"No Org {uuid.uuid4()}"])
     assert rc != 0
     assert "not found" in capsys.readouterr().err.lower()
+
+
+def _fresh_rate_limit() -> None:
+    """Concurrent /mfa-verify bursts share one (IP+email) bucket; give each
+    burst a clean budget so the assertion is about single-use, not 429."""
+    import fakeredis.aioredis as fr
+
+    from app.middleware.rate_limit import set_redis_client_for_testing
+
+    set_redis_client_for_testing(fr.FakeRedis(decode_responses=True))
+
+
+async def test_same_backup_code_concurrently_signs_in_exactly_once(sync_engine: Engine) -> None:
+    import asyncio
+
+    async with q01_client(raise_app_exceptions=False) as client:
+        owner = await signup(client)
+        codes = await _enrol(client, owner)
+        _fresh_rate_limit()
+        client.cookies.clear()
+        rs = await asyncio.gather(*[_verify_with_backup(client, owner, codes[0]) for _ in range(6)])
+        statuses = [r.status_code for r in rs]
+        assert statuses.count(200) == 1, statuses
+        assert all(c in (200, 401) for c in statuses), statuses
+    used = [e for e in _user(sync_engine, owner).mfa_backup_codes or [] if e["used_at"]]
+    assert len(used) == 1
+
+
+async def test_different_backup_codes_concurrently_are_all_spent(sync_engine: Engine) -> None:
+    import asyncio
+
+    async with q01_client(raise_app_exceptions=False) as client:
+        owner = await signup(client)
+        codes = await _enrol(client, owner)
+        _fresh_rate_limit()
+        rs = await asyncio.gather(*[_verify_with_backup(client, owner, c) for c in codes[:4]])
+        assert [r.status_code for r in rs] == [200] * 4, [r.text for r in rs]
+        _fresh_rate_limit()
+        replays = await asyncio.gather(*[_verify_with_backup(client, owner, c) for c in codes[:4]])
+        assert [r.status_code for r in replays] == [401] * 4
+    used = [e for e in _user(sync_engine, owner).mfa_backup_codes or [] if e["used_at"]]
+    assert len(used) == 4
+
+
+async def test_failed_mfa_attempts_are_audited_without_the_code(sync_engine: Engine) -> None:
+    async with q01_client(raise_app_exceptions=False) as client:
+        owner = await signup(client)
+        codes = await _enrol(client, owner)
+        bad_backup = await _verify_with_backup(client, owner, "zzzzz-zzzzz")
+        assert bad_backup.status_code == 401
+        client.cookies.clear()
+        bad_totp = await client.post(
+            "/auth/mfa-verify",
+            headers=idem(),
+            json={
+                "email": owner["_email"],
+                "password": PASSWORD,
+                "org_name": owner["_org_name"],
+                "totp_code": "000000",
+            },
+        )
+        assert bad_totp.status_code == 401
+        # Same generic 401 for a used code (no oracle).
+        assert (await _verify_with_backup(client, owner, codes[0])).status_code == 200
+        used_again = await _verify_with_backup(client, owner, codes[0])
+        assert used_again.status_code == 401
+        assert used_again.json()["code"] == bad_backup.json()["code"]
+        assert used_again.json()["detail"] == bad_backup.json()["detail"]
+
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        rows = s.execute(
+            select(AuditLog.changes).where(
+                AuditLog.org_id == uuid.UUID(owner["org_id"]),
+                AuditLog.action == "mfa_failed",
+            )
+        ).all()
+    factors = sorted(str((c or {}).get("after", {}).get("factor")) for (c,) in rows)
+    assert factors == ["backup_code", "backup_code", "totp"], factors
+    blob = repr([c for (c,) in rows])
+    assert "zzzzz" not in blob and "000000" not in blob
+    assert codes[0] not in blob and codes[0].replace("-", "") not in blob

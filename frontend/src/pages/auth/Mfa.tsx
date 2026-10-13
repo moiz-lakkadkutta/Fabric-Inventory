@@ -123,7 +123,7 @@ export default function Mfa() {
               <AlertCircle size={14} color="var(--danger)" />
               <span>
                 {useBackup
-                  ? "That backup code didn't match or was already used."
+                  ? "That code didn't work. Each backup code works once. If you've used all of them, contact your administrator for an MFA reset."
                   : "Code didn't match. If you just set up two-factor, wait for the next code in your app — a code can't be used twice."}
               </span>
             </div>
