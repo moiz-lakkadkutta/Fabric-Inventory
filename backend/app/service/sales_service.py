@@ -1010,6 +1010,27 @@ def _refuse_unpriced_registered_draft(
     )
 
 
+def _refuse_gst_firm_without_state(firm: Firm) -> None:
+    """A GST-registered firm with no valid state can't price a sale: the
+    seller state decides CGST+SGST vs IGST, and is the §10(1)(ca) place of
+    supply for an unregistered buyer with no recorded state. Without it the
+    PoS engine returned NIL_NOT_A_SUPPLY (₹0 GST) for B2C, or IGST for every
+    sale. A non-GST firm issues a Bill of Supply (no tax) and is exempt.
+    PENDING MOIZ+CA SIGN-OFF.
+    """
+    if not firm.has_gst or normalize_state_code(firm.state_code) is not None:
+        return
+    if firm.state_code and firm.state_code.strip():
+        what = f"its recorded state {firm.state_code!r} is not a valid GST state code"
+    else:
+        what = "has no state recorded"
+    raise AppValidationError(
+        f"Firm {firm.name!r} is GST-registered but {what}, so the place of supply "
+        "(CGST+SGST vs IGST) can't be determined. Ask your Fabric administrator to "
+        "record the firm's state (there is no in-app firm settings screen yet), then retry."
+    )
+
+
 def create_draft_invoice(
     session: Session,
     *,
@@ -1068,6 +1089,7 @@ def create_draft_invoice(
     firm = session.execute(
         select(Firm).where(Firm.firm_id == firm_id, Firm.org_id == org_id)
     ).scalar_one()
+    _refuse_gst_firm_without_state(firm)
 
     # Compute totals first so the PoS engine sees the real invoice value
     # (matters only for the GSTR-1 B2CL bucket — see gst_service.b2cl_threshold).
@@ -1351,6 +1373,15 @@ def finalize_invoice(
             f"{invoice.lifecycle_status}, expected DRAFT.",
             title="Invoice already finalized",
         )
+
+    # A GST firm whose state is missing/invalid now can't have priced this
+    # draft correctly (or its state was cleared since): refuse, same 422 as
+    # create.
+    _refuse_gst_firm_without_state(
+        session.execute(
+            select(Firm).where(Firm.firm_id == invoice.firm_id, Firm.org_id == org_id)
+        ).scalar_one()
+    )
 
     # #215: a draft stored as NIL_NOT_A_SUPPLY for a GSTIN-bearing buyer
     # (created before the create-time guard existed) must not be finalized

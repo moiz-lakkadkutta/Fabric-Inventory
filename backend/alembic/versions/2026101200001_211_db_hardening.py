@@ -84,6 +84,27 @@ RAISING_POLICY_TABLES: tuple[str, ...] = (
 )
 
 
+# Raises if any policy in `public` reads a GUC in the raising form: the
+# deparsed one-argument `current_setting('<name>'::text)` or an explicit
+# missing_ok = false, which deparses as `current_setting('<name>'::text, false)`.
+RAISING_GUC_GUARD_SQL = r"""
+    DO $$
+    DECLARE bad text;
+    BEGIN
+        SELECT string_agg(tablename || '.' || policyname, ', ')
+          INTO bad
+          FROM pg_policies
+         WHERE schemaname = 'public'
+           AND (coalesce(qual, '') || ' ' || coalesce(with_check, ''))
+               ~ 'current_setting\(''[^'']*''::text(, *false)?\)';
+        IF bad IS NOT NULL THEN
+            RAISE EXCEPTION
+                'Q01-07: policies still read a GUC without missing_ok: %', bad;
+        END IF;
+    END $$;
+"""
+
+
 def upgrade() -> None:
     # ── Q01-06 ────────────────────────────────────────────────────────────
     for table in CATALOG_TABLES:
@@ -102,26 +123,8 @@ def upgrade() -> None:
             f"FOR ALL USING {_ORG_PREDICATE} WITH CHECK {_ORG_PREDICATE};"
         )
     # Post-condition: no policy anywhere in `public` may read a GUC without
-    # missing_ok. Matches `current_setting('<name>'::text)` — the deparsed
-    # one-argument (raising) form.
-    op.execute(
-        r"""
-        DO $$
-        DECLARE bad text;
-        BEGIN
-            SELECT string_agg(tablename || '.' || policyname, ', ')
-              INTO bad
-              FROM pg_policies
-             WHERE schemaname = 'public'
-               AND (coalesce(qual, '') || ' ' || coalesce(with_check, ''))
-                   ~ 'current_setting\(''[^'']*''::text\)';
-            IF bad IS NOT NULL THEN
-                RAISE EXCEPTION
-                    'Q01-07: policies still read a GUC without missing_ok: %', bad;
-            END IF;
-        END $$;
-        """
-    )
+    # missing_ok (see RAISING_GUC_GUARD_SQL).
+    op.execute(RAISING_GUC_GUARD_SQL)
 
     # ── Q01-09 ────────────────────────────────────────────────────────────
     op.execute("REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON alembic_version FROM fabric_app;")

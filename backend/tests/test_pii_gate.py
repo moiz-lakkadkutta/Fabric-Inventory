@@ -13,7 +13,9 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-VALID_GSTIN = "27ABCDE1234F1Z5"
+from tests._gstin import make_gstin
+
+VALID_GSTIN = make_gstin("27", "ABCDE1234F")
 _PII_MASK = "*****"
 
 

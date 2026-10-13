@@ -33,6 +33,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
 
 from app.service.export_service import UTF8_BOM
+from tests._gstin import make_gstin
 
 # ──────────────────────────────────────────────────────────────────────
 # Helpers — auth + seed (mirrors the test_reports_routers / test_sales
@@ -205,7 +206,7 @@ def test_parties_csv_export(http_client: TestClient, sync_engine: Engine) -> Non
             "code": "P-EXP-1",
             "name": "Export Test Customer",
             "is_customer": True,
-            "gstin": "27ABCDE1234F1Z5",
+            "gstin": make_gstin("27", "ABCDE1234F"),
             "pan": "ABCDE1234F",
             "state_code": "MH",
         },
@@ -218,7 +219,7 @@ def test_parties_csv_export(http_client: TestClient, sync_engine: Engine) -> Non
     assert "Code,Name" in text_body
     assert "P-EXP-1" in text_body
     # PII is the decrypted plaintext, not cipher-text bytes.
-    assert "27ABCDE1234F1Z5" in text_body
+    assert make_gstin("27", "ABCDE1234F") in text_body
 
 
 def test_parties_xlsx_export(http_client: TestClient, sync_engine: Engine) -> None:

@@ -95,6 +95,28 @@ def _request_validation_to_field_errors(
     return out
 
 
+# Postgres raises every RLS WITH CHECK refusal (INSERT, UPDATE, ON CONFLICT)
+# from this executor function. A missing GRANT shares SQLSTATE 42501 but comes
+# from ``aclcheck_error``. PG_DIAG_SOURCE_FUNCTION is never translated, unlike
+# the message, so this holds under any ``lc_messages``.
+_RLS_CHECK_SOURCE_FUNCTION = "ExecWithCheckOptions"
+
+
+def _is_rls_check_refusal(orig: object) -> bool:
+    """True when a DB-API error is an RLS WITH CHECK refusal. Works for both
+    drivers: psycopg2 exposes ``.diag.source_function``; SQLAlchemy's asyncpg
+    adapter chains the asyncpg ``PostgresError`` (``server_source_function``)
+    as ``__cause__``."""
+    if getattr(orig, "pgcode", None) != "42501":
+        return False
+    diag = getattr(orig, "diag", None)
+    source_function = getattr(diag, "source_function", None)
+    if source_function is None:
+        cause = getattr(orig, "__cause__", None)
+        source_function = getattr(cause, "server_source_function", None)
+    return source_function == _RLS_CHECK_SOURCE_FUNCTION
+
+
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
@@ -183,9 +205,13 @@ def register_error_handlers(app: FastAPI) -> None:
         write into a firm outside the caller's scope — a path the app-layer
         check missed. Answer with the same 403 the app layer gives, naming
         no table / policy. Other 42501s (a missing GRANT) and every other
-        ProgrammingError stay generic 500s: they are bugs."""
+        ProgrammingError stay generic 500s: they are bugs.
+
+        Detected by SQLSTATE + server source function (see
+        `_is_rls_check_refusal`), never by the message text, which
+        ``lc_messages`` translates."""
         orig = exc.orig
-        if getattr(orig, "pgcode", None) == "42501" and "row-level security" in str(orig):
+        if _is_rls_check_refusal(orig):
             logger.warning("rls_write_refused_403", path=request.url.path)
             return JSONResponse(
                 status_code=403,

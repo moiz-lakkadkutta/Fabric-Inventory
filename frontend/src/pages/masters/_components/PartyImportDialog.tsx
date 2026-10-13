@@ -31,6 +31,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { ApiError } from '@/lib/api/client';
 import { liveCreateParty, type BackendPartyCreateBody } from '@/lib/api/parties';
+import { gstinChecksumOk } from '@/lib/gstin';
 import { IS_LIVE } from '@/lib/api/mode';
 
 import { parseCsv, type ParsedCsv } from './partyImportCsv';
@@ -161,8 +162,12 @@ function validateRow(row: RowMapped): RowValidation {
   for (const r of REQUIRED_FIELDS) {
     if (!m[r] || !m[r]!.trim()) out.errors.push(`Missing required field "${r}".`);
   }
-  if (m.gstin && m.gstin.trim() && !GSTIN_REGEX.test(m.gstin.trim().toUpperCase())) {
-    out.warnings.push('GSTIN failed client-side format check.');
+  if (m.gstin && m.gstin.trim()) {
+    if (!GSTIN_REGEX.test(m.gstin.trim().toUpperCase())) {
+      out.warnings.push('GSTIN failed client-side format check.');
+    } else if (!gstinChecksumOk(m.gstin)) {
+      out.warnings.push("GSTIN check digit doesn't match — please re-check the number.");
+    }
   }
   if (
     m.state_code &&
