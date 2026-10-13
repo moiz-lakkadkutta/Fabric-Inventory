@@ -1295,9 +1295,13 @@ paths:
     post:
       summary: Refresh JWT token
       description: |
-        Single-use rotation with a reuse interval (Q01-10). The presented
-        refresh token's session row is locked, so concurrent redemptions
-        serialise and exactly one successor pair is minted. Re-presenting a
+        Single-use rotation with a reuse interval (Q01-10). Every mutation of
+        a refresh-token family (rotation, grace re-issue, reuse detection,
+        logout, the ops MFA reset) takes one per-family mutex (a
+        transaction-scoped Postgres advisory lock), so concurrent redemptions
+        serialise and exactly one successor pair is minted. Waiting for that
+        mutex is bounded by `AUTH_LOCK_TIMEOUT_MS` (default 5s); past it the
+        response is 503 `LOCK_TIMEOUT` and the token is NOT consumed. Re-presenting a
         token rotated less than `REFRESH_REUSE_GRACE_SECONDS` (default 20s,
         max 60s) ago returns the SAME successor pair (two tabs booting at
         once both stay logged in). Re-presenting it later is treated as
@@ -1334,6 +1338,21 @@ paths:
                     type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: |
+            Transient contention; nothing was changed — retry after
+            `Retry-After` (seconds). `LOCK_TIMEOUT`: the refresh-token family
+            mutex was not granted within AUTH_LOCK_TIMEOUT_MS.
+            `DEADLOCK_DETECTED`: Postgres chose this request as a deadlock
+            victim (defence in depth).
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
       x-permission: auth.refresh
 
   /auth/logout:
@@ -1343,6 +1362,9 @@ paths:
         Revokes the presented refresh token's whole family (its live
         successor and any reuse-interval envelopes), so a just-rotated
         predecessor in another tab cannot be re-issued tokens afterwards.
+        Takes the family mutex (see /auth/refresh); a wait past
+        AUTH_LOCK_TIMEOUT_MS returns 503 `LOCK_TIMEOUT` with Retry-After
+        (nothing revoked — retry).
       operationId: logoutUser
       tags:
         - identity
@@ -1351,6 +1373,21 @@ paths:
           description: Logged out successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: |
+            Transient contention; nothing was changed — retry after
+            `Retry-After` (seconds). `LOCK_TIMEOUT`: the refresh-token family
+            mutex was not granted within AUTH_LOCK_TIMEOUT_MS.
+            `DEADLOCK_DETECTED`: Postgres chose this request as a deadlock
+            victim (defence in depth).
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
       x-permission: auth.logout
 
   /auth/forgot:

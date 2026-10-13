@@ -275,3 +275,115 @@ async def test_failed_mfa_attempts_are_audited_without_the_code(sync_engine: Eng
     blob = repr([c for (c,) in rows])
     assert "zzzzz" not in blob and "000000" not in blob
     assert codes[0] not in blob and codes[0].replace("-", "") not in blob
+
+
+async def test_totp_login_racing_an_ops_reset_does_not_survive_it(sync_engine: Engine) -> None:
+    """The ops reset is in flight (user row updated, not committed) while a
+    TOTP sign-in with the OLD secret arrives. The sign-in must wait for the
+    reset and then fail — not mint a fresh family the reset never saw."""
+    import asyncio
+    import datetime
+    import time
+
+    from app.db import get_sync_engine
+    from app.service import identity_service
+
+    async with q01_client(raise_app_exceptions=False) as client:
+        owner = await signup(client)
+        token = owner["access_token"]
+        setup = await client.post("/auth/mfa/setup", headers={**bearer(token), **idem()})
+        secret = setup.json()["secret"]
+        confirm = await client.post(
+            "/auth/mfa/confirm",
+            headers={**bearer(token), **idem()},
+            json={"code": pyotp.TOTP(secret).now()},
+        )
+        assert confirm.status_code == 200, confirm.text
+
+        resetter = OrmSession(get_sync_engine())
+        resetter.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        user = resetter.execute(
+            select(AppUser).where(AppUser.user_id == uuid.UUID(owner["user_id"]))
+        ).scalar_one()
+        identity_service.reset_mfa(resetter, user=user, now=datetime.datetime.now(tz=datetime.UTC))
+        resetter.flush()
+
+        async def sign_in() -> Any:
+            client.cookies.clear()
+            return await client.post(
+                "/auth/mfa-verify",
+                headers=idem(),
+                json={
+                    "email": owner["_email"],
+                    "password": PASSWORD,
+                    "org_name": owner["_org_name"],
+                    "totp_code": pyotp.TOTP(secret).at(int(time.time()) + 30),
+                },
+            )
+
+        async def commit_reset_later() -> None:
+            await asyncio.sleep(2.0)
+            await asyncio.to_thread(resetter.commit)
+
+        resp, _ = await asyncio.gather(sign_in(), commit_reset_later())
+        resetter.close()
+
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        live = s.execute(
+            select(DbSession.session_id).where(
+                DbSession.user_id == uuid.UUID(owner["user_id"]), DbSession.revoked_at.is_(None)
+            )
+        ).all()
+    assert resp.status_code == 401, f"sign-in during reset -> {resp.status_code} {resp.text[:120]}"
+    assert live == [], f"{len(live)} live session(s) survived the MFA reset"
+
+
+def test_reset_only_locks_families_that_still_matter(
+    sync_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Months of fully-dead families (revoked, no grace envelope) are not
+    locked one by one: only live families (or ones holding an envelope)."""
+    import asyncio
+    import datetime
+
+    from app.service import identity_service, session_family_service
+
+    async def mk() -> dict[str, Any]:
+        async with q01_client() as client:
+            return await signup(client)
+
+    owner = asyncio.run(mk())
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        s.execute(
+            text(
+                """INSERT INTO session (session_id, org_id, user_id, access_token_hash,
+                       refresh_token_hash, expires_at, family_id, revoked_at)
+                   SELECT g, :org, :u, md5(g::text), md5(g::text || 'r'),
+                          now() - interval '1 day', g, now() - interval '20 days'
+                   FROM (SELECT gen_random_uuid() AS g FROM generate_series(1, 300)) x"""
+            ),
+            {"org": owner["org_id"], "u": owner["user_id"]},
+        )
+        s.commit()
+
+    locked: list[uuid.UUID] = []
+    real = session_family_service.revoke_family
+
+    def counting(session: Any, *, family_id: uuid.UUID, now: datetime.datetime) -> int:
+        locked.append(family_id)
+        return real(session, family_id=family_id, now=now)
+
+    monkeypatch.setattr(session_family_service, "revoke_family", counting)
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        user = s.execute(
+            select(AppUser).where(AppUser.user_id == uuid.UUID(owner["user_id"]))
+        ).scalar_one()
+        revoked = identity_service.reset_mfa(
+            s, user=user, now=datetime.datetime.now(tz=datetime.UTC)
+        )
+        s.commit()
+    assert revoked == 1  # the signup session
+    assert len(locked) == 1, f"locked {len(locked)} families"

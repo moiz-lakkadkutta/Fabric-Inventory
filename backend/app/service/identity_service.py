@@ -39,7 +39,7 @@ from typing import Any, Final, Literal
 import bcrypt
 import jwt
 import pyotp
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -642,7 +642,12 @@ def reset_mfa(session: Session, *, user: AppUser, now: datetime.datetime) -> int
     families = (
         session.execute(
             select(DbSession.family_id)
-            .where(DbSession.user_id == user.user_id)
+            # Only families that still matter: a live row, or a grace
+            # envelope to wipe. Months of fully-dead history are skipped.
+            .where(
+                DbSession.user_id == user.user_id,
+                or_(DbSession.revoked_at.is_(None), DbSession.grace_successor_ct.is_not(None)),
+            )
             .distinct()
             .order_by(DbSession.family_id)
         )
@@ -757,8 +762,15 @@ def verify_totp(session: Session, *, user_id: uuid.UUID, code: str) -> bool:
     version-byte discriminator falls back to UTF-8 decode for pre-fix
     rows), so existing enrolments keep working.
     """
+    # Locked, fresh read (same as `consume_backup_code`): an ops `reset_mfa`
+    # in flight holds this row; we wait for it and then see mfa_secret=None,
+    # instead of verifying against the stale secret and minting a session
+    # the reset never saw. FOR NO KEY UPDATE doesn't block FK inserts.
     user = session.execute(
-        select(AppUser).where(AppUser.user_id == user_id, AppUser.deleted_at.is_(None))
+        select(AppUser)
+        .where(AppUser.user_id == user_id, AppUser.deleted_at.is_(None))
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if user is None or user.mfa_secret is None:
         return False
