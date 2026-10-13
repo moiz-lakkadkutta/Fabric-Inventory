@@ -37,8 +37,8 @@ from app.service.gst_service import TaxType
 def _msg(firm_name: str, what: str = "has no state recorded") -> str:
     return (
         f"Firm {firm_name!r} is GST-registered but {what}, so the place of supply "
-        "(CGST+SGST vs IGST) can't be determined. Set your firm's state in "
-        "Settings → Firm before invoicing."
+        "(CGST+SGST vs IGST) can't be determined. Ask your Fabric administrator to "
+        "record the firm's state (there is no in-app firm settings screen yet), then retry."
     )
 
 

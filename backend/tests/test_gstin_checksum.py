@@ -30,6 +30,16 @@ from tests._gstin import make_gstin
 
 # Real, publicly listed registrations (Reliance Industries Ltd, Infosys Ltd).
 REAL_GSTINS = [
+    # Non-company registrations (verifier cross-check, public listings):
+    # state govt department, local authority, trust, AJP, partnership firm,
+    # proprietor, HUF, and python-stdnum's own test vector.
+    "37AAAGP3279H1Z1",
+    "33AAALG7715L1Z1",
+    "27AAATI1446A1Z7",
+    "09AAAJI0396R1ZJ",
+    "27AAGFS7543C1Z6",
+    "07AAAHI0420G1ZY",
+    "27AAPFU0939F1ZV",
     "27AAACR5055K1Z7",
     "27AAACR5055K2Z6",
     "27AAACR5055K3Z5",
