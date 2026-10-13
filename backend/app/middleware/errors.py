@@ -23,7 +23,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import DataError, ProgrammingError
+from sqlalchemy.exc import DataError, OperationalError, ProgrammingError
 
 from ..exceptions import AppError, ErrorCode
 
@@ -228,6 +228,58 @@ def register_error_handlers(app: FastAPI) -> None:
                 ),
             )
         logger.exception("programming_error", path=request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content=_envelope(
+                code=str(ErrorCode.UNKNOWN),
+                title="Internal server error",
+                detail="An unexpected error occurred.",
+                status=500,
+                field_errors={},
+                request_id=_request_id_for(request),
+            ),
+        )
+
+    @app.exception_handler(OperationalError)
+    async def _handle_operational_error(request: Request, exc: OperationalError) -> JSONResponse:
+        """Q01-10 follow-up: transient contention, not bugs — 503 +
+        Retry-After so the client retries; ``get_db_sync`` rolls back.
+          * 55P03: a lock wait hit ``lock_timeout`` (the refresh-family mutex
+            wait, AUTH_LOCK_TIMEOUT_MS; or DB_LOCK_TIMEOUT_MS if configured).
+          * 40P01: deadlock victim (defence in depth).
+        Every other OperationalError stays a generic 500."""
+        orig = exc.orig
+        code = getattr(orig, "pgcode", None) or getattr(orig, "sqlstate", None)
+        if code == "40P01":
+            logger.warning("db_deadlock_503", path=request.url.path)
+            return JSONResponse(
+                status_code=503,
+                content=_envelope(
+                    code=str(ErrorCode.DEADLOCK_DETECTED),
+                    title="Busy, please retry",
+                    detail="Two requests collided on the same records. Nothing was saved; "
+                    "retry in a moment.",
+                    status=503,
+                    field_errors={},
+                    request_id=_request_id_for(request),
+                ),
+                headers={"Retry-After": "1"},
+            )
+        if code == "55P03":
+            logger.warning("db_lock_timeout_503", path=request.url.path)
+            return JSONResponse(
+                status_code=503,
+                content=_envelope(
+                    code=str(ErrorCode.LOCK_TIMEOUT),
+                    title="Busy, please retry",
+                    detail="The record is being updated by another request. Retry in a moment.",
+                    status=503,
+                    field_errors={},
+                    request_id=_request_id_for(request),
+                ),
+                headers={"Retry-After": "1"},
+            )
+        logger.exception("operational_error", path=request.url.path)
         return JSONResponse(
             status_code=500,
             content=_envelope(

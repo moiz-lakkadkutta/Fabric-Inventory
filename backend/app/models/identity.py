@@ -179,6 +179,9 @@ class AppUser(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
         Boolean, server_default=text("false"), nullable=True
     )
     mfa_secret: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # encrypted
+    # Q01-03 / migration 211: one-time backup codes, bcrypt-hashed:
+    # [{"h": hash, "used_at": iso8601 | None}, ...]. See identity_service.
+    mfa_backup_codes: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     last_login_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -440,6 +443,7 @@ class Session(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     """
 
     __tablename__ = "session"
+    __table_args__ = (Index("ix_session_family_id", "family_id"),)
 
     session_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT
@@ -467,6 +471,22 @@ class Session(Base, TimestampMixin, AuditByMixin, SoftDeleteMixin):
     )
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Q01-10 / migration 211: refresh-token family + rotation link + the
+    # grace-interval successor envelope (see identity_service.refresh_token).
+    # Rows inserted without a family (none in app code) each get their own.
+    family_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, server_default=_UUID_DEFAULT
+    )
+    replaced_by_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(
+            "session.session_id",
+            ondelete="SET NULL",
+            name="fk_session_replaced_by_session_id",
+        ),
+        nullable=True,
+    )
+    grace_successor_ct: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
     user: Mapped[AppUser] = relationship(back_populates="sessions")
     device: Mapped[Device | None] = relationship()

@@ -41,6 +41,7 @@ function renderProtectedAt(
     <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
         <Route path="/login" element={<div>LOGIN_PAGE</div>} />
+        <Route path="/mfa/enroll" element={<div>MFA_ENROLL_PAGE</div>} />
         <Route
           path="/protected"
           element={
@@ -65,6 +66,27 @@ describe('RequireAuth', () => {
     renderProtectedAt('/protected', 'authenticated');
     expect(screen.getByText('PROTECTED_CONTENT')).toBeInTheDocument();
     expect(screen.queryByText('LOGIN_PAGE')).not.toBeInTheDocument();
+  });
+
+  it('sends a user who must enrol MFA (Q01-03) to /mfa/enroll', () => {
+    authStore.setMe({ ...FAKE_ME, mfa_enrollment_required: true });
+    render(
+      <MemoryRouter initialEntries={['/protected']}>
+        <Routes>
+          <Route path="/mfa/enroll" element={<div>MFA_ENROLL_PAGE</div>} />
+          <Route
+            path="/protected"
+            element={
+              <RequireAuth>
+                <div>PROTECTED_CONTENT</div>
+              </RequireAuth>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText('PROTECTED_CONTENT')).not.toBeInTheDocument();
+    expect(screen.getByText('MFA_ENROLL_PAGE')).toBeInTheDocument();
   });
 
   it('renders neither protected content nor /login while status is unknown (no flash of mock identity)', () => {

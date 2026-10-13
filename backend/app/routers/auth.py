@@ -17,6 +17,7 @@ import json as _json
 import uuid
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select, text, update
 
 from app.config import get_settings
@@ -27,6 +28,7 @@ from app.exceptions import (
     InvalidResetTokenError,
     NotFoundError,
     PermissionDeniedError,
+    RefreshTokenReuseError,
     TokenInvalidError,
 )
 from app.middleware.rate_limit import _client_ip, _get_redis, rate_limit
@@ -60,9 +62,11 @@ from app.service import (
     firm_scope_service,
     identity_service,
     inventory_service,
+    mfa_policy_service,
     password_reset_service,
     rbac_service,
     seed_service,
+    session_family_service,
 )
 from app.utils.crypto import encrypt_pii, generate_dek, wrap_dek
 
@@ -564,6 +568,30 @@ def login(
         # email+password alongside the TOTP code).
         return LoginResponse(requires_mfa=True, user_id=user.user_id)
 
+    # Q01-03: MFA is mandatory for admin-class users. Withhold the pair (no
+    # session row, no refresh cookie) and hand out an enrolment-only token.
+    if mfa_policy_service.enrollment_required(db, user_id=user.user_id, mfa_enabled=False):
+        enrollment_token, enrollment_exp = identity_service.issue_mfa_enrollment_token(user=user)
+        audit_service.emit(
+            db,
+            org_id=user.org_id,
+            firm_id=None,
+            user_id=user.user_id,
+            entity_type="auth.session",
+            entity_id=user.user_id,
+            action="login_mfa_enrollment_required",
+            changes={"after": {}},
+        )
+        db.flush()
+        return LoginResponse(
+            requires_mfa=False,
+            requires_mfa_enrollment=True,
+            enrollment_token=enrollment_token,
+            enrollment_token_expires_at=enrollment_exp,
+            user_id=user.user_id,
+            org_id=user.org_id,
+        )
+
     user.last_login_at = datetime.datetime.now(tz=datetime.UTC)
     db.flush()
 
@@ -609,6 +637,25 @@ def login(
 # ──────────────────────────────────────────────────────────────────────
 # MFA verify — public (re-presents creds)
 # ──────────────────────────────────────────────────────────────────────
+
+
+def _audit_mfa_failed(db: SyncDBSession, *, user: AppUser, factor: str) -> None:
+    """Q01-03 follow-up: a wrong / spent second factor at /auth/mfa-verify
+    (password already verified). Records WHICH factor failed, never the
+    value. Committed before the caller raises (same pattern as
+    login_failed) so the row survives the error rollback. The response stays
+    the generic 401 — no "code already used" oracle."""
+    audit_service.emit(
+        db,
+        org_id=user.org_id,
+        firm_id=None,
+        user_id=user.user_id,
+        entity_type="auth.mfa",
+        entity_id=user.user_id,
+        action="mfa_failed",
+        changes={"after": {"factor": factor}},
+    )
+    db.commit()
 
 
 @router.post(
@@ -680,7 +727,26 @@ def mfa_verify(
         # Don't admit "MFA isn't on for that user"; treat as a generic auth fail.
         raise InvalidCredentialsError("Invalid email or password")
 
-    if not identity_service.verify_totp(db, user_id=user.user_id, code=body.totp_code):
+    if body.backup_code is not None:
+        # Q01-03 follow-up: lost-authenticator recovery. One-time; audited.
+        remaining = identity_service.consume_backup_code(
+            db, user_id=user.user_id, code=body.backup_code
+        )
+        if remaining is None:
+            _audit_mfa_failed(db, user=user, factor="backup_code")
+            raise InvalidCredentialsError("Invalid email or password")
+        audit_service.emit(
+            db,
+            org_id=user.org_id,
+            firm_id=None,
+            user_id=user.user_id,
+            entity_type="auth.mfa",
+            entity_id=user.user_id,
+            action="mfa_backup_code_used",
+            changes={"after": {"backup_codes_remaining": remaining}},
+        )
+    elif not identity_service.verify_totp(db, user_id=user.user_id, code=body.totp_code or ""):
+        _audit_mfa_failed(db, user=user, factor="totp")
         raise InvalidCredentialsError("Invalid email or password")
 
     user.last_login_at = datetime.datetime.now(tz=datetime.UTC)
@@ -809,6 +875,8 @@ def mfa_confirm(
         _select(_AppUser).where(_AppUser.user_id == current_user.user_id)
     ).scalar_one()
     user.mfa_enabled = True
+    # Q01-03 follow-up: recovery codes for a lost authenticator, shown once.
+    backup_codes = identity_service.issue_backup_codes(db, user=user)
 
     audit_service.emit(
         db,
@@ -818,10 +886,10 @@ def mfa_confirm(
         entity_type="auth.mfa",
         entity_id=current_user.user_id,
         action="mfa_confirm",
-        changes={"after": {"mfa_enabled": True}},
+        changes={"after": {"mfa_enabled": True, "backup_codes_issued": len(backup_codes)}},
     )
     db.flush()
-    return MfaConfirmResponse(ok=True)
+    return MfaConfirmResponse(ok=True, backup_codes=backup_codes)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -959,6 +1027,37 @@ def refresh(
 
     try:
         pair = identity_service.refresh_token(db, refresh_token=refresh_token)
+    except RefreshTokenReuseError as reuse:
+        # Q01-10: a rotated token re-presented after the grace interval. The
+        # service revoked the family; audit it and COMMIT before raising so
+        # the revocation survives the dependency's rollback-on-error (same
+        # commit-before-raise pattern as login_failed). Uniform 401.
+        audit_service.emit(
+            db,
+            org_id=reuse.org_id,
+            firm_id=None,
+            user_id=reuse.user_id,
+            entity_type="auth.session",
+            entity_id=reuse.family_id,
+            action="refresh_reuse_detected",
+            # Kept even when nothing was live (sessions_revoked=0): replaying
+            # a rotated token of a logged-out family is still a theft signal.
+            changes={
+                "after": {
+                    "sessions_revoked": reuse.sessions_revoked,
+                    "detail": (
+                        "rotated refresh token replayed after the reuse interval; "
+                        "token family revoked"
+                        if reuse.sessions_revoked
+                        else "rotated refresh token replayed after the reuse interval; "
+                        "family was already revoked (logged out)"
+                    ),
+                }
+            },
+        )
+        db.commit()
+        _clear_refresh_cookie(response)
+        raise
     except TokenInvalidError:
         # All token-invalid cases (expired, revoked, unknown, malformed) ->
         # uniform 401 to avoid information leakage.
@@ -982,32 +1081,14 @@ def refresh(
 # ──────────────────────────────────────────────────────────────────────
 
 
-@router.post(
-    "/logout",
-    response_model=LogoutResponse,
-    summary="Revoke the refresh token's session row",
-)
-async def logout(
-    db: SyncDBSession,
-    response: Response,
-    body: LogoutRequest | None = None,
-    fabric_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    authorization: str | None = Header(default=None, alias="Authorization"),
-) -> LogoutResponse:
-
-    # Always clear the cookie even if revocation no-ops — local state
-    # should match the user's intent.
-    _clear_refresh_cookie(response)
-
-    # Body takes precedence when explicitly provided so callers can still
-    # detect "access token mistakenly sent" (a 400 case). When body is
-    # absent, fall back to the HttpOnly cookie (the canonical path now
-    # that the FE never sees the token). When neither, no-op.
-    refresh_token = body.refresh_token if body and body.refresh_token else fabric_refresh
+def _logout_revoke(db: SyncDBSession, refresh_token: str | None) -> bool:
+    """Blocking DB half of logout. Runs in the threadpool (see `logout`):
+    `revoke_family` may wait on a row lock held by a concurrent refresh, and
+    waiting on the event loop would stall every request on the worker —
+    including the refresh that holds the lock (deadlock)."""
     if not refresh_token:
         # Nothing to revoke; cookie already cleared above. Idempotent no-op.
-        return LogoutResponse(revoked=False)
+        return False
 
     # Verify token before lookup so we don't admit row existence on garbage input.
     try:
@@ -1015,7 +1096,7 @@ async def logout(
     except TokenInvalidError:
         # Idempotency: a logout call with an unknown / already-expired token
         # is a no-op success ("already logged out").
-        return LogoutResponse(revoked=False)
+        return False
 
     if payload.token_type != "refresh":  # noqa: S105 — JWT type discriminator
         raise HTTPException(
@@ -1036,33 +1117,18 @@ async def logout(
             DbSession.refresh_token_hash == identity_service._hash_token(refresh_token),
         )
     ).scalar_one_or_none()
-    if db_session_row is None or db_session_row.revoked_at is not None:
-        return LogoutResponse(revoked=False)
+    if db_session_row is None:
+        return False
 
-    db_session_row.revoked_at = datetime.datetime.now(tz=datetime.UTC)
+    # Q01-10: revoke the whole refresh-token family (the live successor and
+    # every grace envelope), not just the presented row — so a just-rotated
+    # predecessor in another tab can't be re-issued the pair after logout.
+    revoked_count = session_family_service.revoke_family(
+        db, family_id=db_session_row.family_id, now=datetime.datetime.now(tz=datetime.UTC)
+    )
     db.flush()
-
-    # TS-04: jti denylist — push the access token's jti to Redis so
-    # subsequent requests using the same access token return 401 immediately,
-    # rather than waiting for the 15-minute TTL to expire.
-    # The access token is expected in the Authorization header (the client
-    # sends it alongside the refresh token at logout). If absent or
-    # already-expired, we skip silently — idempotent and safe.
-    if authorization and authorization.startswith("Bearer "):
-        _access_raw = authorization.removeprefix("Bearer ").strip()
-        try:
-            _access_payload = identity_service.verify_jwt(_access_raw)
-            if _access_payload.token_type == "access":  # noqa: S105 — discriminator
-                _remaining = int(
-                    _access_payload.exp - datetime.datetime.now(tz=datetime.UTC).timestamp()
-                )
-                if _remaining > 0:
-                    _redis = _get_redis()
-                    if _redis is not None:
-                        await _redis.setex(f"jti:{_access_payload.jti}", _remaining, "1")
-        except TokenInvalidError:
-            # Already expired or invalid — no need to denylist; skip silently.
-            pass
+    if revoked_count == 0:
+        return False
 
     audit_service.emit(
         db,
@@ -1075,7 +1141,59 @@ async def logout(
     )
     db.flush()
 
-    return LogoutResponse(revoked=True)
+    return True
+
+
+async def _denylist_bearer(authorization: str | None) -> None:
+    """Denylist the jti of an access / MFA-enrolment bearer token. Missing,
+    expired or invalid tokens are skipped silently (idempotent logout)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return
+    try:
+        bearer = identity_service.verify_jwt(authorization.removeprefix("Bearer ").strip())
+    except TokenInvalidError:
+        return
+    if bearer.token_type not in ("access", "mfa_enrollment"):
+        return
+    remaining = int(bearer.exp - datetime.datetime.now(tz=datetime.UTC).timestamp())
+    if remaining > 0:
+        redis_client = _get_redis()
+        if redis_client is not None:
+            await redis_client.setex(f"jti:{bearer.jti}", remaining, "1")
+
+
+@router.post(
+    "/logout",
+    response_model=LogoutResponse,
+    summary="Revoke the refresh token's session row",
+)
+async def logout(
+    db: SyncDBSession,
+    response: Response,
+    body: LogoutRequest | None = None,
+    fabric_refresh: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> LogoutResponse:
+
+    # Always clear the cookie even if revocation no-ops — local state
+    # should match the user's intent.
+    _clear_refresh_cookie(response)
+
+    # TS-04: jti denylist — push the presented bearer token's jti to Redis so
+    # subsequent requests using it return 401 immediately rather than waiting
+    # for its TTL. Done up front, independent of the refresh-token outcome:
+    # an MFA-enrolment token (Q01-03) has no refresh token at all, and a
+    # no-op refresh revocation must not leave the bearer token alive.
+    await _denylist_bearer(authorization)
+
+    # Body takes precedence when explicitly provided so callers can still
+    # detect "access token mistakenly sent" (a 400 case). When body is
+    # absent, fall back to the HttpOnly cookie (the canonical path now
+    # that the FE never sees the token). When neither, no-op.
+    refresh_token = body.refresh_token if body and body.refresh_token else fabric_refresh
+    revoked = await run_in_threadpool(_logout_revoke, db, refresh_token)
+    return LogoutResponse(revoked=revoked)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1208,4 +1326,10 @@ def me(current_user: CurrentUser, db: SyncDBSession) -> MeResponse:
         flags=flags,
         available_firms=[MeFirmRef(firm_id=f.firm_id, code=f.code, name=f.name) for f in firms],
         token_expires_at=datetime.datetime.fromtimestamp(current_user.exp, tz=datetime.UTC),
+        mfa_enrollment_required=(
+            current_user.token_type == "mfa_enrollment"  # noqa: S105 — discriminator
+            or mfa_policy_service.enrollment_required(
+                db, user_id=current_user.user_id, mfa_enabled=bool(user_row.mfa_enabled)
+            )
+        ),
     )

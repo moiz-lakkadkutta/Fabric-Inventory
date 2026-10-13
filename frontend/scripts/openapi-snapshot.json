@@ -6720,7 +6720,7 @@
         "type": "object"
       },
       "LoginResponse": {
-        "description": "Either tokens (no MFA) or `requires_mfa=True` (caller follows up\nwith /auth/mfa-verify). Never both.\n\nIncludes `org_id`, `firm_id`, and `available_firms` (mirroring\nSignupResponse) so the FE can complete login in a single round-trip\ninstead of chasing /auth/me afterward. `firm_id` is auto-populated\nwhen the user has exactly one firm; null otherwise (multi-firm\naccounts use the firm switcher to pick).",
+        "description": "Either tokens (no MFA), `requires_mfa=True` (caller follows up\nwith /auth/mfa-verify), or `requires_mfa_enrollment=True` with an\nenrolment-only token (Q01-03). Never more than one.\n\nIncludes `org_id`, `firm_id`, and `available_firms` (mirroring\nSignupResponse) so the FE can complete login in a single round-trip\ninstead of chasing /auth/me afterward. `firm_id` is auto-populated\nwhen the user has exactly one firm; null otherwise (multi-firm\naccounts use the firm switcher to pick).",
         "properties": {
           "access_expires_at": {
             "anyOf": [
@@ -6751,6 +6751,29 @@
             },
             "title": "Available Firms",
             "type": "array"
+          },
+          "enrollment_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enrollment Token"
+          },
+          "enrollment_token_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enrollment Token Expires At"
           },
           "firm_id": {
             "anyOf": [
@@ -6801,6 +6824,11 @@
           },
           "requires_mfa": {
             "title": "Requires Mfa",
+            "type": "boolean"
+          },
+          "requires_mfa_enrollment": {
+            "default": false,
+            "title": "Requires Mfa Enrollment",
             "type": "boolean"
           },
           "user_id": {
@@ -7421,6 +7449,11 @@
             "title": "Flags",
             "type": "object"
           },
+          "mfa_enrollment_required": {
+            "default": false,
+            "title": "Mfa Enrollment Required",
+            "type": "boolean"
+          },
           "org_id": {
             "format": "uuid",
             "title": "Org Id",
@@ -7474,6 +7507,13 @@
       "MfaConfirmResponse": {
         "description": "POST /auth/mfa/confirm response \u2014 ok=True means MFA is now active.",
         "properties": {
+          "backup_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Backup Codes",
+            "type": "array"
+          },
           "ok": {
             "default": true,
             "title": "Ok",
@@ -7505,6 +7545,19 @@
       "MfaVerifyRequest": {
         "description": "Re-presents email+password alongside the TOTP code. See module docstring.",
         "properties": {
+          "backup_code": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "minLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup Code"
+          },
           "email": {
             "format": "email",
             "title": "Email",
@@ -7521,18 +7574,24 @@
             "type": "string"
           },
           "totp_code": {
-            "maxLength": 6,
-            "minLength": 6,
-            "pattern": "^\\d{6}$",
-            "title": "Totp Code",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 6,
+                "minLength": 6,
+                "pattern": "^\\d{6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totp Code"
           }
         },
         "required": [
           "email",
           "password",
-          "org_name",
-          "totp_code"
+          "org_name"
         ],
         "title": "MfaVerifyRequest",
         "type": "object"

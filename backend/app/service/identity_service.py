@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import hashlib
+import secrets
 import uuid
 from dataclasses import dataclass
 from typing import Any, Final, Literal
@@ -38,7 +39,7 @@ from typing import Any, Final, Literal
 import bcrypt
 import jwt
 import pyotp
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -46,11 +47,12 @@ from app.exceptions import (
     AppValidationError,
     InvalidCredentialsError,
     MfaAlreadyEnabledError,
+    RefreshTokenReuseError,
     TokenInvalidError,
 )
 from app.models import AppUser
 from app.models import Session as DbSession
-from app.service import rbac_service
+from app.service import rbac_service, session_family_service
 from app.utils import crypto
 
 # ──────────────────────────────────────────────────────────────────────
@@ -60,6 +62,8 @@ from app.utils import crypto
 
 _ACCESS_TOKEN_TTL_SECONDS: Final[int] = 15 * 60  # 15 min
 _REFRESH_TOKEN_TTL_SECONDS: Final[int] = 14 * 24 * 3600  # 14 days
+# Q01-03: enrolment-only token — long enough to scan a QR and type a code.
+_MFA_ENROLLMENT_TOKEN_TTL_SECONDS: Final[int] = 15 * 60  # 15 min
 _BCRYPT_ROUNDS: Final[int] = 12
 _JWT_ALG: Final[str] = "HS256"  # RS256 + key rotation later.
 _TOTP_ISSUER: Final[str] = "Fabric ERP"
@@ -96,7 +100,7 @@ class TokenPayload:
     jti: str
     iat: int
     exp: int
-    token_type: Literal["access", "refresh"]
+    token_type: Literal["access", "refresh", "mfa_enrollment"]
     # TS-05/IDM-5: permissions_version claim — must match the user's live
     # `permissions_version` column on every authenticated request. Tokens
     # issued before this field existed carry pv=0; since the DB default for
@@ -212,7 +216,7 @@ def _issue_jwt(
     user: AppUser,
     firm_id: uuid.UUID | None,
     permissions: list[str],
-    token_type: Literal["access", "refresh"],
+    token_type: Literal["access", "refresh", "mfa_enrollment"],
     ttl_seconds: int,
 ) -> tuple[str, datetime.datetime, str]:
     """Returns (encoded_jwt, expires_at, jti)."""
@@ -245,8 +249,21 @@ def issue_tokens(
 ) -> TokenPair:
     """Generate access + refresh tokens. Persists a `session` row holding
     the SHA-256 hash of both tokens + the refresh expiry as the outer
-    envelope.
+    envelope. Starts a new refresh-token family (see `refresh_token`).
     """
+    pair, _row = _issue_session(session, user=user, firm_id=firm_id, family_id=None)
+    return pair
+
+
+def _issue_session(
+    session: Session,
+    *,
+    user: AppUser,
+    firm_id: uuid.UUID | None,
+    family_id: uuid.UUID | None,
+) -> tuple[TokenPair, DbSession]:
+    """Mint a token pair + its `session` row. ``family_id=None`` starts a new
+    family (the row's own id); a rotation passes the predecessor's family."""
     permissions = sorted(
         rbac_service.get_user_permissions(session, user_id=user.user_id, firm_id=firm_id)
     )
@@ -264,21 +281,42 @@ def issue_tokens(
         token_type="refresh",  # noqa: S106 — JWT type discriminator, not a credential
         ttl_seconds=_REFRESH_TOKEN_TTL_SECONDS,
     )
+    session_id = uuid.uuid4()
     db_session_row = DbSession(
+        session_id=session_id,
         org_id=user.org_id,
         user_id=user.user_id,
         access_token_hash=_hash_token(access_jwt),
         refresh_token_hash=_hash_token(refresh_jwt),
         expires_at=refresh_exp,
+        family_id=family_id if family_id is not None else session_id,
     )
     session.add(db_session_row)
     session.flush()
-    return TokenPair(
+    pair = TokenPair(
         access_token=access_jwt,
         refresh_token=refresh_jwt,
         access_expires_at=access_exp,
         refresh_expires_at=refresh_exp,
     )
+    return pair, db_session_row
+
+
+def issue_mfa_enrollment_token(*, user: AppUser) -> tuple[str, datetime.datetime]:
+    """Q01-03: a short-lived, enrolment-only token for an admin-class user
+    who has not enrolled TOTP. ``token_type="mfa_enrollment"``, no
+    permissions, no firm, no `session` row and no refresh token — it cannot
+    be refreshed or switched into a full pair. `dependencies.get_current_user`
+    admits it only on `mfa_policy_service.ENROLLMENT_TOKEN_ROUTES`.
+    Returns ``(jwt, expires_at)``."""
+    token, exp, _ = _issue_jwt(
+        user=user,
+        firm_id=None,
+        permissions=[],
+        token_type="mfa_enrollment",  # noqa: S106 — JWT type discriminator, not a credential
+        ttl_seconds=_MFA_ENROLLMENT_TOKEN_TTL_SECONDS,
+    )
+    return token, exp
 
 
 def verify_jwt(token: str) -> TokenPayload:
@@ -354,7 +392,21 @@ def login(
 
 
 def refresh_token(session: Session, *, refresh_token: str) -> TokenPair:
-    """Validate a refresh token, revoke the old session row, issue a fresh pair.
+    """Redeem a refresh token: single-use rotation with a short reuse interval.
+
+    Q01-10 + the two-tab refresh race. The presented session row is locked
+    (``SELECT … FOR UPDATE``) so concurrent redemptions serialise:
+
+    * **Live row** → rotate: mint ONE successor in the same family, mark the
+      row revoked + ``replaced_by_session_id``, and seal the successor pair
+      under a key only the presented token can derive
+      (`session_family_service.seal_successor`).
+    * **Rotated within ``refresh_reuse_grace_seconds``** → idempotent re-issue
+      of the SAME successor pair (no new session, no 401). This is what two
+      tabs booting at once, or a retried request, need.
+    * **Rotated longer ago** → refresh-token reuse: revoke the whole family
+      and raise `RefreshTokenReuseError` (the router audits + commits it).
+    * **Revoked by logout / reuse detection** → plain 401.
 
     Raises `TokenInvalidError` for missing/expired/revoked tokens or if the
     presented token is an access token.
@@ -371,28 +423,107 @@ def refresh_token(session: Session, *, refresh_token: str) -> TokenPair:
     # session row.
     session.execute(text(f"SET LOCAL app.current_org_id = '{payload.org_id}'"))
 
-    db_session_row = session.execute(
-        select(DbSession).where(
+    lookup = (
+        select(DbSession)
+        .where(
             DbSession.user_id == payload.user_id,
             DbSession.refresh_token_hash == _hash_token(refresh_token),
         )
-    ).scalar_one_or_none()
-    if db_session_row is None:
+        .execution_options(populate_existing=True)
+    )
+    found = session.execute(lookup).scalar_one_or_none()
+    if found is None:
         raise TokenInvalidError("Refresh token not found")
+
+    # Family mutex (`session_family_service.lock_family`): rotation, grace
+    # re-issue, reuse detection and logout of this family serialise here. A
+    # concurrent redemption of the same token waits until this transaction
+    # commits, then re-reads the row below (fresh snapshot, populate_existing)
+    # and takes the rotated branch.
+    session_family_service.lock_family(session, family_id=found.family_id)
+    db_session_row = session.execute(lookup).scalar_one()
+
+    now = _now_utc()
     if db_session_row.revoked_at is not None:
-        raise TokenInvalidError("Refresh token has been revoked")
-    if db_session_row.expires_at < _now_utc():
+        return _redeem_rotated(
+            session, row=db_session_row, presented=refresh_token, user_id=payload.user_id, now=now
+        )
+    if db_session_row.expires_at < now:
         raise TokenInvalidError("Refresh token has expired")
 
-    user = session.execute(
-        select(AppUser).where(AppUser.user_id == payload.user_id)
-    ).scalar_one_or_none()
+    user = _active_user(session, payload.user_id)
+    pair, successor = _issue_session(
+        session, user=user, firm_id=payload.firm_id, family_id=db_session_row.family_id
+    )
+    db_session_row.revoked_at = now
+    db_session_row.replaced_by_session_id = successor.session_id
+    db_session_row.grace_successor_ct = session_family_service.seal_successor(
+        presented_refresh_token=refresh_token,
+        session_id=db_session_row.session_id,
+        pair=pair,
+    )
+    session.flush()
+    # At most one grace envelope per family: the one just written.
+    session_family_service.wipe_older_envelopes(
+        session, family_id=db_session_row.family_id, keep=db_session_row.session_id
+    )
+    return pair
+
+
+def _active_user(session: Session, user_id: uuid.UUID) -> AppUser:
+    user = session.execute(select(AppUser).where(AppUser.user_id == user_id)).scalar_one_or_none()
     if user is None or not user.is_active or user.is_suspended:
         raise TokenInvalidError("User is no longer active")
+    return user
 
-    db_session_row.revoked_at = _now_utc()
-    session.flush()
-    return issue_tokens(session, user=user, firm_id=payload.firm_id)
+
+def _redeem_rotated(
+    session: Session,
+    *,
+    row: DbSession,
+    presented: str,
+    user_id: uuid.UUID,
+    now: datetime.datetime,
+) -> TokenPair:
+    """A revoked row was presented: grace re-issue, reuse detection, or 401."""
+    if row.replaced_by_session_id is None or row.revoked_at is None:
+        # Revoked by logout / a previous reuse detection — not a rotation.
+        raise TokenInvalidError("Refresh token has been revoked")
+
+    grace = datetime.timedelta(seconds=get_settings().refresh_reuse_grace_seconds)
+    if now - row.revoked_at > grace:
+        revoked = session_family_service.revoke_family(session, family_id=row.family_id, now=now)
+        session.flush()
+        raise RefreshTokenReuseError(
+            "Refresh token has been revoked",
+            org_id=row.org_id,
+            user_id=user_id,
+            family_id=row.family_id,
+            sessions_revoked=revoked,
+        )
+
+    successor = session.execute(
+        select(DbSession).where(DbSession.session_id == row.replaced_by_session_id)
+    ).scalar_one_or_none()
+    if (
+        successor is None
+        or successor.revoked_at is not None
+        or successor.expires_at < now
+        or row.grace_successor_ct is None
+    ):
+        # The successor was logged out / rotated again / expired: nothing
+        # to hand back. Not a theft signal inside the window — plain 401.
+        raise TokenInvalidError("Refresh token has been revoked")
+
+    _active_user(session, user_id)
+    pair = session_family_service.open_successor(
+        presented_refresh_token=presented,
+        session_id=row.session_id,
+        blob=row.grace_successor_ct,
+    )
+    if pair is None:
+        raise TokenInvalidError("Refresh token has been revoked")
+    return pair
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -428,6 +559,106 @@ def enable_mfa(session: Session, *, user_id: uuid.UUID) -> MfaEnrollment:
 
     session.flush()
     return MfaEnrollment(secret=secret, provisioning_uri=provisioning_uri)
+
+
+# Q01-03 follow-up: one-time backup codes (lost-authenticator recovery).
+_BACKUP_CODE_COUNT: Final[int] = 10
+# 10 chars from a 32-symbol alphabet = 50 bits per code. bcrypt at 10 rounds
+# (~60 ms) keeps a full scan of 10 hashes well under a second; the codes'
+# entropy, not the work factor, is what resists guessing, and /mfa-verify is
+# rate-limited + needs the password too.
+_BACKUP_CODE_ROUNDS: Final[int] = 10
+_BACKUP_CODE_ALPHABET: Final[str] = "abcdefghjkmnpqrstuvwxyz23456789"
+
+
+def _normalize_backup_code(code: str) -> str:
+    return "".join(ch for ch in code.lower() if ch.isalnum())
+
+
+def issue_backup_codes(session: Session, *, user: AppUser) -> list[str]:
+    """Replace the user's backup codes with 10 fresh ones and return the
+    plaintext ONCE. Only bcrypt hashes are stored (``app_user.mfa_backup_codes``)."""
+    codes: list[str] = []
+    stored: list[dict[str, Any]] = []
+    for _ in range(_BACKUP_CODE_COUNT):
+        raw = "".join(secrets.choice(_BACKUP_CODE_ALPHABET) for _ in range(10))
+        codes.append(f"{raw[:5]}-{raw[5:]}")
+        digest = bcrypt.hashpw(raw.encode("utf-8"), bcrypt.gensalt(rounds=_BACKUP_CODE_ROUNDS))
+        stored.append({"h": digest.decode("utf-8"), "used_at": None})
+    user.mfa_backup_codes = stored
+    session.flush()
+    return codes
+
+
+def consume_backup_code(session: Session, *, user_id: uuid.UUID, code: str) -> int | None:
+    """Spend one backup code. Returns the number of unused codes left, or
+    ``None`` if ``code`` matches no unused code. The user row is locked so
+    two concurrent sign-ins cannot spend the same code twice."""
+    normalized = _normalize_backup_code(code)
+    if len(normalized) != 10:
+        return None
+    # populate_existing: the caller (/auth/mfa-verify) already loaded this
+    # user into the identity map; without it the locked re-read would hand
+    # back the STALE codes and concurrent requests could each spend the same
+    # code. FOR NO KEY UPDATE (key_share) still serialises spenders but
+    # doesn't block FK inserts referencing app_user during the bcrypt scan.
+    user = session.execute(
+        select(AppUser)
+        .where(AppUser.user_id == user_id)
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if user is None or not user.mfa_backup_codes:
+        return None
+    entries = [dict(e) for e in user.mfa_backup_codes]
+    hit = None
+    for entry in entries:
+        if entry.get("used_at") is None and bcrypt.checkpw(
+            normalized.encode("utf-8"), str(entry["h"]).encode("utf-8")
+        ):
+            hit = entry
+            break
+    if hit is None:
+        return None
+    hit["used_at"] = _now_utc().isoformat()
+    user.mfa_backup_codes = entries  # new list → JSONB change detected
+    session.flush()
+    return sum(1 for e in entries if e.get("used_at") is None)
+
+
+def reset_mfa(session: Session, *, user: AppUser, now: datetime.datetime) -> int:
+    """Ops recovery (``scripts/reset_mfa.py``): clear TOTP enrolment and
+    backup codes, bump ``permissions_version`` (outstanding access tokens
+    die on their next request) and revoke every live refresh session.
+    Returns the number of sessions revoked. Caller audits + commits."""
+    user.mfa_enabled = False
+    user.mfa_secret = None
+    user.mfa_backup_codes = None
+    user.permissions_version = (user.permissions_version or 0) + 1
+    session.flush()
+    # Revoke family by family under each family's mutex (sorted: a fixed
+    # order if two resets ever overlap), so a successor being minted by a
+    # concurrent refresh is waited for and revoked too.
+    families = (
+        session.execute(
+            select(DbSession.family_id)
+            # Only families that still matter: a live row, or a grace
+            # envelope to wipe. Months of fully-dead history are skipped.
+            .where(
+                DbSession.user_id == user.user_id,
+                or_(DbSession.revoked_at.is_(None), DbSession.grace_successor_ct.is_not(None)),
+            )
+            .distinct()
+            .order_by(DbSession.family_id)
+        )
+        .scalars()
+        .all()
+    )
+    revoked = sum(
+        session_family_service.revoke_family(session, family_id=f, now=now) for f in families
+    )
+    session.flush()
+    return revoked
 
 
 def prepare_mfa_enrollment(session: Session, *, user_id: uuid.UUID) -> MfaEnrollment:
@@ -531,8 +762,15 @@ def verify_totp(session: Session, *, user_id: uuid.UUID, code: str) -> bool:
     version-byte discriminator falls back to UTF-8 decode for pre-fix
     rows), so existing enrolments keep working.
     """
+    # Locked, fresh read (same as `consume_backup_code`): an ops `reset_mfa`
+    # in flight holds this row; we wait for it and then see mfa_secret=None,
+    # instead of verifying against the stale secret and minting a session
+    # the reset never saw. FOR NO KEY UPDATE doesn't block FK inserts.
     user = session.execute(
-        select(AppUser).where(AppUser.user_id == user_id, AppUser.deleted_at.is_(None))
+        select(AppUser)
+        .where(AppUser.user_id == user_id, AppUser.deleted_at.is_(None))
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if user is None or user.mfa_secret is None:
         return False

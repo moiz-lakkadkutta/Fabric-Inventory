@@ -37,6 +37,8 @@ export interface Q8aEnvelope {
    * synthesise an envelope without one.
    */
   request_id?: string;
+  /** Seconds from a `Retry-After` header (503 LOCK_TIMEOUT / DEADLOCK_DETECTED, 429). */
+  retry_after?: number;
 }
 
 export class ApiError extends Error implements Q8aEnvelope {
@@ -46,6 +48,7 @@ export class ApiError extends Error implements Q8aEnvelope {
   readonly status: number;
   readonly field_errors: Record<string, string[]>;
   readonly request_id?: string;
+  readonly retry_after?: number;
 
   constructor(envelope: Q8aEnvelope) {
     super(`${envelope.code}: ${envelope.title}`);
@@ -56,6 +59,7 @@ export class ApiError extends Error implements Q8aEnvelope {
     this.status = envelope.status;
     this.field_errors = envelope.field_errors ?? {};
     this.request_id = envelope.request_id;
+    this.retry_after = envelope.retry_after;
   }
 }
 
@@ -91,5 +95,8 @@ export async function decodeError(response: Response): Promise<ApiError> {
       request_id: headerRequestId,
     };
   }
+  const retryAfterRaw = response.headers.get('Retry-After');
+  const retryAfter = retryAfterRaw === null ? NaN : Number(retryAfterRaw);
+  if (Number.isFinite(retryAfter) && retryAfter >= 0) envelope.retry_after = retryAfter;
   return new ApiError(envelope);
 }

@@ -23,6 +23,7 @@ from the OpenAPI spec, which embeds this enum.
 
 from __future__ import annotations
 
+import uuid
 from enum import StrEnum
 
 
@@ -38,6 +39,9 @@ class ErrorCode(StrEnum):
     MFA_REQUIRED = "MFA_REQUIRED"
     MFA_INVALID = "MFA_INVALID"
     MFA_ALREADY_ENABLED = "MFA_ALREADY_ENABLED"
+    # Q01-03: an admin-class user who has not enrolled TOTP called a route
+    # other than MFA enrolment / me / logout.
+    MFA_ENROLLMENT_REQUIRED = "MFA_ENROLLMENT_REQUIRED"
     TOKEN_INVALID = "TOKEN_INVALID"  # noqa: S105 — error code, not a password
     USER_EMAIL_TAKEN = "USER_EMAIL_TAKEN"
     # CUT-303: a single code covers all reset-token failure modes
@@ -57,6 +61,12 @@ class ErrorCode(StrEnum):
     IDEMPOTENCY_KEY_PAYLOAD_MISMATCH = "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH"
     # Q01-01: a request with the same key (same principal) is still executing.
     IDEMPOTENCY_REQUEST_IN_PROGRESS = "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+    # Q01-10 follow-up: a row lock was not granted within DB_LOCK_TIMEOUT_MS
+    # (SQLSTATE 55P03). Transient; retry after Retry-After.
+    LOCK_TIMEOUT = "LOCK_TIMEOUT"
+    # Defence in depth: Postgres aborted the transaction as a deadlock victim
+    # (SQLSTATE 40P01). Nothing was committed; retry after Retry-After.
+    DEADLOCK_DETECTED = "DEADLOCK_DETECTED"
 
     # Business
     INVOICE_STATE_ERROR = "INVOICE_STATE_ERROR"
@@ -186,12 +196,44 @@ class TokenInvalidError(AppError):
     http_status = 401
 
 
+class RefreshTokenReuseError(TokenInvalidError):
+    """Q01-10: a refresh token rotated longer ago than the reuse (grace)
+    interval was presented again. The service has already revoked the token
+    family; the router audits the event, COMMITS (so the revocation survives
+    the error rollback) and returns the same uniform 401 as any other
+    invalid refresh token."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        org_id: uuid.UUID,
+        user_id: uuid.UUID,
+        family_id: uuid.UUID,
+        sessions_revoked: int,
+    ) -> None:
+        super().__init__(message)
+        self.org_id = org_id
+        self.user_id = user_id
+        self.family_id = family_id
+        self.sessions_revoked = sessions_revoked
+
+
 class MfaError(AppError):
     """TOTP code mismatch, MFA not enabled when required, etc."""
 
     code = ErrorCode.MFA_INVALID
     title = "MFA verification failed"
     http_status = 401
+
+
+class MfaEnrollmentRequiredError(AppError):
+    """Q01-03: the principal must enrol TOTP (POST /auth/mfa/setup, then
+    /auth/mfa/confirm) before this route is available."""
+
+    code = ErrorCode.MFA_ENROLLMENT_REQUIRED
+    title = "MFA enrolment required"
+    http_status = 403
 
 
 class MfaAlreadyEnabledError(AppError):

@@ -18,9 +18,12 @@ import uuid
 
 import jwt as pyjwt
 import pyotp
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
+
+from app.service import identity_service
 
 
 def _unique_email() -> str:
@@ -389,8 +392,12 @@ def test_refresh_with_access_token_returns_401(http_client: TestClient) -> None:
     assert resp.json()["code"] == "TOKEN_INVALID"
 
 
-def test_refresh_replay_returns_401(http_client: TestClient) -> None:
-    """Once a refresh token has been rotated, replaying it should fail.
+def test_refresh_replay_returns_401(
+    http_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once a refresh token has been rotated, replaying it after the reuse
+    (grace) interval fails. Inside the interval the replay is handed the SAME
+    successor pair (Q01-10 / two-tab race) — never a second, different pair.
 
     We clear the cookie between calls so the body-path is exercised in
     isolation — otherwise the cookie (which auto-rotates on each refresh)
@@ -404,7 +411,17 @@ def test_refresh_replay_returns_401(http_client: TestClient) -> None:
     )
     first_refresh = body["refresh_token"]
     http_client.cookies.clear()
-    http_client.post("/auth/refresh", json={"refresh_token": first_refresh}).raise_for_status()
+    rotated = http_client.post("/auth/refresh", json={"refresh_token": first_refresh})
+    rotated.raise_for_status()
+    http_client.cookies.clear()
+    in_grace = http_client.post("/auth/refresh", json={"refresh_token": first_refresh})
+    assert in_grace.status_code == 200
+    assert in_grace.json()["refresh_token"] == rotated.json()["refresh_token"]
+
+    real_now = identity_service._now_utc
+    monkeypatch.setattr(
+        identity_service, "_now_utc", lambda: real_now() + datetime.timedelta(minutes=5)
+    )
     http_client.cookies.clear()
     replay = http_client.post("/auth/refresh", json={"refresh_token": first_refresh})
     assert replay.status_code == 401
