@@ -186,6 +186,25 @@ def normalize_gstin(raw: str | None) -> str | None:
     return cleaned or None
 
 
+_GSTIN_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def gstin_check_digit(first14: str) -> str:
+    """GSTN check digit for the first 14 GSTIN characters (mod-36 Luhn-style).
+
+    Map each character to its value in 0-9A-Z (0..35); multiply by 1 at even
+    positions and 2 at odd positions (0-based, left to right); sum
+    ``product // 36 + product % 36``; the check digit is
+    ``(36 - sum % 36) % 36`` mapped back to 0-9A-Z. Verified against 15 real,
+    publicly listed GSTINs (see tests/test_gstin_checksum.py).
+    """
+    total = 0
+    for i, ch in enumerate(first14):
+        product = _GSTIN_ALPHABET.index(ch) * (2 if i % 2 else 1)
+        total += product // 36 + product % 36
+    return _GSTIN_ALPHABET[(36 - total % 36) % 36]
+
+
 def gstin_validation_error(gstin: str) -> str | None:
     """Return an actionable error message if *gstin* is not acceptable, else None.
 
@@ -197,7 +216,10 @@ def gstin_validation_error(gstin: str) -> str | None:
         rejected: a party with such a GSTIN and no recorded state used to
         resolve to NIL_NOT_A_SUPPLY with Rs 0 GST.
 
-    Out of scope (not validated anywhere yet): the mod-36 checksum digit.
+      - the 15th character must be the GSTN mod-36 check digit
+        (``gstin_check_digit``) — catches typos and transpositions.
+        PENDING MOIZ+CA SIGN-OFF.
+
     UIN / OIDAR / TDS / TCS / NRTP identifiers don't match the
     normal-taxpayer format and are rejected by the format check.
     """
@@ -211,12 +233,19 @@ def gstin_validation_error(gstin: str) -> str | None:
             "GST state code of registration (01-38 or 97, e.g. '27' for "
             "Maharashtra). Check the GSTIN on the party's registration certificate."
         )
+    if gstin_check_digit(gstin[:14]) != gstin[14]:
+        return (
+            f"GSTIN check digit doesn't match — please re-check the number "
+            f"(GSTIN {gstin!r}). One of its characters is likely mistyped; copy it "
+            "from the party's GST registration certificate or the GST portal."
+        )
     return None
 
 
 __all__ = [
     "GSTIN_FORMAT_RE",
     "VALID_GST_STATE_CODES",
+    "gstin_check_digit",
     "gstin_validation_error",
     "is_valid_state_code",
     "normalize_gstin",

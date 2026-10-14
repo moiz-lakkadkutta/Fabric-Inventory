@@ -1,0 +1,389 @@
+"""Q01-03 follow-up: recovery from a lost authenticator.
+
+Mandatory MFA without recovery is a permanent lockout for a sole Owner, so:
+
+* ``/auth/mfa/confirm`` issues 10 one-time backup codes (bcrypt-hashed at
+  rest, shown once). ``/auth/mfa-verify`` accepts ``backup_code`` in place of
+  ``totp_code``; each code works once and its use is audited.
+* ``scripts/reset_mfa.py --email X --org "Org"`` (ops, MIGRATION_DATABASE_URL)
+  clears the enrolment, revokes the user's sessions and outstanding access
+  tokens, and audits ``mfa_reset``. The next login is forced to re-enrol.
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+import pyotp
+import pytest
+from httpx import AsyncClient
+from sqlalchemy import select, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session as OrmSession
+
+from app.middleware.idempotency import _SECRET_BODY_FIELDS
+from app.models import AppUser, AuditLog
+from app.models import Session as DbSession
+from tests.security._q01_helpers import PASSWORD, bearer, idem, q01_client, signup
+
+pytestmark = pytest.mark.mfa_policy_enforced
+
+
+async def _enrol(client: AsyncClient, owner: dict[str, Any]) -> list[str]:
+    token = owner["access_token"]
+    setup = await client.post("/auth/mfa/setup", headers={**bearer(token), **idem()})
+    assert setup.status_code == 200, setup.text
+    confirm = await client.post(
+        "/auth/mfa/confirm",
+        headers={**bearer(token), **idem()},
+        json={"code": pyotp.TOTP(setup.json()["secret"]).now()},
+    )
+    assert confirm.status_code == 200, confirm.text
+    codes: list[str] = confirm.json()["backup_codes"]
+    return codes
+
+
+async def _verify_with_backup(client: AsyncClient, owner: dict[str, Any], code: str) -> Any:
+    client.cookies.clear()
+    return await client.post(
+        "/auth/mfa-verify",
+        headers=idem(),
+        json={
+            "email": owner["_email"],
+            "password": PASSWORD,
+            "org_name": owner["_org_name"],
+            "backup_code": code,
+        },
+    )
+
+
+def _user(engine: Engine, owner: dict[str, Any]) -> AppUser:
+    with OrmSession(engine, expire_on_commit=False) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        return s.execute(
+            select(AppUser).where(AppUser.user_id == uuid.UUID(owner["user_id"]))
+        ).scalar_one()
+
+
+def _audit_actions(engine: Engine, owner: dict[str, Any]) -> list[str]:
+    with OrmSession(engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        return [
+            a
+            for (a,) in s.execute(
+                select(AuditLog.action).where(AuditLog.org_id == uuid.UUID(owner["org_id"]))
+            ).all()
+        ]
+
+
+async def test_confirm_issues_ten_hashed_one_time_backup_codes(sync_engine: Engine) -> None:
+    async with q01_client() as client:
+        owner = await signup(client)
+        codes = await _enrol(client, owner)
+    assert len(codes) == 10
+    assert len(set(codes)) == 10
+    stored = _user(sync_engine, owner).mfa_backup_codes
+    assert stored is not None and len(stored) == 10
+    blob = repr(stored)
+    for code in codes:
+        assert code not in blob and code.replace("-", "") not in blob
+    assert all(entry["used_at"] is None for entry in stored)
+
+
+async def test_backup_code_signs_in_once_and_is_audited(sync_engine: Engine) -> None:
+    async with q01_client() as client:
+        owner = await signup(client)
+        codes = await _enrol(client, owner)
+
+        ok = await _verify_with_backup(client, owner, codes[0])
+        assert ok.status_code == 200, ok.text
+        party = await client.post(
+            "/parties",
+            headers={**bearer(ok.json()["access_token"]), **idem()},
+            json={"code": "P-BK", "name": "x", "is_supplier": True, "firm_id": owner["firm_id"]},
+        )
+        assert party.status_code == 201, party.text
+
+        # Single use.
+        assert (await _verify_with_backup(client, owner, codes[0])).status_code == 401
+        # Formatting-tolerant (case, spaces, no dash) and another code still works.
+        loose = codes[1].replace("-", " ").upper()
+        assert (await _verify_with_backup(client, owner, loose)).status_code == 200
+        # Garbage is refused.
+        assert (await _verify_with_backup(client, owner, "zzzzz-zzzzz")).status_code == 401
+
+    used = [e for e in _user(sync_engine, owner).mfa_backup_codes or [] if e["used_at"]]
+    assert len(used) == 2
+    assert _audit_actions(sync_engine, owner).count("mfa_backup_code_used") == 2
+
+
+async def test_mfa_verify_needs_exactly_one_factor() -> None:
+    async with q01_client() as client:
+        owner = await signup(client)
+        base = {"email": owner["_email"], "password": PASSWORD, "org_name": owner["_org_name"]}
+        neither = await client.post("/auth/mfa-verify", headers=idem(), json=base)
+        both = await client.post(
+            "/auth/mfa-verify",
+            headers=idem(),
+            json={**base, "totp_code": "123456", "backup_code": "abcde-fghij"},
+        )
+        assert neither.status_code == 422
+        assert both.status_code == 422
+
+
+def test_enrolment_secrets_are_never_cached_by_idempotency() -> None:
+    for field in ("enrollment_token", "backup_codes", "secret", "access_token"):
+        assert field in _SECRET_BODY_FIELDS
+
+
+async def test_reset_mfa_cli_clears_enrolment_and_forces_re_enrolment(
+    sync_engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from scripts import reset_mfa
+
+    async with q01_client() as client:
+        owner = await signup(client)
+        await _enrol(client, owner)
+        old_access = owner["access_token"]
+
+        rc = reset_mfa.main(
+            [
+                "--email",
+                owner["_email"].upper(),
+                "--org",
+                owner["_org_name"],
+                "--reason",
+                "lost phone",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "MFA reset" in out and owner["_email"] in out
+
+        user = _user(sync_engine, owner)
+        assert not user.mfa_enabled
+        assert user.mfa_secret is None
+        assert user.mfa_backup_codes is None
+        with OrmSession(sync_engine) as s:
+            s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+            live = s.execute(
+                select(DbSession).where(
+                    DbSession.user_id == uuid.UUID(owner["user_id"]),
+                    DbSession.revoked_at.is_(None),
+                )
+            ).all()
+        assert live == []
+        assert "mfa_reset" in _audit_actions(sync_engine, owner)
+
+        # Outstanding access tokens die (permissions_version bumped) ...
+        assert (await client.get("/auth/me", headers=bearer(old_access))).status_code == 401
+        # ... and the next login is forced back into enrolment.
+        client.cookies.clear()
+        login = await client.post(
+            "/auth/login",
+            json={"email": owner["_email"], "password": PASSWORD, "org_name": owner["_org_name"]},
+        )
+        assert login.json()["requires_mfa_enrollment"] is True
+
+
+def test_reset_mfa_cli_unknown_user_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    from scripts import reset_mfa
+
+    rc = reset_mfa.main(["--email", "nobody@example.com", "--org", f"No Org {uuid.uuid4()}"])
+    assert rc != 0
+    assert "not found" in capsys.readouterr().err.lower()
+
+
+def _fresh_rate_limit() -> None:
+    """Concurrent /mfa-verify bursts share one (IP+email) bucket; give each
+    burst a clean budget so the assertion is about single-use, not 429."""
+    import fakeredis.aioredis as fr
+
+    from app.middleware.rate_limit import set_redis_client_for_testing
+
+    set_redis_client_for_testing(fr.FakeRedis(decode_responses=True))
+
+
+async def test_same_backup_code_concurrently_signs_in_exactly_once(sync_engine: Engine) -> None:
+    import asyncio
+
+    async with q01_client(raise_app_exceptions=False) as client:
+        owner = await signup(client)
+        codes = await _enrol(client, owner)
+        _fresh_rate_limit()
+        client.cookies.clear()
+        rs = await asyncio.gather(*[_verify_with_backup(client, owner, codes[0]) for _ in range(6)])
+        statuses = [r.status_code for r in rs]
+        assert statuses.count(200) == 1, statuses
+        assert all(c in (200, 401) for c in statuses), statuses
+    used = [e for e in _user(sync_engine, owner).mfa_backup_codes or [] if e["used_at"]]
+    assert len(used) == 1
+
+
+async def test_different_backup_codes_concurrently_are_all_spent(sync_engine: Engine) -> None:
+    import asyncio
+
+    async with q01_client(raise_app_exceptions=False) as client:
+        owner = await signup(client)
+        codes = await _enrol(client, owner)
+        _fresh_rate_limit()
+        rs = await asyncio.gather(*[_verify_with_backup(client, owner, c) for c in codes[:4]])
+        assert [r.status_code for r in rs] == [200] * 4, [r.text for r in rs]
+        _fresh_rate_limit()
+        replays = await asyncio.gather(*[_verify_with_backup(client, owner, c) for c in codes[:4]])
+        assert [r.status_code for r in replays] == [401] * 4
+    used = [e for e in _user(sync_engine, owner).mfa_backup_codes or [] if e["used_at"]]
+    assert len(used) == 4
+
+
+async def test_failed_mfa_attempts_are_audited_without_the_code(sync_engine: Engine) -> None:
+    async with q01_client(raise_app_exceptions=False) as client:
+        owner = await signup(client)
+        codes = await _enrol(client, owner)
+        bad_backup = await _verify_with_backup(client, owner, "zzzzz-zzzzz")
+        assert bad_backup.status_code == 401
+        client.cookies.clear()
+        bad_totp = await client.post(
+            "/auth/mfa-verify",
+            headers=idem(),
+            json={
+                "email": owner["_email"],
+                "password": PASSWORD,
+                "org_name": owner["_org_name"],
+                "totp_code": "000000",
+            },
+        )
+        assert bad_totp.status_code == 401
+        # Same generic 401 for a used code (no oracle).
+        assert (await _verify_with_backup(client, owner, codes[0])).status_code == 200
+        used_again = await _verify_with_backup(client, owner, codes[0])
+        assert used_again.status_code == 401
+        assert used_again.json()["code"] == bad_backup.json()["code"]
+        assert used_again.json()["detail"] == bad_backup.json()["detail"]
+
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        rows = s.execute(
+            select(AuditLog.changes).where(
+                AuditLog.org_id == uuid.UUID(owner["org_id"]),
+                AuditLog.action == "mfa_failed",
+            )
+        ).all()
+    factors = sorted(str((c or {}).get("after", {}).get("factor")) for (c,) in rows)
+    assert factors == ["backup_code", "backup_code", "totp"], factors
+    blob = repr([c for (c,) in rows])
+    assert "zzzzz" not in blob and "000000" not in blob
+    assert codes[0] not in blob and codes[0].replace("-", "") not in blob
+
+
+async def test_totp_login_racing_an_ops_reset_does_not_survive_it(sync_engine: Engine) -> None:
+    """The ops reset is in flight (user row updated, not committed) while a
+    TOTP sign-in with the OLD secret arrives. The sign-in must wait for the
+    reset and then fail — not mint a fresh family the reset never saw."""
+    import asyncio
+    import datetime
+    import time
+
+    from app.db import get_sync_engine
+    from app.service import identity_service
+
+    async with q01_client(raise_app_exceptions=False) as client:
+        owner = await signup(client)
+        token = owner["access_token"]
+        setup = await client.post("/auth/mfa/setup", headers={**bearer(token), **idem()})
+        secret = setup.json()["secret"]
+        confirm = await client.post(
+            "/auth/mfa/confirm",
+            headers={**bearer(token), **idem()},
+            json={"code": pyotp.TOTP(secret).now()},
+        )
+        assert confirm.status_code == 200, confirm.text
+
+        resetter = OrmSession(get_sync_engine())
+        resetter.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        user = resetter.execute(
+            select(AppUser).where(AppUser.user_id == uuid.UUID(owner["user_id"]))
+        ).scalar_one()
+        identity_service.reset_mfa(resetter, user=user, now=datetime.datetime.now(tz=datetime.UTC))
+        resetter.flush()
+
+        async def sign_in() -> Any:
+            client.cookies.clear()
+            return await client.post(
+                "/auth/mfa-verify",
+                headers=idem(),
+                json={
+                    "email": owner["_email"],
+                    "password": PASSWORD,
+                    "org_name": owner["_org_name"],
+                    "totp_code": pyotp.TOTP(secret).at(int(time.time()) + 30),
+                },
+            )
+
+        async def commit_reset_later() -> None:
+            await asyncio.sleep(2.0)
+            await asyncio.to_thread(resetter.commit)
+
+        resp, _ = await asyncio.gather(sign_in(), commit_reset_later())
+        resetter.close()
+
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        live = s.execute(
+            select(DbSession.session_id).where(
+                DbSession.user_id == uuid.UUID(owner["user_id"]), DbSession.revoked_at.is_(None)
+            )
+        ).all()
+    assert resp.status_code == 401, f"sign-in during reset -> {resp.status_code} {resp.text[:120]}"
+    assert live == [], f"{len(live)} live session(s) survived the MFA reset"
+
+
+def test_reset_only_locks_families_that_still_matter(
+    sync_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Months of fully-dead families (revoked, no grace envelope) are not
+    locked one by one: only live families (or ones holding an envelope)."""
+    import asyncio
+    import datetime
+
+    from app.service import identity_service, session_family_service
+
+    async def mk() -> dict[str, Any]:
+        async with q01_client() as client:
+            return await signup(client)
+
+    owner = asyncio.run(mk())
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        s.execute(
+            text(
+                """INSERT INTO session (session_id, org_id, user_id, access_token_hash,
+                       refresh_token_hash, expires_at, family_id, revoked_at)
+                   SELECT g, :org, :u, md5(g::text), md5(g::text || 'r'),
+                          now() - interval '1 day', g, now() - interval '20 days'
+                   FROM (SELECT gen_random_uuid() AS g FROM generate_series(1, 300)) x"""
+            ),
+            {"org": owner["org_id"], "u": owner["user_id"]},
+        )
+        s.commit()
+
+    locked: list[uuid.UUID] = []
+    real = session_family_service.revoke_family
+
+    def counting(session: Any, *, family_id: uuid.UUID, now: datetime.datetime) -> int:
+        locked.append(family_id)
+        return real(session, family_id=family_id, now=now)
+
+    monkeypatch.setattr(session_family_service, "revoke_family", counting)
+    with OrmSession(sync_engine) as s:
+        s.execute(text(f"SET LOCAL app.current_org_id = '{owner['org_id']}'"))
+        user = s.execute(
+            select(AppUser).where(AppUser.user_id == uuid.UUID(owner["user_id"]))
+        ).scalar_one()
+        revoked = identity_service.reset_mfa(
+            s, user=user, now=datetime.datetime.now(tz=datetime.UTC)
+        )
+        s.commit()
+    assert revoked == 1  # the signup session
+    assert len(locked) == 1, f"locked {len(locked)} families"

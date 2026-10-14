@@ -7,11 +7,13 @@ backfill existing tenants.
 Usage:
     uv run python -m app.cli.seed --org-id <UUID>
 
-RLS note: this CLI does INSERTs only, with `org_id` set explicitly on
-every row, so the RLS policies (SELECT-side filters) don't apply and
-we deliberately don't `SET LOCAL app.current_org_id`. If a future
-operation here needs to SELECT, set the GUC first or rows will silently
-disappear from the result set.
+RLS note: this CLI connects as the RUNTIME role (``fabric_app``,
+NOBYPASSRLS), so it pins ``app.current_org_id`` to the target org for its
+transaction. Without it the idempotency SELECTs see nothing and every
+INSERT fails the org policy's WITH CHECK (true for ``coa_group``/``ledger``
+since INT-9 and for ``uom``/``hsn`` since migration 211 / Q01-06). It is
+also a SYSTEM firm-scope context (Q01-02): it seeds org-shared rows for an
+org with no principal in the loop.
 """
 
 from __future__ import annotations
@@ -20,11 +22,11 @@ import argparse
 import sys
 import uuid
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.service import seed_service
+from app.service import firm_scope_service, seed_service
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,8 +39,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     engine = create_engine(db_url, future=True)
     with Session(engine) as session:
+        session.execute(
+            text("SELECT set_config('app.current_org_id', :v, true)"), {"v": str(args.org_id)}
+        )
+        firm_scope_service.apply_system_firm_scope(session)
         seed_service.seed_system_catalog(session, org_id=args.org_id)
         session.commit()
+    engine.dispose()
     print(f"Seeded system catalog for org_id={args.org_id}")
     return 0
 

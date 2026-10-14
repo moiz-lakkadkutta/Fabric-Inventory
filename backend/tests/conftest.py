@@ -81,6 +81,25 @@ def _autofill_encrypted_dek(_mapper: object, _connection: object, target: _Organ
 
 
 @pytest.fixture(autouse=True)
+def _mfa_policy_off_unless_marked(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Q01-03: MFA is mandatory for admin-class users by default
+    (MFA_REQUIRED_FOR_ADMIN=True). Almost every test authenticates as a
+    freshly signed-up Owner with no TOTP, so the suite runs with the policy
+    OFF — the same posture as the E2E overlay — and the dedicated tests opt
+    back in with ``@pytest.mark.mfa_policy_enforced`` (they then read the
+    real setting). Patched at the policy seam rather than via the env var so
+    the many tests that build staging/prod Settings keep booting (a False
+    MFA_REQUIRED_FOR_ADMIN outside dev is a boot refusal)."""
+    if request.node.get_closest_marker("mfa_policy_enforced") is not None:
+        return
+    from app.service import mfa_policy_service
+
+    monkeypatch.setattr(mfa_policy_service, "is_enforced", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_rate_limit() -> Iterator[None]:
     """Give every test a private, empty rate-limit store.
 

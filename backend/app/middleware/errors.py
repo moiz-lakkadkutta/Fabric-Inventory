@@ -23,7 +23,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import DataError, ProgrammingError
+from sqlalchemy.exc import DataError, OperationalError, ProgrammingError
 
 from ..exceptions import AppError, ErrorCode
 
@@ -93,6 +93,28 @@ def _request_validation_to_field_errors(
         msg = str(err.get("msg", "invalid"))
         out.setdefault(key, []).append(msg)
     return out
+
+
+# Postgres raises every RLS WITH CHECK refusal (INSERT, UPDATE, ON CONFLICT)
+# from this executor function. A missing GRANT shares SQLSTATE 42501 but comes
+# from ``aclcheck_error``. PG_DIAG_SOURCE_FUNCTION is never translated, unlike
+# the message, so this holds under any ``lc_messages``.
+_RLS_CHECK_SOURCE_FUNCTION = "ExecWithCheckOptions"
+
+
+def _is_rls_check_refusal(orig: object) -> bool:
+    """True when a DB-API error is an RLS WITH CHECK refusal. Works for both
+    drivers: psycopg2 exposes ``.diag.source_function``; SQLAlchemy's asyncpg
+    adapter chains the asyncpg ``PostgresError`` (``server_source_function``)
+    as ``__cause__``."""
+    if getattr(orig, "pgcode", None) != "42501":
+        return False
+    diag = getattr(orig, "diag", None)
+    source_function = getattr(diag, "source_function", None)
+    if source_function is None:
+        cause = getattr(orig, "__cause__", None)
+        source_function = getattr(cause, "server_source_function", None)
+    return source_function == _RLS_CHECK_SOURCE_FUNCTION
 
 
 def register_error_handlers(app: FastAPI) -> None:
@@ -183,9 +205,13 @@ def register_error_handlers(app: FastAPI) -> None:
         write into a firm outside the caller's scope — a path the app-layer
         check missed. Answer with the same 403 the app layer gives, naming
         no table / policy. Other 42501s (a missing GRANT) and every other
-        ProgrammingError stay generic 500s: they are bugs."""
+        ProgrammingError stay generic 500s: they are bugs.
+
+        Detected by SQLSTATE + server source function (see
+        `_is_rls_check_refusal`), never by the message text, which
+        ``lc_messages`` translates."""
         orig = exc.orig
-        if getattr(orig, "pgcode", None) == "42501" and "row-level security" in str(orig):
+        if _is_rls_check_refusal(orig):
             logger.warning("rls_write_refused_403", path=request.url.path)
             return JSONResponse(
                 status_code=403,
@@ -202,6 +228,58 @@ def register_error_handlers(app: FastAPI) -> None:
                 ),
             )
         logger.exception("programming_error", path=request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content=_envelope(
+                code=str(ErrorCode.UNKNOWN),
+                title="Internal server error",
+                detail="An unexpected error occurred.",
+                status=500,
+                field_errors={},
+                request_id=_request_id_for(request),
+            ),
+        )
+
+    @app.exception_handler(OperationalError)
+    async def _handle_operational_error(request: Request, exc: OperationalError) -> JSONResponse:
+        """Q01-10 follow-up: transient contention, not bugs — 503 +
+        Retry-After so the client retries; ``get_db_sync`` rolls back.
+          * 55P03: a lock wait hit ``lock_timeout`` (the refresh-family mutex
+            wait, AUTH_LOCK_TIMEOUT_MS; or DB_LOCK_TIMEOUT_MS if configured).
+          * 40P01: deadlock victim (defence in depth).
+        Every other OperationalError stays a generic 500."""
+        orig = exc.orig
+        code = getattr(orig, "pgcode", None) or getattr(orig, "sqlstate", None)
+        if code == "40P01":
+            logger.warning("db_deadlock_503", path=request.url.path)
+            return JSONResponse(
+                status_code=503,
+                content=_envelope(
+                    code=str(ErrorCode.DEADLOCK_DETECTED),
+                    title="Busy, please retry",
+                    detail="Two requests collided on the same records. Nothing was saved; "
+                    "retry in a moment.",
+                    status=503,
+                    field_errors={},
+                    request_id=_request_id_for(request),
+                ),
+                headers={"Retry-After": "1"},
+            )
+        if code == "55P03":
+            logger.warning("db_lock_timeout_503", path=request.url.path)
+            return JSONResponse(
+                status_code=503,
+                content=_envelope(
+                    code=str(ErrorCode.LOCK_TIMEOUT),
+                    title="Busy, please retry",
+                    detail="The record is being updated by another request. Retry in a moment.",
+                    status=503,
+                    field_errors={},
+                    request_id=_request_id_for(request),
+                ),
+                headers={"Retry-After": "1"},
+            )
+        logger.exception("operational_error", path=request.url.path)
         return JSONResponse(
             status_code=500,
             content=_envelope(

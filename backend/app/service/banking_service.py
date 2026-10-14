@@ -137,7 +137,11 @@ def create_bank_account(
         last_reconciled_date=last_reconciled_date,
     )
     # Q01-02 M1: the pre-check above only sees firms in the caller's scope;
-    # the index sees every firm. Same answer either way, naming nothing.
+    # the index sees every firm. A clash with a VISIBLE account is answered
+    # above and names that bank_account_id (the caller may open it); a clash
+    # with one in a firm the caller can't see lands here and names no
+    # account, so nothing about the hidden firm leaks. Same refusal and fix
+    # ("use its own sub-ledger") either way; only the visible case says which.
     with unique_violation_as_422(
         session,
         constraint="uq_bank_account_ledger",

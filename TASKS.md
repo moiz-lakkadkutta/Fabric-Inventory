@@ -19,9 +19,9 @@ This section supersedes the 2026-05-10 cutover block for task selection. The `TA
 - **Trial blockers, in order:**
   1. **CA sign-off** on the GST/accounting treatments merged in #214 (**#217**; includes DEBT-01). The treatments are live without CA review.
   2. **Deployment never run** (E01 deploy half). This blocks E02–E05.
-  3. **Quality gates:** Q01 security review done and its P1s fixed on `fixes-2026-10-10` (pending sign-off, see `docs/retros/task-batch-2026-10-10.md`); Q02–Q06 not started.
+  3. **Quality gates:** Q01 security review done; P1s fixed on `fixes-2026-10-10` (#223) and the remaining P2/P3s on `fixes-2026-10-12` (stacked PR), both pending sign-off (see `docs/retros/task-batch-2026-10-10.md` and `docs/retros/task-batch-2026-10-12.md`); Q02–Q06 not started.
 - **Not built:** partial sales/purchase returns (D01–D04). Only full cancellation of a finalized invoice exists, via the §34 credit note (#199 / #214).
-- **Open issues:** #209, #215 and #216 items 1–2 are fixed on the integration branch `fixes-2026-10-10` (2026-10-10, PENDING MOIZ/CA sign-off; not on `main`). Still open: #216 items 3–4 (SEZ reporting, buyer-GSTIN snapshot), #210 (test gap), and Q01 P2/P3 findings (`docs/reviews/security/q01-security-review.md`). Debt: DEBT-02/03 fixed on `fixes-2026-10-10`; DEBT-04 fixed on `fix/debt-04` (separate PR); FUP-205-A to C below.
+- **Open issues:** #209, #215 and #216 items 1–2 are fixed on the integration branch `fixes-2026-10-10` (2026-10-10, PENDING MOIZ/CA sign-off; not on `main`). Still open: #216 items 3–4 (SEZ reporting, buyer-GSTIN snapshot), #210 (test gap), #216 purchase-side void numbering + debit note (deferred). Q01 P2/P3 findings are fixed on `fixes-2026-10-12` (PENDING MOIZ SIGN-OFF). Debt: DEBT-02/03 fixed on `fixes-2026-10-10`; DEBT-04 merged (#222); FUP-205-A to C below.
 - **Open decisions for Moiz:** an LUT flag for exports/SEZ (always IGST today); widening `place_of_supply_state` (VARCHAR(2)) for the portal's "96" export code.
 
 ### Locked decisions (see plan doc §2)
@@ -103,7 +103,7 @@ Per CLAUDE.md: each task gets its own `task/<id>-slug` branch. Self-review + mer
 | TASK-TR-E01a | Deploy-artifact repo fixes | **Done** | #108 |
 | TASK-TR-E04 | Error states + onboarding polish (invite→accept→first-login) | Blocked | E01. (Onboarding lockouts fixed in #208) |
 | TASK-TR-E05 | Staging environment + staging→prod promotion | Blocked | E01. Unmerged scaffolding on branch `task/int-0-staging-bootstrap` |
-| TASK-TR-Q01 | Security review pass — RLS isolation, permission matrix, idempotency | **In review** | Report `docs/reviews/security/q01-security-review.md` (0 P0 / 2 P1 / 4 P2 / 7 P3). P1s (Q01-01, Q01-02) + Q01-04/11 fixed on `fixes-2026-10-10`, PENDING MOIZ SIGN-OFF. Q01-03/05 + P3s open |
+| TASK-TR-Q01 | Security review pass — RLS isolation, permission matrix, idempotency | **In review** | Report `docs/reviews/security/q01-security-review.md` (0 P0 / 2 P1 / 4 P2 / 7 P3). P1s (Q01-01, Q01-02) + Q01-04/11 fixed on `fixes-2026-10-10` (#223); Q01-03/05/06/07/08/09/10/12/13 + two-tab refresh race fixed on `fixes-2026-10-12` (stacked on #223). All PENDING MOIZ SIGN-OFF. Retro `docs/retros/task-batch-2026-10-12.md` |
 | TASK-TR-Q02 | GST + accounting correctness audit | **Blocked on #217** | Run after the CA's answers so the audit checks the confirmed treatments |
 | TASK-TR-Q03 | E2E critical-journeys suite — 4 journeys green | Blocked | D04 (returns journey); other journeys partly covered by `cutover.spec.ts` + `manufacturing-pipeline.spec.ts` |
 | TASK-TR-S01 | *(Stretch)* Sales quotations — service + UI | **Stretch** | only if ahead |
@@ -193,7 +193,7 @@ Each PR was merged with a known open item. **None is a live bug today**, but DEB
 ---
 
 ### DEBT-04: E2E acceptance stack wedges intermittently
-**Status:** In review (`fix/debt-04`): root-caused, see findings below
+**Status:** Done — merged as #222 (single-flight auth bootstrap fixes the StrictMode double `/auth/refresh`; Playwright timeouts; CI log artifacts)
 **Files touched:** `docker-compose.yml`, `docker-compose.e2e.yml`, `.github/workflows/ci.yml`, `frontend/__tests__/e2e/`
 
 **Scope:**

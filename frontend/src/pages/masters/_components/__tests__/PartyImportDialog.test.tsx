@@ -154,6 +154,25 @@ describe('validateRow', () => {
     expect(v.errors).toEqual([]);
     expect(v.warnings.length).toBeGreaterThan(0);
   });
+
+  it('warns when the GSTIN check digit does not match (server will reject it)', () => {
+    const v = _internal.validateRow({
+      rowNumber: 1,
+      raw: {},
+      mapped: { code: 'C1', name: 'A', gstin: '27AAACR5055K1Z8' },
+    });
+    expect(v.errors).toEqual([]);
+    expect(v.warnings).toContain("GSTIN check digit doesn't match — please re-check the number.");
+  });
+
+  it('does not warn for a checksum-valid GSTIN', () => {
+    const v = _internal.validateRow({
+      rowNumber: 1,
+      raw: {},
+      mapped: { code: 'C1', name: 'A', gstin: '27aaacr5055k1z7' },
+    });
+    expect(v.warnings).toEqual([]);
+  });
 });
 
 describe('runWithConcurrency', () => {

@@ -53,3 +53,12 @@ services:
       # Same headroom rationale for /auth/forgot (suite needs ~4 incl. retry).
       FORGOT_RATE_LIMIT_MAX_REQUESTS: "200"
       FORGOT_RATE_LIMIT_WINDOW_SECONDS: "60"
+      # Q01-03: MFA is mandatory for admin-class users by default, so every
+      # acceptance test's freshly signed-up Owner would be gated to the MFA
+      # enrolment screen. The acceptance specs exercise business flows, not
+      # enrolment (that is covered by backend/tests/security/
+      # test_mfa_mandatory_admin.py + the MfaEnroll vitest), so the throwaway
+      # E2E stack turns the policy off. Same safety net as the knobs above:
+      # `Settings._reject_mfa_policy_off_outside_dev` refuses to boot
+      # staging/prod with this set to false; this stack runs ENVIRONMENT=dev.
+      MFA_REQUIRED_FOR_ADMIN: "false"

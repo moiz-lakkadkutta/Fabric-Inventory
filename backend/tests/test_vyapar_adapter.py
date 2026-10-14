@@ -26,6 +26,7 @@ from app.service.migration import (
     VyaparExcelAdapter,
 )
 from app.service.migration.vyapar_adapter import _parse_decimal
+from tests._gstin import make_gstin
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "vyapar-sample.xlsx"
 
@@ -52,7 +53,7 @@ def test_extract_parties_yields_expected_rows() -> None:
     by_name = {p.name: p for p in parties}
     anjali = by_name["Anjali Saree Centre"]
     assert anjali.kinds == ("CUSTOMER",)
-    assert anjali.gstin == "24AAACR5055K1Z5"
+    assert anjali.gstin == make_gstin("24", "AAACR5055K")
     assert anjali.state_code == "GJ"
     # Code is derived from the first 3 alpha tokens.
     assert anjali.code.startswith("ANJALI-")
@@ -61,7 +62,7 @@ def test_extract_parties_yields_expected_rows() -> None:
 
     silk = by_name["Surat Silk Mills"]
     assert silk.kinds == ("SUPPLIER",)
-    assert silk.gstin == "24BBBCC5555K2Z9"
+    assert silk.gstin == make_gstin("24", "BBBCC5555K", "2")
 
     karigar = by_name["Imran Karigar"]
     assert karigar.kinds == ("KARIGAR",)

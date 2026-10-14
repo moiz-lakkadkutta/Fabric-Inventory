@@ -64,7 +64,9 @@ _NO_PERMISSION_ROUTES = {
 _FIRM_DENIED_TITLE = "No access to that firm"
 # Media types FastAPI decodes as a JSON body (fastapi/routing.py: maintype
 # "application" and subtype "json" or "*+json", parsed case-insensitively).
-_JSON_CONTENT_TYPES = (
+# None = the header omitted entirely: FastAPI then parses the body as JSON too.
+_JSON_CONTENT_TYPES: tuple[str | None, ...] = (
+    None,
     "application/json",
     "Application/JSON; charset=utf-8",
     "application/vnd.api+json",
@@ -155,17 +157,13 @@ async def test_q01_02_every_guarded_route_refuses_an_ungranted_firm_target(
             ]
             if method in {"POST", "PUT", "PATCH", "DELETE"}:
                 for ctype in _JSON_CONTENT_TYPES:
+                    headers = {**bearer(ctx["token"]), **idem()}
+                    if ctype is not None:
+                        headers["Content-Type"] = ctype
                     variants.append(
                         (
-                            f"body[{ctype}]",
-                            {
-                                "headers": {
-                                    **bearer(ctx["token"]),
-                                    **idem(),
-                                    "Content-Type": ctype,
-                                },
-                                "content": json.dumps({"firm_id": ctx["f2"]}),
-                            },
+                            f"body[{ctype or 'no Content-Type'}]",
+                            {"headers": headers, "content": json.dumps({"firm_id": ctx["f2"]})},
                         )
                     )
                 variants[0][1]["headers"] = {**variants[0][1]["headers"], **idem()}

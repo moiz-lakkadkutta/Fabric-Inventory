@@ -7,7 +7,7 @@ Encrypted columns (gstin, pan, phone) go through `app.utils.crypto`
 helpers — stubs for MVP, swap-in target for Phase-2 envelope encryption.
 
 Validations live in the service layer:
-- GSTIN format + state-code prefix (#215; checksum digit not yet validated).
+- GSTIN format + state-code prefix (#215) + mod-36 check digit.
 - Code/name non-empty.
 - Code uniqueness per (org, firm) — DB-enforced via
   `party_org_id_firm_id_code_key`; service catches early for clean 422.
@@ -54,7 +54,7 @@ _PAN_REGEX = re.compile(r"^[A-Z]{5}\d{4}[A-Z]$")
 def _validate_gstin(gstin: str | None) -> None:
     """Format + state-code-prefix check (#215); the rule lives in
     ``app.utils.gst_states.gstin_validation_error`` (shared with the Vyapar
-    importer). The checksum digit is not validated yet."""
+    importer), including the mod-36 check digit."""
     if gstin is None or gstin == "":
         return
     error = gstin_validation_error(gstin)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from sqlalchemy.engine import Engine
 
+from tests._gstin import make_gstin
 from tests.security._q01_helpers import bearer, idem, q01_client, signup
 
 
@@ -26,7 +27,7 @@ async def test_q01_cross_org_by_id_access_is_404(sync_engine: Engine) -> None:
                 "code": "Q01-IDOR",
                 "name": "A's customer",
                 "is_customer": True,
-                "gstin": "27ABCDE1234F1Z5",
+                "gstin": make_gstin("27", "ABCDE1234F"),
                 "phone": "+919999999999",
             },
         )

@@ -68,3 +68,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "mfa_policy_enforced: run with the real MFA-mandatory-for-admin policy (Q01-03); conftest turns it off otherwise",
+]

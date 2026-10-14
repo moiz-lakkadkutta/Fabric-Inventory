@@ -8,6 +8,7 @@ import Forgot from '@/pages/auth/Forgot';
 import Invite from '@/pages/auth/Invite';
 import Login from '@/pages/auth/Login';
 import Mfa from '@/pages/auth/Mfa';
+import MfaEnroll from '@/pages/auth/MfaEnroll';
 import Onboarding from '@/pages/auth/Onboarding';
 import ResetPassword from '@/pages/auth/ResetPassword';
 import Dashboard from '@/pages/Dashboard';
@@ -58,6 +59,9 @@ import SalesOrderList from '@/pages/sales/SalesOrderList';
 const router = createBrowserRouter([
   { path: '/login', element: <Login /> },
   { path: '/mfa', element: <Mfa /> },
+  // Q01-03: public route (outside RequireAuth) — it is where RequireAuth
+  // sends an admin who must enrol TOTP; it holds its own token check.
+  { path: '/mfa/enroll', element: <MfaEnroll /> },
   { path: '/forgot', element: <Forgot /> },
   // CUT-303: /reset/:token is a public route (outside RequireAuth) —
   // the whole point is letting the user back in when they can't log

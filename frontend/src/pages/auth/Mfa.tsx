@@ -26,6 +26,9 @@ const ERROR_SENTINEL = '000000';
 export default function Mfa() {
   const [code, setCode] = React.useState('');
   const [error, setError] = React.useState(false);
+  // Q01-03 follow-up: sign in with a one-time backup code instead of TOTP.
+  const [useBackup, setUseBackup] = React.useState(false);
+  const [backupCode, setBackupCode] = React.useState('');
   const navigate = useNavigate();
   const pending = usePendingMfa();
   const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
@@ -54,7 +57,7 @@ export default function Mfa() {
         email: pending.email,
         password: pending.password,
         org_name: pending.org_name,
-        totp_code: code,
+        ...(useBackup ? { backup_code: backupCode.trim() } : { totp_code: code }),
         idempotencyKey,
       },
       {
@@ -71,7 +74,7 @@ export default function Mfa() {
     );
   };
 
-  const ready = code.length === 6;
+  const ready = useBackup ? backupCode.replace(/[^a-z0-9]/gi, '').length === 10 : code.length === 6;
 
   return (
     <AuthShell>
@@ -80,7 +83,31 @@ export default function Mfa() {
         subtitle="Enter the 6-digit code from your authenticator app."
       >
         <div className="flex flex-col gap-5">
-          <CodeInput value={code} onChange={onChange} error={error} />
+          {useBackup ? (
+            <input
+              aria-label="Backup code"
+              autoComplete="off"
+              value={backupCode}
+              onChange={(e) => {
+                setBackupCode(e.target.value);
+                if (error) setError(false);
+              }}
+              placeholder="xxxxx-xxxxx"
+              className="num"
+              style={{
+                height: 44,
+                padding: '0 12px',
+                borderRadius: 6,
+                border: `1.5px solid ${error ? 'var(--danger)' : 'var(--border-default)'}`,
+                background: 'var(--bg-surface)',
+                fontSize: 16,
+                letterSpacing: '0.08em',
+              }}
+              autoFocus
+            />
+          ) : (
+            <CodeInput value={code} onChange={onChange} error={error} />
+          )}
           {error && (
             <div
               role="alert"
@@ -95,18 +122,26 @@ export default function Mfa() {
             >
               <AlertCircle size={14} color="var(--danger)" />
               <span>
-                Code didn't match. <strong>2 tries left</strong> before this device is locked for 15
-                minutes.
+                {useBackup
+                  ? "That code didn't work. Each backup code works once. If you've used all of them, contact your administrator for an MFA reset."
+                  : "Code didn't match. If you just set up two-factor, wait for the next code in your app — a code can't be used twice."}
               </span>
             </div>
           )}
           <div className="flex justify-between" style={{ fontSize: 12.5 }}>
-            <Link to="/login" style={{ color: 'var(--accent)', fontWeight: 500 }}>
-              Use a backup code
+            <button
+              type="button"
+              onClick={() => {
+                setUseBackup((v) => !v);
+                setError(false);
+              }}
+              style={{ color: 'var(--accent)', fontWeight: 500 }}
+            >
+              {useBackup ? 'Use your authenticator app' : 'Use a backup code'}
+            </button>
+            <Link to="/login" style={{ color: 'var(--text-tertiary)' }}>
+              Back to sign in
             </Link>
-            <span style={{ color: 'var(--text-tertiary)' }}>
-              Resend in <span className="num">0:30</span>
-            </span>
           </div>
           <Button size="lg" disabled={!ready} onClick={onVerify}>
             {error ? 'Try again' : 'Verify'}

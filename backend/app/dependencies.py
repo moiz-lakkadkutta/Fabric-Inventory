@@ -14,10 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from .db import get_sessionmaker, get_sync_sessionmaker
-from .exceptions import PermissionDeniedError, TokenInvalidError
+from .exceptions import MfaEnrollmentRequiredError, PermissionDeniedError, TokenInvalidError
 from .middleware.rate_limit import _get_redis
 from .models import AppUser
-from .service import firm_scope_service
+from .service import firm_scope_service, mfa_policy_service
 from .service.identity_service import TokenPayload, verify_jwt
 
 
@@ -142,7 +142,7 @@ async def get_current_user(
         raise TokenInvalidError("Missing or invalid Authorization header")
     token = auth_header.removeprefix("Bearer ").strip()
     payload = verify_jwt(token)
-    if payload.token_type != "access":  # noqa: S105 — JWT type discriminator
+    if payload.token_type not in ("access", "mfa_enrollment"):
         raise TokenInvalidError("Expected access token")
 
     # TS-04: jti denylist — async Redis check.
@@ -176,6 +176,30 @@ async def get_current_user(
 
     if payload.pv != user.permissions_version:
         raise TokenInvalidError("Token permissions are stale — please re-authenticate")
+
+    # Q01-03: MFA is mandatory for admin-class users. An enrolment-only token
+    # is admitted on the enrolment routes alone; a full token of a user who
+    # still has to enrol is gated to the same routes (+ switch-firm). The
+    # route TEMPLATE is matched (scope["route"].path), so path params,
+    # trailing segments or a root_path can't smuggle a different route in;
+    # no matched route → not allowlisted (fail closed).
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None)
+    if payload.token_type == "mfa_enrollment":  # noqa: S105 — JWT type discriminator
+        if route_path not in mfa_policy_service.ENROLLMENT_TOKEN_ROUTES:
+            raise MfaEnrollmentRequiredError(
+                "Set up two-factor authentication before using the app: "
+                "POST /auth/mfa/setup, then /auth/mfa/confirm, then sign in again."
+            )
+    elif route_path not in mfa_policy_service.GATED_ACCESS_TOKEN_ROUTES and (
+        mfa_policy_service.enrollment_required(
+            db, user_id=user.user_id, mfa_enabled=bool(user.mfa_enabled)
+        )
+    ):
+        raise MfaEnrollmentRequiredError(
+            "Your role requires two-factor authentication. Set it up "
+            "(POST /auth/mfa/setup, then /auth/mfa/confirm) to continue."
+        )
 
     return payload
 

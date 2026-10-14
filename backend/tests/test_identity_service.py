@@ -298,8 +298,17 @@ def test_refresh_token_already_revoked_raises(
     pair = identity_service.login(
         db_session, email="owner@example.com", password=password, org_id=org_id
     )
-    identity_service.refresh_token(db_session, refresh_token=pair.refresh_token)
-    with pytest.raises(TokenInvalidError, match=r"not found|revoked"):
+    successor = identity_service.refresh_token(db_session, refresh_token=pair.refresh_token)
+    # Q01-10: inside the reuse interval the SAME successor comes back.
+    again = identity_service.refresh_token(db_session, refresh_token=pair.refresh_token)
+    assert again == successor
+    # After it, the rotated token is dead (reuse detection).
+    real_now = identity_service._now_utc
+    with (
+        pytest.MonkeyPatch.context() as mp,
+        pytest.raises(TokenInvalidError, match=r"not found|revoked"),
+    ):
+        mp.setattr(identity_service, "_now_utc", lambda: real_now() + datetime.timedelta(minutes=5))
         identity_service.refresh_token(db_session, refresh_token=pair.refresh_token)
 
 

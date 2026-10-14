@@ -66,6 +66,19 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
 - **Repro:** `test_q01_rbac_mfa.py::test_q01_03_owner_without_mfa_cannot_get_a_session` shows a fresh Owner login returning `access_token` from the password alone.
 - **Suggested fix:** If the principal holds any admin-class permission and `mfa_enabled = false`, return `requires_mfa_enrollment` with a short-lived enrolment-only token (scoped to `/auth/mfa/setup|confirm`) instead of a full pair. Add a grace period for existing Owners.
 - **Gate:** **Moiz** (auth/security policy and UX).
+- **Fix (branch `fu/auth`, PENDING MOIZ SIGN-OFF):**
+  - "Admin-class" is decided by permission (`mfa_policy_service.MFA_MANDATORY_PERMISSIONS`): holding `admin.user.manage` or `identity.role.create/update/delete` in any role, org-wide or in any firm. That covers OWNER and any custom delegate.
+  - Login for an admin-class user without TOTP returns `requires_mfa_enrollment: true` plus a 15-minute `enrollment_token` (JWT `token_type="mfa_enrollment"`, no permissions, no firm, no session row, no refresh token, no cookie). `get_current_user` admits it only on `/auth/mfa/setup`, `/auth/mfa/confirm`, `/auth/me` and `/auth/logout` (matched on the route template). Every other route returns 403 `MFA_ENROLLMENT_REQUIRED`. It cannot be refreshed or switched into a full pair.
+  - A full token such a user already holds (signup, a pre-rollout session, a refresh of either) is gated the same way, plus `/auth/switch-firm`, whose output stays gated. Existing owners (Moiz's account) are therefore forced to enrol on their next request, not only on their next login.
+  - After `/auth/mfa/confirm`, the next login returns `requires_mfa` and goes through `/auth/mfa-verify`. The FE `/mfa/enroll` screen signs out after confirming.
+  - Setting `MFA_REQUIRED_FOR_ADMIN` defaults to true. False is a boot refusal outside `ENVIRONMENT=dev`. The E2E overlay sets it false. The pytest suite turns the policy off at the `mfa_policy_service.is_enforced` seam unless a test carries `@pytest.mark.mfa_policy_enforced`.
+  - Logout now denylists the presented bearer (access or enrolment token) on every path, not only after a successful refresh revocation.
+  - **Recovery (verifier round 1):**
+    - `/auth/mfa/confirm` issues 10 one-time backup codes, stored as bcrypt hashes in `app_user.mfa_backup_codes` (migration 211). `/auth/mfa-verify` accepts `backup_code` in place of `totp_code`; each code works once, the user row is locked while it is spent, and every use is audited as `mfa_backup_code_used`.
+    - Ops break-glass: `scripts/reset_mfa.py --email --org --reason` clears the enrolment, bumps `permissions_version`, revokes all of the user's sessions and audits `mfa_reset`. See `docs/ops/mfa-reset-runbook.md`.
+    - `enrollment_token` and `backup_code` are added to the idempotency never-cache fields.
+    - **Verifier round 2:** backup codes are now single-use under concurrency. The spend re-reads the user with `populate_existing` under `FOR NO KEY UPDATE`; before, six concurrent requests with one code all got 200.
+    - Failed TOTP and backup-code attempts are audited as `mfa_failed` with the factor type only, never the value. The response stays the generic 401.
 
 ### Q01-04 · P2 · Idempotency cache is not principal-scoped and is replayed before authentication (including token-bearing responses)
 
@@ -100,6 +113,12 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
 - **Repro:** `test_q01_rbac_mfa.py::test_q01_05_user_manager_cannot_demote_an_owner` sets up an org with 2 Owners and a custom role `{admin.user.manage, masters.party.read}`. `PATCH /admin/users/{owner2}/role` returns 204. Control: the same delegate cannot invite into Owner (403), so the PRIV-1/IDM-1 fix holds.
 - **Suggested fix:** In `change_user_role`, require `target_current_perms ⊆ actor_effective` (an actor cannot modify a user who outranks them), and apply the same rule to any future suspend/deactivate endpoint.
 - **Gate:** **Moiz** (RBAC/security).
+- **Verifier follow-ups (branch `fu/rbac`):**
+  - Concurrent Owner demotions can no longer leave zero Owners: `lock_org_role_changes` takes a per-org advisory lock at the top of `change_user_role`.
+  - `PATCH /admin/roles/{id}` and `DELETE /admin/roles/{id}` apply the same outrank rule to the role's CURRENT permissions, in every scope it is assigned in.
+  - A role delete and an assignment of that role serialize on a `FOR UPDATE` lock of the role row.
+  - Soft-deleted users no longer block a role delete.
+- **Fix (branch `fu/rbac`, PENDING MOIZ SIGN-OFF):** `invite_service.assert_actor_outranks_target` requires the target's current permissions ⊆ the actor's in every scope the target holds a role in (403, names the permissions). `assert_not_last_owner` (the Owner-code invariant) now counts only live, active, unsuspended Owners (422). Both are public helpers for the suspend/deactivate/remove endpoints, none of which exist yet.
 
 ### Q01-11 · P2 · Writes are acknowledged (and idempotency-cached) before COMMIT
 
@@ -115,30 +134,55 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
 - **Repro:** `test_q01_rls_catalog.py::test_q01_06_foreign_org_guc_sees_zero_catalog_rows` shows `{'uom': 2330, 'hsn': 2330}` visible under a foreign org. `test_q01_06_every_tenant_table_has_rls` fails on `{'hsn','uom'}`.
 - **Fix:** One migration: `ENABLE ROW LEVEL SECURITY` plus the standard NULLIF org policy (USING and WITH CHECK). Then remove `_KNOWN_NO_RLS`.
 - **Gate:** **Moiz** (schema).
+- **Fix (branch `fu/dbh`, migration `211_db_hardening`, PENDING MOIZ SIGN-OFF):** both tables have only per-org rows (no `org_id IS NULL` globals, no `firm_id`), so they get the plain INT-9 org policy on USING and WITH CHECK; no FORCE (consistent with every other table). `_KNOWN_NO_RLS` removed. `app.cli.seed` now pins the org GUC + system firm scope (it was already broken for COA under `fabric_app`).
 
 ### Q01-07 · P3 · Six policies use `current_setting()` without missing_ok/NULLIF and have no explicit WITH CHECK
 
 - **Where:** `job_work_order`, `job_work_order_line`, `job_work_receipt`, `job_work_receipt_line`, `material_issue`, `material_issue_line` (migrations `2026051100001_task_cut_305_jobwork.py`, `2026051500002_task_tr_a06_material_issue.py`, both post-INT-9). For `FOR ALL` policies, WITH CHECK falls back to USING, so writes are still constrained. The only effect is that an unset GUC **raises** (`unrecognized configuration parameter` → 500) instead of returning 0 rows. The policies fail closed and do not leak.
 - **Repro:** `test_q01_rls_catalog.py::test_q01_07_all_policies_use_missing_ok_guc`.
 - **Fix:** Re-create the policies with the INT-9 NULLIF form and an explicit WITH CHECK. **Gate:** Moiz (schema).
+- **Fix (branch `fu/dbh`, migration `211_db_hardening`, PENDING MOIZ SIGN-OFF):** the six re-created in the INT-9 form. A `pg_policies` sweep found no other raising GUC read. The migration aborts if any policy still uses the one-argument form, and `test_q01_07_*` guard the catalog (missing_ok + NULLIF), explicit WITH CHECK, and behaviour (unset and empty GUC → 0 rows, no error, on every RLS table).
 
 ### Q01-08 · P3 · Soft-deleted roles are still assignable and still grant permissions
 
 - **Where:** `invite_service.py:418-419` and `:133` look up the role without `Role.deleted_at IS NULL`, and `rbac_service.get_user_permissions` (`:645`) never filters deleted roles. A deleted role can be assigned, grants its permissions, and is hidden from `GET /admin/roles`.
 - **Repro:** `test_q01_rbac_mfa.py::test_q01_08_soft_deleted_role_cannot_be_assigned` gets 204.
 - **Fix:** Add a `deleted_at IS NULL` filter in both lookups and join `Role` with that filter in `get_user_permissions`. **Gate:** Moiz (RBAC), XS effort.
+- **Fix (branch `fu/rbac`, PENDING MOIZ SIGN-OFF):** `get_user_permissions` ignores deleted roles. Invite create, invite accept and role change return 422 for a deleted role, so an invite minted before its role was deleted can't be accepted either. Deleting a role that is still assigned is **blocked** (422 "assigned to N users. Reassign them first"), never cascaded. Migration `211_rbac_followups` bumps `permissions_version` for anyone still holding a deleted role.
 
 ### Q01-09 · P3 · Runtime role has INSERT/UPDATE/DELETE on `alembic_version`
 
 - **Where:** `alembic/versions/2026050600001_task_int_9_app_role_split.py:95` grants on ALL TABLES, and the default privileges do the same. An app-level SQL bug could corrupt migration state.
 - **Repro:** `test_q01_rls_catalog.py::test_q01_09_runtime_role_cannot_write_alembic_version`.
 - **Fix:** `REVOKE INSERT, UPDATE, DELETE ON alembic_version FROM fabric_app`. **Gate:** Moiz (schema/grants).
+- **Fix (branch `fu/dbh`, migration `211_db_hardening`, PENDING MOIZ SIGN-OFF):** revokes INSERT/UPDATE/DELETE/TRUNCATE; SELECT kept (the test harness reads the revision as `fabric_app`; `/ready` is `SELECT 1`). Also `REVOKE CREATE ON SCHEMA public FROM PUBLIC` in the same migration (no-op on PG 16, closes the PG 14 default); downgrade does not re-grant it.
 
 ### Q01-10 · P3 · Refresh-token rotation race: one refresh token can be redeemed several times concurrently
 
 - **Where:** `app/service/identity_service.py:374-394`. The code SELECTs the session row, checks `revoked_at`, then updates by primary key, with no `FOR UPDATE` and no conditional `UPDATE … WHERE revoked_at IS NULL RETURNING`. There is also no reuse detection: presenting a revoked refresh token does not revoke the token family.
 - **Repro:** `test_q01_rbac_mfa.py::test_q01_10_refresh_token_single_use_under_concurrency` gives `one refresh token redeemed 4 times`.
 - **Fix:** `UPDATE session SET revoked_at=now() WHERE … AND revoked_at IS NULL RETURNING session_id`, and continue only if a row comes back. Optionally revoke all of the user's sessions when a revoked token is presented. **Gate:** Moiz (auth).
+- **Fix (branch `fu/auth`, migration `211_refresh_rotation`, PENDING MOIZ SIGN-OFF):**
+  - `refresh_token` locks the presented session row (`SELECT … FOR UPDATE`), so concurrent redemptions serialise and exactly one successor is minted.
+  - Reuse interval (`REFRESH_REUSE_GRACE_SECONDS`, default 20, max 60): a token rotated inside the window gets back the SAME successor pair. This also fixes the cross-tab half of DEBT-04 (two tabs booting at once both stay logged in) without forking the family.
+  - The successor pair is stored only as AES-256-GCM ciphertext (`session.grace_successor_ct`), keyed by HMAC-SHA256 of the predecessor token. The DB holds only `sha256(token)`, so a DB read cannot open it.
+  - Reuse detection: a rotated token presented after the window revokes its whole family (`session.family_id`; the user's other logins are untouched). It is audited as `refresh_reuse_detected` and committed before the uniform 401.
+  - Logout revokes the whole family and wipes the grace envelopes.
+  - Repro: 4 concurrent redemptions went from 4 distinct pairs to 1 pair, returned to all 4 callers.
+  - **Verifier round 1 follow-up:**
+    - `revoke_family` and `refresh_token` both lock the whole family (`FOR UPDATE`, `session_id` order) first. A successor being minted concurrently is now revoked by reuse detection and by logout, and the shared lock order means no lock-order deadlock.
+    - Rotation wipes every older envelope, so a family has at most one. The envelope key is peppered: `HMAC(HKDF(JWT_SECRET), label || token)`.
+    - Logout's DB work runs in the threadpool. It used to run on the event loop, where it deadlocked against a refresh holding the lock.
+    - The app engines set `lock_timeout` (`DB_LOCK_TIMEOUT_MS`, default 5000). A lock wait past it returns 503 `LOCK_TIMEOUT`.
+    - The `refresh_reuse_detected` audit is kept when `sessions_revoked=0`, with a detail saying the family was already revoked.
+    - Other `async def` routes doing sync DB work, not changed: `migrations.upload_migration` and `migrations.approve_migration`.
+  - **Verifier round 2 follow-up:**
+    - The family lock is now ONE mutex: a transaction-scoped advisory lock `pg_advisory_xact_lock(hashtextextended('session_family:' || family_id, 0))`. Refresh, grace re-issue, reuse detection, logout and the ops MFA reset all take it. Row-lock ordering over a growing family had deadlocked (4–18% 40P01) and cost O(family size) per refresh.
+    - Bounded stress (12 iterations × 20 threads, grace 0 and 20 s): 0 deadlocks, 0 lock timeouts, 0 sessions surviving a logout. The row-lock version fails the same test with 40P01.
+    - No engine-wide `lock_timeout` any more (`DB_LOCK_TIMEOUT_MS` now defaults to 0): a long import holding the org audit lock had made other users' writes and logins return 503.
+    - Only the family-mutex wait is bounded, by `AUTH_LOCK_TIMEOUT_MS` (5 s, `SET LOCAL`). The timeout resets once the mutex is held, so a reuse detection's audit row can't roll the revocation back.
+    - 40P01 maps to 503 `DEADLOCK_DETECTED` + `Retry-After`.
+    - The ops MFA reset revokes each of the user's families under that family's mutex.
 
 ### Q01-12 · P3 · The OpenAPI `x-permission` contract has drifted from the code
 
@@ -150,6 +194,7 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
   - `specs/api-phase3.yaml` **is not valid YAML** (line 377: an unquoted `{M: 40, …}` in a description).
 - **Impact:** None at runtime; enforcement is correct and every route is gated. But CLAUDE.md's "new endpoint is in OpenAPI spec with correct `x-permission`" control is not functioning, so a reviewer cannot use the spec to audit permissions.
 - **Fix:** Generate `x-permission` from the route dependency (the walker script in §7 already extracts it), or delete the hand-written field. Quote line 377. **Gate:** Decide (docs).
+- **Fix (branch `fu/spec`):** `specs/api-phase1.yaml` is now the contract for all 179 served operations, manufacturing included, each with the `x-permission` its route enforces (`public` / `authenticated` for the 14 auth/health routes). 7 spec paths were renamed to the routes' parameter names; 72 designed-but-unserved operations are marked `x-implemented: false`; added operations reference their schemas in `frontend/scripts/openapi-snapshot.json`. `specs/api-phase3.yaml` is quoted at line 377 and labelled a design document. Guard: `backend/tests/test_spec_permission_parity.py`; drift fixer: `uv run python -m scripts.spec_sync --write`.
 
 ### Q01-13 · P3 · Permission-catalog drift and coarse mappings
 
@@ -163,6 +208,16 @@ Each finding has an `xfail(strict=True)` reproduction in `backend/tests/security
   - `POST /bank-reconciliation/preview` (a read-only preview) is gated by `accounting.voucher.read`. This is the only mutating-verb route behind a read permission, and it is benign.
 - **Role-code logic in code:** `invite_service.py:458,499` uses `OWNER_ROLE_CODE` for the last-Owner guard and for org-wide assignment. This is a business invariant, not an authorization check, and is acceptable, but note it against the CLAUDE.md "no role names" rule.
 - **Gate:** Moiz (permission-model scope).
+- **Fix (branch `fu/rbac`, PENDING MOIZ SIGN-OFF):** routes switched only where a more precise code already existed. Migration `211_rbac_followups` grants the new code to every role holding the old one and bumps those holders' `permissions_version`:
+  - `GET /admin/roles` moves from `admin.user.manage` to `identity.role.read`.
+  - `POST /receipts` and `POST /payments` move from `banking.bank.create` to `accounting.voucher.post`.
+  - `GET /receipts` and `GET /payments` move from `banking.bank.read` to `accounting.voucher.read`.
+  - Caveats (access gained):
+    - ACCOUNTANT already held `identity.role.read`, so it now also gets `GET /admin/roles`. It could already read each role by id.
+    - A custom role holding `identity.role.read` without `admin.user.manage` gains the same list.
+    - A custom role that held `banking.bank.*` without `accounting.voucher.*` also gains the journal and voucher-list routes.
+    - No other system-role access changes.
+  - Everything else needs a permission code that doesn't exist yet (`*.delete`, `inventory.location.create`, `jobwork.order.receive`, `sales.invoice.delete`). Those, and the 10 dead codes, are left for Moiz.
 
 ---
 
