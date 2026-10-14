@@ -666,8 +666,10 @@ def test_gstr1_endpoint_returns_cdnr_and_xlsx_sheet(
     header = [c.value for c in ws[1]]
     values = [c.value for c in ws[2]]
     row = dict(zip(header, values, strict=True))
-    assert row["Note #"] == note["note_number"]
-    assert row["Original invoice #"] == note["invoice_number"]
+    # #216: the export carries the FULL numbers, not the bare serials.
+    assert row["Note #"] == note["note_no"] == f"{note['note_series']}/{note['note_number']}"
+    assert row["Original invoice #"] == note["invoice_no"]
+    assert note["invoice_no"] == f"{note['invoice_series']}/{note['invoice_number']}"
     assert row["Note type"] == "C"
     assert Decimal(str(row["CGST"])) == Decimal("25.00")
 

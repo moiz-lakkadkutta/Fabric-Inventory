@@ -218,6 +218,16 @@ class SalesInvoiceListItem(BaseModel):
     created_at: datetime.datetime
 
 
+class InvoiceCreditNoteRef(BaseModel):
+    """#216: the CGST §34 credit note issued against a cancelled invoice
+    (cross-period cancel). ``number`` is the full document number, e.g.
+    "CN/26-27/0001"; the PDF is at GET /invoices/{id}/credit-note/pdf."""
+
+    voucher_id: uuid.UUID
+    number: str
+    note_date: datetime.date
+
+
 class SalesInvoiceResponse(BaseModel):
     sales_invoice_id: uuid.UUID
     org_id: uuid.UUID
@@ -245,6 +255,10 @@ class SalesInvoiceResponse(BaseModel):
     lines: list[SiLineResponse]
     created_at: datetime.datetime
     updated_at: datetime.datetime
+    # #216: set only on a CANCELLED invoice whose cancel was a §34 credit
+    # note (later GST period). None for a same-period cancellation (a true
+    # cancellation — no credit note is issued) and for every other status.
+    credit_note: InvoiceCreditNoteRef | None = None
 
 
 class SalesInvoiceListResponse(BaseModel):
@@ -265,6 +279,13 @@ class InvoiceCancelRequest(BaseModel):
         if not v.strip():
             raise ValueError("reason must not be blank")
         return v.strip()
+
+
+class InvoiceDiscardRequest(BaseModel):
+    """Optional body for POST /invoices/{id}/discard — a free-text reason that
+    is recorded on the audit log (the voided number stays on the row)."""
+
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class SiLineCreateRequest(BaseModel):
@@ -300,6 +321,17 @@ class SalesInvoiceCreateRequest(BaseModel):
     bill_to_address: str | None = None
     ship_to_address: str | None = None
     notes: str | None = None
+    delivery_challan_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "Bill an ISSUED/ACKNOWLEDGED delivery challan (DEBT-02). Same firm + "
+            "customer; the stockable lines must bill exactly the challan's items "
+            "and quantities (SERVICE lines such as freight may be added). A challan "
+            "can be held by only one live invoice; cancelling it frees the challan. "
+            "Finalize then posts COGS from the challan's dispatch without relieving "
+            "stock a second time."
+        ),
+    )
     lines: list[SiLineCreateRequest] = Field(min_length=1)
 
     @field_validator("ship_to_state", mode="before")

@@ -1,0 +1,181 @@
+{# Shared A4 document styles — invoice.html.jinja + credit_note.html.jinja (#216). #}
+    /* CUT-205 — A4 page sizing for WeasyPrint. Per the wireframe at
+       docs/spikes/invoice-template-wireframe.html. Layout deliberately
+       stays "basic CSS"; WeasyPrint's CSS subset doesn't cover modern
+       flex tricks but grid + table + @page are stable. */
+    @page {
+      size: A4;
+      margin: 14mm 12mm 14mm 12mm;
+      @bottom-center {
+        content: "Page " counter(page) " of " counter(pages);
+        font-family: "Noto Sans", "Helvetica", "Arial", sans-serif;
+        font-size: 9pt;
+        color: #666;
+      }
+    }
+    html, body {
+      font-family: "Noto Sans", "Helvetica", "Arial", sans-serif;
+      font-size: 10pt;
+      color: #111;
+      line-height: 1.4;
+      margin: 0;
+      padding: 0;
+      background: #fff;
+    }
+    .invoice { max-width: 186mm; margin: 0 auto; }
+
+    .doc-title {
+      text-align: center;
+      font-size: 16pt;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      border-bottom: 2px solid #111;
+      padding-bottom: 4mm;
+      margin-bottom: 6mm;
+    }
+    .doc-title .alt {
+      display: block;
+      font-size: 9pt;
+      color: #666;
+      font-weight: 400;
+      letter-spacing: 0;
+      margin-top: 2mm;
+    }
+
+    .parties {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6mm;
+      margin-bottom: 6mm;
+    }
+    .party { border: 1px solid #ddd; padding: 4mm; border-radius: 2px; }
+    .party .name { font-weight: 700; font-size: 11pt; margin-bottom: 1.5mm; }
+    .party .meta { font-size: 9pt; color: #333; }
+    .party .meta div { margin-bottom: 1mm; }
+    .party .label {
+      display: inline-block;
+      width: 28mm;
+      color: #777;
+      font-size: 8.5pt;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4mm 6mm;
+      border: 1px solid #ddd;
+      padding: 3.5mm 4mm;
+      margin-bottom: 6mm;
+      border-radius: 2px;
+      background: #fafafa;
+    }
+    .meta-grid .cell .k {
+      display: block;
+      font-size: 8pt;
+      color: #777;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      margin-bottom: 0.5mm;
+    }
+    .meta-grid .cell .v {
+      font-size: 10pt;
+      font-weight: 600;
+      color: #111;
+    }
+
+    table.lines {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 5mm;
+      font-size: 9pt;
+    }
+    table.lines thead th {
+      background: #111;
+      color: #fff;
+      font-weight: 600;
+      text-align: left;
+      padding: 2.5mm 2mm;
+      font-size: 8.5pt;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    table.lines tbody td {
+      padding: 2mm 2mm;
+      border-bottom: 1px solid #eee;
+      vertical-align: top;
+    }
+    table.lines tbody tr:nth-child(even) td { background: #fafafa; }
+    table.lines tbody tr { page-break-inside: avoid; }
+    table.lines td.r, table.lines th.r { text-align: right; }
+    table.lines td.c, table.lines th.c { text-align: center; }
+    table.lines td.desc { font-weight: 500; }
+    table.lines td.hsn { font-family: "Courier New", monospace; font-size: 8.5pt; }
+
+    .totals-row {
+      display: grid;
+      grid-template-columns: 1fr 70mm;
+      gap: 6mm;
+      margin-bottom: 6mm;
+    }
+    .totals { border: 1px solid #ddd; padding: 3mm 4mm; font-size: 10pt; }
+    .totals dl {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 1.5mm 6mm;
+      margin: 0;
+    }
+    .totals dt { color: #555; }
+    .totals dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+    .totals .grand {
+      border-top: 2px solid #111;
+      margin-top: 2mm;
+      padding-top: 2mm;
+      font-weight: 700;
+      font-size: 12pt;
+    }
+    .totals .grand dt { color: #111; }
+
+    .in-words {
+      border: 1px solid #ddd;
+      padding: 3mm 4mm;
+      border-radius: 2px;
+      font-size: 9.5pt;
+      margin-bottom: 5mm;
+    }
+    .in-words .label {
+      display: block;
+      font-size: 8pt;
+      color: #777;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      margin-bottom: 1mm;
+    }
+    .in-words .value { font-style: italic; }
+
+    .footer {
+      display: grid;
+      grid-template-columns: 1fr 70mm;
+      gap: 6mm;
+      margin-top: 8mm;
+      page-break-inside: avoid;
+    }
+    .footer .qr-slot { font-size: 8pt; color: #888; }
+    .footer .signature { text-align: right; font-size: 9pt; }
+    .footer .signature .firm {
+      font-weight: 700;
+      margin-bottom: 14mm;
+      color: #111;
+    }
+    .footer .signature .role { color: #555; font-size: 8.5pt; }
+
+    .marker {
+      display: inline-block;
+      padding: 0.5mm 2mm;
+      border-radius: 2px;
+      background: #fee;
+      color: #a11;
+      font-size: 8.5pt;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+    }
+    .marker.no { background: #efefef; color: #555; }

@@ -37,10 +37,10 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.exceptions import InvoiceStateError
-from app.models import Firm, Item, Party, SalesInvoice
+from app.exceptions import InvoiceStateError, NotFoundError
+from app.models import Firm, Item, Party, SalesInvoice, Voucher
 from app.models.sales import InvoiceLifecycleStatus
-from app.service import gst_service, sales_service
+from app.service import accounting_service, gst_service, sales_service
 from app.service.gst_service import TaxType
 from app.utils.crypto import decrypt_pii, get_org_dek
 from app.utils.gst_states import normalize_state_code
@@ -244,6 +244,12 @@ def _doc_title_for(invoice: SalesInvoice, firm: Firm) -> str:
     return "Tax Invoice"
 
 
+def original_document_title(invoice: SalesInvoice, firm: Firm) -> str:
+    """#216: title of the ORIGINAL document a credit note is issued against
+    (Rule 53(1A)(g)) — the same title its own PDF carries."""
+    return _doc_title_for(invoice, firm)
+
+
 def _tax_split_label(invoice: SalesInvoice) -> str:
     """Drives whether the line table shows IGST or CGST+SGST columns."""
     if invoice.tax_type == TaxType.IGST.value:
@@ -406,6 +412,11 @@ def _load_invoice_for_render(
             "Cannot render PDF for a DRAFT invoice — finalize first.",
             title="Invoice not finalized",
         )
+    if invoice.lifecycle_status == InvoiceLifecycleStatus.DISCARDED:
+        raise InvoiceStateError(
+            "Cannot render PDF for a DISCARDED invoice — it was never issued.",
+            title="Invoice discarded",
+        )
 
     firm = session.execute(
         select(Firm).where(Firm.firm_id == invoice.firm_id, Firm.org_id == org_id)
@@ -454,8 +465,119 @@ def filename_for(invoice: SalesInvoice) -> str:
     return raw.replace("/", "_").replace("\\", "_")
 
 
+# ──────────────────────────────────────────────────────────────────────
+# #216 — Credit-note document (CGST Rule 53(1A)).
+#
+# Issued for a CROSS-period cancel of a finalized invoice (a §34 credit note
+# for the full value; #199). A same-period cancellation is a true
+# cancellation — no credit note exists, so there is nothing to render (404).
+# The note mirrors the original invoice line-for-line: same items, HSN,
+# taxable values, rates and CGST/SGST/IGST split, since it credits the whole
+# invoice. Rule 53(1A) particulars and where they come from:
+#   (a) supplier name / address / GSTIN ........ firm
+#   (b) nature of document ..................... "Credit Note"
+#   (c) serial number ≤16 chars, unique per FY . CREDIT_NOTE voucher
+#                                                series/number (CN/26-27/0001)
+#   (d) date of issue .......................... CREDIT_NOTE voucher_date
+#   (e) recipient name / address / GSTIN ....... party + invoice bill_to
+#   (f) unregistered: name / address / place of
+#       delivery / state ....................... party, bill_to, ship_to, PoS
+#   (g) serial no. + date of the tax invoice ... original invoice
+#   (h) value, taxable value, rate, tax credited invoice lines (per rate)
+#   (i) signature of supplier / authorised rep.  signature block
+# GATED — PENDING MOIZ + CA SIGN-OFF.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _load_credit_note_for_render(
+    session: Session, *, invoice_id: uuid.UUID, org_id: uuid.UUID
+) -> tuple[SalesInvoice, Firm, Party, Voucher]:
+    """Load the invoice + firm + party + its §34 credit-note voucher.
+
+    NotFoundError (404) when the invoice is not visible to this org (RLS /
+    wrong org) or has no §34 credit note: not cancelled, or cancelled in the
+    same GST period (a true cancellation — no credit note is issued)."""
+    invoice = sales_service.get_sales_invoice(session, org_id=org_id, sales_invoice_id=invoice_id)
+    note = accounting_service.find_sales_credit_note(session, invoice=invoice)
+    if note is None:
+        raise NotFoundError(
+            f"Invoice {invoice.series}/{invoice.number} has no credit note. A credit "
+            "note is issued only when a finalized invoice is cancelled in a later GST "
+            "period (CGST Act §34); a cancellation in the same month is a true "
+            "cancellation with no credit note."
+        )
+    firm = session.execute(
+        select(Firm).where(Firm.firm_id == invoice.firm_id, Firm.org_id == org_id)
+    ).scalar_one()
+    party = session.execute(
+        select(Party).where(Party.party_id == invoice.party_id, Party.org_id == org_id)
+    ).scalar_one()
+    return invoice, firm, party, note
+
+
+def _build_credit_note_context(
+    session: Session, *, invoice: SalesInvoice, firm: Firm, party: Party, note: Voucher
+) -> dict[str, Any]:
+    context = _build_context(session, invoice=invoice, firm=firm, party=party)
+    against_doc_title = context["doc_title"]  # the original's title, before overwrite
+    buyer = context["buyer"]
+    registered = bool(buyer["gstin"])
+    pos_code = context["invoice"]["place_of_supply_state"]
+    buyer["registered"] = registered
+    buyer["place_of_delivery"] = invoice.ship_to_address or invoice.bill_to_address
+    # Rule 53(1A)(f): an unregistered recipient's state is the place of supply.
+    if not buyer["state_code"] and pos_code:
+        buyer["state_code"] = pos_code
+        buyer["state_name"] = _state_name(pos_code)
+    context["doc_title"] = "Credit Note"
+    context["credit_note"] = {
+        "full_number": f"{note.series}/{note.number}",
+        "date_display": _fmt_date(note.voucher_date),
+        "reason": invoice.cancel_reason,
+        "against_doc_title": against_doc_title,
+        "against_invoice_number": context["invoice"]["full_number"],
+        "against_invoice_date": context["invoice"]["date_display"],
+    }
+    return context
+
+
+def render_credit_note_html(session: Session, *, invoice_id: uuid.UUID, org_id: uuid.UUID) -> str:
+    """invoice_id → rendered credit-note HTML (unit-test hook, like
+    ``render_invoice_html``). Raises NotFoundError when there is no §34
+    credit note for the invoice."""
+    invoice, firm, party, note = _load_credit_note_for_render(
+        session, invoice_id=invoice_id, org_id=org_id
+    )
+    context = _build_credit_note_context(
+        session, invoice=invoice, firm=firm, party=party, note=note
+    )
+    return _jinja_env.get_template("credit_note.html.jinja").render(**context)
+
+
+def render_credit_note_pdf(
+    session: Session, *, invoice_id: uuid.UUID, org_id: uuid.UUID
+) -> tuple[bytes, str]:
+    """Render the §34 credit note for ``invoice_id`` → (PDF bytes, filename).
+    Filename is the note number made download-safe, e.g. ``CN_26-27_0001.pdf``."""
+    invoice, firm, party, note = _load_credit_note_for_render(
+        session, invoice_id=invoice_id, org_id=org_id
+    )
+    context = _build_credit_note_context(
+        session, invoice=invoice, firm=firm, party=party, note=note
+    )
+    html = _jinja_env.get_template("credit_note.html.jinja").render(**context)
+    from weasyprint import HTML
+
+    pdf: bytes = HTML(string=html).write_pdf()
+    filename = f"{note.series}/{note.number}.pdf".replace("/", "_").replace("\\", "_")
+    return pdf, filename
+
+
 __all__ = [
     "filename_for",
+    "original_document_title",
+    "render_credit_note_html",
+    "render_credit_note_pdf",
     "render_invoice_html",
     "render_invoice_pdf",
 ]

@@ -209,6 +209,8 @@ def _dev_base_env() -> None:
     os.environ.pop("CORS_ORIGINS", None)
     os.environ.pop("SIGNUP_RATE_LIMIT_MAX_REQUESTS", None)
     os.environ.pop("SIGNUP_RATE_LIMIT_WINDOW_SECONDS", None)
+    os.environ.pop("FORGOT_RATE_LIMIT_MAX_REQUESTS", None)
+    os.environ.pop("FORGOT_RATE_LIMIT_WINDOW_SECONDS", None)
 
 
 def _non_dev_base_env(env: str) -> None:
@@ -219,6 +221,8 @@ def _non_dev_base_env(env: str) -> None:
     os.environ["REDIS_URL"] = "redis://localhost:6379/0"
     os.environ.pop("SIGNUP_RATE_LIMIT_MAX_REQUESTS", None)
     os.environ.pop("SIGNUP_RATE_LIMIT_WINDOW_SECONDS", None)
+    os.environ.pop("FORGOT_RATE_LIMIT_MAX_REQUESTS", None)
+    os.environ.pop("FORGOT_RATE_LIMIT_WINDOW_SECONDS", None)
 
 
 def test_signup_rate_limit_defaults_are_secure() -> None:
@@ -294,4 +298,98 @@ def test_signup_rate_limit_max_must_be_positive() -> None:
     os.environ["SIGNUP_RATE_LIMIT_MAX_REQUESTS"] = "0"
 
     with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        _build_settings()
+
+
+# ---------------------------------------------------------------------------
+# DEBT-03 forgot-password rate-limit guard: identical contract to the DOS-01
+# signup guard above. The knobs exist for the E2E acceptance stack
+# (ENVIRONMENT=dev) only; staging/prod must never run a looser policy.
+# ---------------------------------------------------------------------------
+
+
+def test_forgot_rate_limit_defaults_are_secure() -> None:
+    """Unset env → the strict CUT-501a policy: 5 forgot requests per 60s per IP."""
+    from app.config import (
+        SECURE_FORGOT_RATE_LIMIT_MAX_REQUESTS,
+        SECURE_FORGOT_RATE_LIMIT_WINDOW_SECONDS,
+    )
+
+    assert SECURE_FORGOT_RATE_LIMIT_MAX_REQUESTS == 5
+    assert SECURE_FORGOT_RATE_LIMIT_WINDOW_SECONDS == 60
+
+    _dev_base_env()
+    settings = _build_settings()
+    assert settings.forgot_rate_limit_max_requests == 5  # type: ignore[attr-defined]
+    assert settings.forgot_rate_limit_window_seconds == 60  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_forgot_rate_limit_defaults_are_secure_in_non_dev(env: str) -> None:
+    """staging/prod with nothing set boots on the strict policy."""
+    _non_dev_base_env(env)
+    settings = _build_settings()
+    assert settings.forgot_rate_limit_max_requests == 5  # type: ignore[attr-defined]
+    assert settings.forgot_rate_limit_window_seconds == 60  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_forgot_rate_limit_loose_max_rejected_in_non_dev(env: str) -> None:
+    """A raised max (the E2E override value) must refuse to boot in prod."""
+    _non_dev_base_env(env)
+    os.environ["FORGOT_RATE_LIMIT_MAX_REQUESTS"] = "200"
+
+    with pytest.raises(Exception, match="Forgot-password rate limit may not be loosened"):
+        _build_settings()
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_forgot_rate_limit_short_window_rejected_in_non_dev(env: str) -> None:
+    """Shrinking the window is loosening too — same boot refusal."""
+    _non_dev_base_env(env)
+    os.environ["FORGOT_RATE_LIMIT_WINDOW_SECONDS"] = "10"
+
+    with pytest.raises(Exception, match="Forgot-password rate limit may not be loosened"):
+        _build_settings()
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_forgot_rate_limit_tightening_allowed_in_non_dev(env: str) -> None:
+    """Stricter-than-default is always allowed (fewer requests, longer window)."""
+    _non_dev_base_env(env)
+    os.environ["FORGOT_RATE_LIMIT_MAX_REQUESTS"] = "2"
+    os.environ["FORGOT_RATE_LIMIT_WINDOW_SECONDS"] = "300"
+
+    settings = _build_settings()
+    assert settings.forgot_rate_limit_max_requests == 2  # type: ignore[attr-defined]
+    assert settings.forgot_rate_limit_window_seconds == 300  # type: ignore[attr-defined]
+
+
+def test_forgot_rate_limit_override_allowed_in_dev() -> None:
+    """The E2E stack (ENVIRONMENT=dev) may raise the ceiling — that is the
+    single sanctioned consumer of these knobs."""
+    _dev_base_env()
+    os.environ["FORGOT_RATE_LIMIT_MAX_REQUESTS"] = "200"
+
+    settings = _build_settings()
+    assert settings.forgot_rate_limit_max_requests == 200  # type: ignore[attr-defined]
+
+
+def test_forgot_rate_limit_max_must_be_positive() -> None:
+    """0 / negative would disable the limiter outright — rejected everywhere."""
+    _dev_base_env()
+    os.environ["FORGOT_RATE_LIMIT_MAX_REQUESTS"] = "0"
+
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        _build_settings()
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_signup_and_forgot_guards_are_independent(env: str) -> None:
+    """Loosening forgot must not be masked by a secure signup config (and the
+    error names the forgot knob, so an operator knows which var to unset)."""
+    _non_dev_base_env(env)
+    os.environ["FORGOT_RATE_LIMIT_MAX_REQUESTS"] = "6"
+
+    with pytest.raises(Exception, match="FORGOT_RATE_LIMIT_MAX_REQUESTS=6"):
         _build_settings()

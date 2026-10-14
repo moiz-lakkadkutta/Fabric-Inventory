@@ -15,7 +15,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { ApiError } from '@/lib/api/client';
+import { ApiError, fetchWithInProgressRetry } from '@/lib/api/client';
 import { decodeError } from '@/lib/api/errors';
 import { IS_LIVE } from '@/lib/api/mode';
 import { authStore } from '@/store/auth';
@@ -86,6 +86,9 @@ async function multipartPost(
   if (accessToken) {
     headers['Authorization'] = `Bearer ${accessToken}`;
   }
+  // Not retried on 409 IDEMPOTENCY_REQUEST_IN_PROGRESS: the browser picks a
+  // fresh multipart boundary per send, so a re-send hashes differently and
+  // would be rejected as IDEMPOTENCY_KEY_PAYLOAD_MISMATCH anyway (Q01-01).
   const resp = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers,
@@ -110,7 +113,7 @@ async function jsonPost(path: string, idempotencyKey: string): Promise<unknown> 
   if (accessToken) {
     headers['Authorization'] = `Bearer ${accessToken}`;
   }
-  const resp = await fetch(`${API_BASE}${path}`, {
+  const resp = await fetchWithInProgressRetry(`${API_BASE}${path}`, {
     method: 'POST',
     headers,
     credentials: 'include',

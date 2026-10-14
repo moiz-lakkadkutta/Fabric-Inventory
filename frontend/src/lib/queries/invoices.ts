@@ -58,7 +58,7 @@ const STATUS_MAP: Record<string, InvoiceStatus> = {
   PAID: 'PAID',
   OVERDUE: 'OVERDUE',
   CANCELLED: 'CANCELLED',
-  DISCARDED: 'CANCELLED',
+  DISCARDED: 'DISCARDED',
 };
 
 function mapStatus(lifecycle: string): InvoiceStatus {
@@ -111,6 +111,10 @@ function mapDetail(b: BackendSalesInvoice): Invoice {
     ageing_days: ageingDays(b.due_date),
     lines: b.lines.map(mapLine),
     doc_type: mapDocType(b.tax_type, b.invoice_type),
+    delivery_challan_id: b.delivery_challan_id ?? null,
+    credit_note: b.credit_note
+      ? { number: b.credit_note.number, date: b.credit_note.note_date }
+      : null,
   };
 }
 
@@ -211,6 +215,9 @@ function buildCreateBody(
     due_date: draft.due_date || null,
     series: 'RT/2526',
     ship_to_state: draft.party_state || null,
+    // DEBT-02: bill a delivery challan (BE validates party/items/qty and
+    // posts COGS from the challan without relieving stock twice).
+    delivery_challan_id: draft.delivery_challan_id ?? null,
     lines: draft.lines.map((line, idx) => ({
       item_id: line.item_id,
       qty: line.qty.toString(),
@@ -273,6 +280,49 @@ export function useFinalizeInvoice() {
         (prev) => prev?.map((i) => (i.invoice_id === next.invoice_id ? next : i)) ?? prev,
       );
       qc.setQueryData([...KEY, next.invoice_id], next);
+    },
+  });
+}
+
+async function liveDiscard(invoiceId: string, idempotencyKey: string): Promise<Invoice> {
+  const data = await api<BackendSalesInvoice>(`/invoices/${invoiceId}/discard`, {
+    method: 'POST',
+    idempotencyKey,
+    body: {},
+  });
+  return mapDetail(data);
+}
+
+export interface DiscardInput {
+  invoiceId: string;
+  idempotencyKey: string;
+}
+
+/**
+ * DRAFT → DISCARDED (POST /invoices/{id}/discard). The backend keeps the row
+ * (its number stays as a voided number) and hides it from the default list,
+ * and releases any linked delivery challan — so invalidate the list, the
+ * dashboard and the DC caches, and seed the detail cache with the result.
+ */
+export function useDiscardInvoice() {
+  const qc = useQueryClient();
+  return useMutation<Invoice, ApiError | Error, DiscardInput>({
+    mutationFn: async ({ invoiceId, idempotencyKey }) => {
+      if (IS_LIVE) return liveDiscard(invoiceId, idempotencyKey);
+      return fakeFetch(() => {
+        const list = ensureStore();
+        const idx = list.findIndex((i) => i.invoice_id === invoiceId);
+        if (idx === -1) throw new Error(`Invoice ${invoiceId} not found`);
+        const next: Invoice = { ...list[idx], status: 'DISCARDED' };
+        store = [...list.slice(0, idx), ...list.slice(idx + 1)];
+        return next;
+      });
+    },
+    onSuccess: (next) => {
+      qc.setQueryData([...KEY, next.invoice_id], next);
+      qc.invalidateQueries({ queryKey: KEY, exact: true });
+      qc.invalidateQueries({ queryKey: ['dashboard'] });
+      qc.invalidateQueries({ queryKey: ['delivery-challans'] });
     },
   });
 }

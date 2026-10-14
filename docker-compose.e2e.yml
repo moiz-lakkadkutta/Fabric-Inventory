@@ -22,15 +22,21 @@
 # 429, and every later test cascades into 429/401. One unrelated hiccup then
 # fails the whole job, which is what made this suite look flaky.
 #
+# `/auth/forgot` (5 requests / 60s per IP, CUT-501a; DEBT-03) is the same trap
+# one notch less armed: cutover.spec.ts spends 2 per green run, and a
+# Playwright retry landing inside the 60s window spends 2 more — 4 of 5.
+#
 # So we raise the ceiling for the throwaway E2E stack only. The limiter still
 # runs (this is a bigger budget, not a bypass), so the dependency itself stays
 # on the executed path.
 #
 # Why this cannot weaken production
 # ---------------------------------
-#   * The secure values (3 / 3600s) are the DEFAULTS in `app/config.py`.
+#   * The secure values (signup 3 / 3600s, forgot 5 / 60s) are the DEFAULTS
+#     in `app/config.py`.
 #     Anything that does not set these vars gets the strict policy.
-#   * `Settings._reject_loose_signup_rate_limit_outside_dev` refuses to boot
+#   * `Settings._reject_loose_signup_rate_limit_outside_dev` and
+#     `Settings._reject_loose_forgot_rate_limit_outside_dev` refuse to boot
 #     when ENVIRONMENT is staging/prod and either knob is looser than the
 #     secure default. A relaxed value in a prod `.env`, a copied compose file,
 #     or a stray shell export is a hard, loud startup failure — not a silent
@@ -44,3 +50,6 @@ services:
       # retries), while keeping the limiter enforcing.
       SIGNUP_RATE_LIMIT_MAX_REQUESTS: "200"
       SIGNUP_RATE_LIMIT_WINDOW_SECONDS: "3600"
+      # Same headroom rationale for /auth/forgot (suite needs ~4 incl. retry).
+      FORGOT_RATE_LIMIT_MAX_REQUESTS: "200"
+      FORGOT_RATE_LIMIT_WINDOW_SECONDS: "60"

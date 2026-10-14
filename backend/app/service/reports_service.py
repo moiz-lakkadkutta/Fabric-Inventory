@@ -47,7 +47,7 @@ from app.models import (
 )
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.sales import InvoiceLifecycleStatus, SiLine
-from app.service import gst_service
+from app.service import accounting_service, gst_service
 from app.service.gst_service import TaxType
 from app.utils import crypto
 from app.utils.gst_states import normalize_state_code
@@ -1375,6 +1375,10 @@ class _Gstr1CdnRow:
     cgst: Decimal
     sgst: Decimal
     igst: Decimal
+    # #216: full document numbers ("CN/26-27/0001", "RT/2526/0042") — what
+    # the buyer's copy, the portal upload and the xlsx export must show.
+    note_no: str
+    invoice_no: str
 
 
 @dataclass(frozen=True)
@@ -1533,8 +1537,29 @@ def _gstr1_invoice_filter() -> Any:
 
 def gstr1_invoice_filter() -> Any:
     """Public alias of the GSTR-1 own-month invoice predicate, for other
-    period reports (dashboard KPIs) that must agree with GSTR-1 (#199)."""
+    period reports (dashboard KPIs) that must agree with GSTR-1 (#199).
+
+    Lifecycle/period only: it does NOT drop non-supplies, so a non-GST
+    firm's Bills of Supply still count as dashboard sales. GSTR-1 itself
+    adds ``accounting_service.gstr1_reportable_supply_clause`` on top
+    (see ``_gstr1_reported_invoice_filter``)."""
     return _gstr1_invoice_filter()
+
+
+def _gstr1_reported_invoice_filter() -> Any:
+    """Invoice-side predicate of GSTR-1 (B2B / B2CL / B2CS / export / HSN):
+    the own-month lifecycle rule AND the document is a reportable supply —
+    the SAME predicate the credit-note side uses (via
+    ``s34_credit_note_clause``), so an invoice is on the invoice side iff a
+    later-month cancel of it is on the note side. A same-GSTIN branch
+    transfer (DELIVERY_CHALLAN) or a Bill of Supply (NIL) is in no section;
+    the pre-#215 TAX_INVOICE + NIL_NOT_A_SUPPLY ₹0 fallback IS reported
+    (₹0 tax, firm's state if no PoS — see ``_reported_pos``).
+    GATED — PENDING MOIZ + CA SIGN-OFF."""
+    return and_(
+        _gstr1_invoice_filter(),
+        accounting_service.gstr1_reportable_supply_clause(SalesInvoice),
+    )
 
 
 def cross_period_credit_note_invoice_ids(
@@ -1592,6 +1617,33 @@ def _tax_type_for_invoice(*, raw_tax_type: str | None) -> TaxType:
         return TaxType(raw_tax_type)
     except ValueError:
         return TaxType.NIL
+
+
+def _reported_pos(
+    pos_state: str | None, raw_tax_type: str | None, seller_state: str, *, bucket: str
+) -> str | None:
+    """Place of supply printed on a B2B / B2CL / export / CDN row.
+
+    The invoice's recorded PoS, unchanged — EXCEPT the pre-#215 ₹0 fallback
+    (TAX_INVOICE + NIL_NOT_A_SUPPLY, see
+    ``accounting_service.is_gstr1_reportable_supply``): it was saved with no
+    PoS because none could be determined, so the row carries the FIRM's
+    state. That matches how ``_bucket_for_invoice`` already treats a missing
+    PoS (intra-state) and how B2CS rows fall back to the seller's state.
+    Its tax is ₹0 (``split_tax`` of a NIL type) — reported with ₹0 tax
+    because the original invoice was mis-priced (pre-#215); CA to confirm,
+    and the firm should amend. PENDING MOIZ + CA SIGN-OFF.
+
+    The fallback applies only to domestic rows (b2b / b2cl): an export / SEZ
+    row's PoS is a foreign / SEZ destination and is never relabelled.
+    """
+    if (
+        bucket in ("b2b", "b2cl")
+        and pos_state is None
+        and raw_tax_type == TaxType.NIL_NOT_A_SUPPLY.value
+    ):
+        return seller_state or None
+    return pos_state
 
 
 def _mask_gstin(gstin: str) -> str:
@@ -1704,7 +1756,7 @@ def compute_gstr1(
             SiLine.deleted_at.is_(None),
             SalesInvoice.invoice_date >= from_date,
             SalesInvoice.invoice_date <= to_date,
-            _gstr1_invoice_filter(),
+            _gstr1_reported_invoice_filter(),
         )
         .group_by(
             SalesInvoice.sales_invoice_id,
@@ -1809,7 +1861,9 @@ def compute_gstr1(
             party_id=r.party_id,
             party_name=r.party_name,
             gstin=gstin_str,
-            place_of_supply_state=r.place_of_supply_state,
+            place_of_supply_state=_reported_pos(
+                r.place_of_supply_state, r.tax_type, seller_state, bucket=bucket
+            ),
             invoice_value=invoice_total,  # header total, repeated per rate row
             taxable_value=taxable_value,
             gst_rate=rate,
@@ -1873,8 +1927,9 @@ def compute_gstr1(
             SalesInvoice.deleted_at.is_(None),
             SiLine.deleted_at.is_(None),
             SalesInvoice.lifecycle_status == InvoiceLifecycleStatus.CANCELLED,
-            func.date_trunc("month", cn.voucher_date)
-            > func.date_trunc("month", SalesInvoice.invoice_date),
+            # #216: the ONE shared "is this reversal a §34 credit note?"
+            # predicate (also used by posting + the credit-note PDF).
+            accounting_service.s34_credit_note_clause(cn, SalesInvoice),
         )
         .group_by(
             cn.voucher_id,
@@ -1966,13 +2021,17 @@ def compute_gstr1(
             party_id=r.party_id,
             party_name=r.party_name,
             gstin=note_gstin,
-            place_of_supply_state=r.place_of_supply_state,
+            place_of_supply_state=_reported_pos(
+                r.place_of_supply_state, r.tax_type, seller_state, bucket=bucket
+            ),
             note_value=Decimal(r.invoice_amount or 0),
             taxable_value=taxable_value,
             gst_rate=rate,
             cgst=split.cgst,
             sgst=split.sgst,
             igst=split.igst,
+            note_no=f"{r.note_series}/{r.note_number}",
+            invoice_no=f"{r.series}/{r.number}",
         )
         (cdnr if bucket == "b2b" else cdnur).append(note)
 
@@ -2000,7 +2059,7 @@ def compute_gstr1(
             SiLine.deleted_at.is_(None),
             SalesInvoice.invoice_date >= from_date,
             SalesInvoice.invoice_date <= to_date,
-            _gstr1_invoice_filter(),
+            _gstr1_reported_invoice_filter(),
         )
         # #195: group by hsn + uom + RATE (portal HSN summary is rate-wise);
         # tax_type stays in the key so IGST vs CGST/SGST split honestly across

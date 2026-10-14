@@ -1,12 +1,13 @@
 import { ArrowLeft, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Pill } from '@/components/ui/pill';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useDc } from '@/lib/queries/delivery-challans';
 import { useItems } from '@/lib/queries/items';
 import { useCustomers } from '@/lib/queries/parties';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
@@ -36,6 +37,13 @@ export default function InvoiceCreate() {
   const finalize = useFinalizeInvoice();
   const createKey = useIdempotencyKey();
   const finalizeKey = useIdempotencyKey();
+  // DEBT-02: `?dc=<id>` bills an issued delivery challan — customer and
+  // stockable lines are prefilled from the challan (BE enforces the match).
+  const [searchParams] = useSearchParams();
+  const dcId = searchParams.get('dc') ?? undefined;
+  const dcQuery = useDc(dcId);
+  const dc = dcId ? (dcQuery.data ?? null) : null;
+  const [dcApplied, setDcApplied] = useState(false);
 
   const [partyId, setPartyId] = useState<string>('');
   const [docType, setDocType] = useState<Invoice['doc_type']>('TAX_INVOICE');
@@ -65,6 +73,24 @@ export default function InvoiceCreate() {
       );
     });
   }, [items]);
+
+  useEffect(() => {
+    if (!dc || dcApplied || items.length === 0) return;
+    setPartyId(dc.party_id);
+    setLines(
+      dc.lines.map((l) => {
+        const item = items.find((i) => i.item_id === l.item_id);
+        return {
+          line_id: nextLineId(),
+          item_id: l.item_id,
+          qty: l.qty_dispatched,
+          rate: l.price ?? 0,
+          gst_pct: item?.gst_rate ?? 0,
+        };
+      }),
+    );
+    setDcApplied(true);
+  }, [dc, dcApplied, items]);
 
   const updateLine = (id: string, patch: Partial<DraftLine>) => {
     setLines((ls) => ls.map((l) => (l.line_id === id ? { ...l, ...patch } : l)));
@@ -129,6 +155,7 @@ export default function InvoiceCreate() {
       ageing_days: -30,
       lines: invoiceLines,
       doc_type: docType,
+      delivery_challan_id: dc?.delivery_challan_id ?? null,
     };
   };
 
@@ -155,7 +182,8 @@ export default function InvoiceCreate() {
     navigate(`/sales/invoices/${created.invoice_id}`);
   };
 
-  const loading = customersQuery.isPending || itemsQuery.isPending;
+  const loading =
+    customersQuery.isPending || itemsQuery.isPending || (dcId !== undefined && dcQuery.isPending);
   const submitting = createDraft.isPending || finalize.isPending;
   const canSubmit = !loading && !submitting && partyId !== '';
 
@@ -200,12 +228,24 @@ export default function InvoiceCreate() {
               borderRadius: 8,
             }}
           >
+            {dc && (
+              <p
+                role="note"
+                data-testid="dc-billing-note"
+                style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}
+              >
+                Billing delivery challan <span className="mono">{dc.display_number}</span>. The
+                customer and the challan&apos;s items and quantities must stay as dispatched; you
+                can change rates and add service lines such as freight.
+              </p>
+            )}
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <Field label="Customer" htmlFor="party">
                 <select
                   id="party"
                   aria-label="Customer"
                   value={partyId}
+                  disabled={dc !== null}
                   onChange={(e) => setPartyId(e.target.value)}
                   className="h-10 w-full rounded-md px-3"
                   style={{

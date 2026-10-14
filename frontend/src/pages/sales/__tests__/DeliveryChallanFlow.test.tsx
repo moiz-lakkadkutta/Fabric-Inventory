@@ -182,6 +182,8 @@ describe('DeliveryChallanDetail', () => {
     );
 
     expect(screen.getByText('DC/2526/0001')).toBeInTheDocument();
+    // DEBT-02: a DRAFT challan can't be billed yet.
+    expect(screen.queryByRole('link', { name: /create invoice/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^issue$/i }));
     await waitFor(() => expect(issueMutate).toHaveBeenCalledTimes(1));
     expect(issueMutate.mock.calls[0][0].dcId).toBe('dc-1');
@@ -227,5 +229,10 @@ describe('DeliveryChallanDetail', () => {
 
     expect(screen.queryByRole('button', { name: /^issue$/i })).not.toBeInTheDocument();
     expect(screen.getByText('Issued')).toBeInTheDocument();
+    // DEBT-02: an issued challan can be billed.
+    expect(screen.getByRole('link', { name: /create invoice/i })).toHaveAttribute(
+      'href',
+      '/sales/invoices/new?dc=dc-1',
+    );
   });
 });

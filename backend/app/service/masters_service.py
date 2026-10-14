@@ -7,7 +7,7 @@ Encrypted columns (gstin, pan, phone) go through `app.utils.crypto`
 helpers — stubs for MVP, swap-in target for Phase-2 envelope encryption.
 
 Validations live in the service layer:
-- GSTIN format (basic regex; full state-code + checksum check is TASK-047 GST engine).
+- GSTIN format + state-code prefix (#215; checksum digit not yet validated).
 - Code/name non-empty.
 - Code uniqueness per (org, firm) — DB-enforced via
   `party_org_id_firm_id_code_key`; service catches early for clean 422.
@@ -27,8 +27,8 @@ from app.models import Party
 from app.models.masters import TaxStatus
 from app.service import audit_service
 from app.service.common_guards import assert_firm_in_org
-from app.utils.crypto import encrypt_pii, get_org_dek
-from app.utils.gst_states import normalize_state_code
+from app.utils.crypto import decrypt_pii, encrypt_pii, get_org_dek
+from app.utils.gst_states import gstin_validation_error, normalize_gstin, normalize_state_code
 
 
 def _canonical_state_code(state_code: str | None) -> str | None:
@@ -48,20 +48,18 @@ def _canonical_state_code(state_code: str | None) -> str | None:
     return canonical
 
 
-# Format check only — full GSTIN validation (state-code lookup, checksum
-# digit, etc.) lives in TASK-047 GST engine. Here we just keep obvious
-# garbage out at write time.
-# GSTIN = 15 chars: 2 state + 5 PAN-letters + 4 PAN-digits + 1 PAN-letter
-# + 1 entity-code (1-9 or A-Z) + literal Z + 1 checksum (alphanumeric).
-_GSTIN_REGEX = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[A-Z\d]$")
 _PAN_REGEX = re.compile(r"^[A-Z]{5}\d{4}[A-Z]$")
 
 
 def _validate_gstin(gstin: str | None) -> None:
+    """Format + state-code-prefix check (#215); the rule lives in
+    ``app.utils.gst_states.gstin_validation_error`` (shared with the Vyapar
+    importer). The checksum digit is not validated yet."""
     if gstin is None or gstin == "":
         return
-    if not _GSTIN_REGEX.fullmatch(gstin):
-        raise AppValidationError(f"Invalid GSTIN format: {gstin!r}")
+    error = gstin_validation_error(gstin)
+    if error is not None:
+        raise AppValidationError(error)
 
 
 def _validate_pan(pan: str | None) -> None:
@@ -111,6 +109,7 @@ def create_party(
     if firm_id is not None:
         assert_firm_in_org(session, org_id=org_id, firm_id=firm_id)
 
+    gstin = normalize_gstin(gstin)  # #215: strip + uppercase before validate/store
     _validate_gstin(gstin)
     _validate_pan(pan)
     state_code = _canonical_state_code(state_code)
@@ -314,8 +313,19 @@ def update_party(
         party.tax_status = tax_status
     if gstin is not None:
         assert dek is not None  # narrow type for mypy
-        _validate_gstin(gstin if gstin != "" else None)
-        party.gstin = encrypt_pii(gstin if gstin != "" else None, dek=dek, org_id=org_id)
+        # Normalise both sides (strip + uppercase; blank -> None) so re-sending
+        # a legacy value with different case/whitespace counts as unchanged.
+        new_gstin = normalize_gstin(gstin)
+        current_gstin = normalize_gstin(
+            decrypt_pii(party.gstin, dek=dek, org_id=org_id) if party.gstin else None
+        )
+        # #215: validate only when the GSTIN actually changes. The edit form
+        # re-sends the unchanged GSTIN on every save; a legacy party holding a
+        # GSTIN that predates a tightened rule must stay editable (fix it by
+        # entering a corrected GSTIN, which IS validated).
+        if new_gstin != current_gstin:
+            _validate_gstin(new_gstin)
+            party.gstin = encrypt_pii(new_gstin, dek=dek, org_id=org_id)
     if pan is not None:
         assert dek is not None
         _validate_pan(pan if pan != "" else None)

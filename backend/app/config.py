@@ -41,6 +41,14 @@ _JWT_PLACEHOLDER_SUBSTRINGS: frozenset[str] = frozenset(
 SECURE_SIGNUP_RATE_LIMIT_MAX_REQUESTS = 3
 SECURE_SIGNUP_RATE_LIMIT_WINDOW_SECONDS = 3600
 
+# DEBT-03 forgot-password throttle (see `app/routers/auth.py ::
+# _FORGOT_RATE_LIMIT`). Same contract as the signup knobs above: these are the
+# SECURE values and the shipped defaults (5 requests per 60s per IP, CUT-501a),
+# overridable ONLY for the E2E acceptance stack, and the model validator below
+# refuses to boot staging/prod with anything looser.
+SECURE_FORGOT_RATE_LIMIT_MAX_REQUESTS = 5
+SECURE_FORGOT_RATE_LIMIT_WINDOW_SECONDS = 60
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -89,6 +97,15 @@ class Settings(BaseSettings):
     signup_rate_limit_max_requests: int = Field(default=SECURE_SIGNUP_RATE_LIMIT_MAX_REQUESTS, ge=1)
     signup_rate_limit_window_seconds: int = Field(
         default=SECURE_SIGNUP_RATE_LIMIT_WINDOW_SECONDS, ge=1
+    )
+    # DEBT-03: forgot-password throttle knobs. Defaults ARE the secure policy
+    # (5/60s per IP). Only the E2E docker-compose overlay sets these, because
+    # the acceptance suite hits /auth/forgot from one docker-network IP.
+    # `_reject_loose_forgot_rate_limit_outside_dev` makes a loosened value a
+    # hard boot failure in staging/prod.
+    forgot_rate_limit_max_requests: int = Field(default=SECURE_FORGOT_RATE_LIMIT_MAX_REQUESTS, ge=1)
+    forgot_rate_limit_window_seconds: int = Field(
+        default=SECURE_FORGOT_RATE_LIMIT_WINDOW_SECONDS, ge=1
     )
 
     @field_validator("cors_origins", mode="before")
@@ -194,6 +211,42 @@ class Settings(BaseSettings):
         if problems:
             raise ValueError(
                 f"Signup rate limit may not be loosened when "
+                f"ENVIRONMENT={self.environment!r}: " + "; ".join(problems) + ". "
+                "These knobs exist only for the E2E acceptance stack "
+                "(docker-compose.e2e.yml, ENVIRONMENT=dev). Unset them here."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_loose_forgot_rate_limit_outside_dev(self) -> Settings:
+        """DEBT-03 guard: staging/prod may never run a forgot-password limit
+        looser than the secure default (5 requests / 60s per IP).
+
+        Mirrors ``_reject_loose_signup_rate_limit_outside_dev``. The knobs
+        exist for exactly one consumer — the E2E acceptance docker-compose
+        overlay, which runs with ``ENVIRONMENT=dev``. Tightening (a smaller
+        max, a longer window) is always allowed. Loosening in a non-dev
+        environment is a boot refusal: /auth/forgot is unauthenticated and
+        sends email, so a relaxed value would reopen the email-pump vector.
+        """
+        if self.environment == "dev":
+            return self
+
+        problems: list[str] = []
+        if self.forgot_rate_limit_max_requests > SECURE_FORGOT_RATE_LIMIT_MAX_REQUESTS:
+            problems.append(
+                f"FORGOT_RATE_LIMIT_MAX_REQUESTS={self.forgot_rate_limit_max_requests} "
+                f"exceeds the secure maximum of {SECURE_FORGOT_RATE_LIMIT_MAX_REQUESTS}"
+            )
+        if self.forgot_rate_limit_window_seconds < SECURE_FORGOT_RATE_LIMIT_WINDOW_SECONDS:
+            problems.append(
+                f"FORGOT_RATE_LIMIT_WINDOW_SECONDS={self.forgot_rate_limit_window_seconds} "
+                f"is shorter than the secure window of "
+                f"{SECURE_FORGOT_RATE_LIMIT_WINDOW_SECONDS}s"
+            )
+        if problems:
+            raise ValueError(
+                f"Forgot-password rate limit may not be loosened when "
                 f"ENVIRONMENT={self.environment!r}: " + "; ".join(problems) + ". "
                 "These knobs exist only for the E2E acceptance stack "
                 "(docker-compose.e2e.yml, ENVIRONMENT=dev). Unset them here."

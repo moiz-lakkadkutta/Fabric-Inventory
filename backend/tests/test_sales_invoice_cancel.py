@@ -26,7 +26,6 @@ from sqlalchemy.orm import Session as OrmSession
 
 from app.exceptions import InvoiceStateError
 from app.models import (
-    DeliveryChallan,
     Firm,
     Item,
     Ledger,
@@ -38,7 +37,7 @@ from app.models import (
 )
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
 from app.models.masters import ItemType, TrackingType, UomType
-from app.models.sales import DCStatus, InvoiceLifecycleStatus
+from app.models.sales import InvoiceLifecycleStatus
 from app.service import inventory_service, reports_service, sales_service
 from app.service.seed_service import seed_coa
 
@@ -418,42 +417,10 @@ def test_cancel_blocked_when_paid(db_session: OrmSession, fresh_org_id: uuid.UUI
     assert inv.lifecycle_status != InvoiceLifecycleStatus.CANCELLED
 
 
-def test_cancel_blocked_for_dc_linked_invoice(
-    db_session: OrmSession, fresh_org_id: uuid.UUID
-) -> None:
-    """DC-linked invoice → 409 (goods dispatched; needs sales-return flow)."""
-    firm, party, item = _seed_org(db_session, fresh_org_id, has_gst=False)
-    invoice = _create_and_finalize(
-        db_session,
-        org_id=fresh_org_id,
-        firm=firm,
-        party=party,
-        item=item,
-        qty="1",
-        price="1000",
-        gst_rate="0",
-    )
-    dc = DeliveryChallan(
-        org_id=fresh_org_id,
-        firm_id=firm.firm_id,
-        series="DC",
-        number="0001",
-        party_id=party.party_id,
-        dispatch_date=datetime.date(2026, 5, 1),
-        status=DCStatus.ISSUED,
-    )
-    db_session.add(dc)
-    db_session.flush()
-    invoice.delivery_challan_id = dc.delivery_challan_id
-    db_session.flush()
-
-    with pytest.raises(InvoiceStateError, match=r"delivery challan|sales-return|credit-note"):
-        sales_service.cancel_invoice(
-            db_session,
-            org_id=fresh_org_id,
-            sales_invoice_id=invoice.sales_invoice_id,
-            reason="x",
-        )
+# DEBT-02 / #209: a DC-linked invoice is now cancellable (revenue + COGS
+# reversed, stock NOT restored — the goods left with the challan; the challan is
+# freed for re-invoicing). Covered end-to-end by
+# tests/test_dc_invoice_link.py::test_cancel_dc_invoice_frees_dc_and_keeps_stock_out.
 
 
 def test_cancel_idempotent(db_session: OrmSession, fresh_org_id: uuid.UUID) -> None:

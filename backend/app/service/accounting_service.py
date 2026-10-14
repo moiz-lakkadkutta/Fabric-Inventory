@@ -23,10 +23,11 @@ import datetime
 import uuid
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
-from sqlalchemy import Integer, case, func, select
+from sqlalchemy import Integer, and_, case, func, not_, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.exceptions import AppValidationError, InvoiceStateError
 from app.models import (
@@ -42,7 +43,8 @@ from app.models import (
     VoucherLine,
 )
 from app.models.accounting import JournalLineType, VoucherStatus, VoucherType
-from app.service import audit_service
+from app.models.sales import InvoiceLifecycleStatus
+from app.service import audit_service, gst_service
 
 # Ledger codes seeded by `seed_service.seed_coa`. Don't change without
 # updating the seed in lockstep — the COA is the contract.
@@ -1269,6 +1271,136 @@ def _post_reversal_of(
     return reversal
 
 
+def _utcnow() -> datetime.datetime:
+    """Clock seam for the default reversal date (tests monkeypatch it)."""
+    return datetime.datetime.now(tz=datetime.UTC)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# #216: is a cancel reversal a CGST §34 credit note?
+#
+# ONE predicate, in a Python form (posting + unit tests) and an SQL form
+# (``find_sales_credit_note`` + GSTR-1 CDNR/CDNUR/B2CS net-off + HSN), so
+# posting, the document endpoint and the return can never disagree. A
+# reversal is a §34 credit note iff ALL of:
+#   1. it is not in the internal CXL/<FY> series (same-period cancels,
+#      non-supply / non-tax-invoice cancels and pre-#190 duplicate reversals
+#      are posted there by ``reverse_sales_invoice_gl``);
+#   2. it is dated in a LATER GST month than the invoice (#199);
+#   3. the original was a TAX INVOICE (invoice_type TAX_INVOICE, or NULL on
+#      legacy rows) — §34(1) applies where "a tax invoice has been issued";
+#      a Bill of Supply (non-GST firm), Cash Memo, Estimate or a branch-
+#      transfer challan is not one;
+#   4. the original is a supply: tax_type is not NIL (non-GST firm). A
+#      same-GSTIN branch transfer is excluded by condition 3 (it is a
+#      DELIVERY_CHALLAN). NIL_LUT (zero-rated export under LUT) and the
+#      pre-#215 TAX_INVOICE + NIL_NOT_A_SUPPLY ₹0 fallback stay eligible
+#      (see ``is_gstr1_reportable_supply``).
+# Conditions 3 + 4 also cover legacy (pre-#216) notes numbered in the
+# invoice series, so those keep reporting exactly as before — except
+# branch-transfer / Bill-of-Supply reversals, which #199 wrongly reported.
+# GATED — PENDING MOIZ + CA SIGN-OFF.
+# ──────────────────────────────────────────────────────────────────────
+
+_CXL_SERIES_PREFIX = f"{gst_service.CANCELLATION_REVERSAL_SERIES_PREFIX}/"
+_S34_INVOICE_TYPE = "TAX_INVOICE"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GSTR-1 symmetry: is this sales document a REPORTABLE SUPPLY?
+#
+# Conditions 3 + 4 of the §34 predicate, factored out as ONE predicate that
+# BOTH sides of GSTR-1 use: the invoice side (B2B / B2CL / B2CS / export /
+# HSN, ``reports_service.compute_gstr1``) and the credit-note side (CDNR /
+# CDNUR / B2CS net-off / HSN net-off, via ``s34_credit_note_clause``). An
+# invoice is reported in its own month iff a later-month cancel of it is
+# reported as a §34 note — the two can no longer diverge.
+#
+# Reportable  ⇔  invoice_type IN (TAX_INVOICE, NULL legacy)
+#              AND tax_type IS DISTINCT FROM 'NIL'.
+#
+# Not reportable (absent from every GSTR-1 section, both sides):
+#   * invoice_type DELIVERY_CHALLAN — a same-GSTIN branch transfer is not a
+#     supply (Sch. I para 2 covers DISTINCT persons only), whatever its
+#     tax_type. The branch transfer is identified by the DOCUMENT type, not
+#     by tax_type alone. Not reported in Table 8 (nil / exempt / non-GST)
+#     either — PENDING CA confirmation (CA question 4). GSTR-1 here has no
+#     Table 8 / Table 13 sections yet; if they are added they must reuse
+#     this predicate.
+#   * tax_type NIL — a Bill of Supply issued while the firm was not GST-
+#     registered (#194; GSTR-1 itself is refused for a non-GST firm). Only
+#     reaches a GSTR-1 when the firm registers later.
+#   * any other invoice_type — Bill of Supply, Cash Memo, Estimate. The app
+#     only ever writes TAX_INVOICE / BILL_OF_SUPPLY / DELIVERY_CHALLAN (from
+#     the PoS engine); Cash Memo / Estimate exist only as legacy / imported
+#     values.
+#
+# Reportable, notably:
+#   * NIL_LUT (zero-rated export under LUT).
+#   * TAX_INVOICE + NIL_NOT_A_SUPPLY — the pre-#215 "no usable place of
+#     supply" fallback: a REAL sale to a real buyer, mis-priced at ₹0 GST.
+#     It is REPORTED, with ₹0 tax, because the original invoice was
+#     mis-priced (pre-#215); excluding it would hide a supply, and under-
+#     reporting is the riskier error. CA to confirm; the firm should amend
+#     the invoice. Its cross-period cancel is a §34 note (CN serial, CDNR /
+#     CDNUR / B2CS net-off), symmetric with the invoice side.
+#   * an unknown / forward-compat tax_type string — fails toward REPORTING.
+# GATED — PENDING MOIZ + CA SIGN-OFF.
+# ──────────────────────────────────────────────────────────────────────
+
+_BILL_OF_SUPPLY_TAX_TYPE = "NIL"  # Bill of Supply (#194)
+
+
+def is_gstr1_reportable_supply(*, invoice_type: str | None, tax_type: str | None) -> bool:
+    """Python form: the document is a tax invoice for a supply, reported in
+    GSTR-1 (and therefore able to carry a §34 credit note)."""
+    if invoice_type is not None and invoice_type != _S34_INVOICE_TYPE:
+        return False
+    return tax_type != _BILL_OF_SUPPLY_TAX_TYPE
+
+
+def gstr1_reportable_supply_clause(invoice: Any) -> Any:
+    """SQL form of ``is_gstr1_reportable_supply``. ``invoice`` is the
+    SalesInvoice entity or an alias of it."""
+    return and_(
+        or_(invoice.invoice_type.is_(None), invoice.invoice_type == _S34_INVOICE_TYPE),
+        invoice.tax_type.is_distinct_from(_BILL_OF_SUPPLY_TAX_TYPE),
+    )
+
+
+def invoice_supports_s34_note(*, invoice_type: str | None, tax_type: str | None) -> bool:
+    """Conditions 3 + 4 above: the original document can carry a §34 note.
+    Exactly ``is_gstr1_reportable_supply`` (GSTR-1 symmetry)."""
+    return is_gstr1_reportable_supply(invoice_type=invoice_type, tax_type=tax_type)
+
+
+def is_s34_credit_note(
+    *,
+    series: str,
+    note_date: datetime.date,
+    invoice_date: datetime.date,
+    invoice_type: str | None,
+    tax_type: str | None,
+) -> bool:
+    """Python form of the shared §34 predicate (see block comment)."""
+    if series.startswith(_CXL_SERIES_PREFIX):
+        return False
+    if not gst_service.is_later_gst_period(note_date, invoice_date):
+        return False
+    return invoice_supports_s34_note(invoice_type=invoice_type, tax_type=tax_type)
+
+
+def s34_credit_note_clause(cn: Any, invoice: Any) -> Any:
+    """SQL form of the shared §34 predicate. ``cn`` is a Voucher alias (the
+    CREDIT_NOTE reversal), ``invoice`` the SalesInvoice entity/alias it
+    reverses. Mirrors ``is_s34_credit_note`` exactly."""
+    return and_(
+        not_(cn.series.like(f"{_CXL_SERIES_PREFIX}%")),
+        func.date_trunc("month", cn.voucher_date) > func.date_trunc("month", invoice.invoice_date),
+        gstr1_reportable_supply_clause(invoice),
+    )
+
+
 def reverse_sales_invoice_gl(
     session: Session,
     *,
@@ -1284,33 +1416,100 @@ def reverse_sales_invoice_gl(
     them all. Each reversal is a CREDIT_NOTE (party_id set) mirroring the
     original's legs (CR AR / DR Sales / DR GST). Returns the reversal
     vouchers (existing ones are returned unchanged — idempotent).
+
+    #216 numbering: the FIRST reversal of a cancel that is a §34 credit note
+    (later GST month + a tax invoice for a supply — see
+    ``invoice_supports_s34_note``) is numbered in the firm's credit-note
+    series ``CN/<FY of the note date>`` (gapless per FY). Every other
+    reversal — same-period cancellation, Bill of Supply / Cash Memo /
+    Estimate / branch transfer, or a pre-#190 duplicate — takes the internal
+    ``CXL/<FY>`` series and never consumes a CN serial.
+
+    ``voucher_date`` defaults to today in Asia/Kolkata (the GST period tz).
     """
+    note_date = voucher_date or gst_service.gst_local_date(_utcnow())
+    issues_note = gst_service.is_later_gst_period(
+        note_date, invoice.invoice_date
+    ) and invoice_supports_s34_note(invoice_type=invoice.invoice_type, tax_type=invoice.tax_type)
+    invoice_no = f"{invoice.series}/{invoice.number}"
     originals = list(
         session.execute(
-            select(Voucher).where(
+            select(Voucher)
+            .where(
                 Voucher.org_id == invoice.org_id,
                 Voucher.voucher_type == VoucherType.SALES_INVOICE,
                 Voucher.reference_type == "sales_invoice",
                 Voucher.reference_id == invoice.sales_invoice_id,
                 Voucher.deleted_at.is_(None),
             )
+            .order_by(Voucher.voucher_date.asc(), Voucher.created_at.asc(), Voucher.voucher_id)
         ).scalars()
     )
     reversals: list[Voucher] = []
+    cn_taken = False
     for original in originals:
-        reversals.append(
-            _post_reversal_of(
-                session,
-                original=original,
-                voucher_type=VoucherType.CREDIT_NOTE,
-                series=original.series,
-                party_id=invoice.party_id,
-                narration=f"Reversal of invoice {original.series}/{original.number} · {reason}",
-                posted_by=posted_by,
-                voucher_date=voucher_date,
-            )
+        if issues_note and not cn_taken:
+            series = gst_service.credit_note_series(note_date)
+            narration = f"Credit note (§34) against invoice {invoice_no} · {reason}"
+        else:
+            series = gst_service.cancellation_reversal_series(note_date)
+            narration = f"Cancellation reversal of invoice {invoice_no} · {reason}"
+        reversal = _post_reversal_of(
+            session,
+            original=original,
+            voucher_type=VoucherType.CREDIT_NOTE,
+            series=series,
+            party_id=invoice.party_id,
+            narration=narration,
+            posted_by=posted_by,
+            voucher_date=note_date,
         )
+        if not reversal.series.startswith(_CXL_SERIES_PREFIX):
+            cn_taken = True
+        reversals.append(reversal)
     return reversals
+
+
+def find_sales_credit_note(session: Session, *, invoice: SalesInvoice) -> Voucher | None:
+    """Return the §34 credit note issued for ``invoice``, or None (#216).
+
+    Uses the shared ``s34_credit_note_clause`` — the same predicate GSTR-1
+    uses for CDNR / CDNUR / B2CS net-off — so the document endpoint and the
+    return always agree. None for a same-period cancellation, a non-tax-
+    invoice / non-supply cancel, and any non-cancelled invoice.
+
+    A pre-#190 duplicate-finalize invoice can carry several reversals; only
+    one is a CN, but like GSTR-1 we pick deterministically (earliest date,
+    number, id) in case legacy data holds more.
+    """
+    if invoice.lifecycle_status != InvoiceLifecycleStatus.CANCELLED:
+        return None
+    orig = aliased(Voucher)
+    return (
+        session.execute(
+            select(Voucher)
+            .join(orig, orig.voucher_id == Voucher.reference_id)
+            .join(SalesInvoice, SalesInvoice.sales_invoice_id == orig.reference_id)
+            .where(
+                Voucher.org_id == invoice.org_id,
+                Voucher.firm_id == invoice.firm_id,
+                Voucher.voucher_type == VoucherType.CREDIT_NOTE,
+                Voucher.reference_type == _SALES_REVERSAL_REF_TYPE,
+                Voucher.deleted_at.is_(None),
+                orig.org_id == invoice.org_id,
+                orig.voucher_type == VoucherType.SALES_INVOICE,
+                orig.reference_type == "sales_invoice",
+                orig.reference_id == invoice.sales_invoice_id,
+                orig.deleted_at.is_(None),
+                SalesInvoice.org_id == invoice.org_id,
+                s34_credit_note_clause(Voucher, SalesInvoice),
+            )
+            .order_by(Voucher.voucher_date.asc(), Voucher.number.asc(), Voucher.voucher_id.asc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
 
 
 def reverse_cogs_sale_gl(

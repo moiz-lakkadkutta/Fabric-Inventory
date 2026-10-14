@@ -78,7 +78,8 @@ export type InvoiceStatus =
   | 'PAID'
   | 'PARTIALLY_PAID'
   | 'OVERDUE'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'DISCARDED';
 
 export interface InvoiceLine {
   item_id: ItemId;
@@ -107,6 +108,11 @@ export interface Invoice {
   ageing_days: number; // negative = upcoming, positive = overdue
   lines: InvoiceLine[];
   doc_type: 'TAX_INVOICE' | 'BILL_OF_SUPPLY' | 'CASH_MEMO' | 'ESTIMATE';
+  /** DEBT-02: the delivery challan this invoice bills (null = direct sale). */
+  delivery_challan_id?: string | null;
+  // #216: the CGST §34 credit note issued when this invoice was cancelled in
+  // a later GST period (e.g. "CN/26-27/0001"). Absent/null otherwise.
+  credit_note?: { number: string; date: string } | null;
 }
 
 export interface Kpi {

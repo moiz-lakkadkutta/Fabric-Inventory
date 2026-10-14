@@ -6,7 +6,7 @@
  * status — handled server-side; the FE just re-fetches.
  */
 
-import { ArrowLeft, Send } from 'lucide-react';
+import { ArrowLeft, FileText, Send } from 'lucide-react';
 import * as React from 'react';
 import { Link, useParams } from 'react-router-dom';
 
@@ -81,6 +81,9 @@ export default function DeliveryChallanDetail() {
   };
 
   const canIssue = dc.status === 'DRAFT';
+  // DEBT-02: a dispatched challan can be billed (BE refuses if an invoice
+  // already holds it, with an actionable message).
+  const canInvoice = dc.status === 'ISSUED' || dc.status === 'ACKNOWLEDGED';
 
   return (
     <div className="space-y-4">
@@ -106,6 +109,14 @@ export default function DeliveryChallanDetail() {
             <Button onClick={onIssue} disabled={issueDc.isPending}>
               <Send size={14} />
               {issueDc.isPending ? 'Issuing…' : 'Issue'}
+            </Button>
+          )}
+          {canInvoice && (
+            <Button asChild>
+              <Link to={`/sales/invoices/new?dc=${dc.delivery_challan_id}`}>
+                <FileText size={14} />
+                Create invoice
+              </Link>
             </Button>
           )}
         </div>

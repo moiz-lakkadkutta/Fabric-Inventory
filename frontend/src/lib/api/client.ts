@@ -11,6 +11,12 @@
  *     the httpOnly cookie, populate the new access token, retry the
  *     original request. Subsequent 401 surfaces as ApiError so the
  *     caller can redirect to /login.
+ *   - On 409 IDEMPOTENCY_REQUEST_IN_PROGRESS (Q01-01: a request with the
+ *     same Idempotency-Key is still executing — typically a double-click):
+ *     wait Retry-After and re-send the SAME request (same key + body) so
+ *     the caller receives the single result as a replay. See
+ *     `fetchWithInProgressRetry` for the cap. IDEMPOTENCY_KEY_PAYLOAD_MISMATCH
+ *     is never retried (it's a caller bug, not a transient state).
  *
  * Base URL defaults to the same origin (`/api/...`) so localhost dev
  * with Vite's proxy and prod behind Caddy both work without env-vars.
@@ -36,6 +42,75 @@ interface ApiOptions {
 }
 
 const MUTATING = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+
+/*
+ * Q01-01 in-progress retry budget. The server holds the in-flight lock for
+ * as long as the first request runs (30s TTL, heartbeat-extended), so this
+ * is a UX bound, not a correctness one: at most 8 retries, each wait taken
+ * from Retry-After (default 1s) and clamped to [0.25s, 2s], so the worst
+ * case is ~16s before the in-progress ApiError surfaces. A request still
+ * running after that is almost certainly stuck; the user can retry the same
+ * form (same key) and get the replay once it finishes.
+ */
+const IN_PROGRESS_CODE = 'IDEMPOTENCY_REQUEST_IN_PROGRESS';
+export const IN_PROGRESS_MAX_RETRIES = 8;
+const IN_PROGRESS_DEFAULT_WAIT_MS = 1000;
+const IN_PROGRESS_MIN_WAIT_MS = 250;
+const IN_PROGRESS_MAX_WAIT_MS = 2000;
+
+async function isInProgress(response: Response): Promise<boolean> {
+  if (response.status !== 409) return false;
+  try {
+    const data = (await response.clone().json()) as { code?: string };
+    return data.code === IN_PROGRESS_CODE;
+  } catch {
+    return false;
+  }
+}
+
+function retryAfterMs(response: Response): number {
+  const raw = response.headers.get('Retry-After');
+  const secs = raw === null ? NaN : Number(raw);
+  const ms = Number.isFinite(secs) ? secs * 1000 : IN_PROGRESS_DEFAULT_WAIT_MS;
+  return Math.min(IN_PROGRESS_MAX_WAIT_MS, Math.max(IN_PROGRESS_MIN_WAIT_MS, ms));
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * fetch() that transparently waits out IDEMPOTENCY_REQUEST_IN_PROGRESS on
+ * mutating requests, re-sending the identical `init` (same Idempotency-Key,
+ * same body string). Returns the final Response — a 2xx replay, any other
+ * status, or the last in-progress 409 once the cap is hit. Each attempt goes
+ * through the caller's 401 handling unchanged because this sits below it.
+ */
+export async function fetchWithInProgressRetry(url: string, init: RequestInit): Promise<Response> {
+  const method = (init.method ?? 'GET').toUpperCase();
+  let response = await fetch(url, init);
+  if (!MUTATING.has(method)) return response;
+  for (let attempt = 0; attempt < IN_PROGRESS_MAX_RETRIES; attempt++) {
+    if (!(await isInProgress(response))) return response;
+    await sleep(retryAfterMs(response), init.signal);
+    response = await fetch(url, init);
+  }
+  return response;
+}
 
 let refreshInFlight: Promise<boolean> | null = null;
 
@@ -104,7 +179,7 @@ export async function api<T = unknown>(path: string, options: ApiOptions = {}): 
     init.body = JSON.stringify(options.body);
   }
 
-  const response = await fetch(`${API_BASE}${path}`, init);
+  const response = await fetchWithInProgressRetry(`${API_BASE}${path}`, init);
 
   if (response.status === 401 && !options.skipRefresh) {
     const refreshed = await refreshAccessToken();
@@ -112,7 +187,7 @@ export async function api<T = unknown>(path: string, options: ApiOptions = {}): 
       const retryHeaders = { ...headers };
       const newToken = authStore.get().accessToken;
       if (newToken) retryHeaders['Authorization'] = `Bearer ${newToken}`;
-      const retry = await fetch(`${API_BASE}${path}`, {
+      const retry = await fetchWithInProgressRetry(`${API_BASE}${path}`, {
         ...init,
         headers: retryHeaders,
       });

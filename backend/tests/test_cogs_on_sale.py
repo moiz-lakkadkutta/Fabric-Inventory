@@ -16,9 +16,9 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as OrmSession
 
-from app.exceptions import InvoiceStateError
 from app.models import (
     DeliveryChallan,
     Firm,
@@ -485,8 +485,9 @@ def _build_dc_linked_invoice(
     number: str = "9001",
     invoice_date: datetime.date = datetime.date(2026, 5, 3),
 ) -> SalesInvoice:
-    """Hand-build a DRAFT invoice linked to an issued DC (the production
-    SO→DC→Invoice linkage path is wired in a future PR)."""
+    """Hand-build a DRAFT invoice linked to an issued DC, bypassing the
+    service's link validation (the real path is
+    ``create_draft_invoice(delivery_challan_id=...)``, DEBT-02)."""
     line_amount = Decimal(qty) * Decimal(price)
     invoice = SalesInvoice(
         org_id=org_id,
@@ -639,8 +640,10 @@ def test_dc_linked_invoice_posts_cogs_at_finalize(
 def test_second_invoice_on_same_dc_rejected(
     db_session: OrmSession, fresh_org_id: uuid.UUID
 ) -> None:
-    """Two invoices sharing one DC would double-count COGS — the second
-    finalize must be rejected (InvoiceStateError → 409)."""
+    """Two live invoices sharing one DC would double-count COGS. #209: even a
+    raw ORM write of a second live link is refused by the DB's partial unique
+    index (the service path refuses earlier with a 422 — see
+    tests/test_dc_invoice_link.py)."""
     firm, party, item = _seed_cogs_org(db_session, fresh_org_id)
     _seed_stock(db_session, org_id=fresh_org_id, firm=firm, item=item, qty="10", unit_cost="50")
 
@@ -665,23 +668,19 @@ def test_second_invoice_on_same_dc_rejected(
         qty="10",
         number="9001",
     )
-    inv2 = _build_dc_linked_invoice(
-        db_session,
-        org_id=fresh_org_id,
-        firm=firm,
-        party=party,
-        item=item,
-        dc=dc,
-        qty="10",
-        number="9002",
-    )
-
     sales_service.finalize_invoice(
         db_session, org_id=fresh_org_id, sales_invoice_id=inv1.sales_invoice_id
     )
-    with pytest.raises(InvoiceStateError, match="already"):
-        sales_service.finalize_invoice(
-            db_session, org_id=fresh_org_id, sales_invoice_id=inv2.sales_invoice_id
+    with pytest.raises(IntegrityError, match="uq_sales_invoice_delivery_challan_live"):
+        _build_dc_linked_invoice(
+            db_session,
+            org_id=fresh_org_id,
+            firm=firm,
+            party=party,
+            item=item,
+            dc=dc,
+            qty="10",
+            number="9002",
         )
 
 

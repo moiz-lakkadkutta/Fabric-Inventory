@@ -24,6 +24,7 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import AppValidationError, InvoiceStateError, NotFoundError
@@ -45,6 +46,7 @@ from app.service import (
     accounting_service,
     audit_service,
     dashboard_service,
+    dc_invoice_link_service,
     gst_service,
     inventory_service,
 )
@@ -842,6 +844,11 @@ def list_sales_invoices(
         stmt = stmt.where(SalesInvoice.party_id == party_id)
     if lifecycle_status is not None:
         stmt = stmt.where(SalesInvoice.lifecycle_status == lifecycle_status)
+    else:
+        # Discarded drafts are hidden from the default view (and therefore
+        # from the dashboard's recent list and the CSV/XLSX export); ask for
+        # `status=DISCARDED` explicitly to see the voided numbers.
+        stmt = stmt.where(SalesInvoice.lifecycle_status != InvoiceLifecycleStatus.DISCARDED)
     if q:
         # Search by invoice number or party name. Join Party once if needed.
         like = f"%{q.lower()}%"
@@ -951,6 +958,58 @@ def _classify_buyer(party: Party) -> BuyerStatus:
     return BuyerStatus.CONSUMER
 
 
+def _is_unpriced_registered_nil(
+    *, tax_type: str | None, document_type: str | None, buyer_gstin: str | None
+) -> bool:
+    """#215: NIL_NOT_A_SUPPLY on a non-DC document for a GSTIN-bearing buyer.
+
+    NIL_NOT_A_SUPPLY on a TAX_INVOICE is the PoS engine's "no usable
+    destination" fallback; for a registered buyer that is a B2B sale at ₹0
+    GST. The same-GSTIN branch transfer (document_type DELIVERY_CHALLAN) is a
+    legitimate non-supply and is excluded. PENDING MOIZ+CA SIGN-OFF.
+    """
+    return (
+        tax_type == gst_service.TaxType.NIL_NOT_A_SUPPLY.value
+        and document_type != gst_service.DocumentType.DELIVERY_CHALLAN.value
+        and bool(buyer_gstin)
+    )
+
+
+def _refuse_unpriced_registered_draft(
+    *,
+    tax_type: str,
+    document_type: str,
+    buyer_gstin: str | None,
+    party: Party,
+    ship_to_state: str | None,
+) -> None:
+    """Create-time guard: 422 naming only the facts that actually hold."""
+    if not _is_unpriced_registered_nil(
+        tax_type=tax_type, document_type=document_type, buyer_gstin=buyer_gstin
+    ):
+        return
+    assert buyer_gstin is not None
+    reasons: list[str] = []
+    if normalize_state_code(party.state_code) is None:
+        if party.state_code and party.state_code.strip():
+            reasons.append(
+                f"the party's recorded state {party.state_code!r} is not a valid GST state code"
+            )
+        else:
+            reasons.append("the party has no state recorded")
+    if ship_to_state and normalize_state_code(ship_to_state) is None:
+        reasons.append(f"the ship-to state {ship_to_state!r} is not a valid GST state code")
+    prefix = buyer_gstin[:2]
+    if normalize_state_code(prefix) is None:
+        reasons.append(f"the GSTIN prefix {prefix!r} is not a valid GST state code")
+    raise AppValidationError(
+        f"Cannot determine the place of supply for party {party.name!r} "
+        f"(GSTIN {buyer_gstin}): {' and '.join(reasons)}, so GST would be charged "
+        "as ₹0. Set the party's state in Masters → Party (or correct its GSTIN), "
+        "or enter a ship-to state on the invoice."
+    )
+
+
 def create_draft_invoice(
     session: Session,
     *,
@@ -966,6 +1025,7 @@ def create_draft_invoice(
     ship_to_address: str | None = None,
     notes: str | None = None,
     created_by: uuid.UUID | None = None,
+    delivery_challan_id: uuid.UUID | None = None,
 ) -> SalesInvoice:
     """Create a DRAFT sales invoice with computed GST split + audit log.
 
@@ -976,6 +1036,13 @@ def create_draft_invoice(
 
     Raises `AppValidationError` for missing lines, unknown party / firm
     / item, or a buyer who is flagged as supplier-only.
+
+    DEBT-02 / #209: ``delivery_challan_id`` bills an ISSUED/ACKNOWLEDGED
+    delivery challan. The DC row is locked FOR UPDATE and validated (same
+    firm + party, not billed by another live invoice, stockable lines match
+    the DC's items + quantities) BEFORE the firm row is locked for numbering;
+    see ``dc_invoice_link_service``. Finalize then takes COGS from the DC's
+    stock movements instead of relieving stock again.
     """
     if not lines:
         raise AppValidationError("Sales invoice must have at least one line")
@@ -987,6 +1054,16 @@ def create_draft_invoice(
         org_id=org_id,
         item_ids=[line["item_id"] for line in lines],  # type: ignore[misc]
     )
+    if delivery_challan_id is not None:
+        # Lock order: DC row -> firm row (numbering below).
+        dc_invoice_link_service.validate_link_for_create(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=party_id,
+            dc_id=delivery_challan_id,
+            lines=lines,
+        )
 
     firm = session.execute(
         select(Firm).where(Firm.firm_id == firm_id, Firm.org_id == org_id)
@@ -1101,6 +1178,19 @@ def create_draft_invoice(
         invoice_date=invoice_date,
     )
 
+    # #215: a GSTIN-bearing (registered) buyer must never be invoiced as
+    # NIL_NOT_A_SUPPLY (₹0 GST) unless it is a same-GSTIN branch transfer
+    # (document_type DELIVERY_CHALLAN). Reached when neither the party, the
+    # invoice's ship-to, nor the GSTIN prefix yields a state (e.g. a legacy
+    # GSTIN starting "99"/"00"). Refuse rather than silently under-charge.
+    _refuse_unpriced_registered_draft(
+        tax_type=pos_decision.tax_type.value,
+        document_type=pos_decision.document_type.value,
+        buyer_gstin=buyer_gstin_plain,
+        party=party,
+        ship_to_state=ship_to_state,
+    )
+
     # #195: SECOND PASS — now that tax_type is known, compute each line's
     # FINAL, statutory GST via gst_service.compute_line_gst. This is the single
     # source of truth: CGST == SGST == round(taxable x rate/200) for intra-state
@@ -1145,6 +1235,7 @@ def create_draft_invoice(
         series=series,
         number=number,
         party_id=party_id,
+        delivery_challan_id=delivery_challan_id,
         invoice_date=invoice_date,
         bill_to_address=bill_to_address,
         ship_to_address=ship_to_address,
@@ -1162,7 +1253,13 @@ def create_draft_invoice(
         updated_by=created_by,
     )
     session.add(invoice)
-    session.flush()
+    try:
+        session.flush()  # may trip uq_sales_invoice_delivery_challan_live (#209)
+    except IntegrityError as exc:
+        # Backstop for the DC lock: a concurrent link that slipped past it
+        # surfaces as the same 422, never a raw 500.
+        dc_invoice_link_service.translate_link_integrity_error(exc, dc_id=delivery_challan_id)
+        raise
 
     for record in line_records:
         session.add(
@@ -1199,6 +1296,9 @@ def create_draft_invoice(
                 "tax_type": pos_decision.tax_type.value,
                 "place_of_supply_state": stored_pos_state,
                 "lines": len(line_records),
+                "delivery_challan_id": (
+                    str(delivery_challan_id) if delivery_challan_id is not None else None
+                ),
             }
         },
     )
@@ -1252,6 +1352,44 @@ def finalize_invoice(
             title="Invoice already finalized",
         )
 
+    # #215: a draft stored as NIL_NOT_A_SUPPLY for a GSTIN-bearing buyer
+    # (created before the create-time guard existed) must not be finalized
+    # into a ₹0-GST tax invoice. Tax type is fixed at draft time, so this
+    # only needs the stored values + the party's current GSTIN.
+    if invoice.tax_type == gst_service.TaxType.NIL_NOT_A_SUPPLY.value:
+        fin_party = session.execute(
+            select(Party).where(Party.party_id == invoice.party_id, Party.org_id == org_id)
+        ).scalar_one()
+        fin_gstin = (
+            crypto.decrypt_pii(
+                fin_party.gstin,
+                dek=crypto.get_org_dek(session, org_id=org_id),
+                org_id=org_id,
+            )
+            if fin_party.gstin
+            else None
+        )
+        if _is_unpriced_registered_nil(
+            tax_type=invoice.tax_type,
+            document_type=invoice.invoice_type,
+            buyer_gstin=fin_gstin,
+        ):
+            # tax_type is frozen on the draft, so fixing the party now can't
+            # re-price it — the only remedy is discard + recreate.
+            raise AppValidationError(
+                f"Cannot finalize invoice {invoice.series}/{invoice.number}: this "
+                "draft was priced with ₹0 GST because no place of supply could be "
+                "determined when it was created. Discard it and create a new "
+                "invoice (after correcting the party's state/GSTIN if needed)."
+            )
+
+    # #209: for a DC-linked invoice, lock + re-validate the DC row now —
+    # BEFORE post_invoice_to_gl locks the firm row for voucher numbering
+    # (lock order invoice -> DC -> firm, same as create_draft_invoice's
+    # DC -> firm), so the "no other live invoice on this DC" check can't race.
+    if invoice.delivery_challan_id is not None:
+        dc_invoice_link_service.revalidate_link_for_finalize(session, invoice=invoice)
+
     before_status = invoice.lifecycle_status.value
     now = datetime.datetime.now(tz=datetime.UTC)
     invoice.lifecycle_status = InvoiceLifecycleStatus.FINALIZED
@@ -1302,6 +1440,102 @@ def finalize_invoice(
                 "voucher_number": f"{voucher.series}/{voucher.number}",
             },
         },
+    )
+    session.flush()
+
+    dashboard_service.invalidate_firm(invoice.firm_id)
+    return invoice
+
+
+# Lifecycle states a discard may act on (invoice-lifecycle spec §2:
+# DRAFT --> DISCARDED, CONFIRMED --> DISCARDED). Nothing has posted yet —
+# no GL voucher, no stock movement — so no reversal is needed.
+_DISCARDABLE_LIFECYCLE = frozenset({InvoiceLifecycleStatus.DRAFT, InvoiceLifecycleStatus.CONFIRMED})
+
+
+def discard_invoice(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    sales_invoice_id: uuid.UUID,
+    reason: str | None = None,
+    discarded_by: uuid.UUID | None = None,
+) -> SalesInvoice:
+    """DRAFT / CONFIRMED -> DISCARDED (a state event, not a delete).
+
+    The row is KEPT — not soft-deleted — with its ``number`` retained.
+    Numbers are allocated at draft time (``_allocate_si_number``, max+1), so
+    a discarded draft leaves its number "used": the series shows a DISCARDED
+    row (audit trail of the voided number) rather than a silent gap, and the
+    allocator never reuses it. PENDING MOIZ+CA: the spec says DRAFT has no
+    doc number; a discard therefore creates a visible gap in the series.
+
+    DISCARDED is outside every billed-state allow-list (GSTR-1, AR, ageing,
+    dashboards) and the invoice list's default view, and it releases a linked
+    delivery challan (#209 index + ``RELEASED_INVOICE_STATUSES``) so the DC
+    can be billed again.
+
+    Idempotent: discarding an already-DISCARDED invoice returns it unchanged.
+    Any other state raises ``InvoiceStateError`` (409) pointing to cancel.
+    """
+    # Same row lock as finalize/cancel so a discard racing a finalize
+    # serializes: the loser re-reads the winner's state and gets a 409.
+    invoice = session.execute(
+        select(SalesInvoice)
+        .options(selectinload(SalesInvoice.lines))
+        .where(
+            SalesInvoice.sales_invoice_id == sales_invoice_id,
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.deleted_at.is_(None),
+        )
+        .with_for_update(of=SalesInvoice)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise NotFoundError(f"Sales invoice {sales_invoice_id} not found.")
+
+    if invoice.lifecycle_status == InvoiceLifecycleStatus.DISCARDED:
+        return invoice
+
+    if invoice.lifecycle_status not in _DISCARDABLE_LIFECYCLE:
+        raise InvoiceStateError(
+            f"Cannot discard invoice {invoice.series}/{invoice.number}: status is "
+            f"{invoice.lifecycle_status.value}. Only a DRAFT or CONFIRMED "
+            "(not yet finalized) invoice can be discarded; a finalized invoice "
+            "must be cancelled instead (Cancel posts the reversing entries).",
+            title="Invoice cannot be discarded",
+        )
+
+    before_status = invoice.lifecycle_status.value
+    now = datetime.datetime.now(tz=datetime.UTC)
+    invoice.lifecycle_status = InvoiceLifecycleStatus.DISCARDED
+    invoice.updated_at = now
+    if discarded_by is not None:
+        invoice.updated_by = discarded_by
+
+    clean_reason = reason.strip() if reason and reason.strip() else None
+    audit_service.emit(
+        session,
+        org_id=org_id,
+        firm_id=invoice.firm_id,
+        user_id=discarded_by,
+        entity_type="sales.invoice",
+        entity_id=invoice.sales_invoice_id,
+        action="discard",
+        changes={
+            "before": {"lifecycle_status": before_status},
+            "after": {
+                "lifecycle_status": InvoiceLifecycleStatus.DISCARDED.value,
+                "discarded_at": now.isoformat(),
+                # The voided number stays on the row; recorded here too so the
+                # audit trail explains the gap in the series.
+                "number": f"{invoice.series}/{invoice.number}",
+                "delivery_challan_id": (
+                    str(invoice.delivery_challan_id) if invoice.delivery_challan_id else None
+                ),
+            },
+        },
+        reason=clean_reason,
     )
     session.flush()
 
@@ -1361,11 +1595,15 @@ def cancel_invoice(
     reversal is a CREDIT_NOTE and how it avoids #190's posting index.
 
     Guards (raise InvoiceStateError → 409):
-      - not in {FINALIZED, POSTED, OVERDUE} (DRAFT is discarded via other
-        flows; a re-cancel of a CANCELLED invoice is an idempotent no-op);
-      - ``paid_amount > 0`` — a receipt was applied; unwind it first;
-      - DC-linked — goods were physically dispatched (v1 scope: use the
-        credit-note / sales-return flow, a follow-up ticket).
+      - not in {FINALIZED, POSTED, OVERDUE} (a DRAFT is discarded via
+        ``discard_invoice``; a re-cancel of a CANCELLED invoice is an idempotent no-op);
+      - ``paid_amount > 0`` — a receipt was applied; unwind it first.
+
+    DC-linked invoices (DEBT-02 / #209) CAN be cancelled: revenue and COGS are
+    reversed but stock is NOT restored — the goods left with the delivery
+    challan and are still with the customer. The DC returns to "dispatched,
+    not billed" (its link is released) and can be invoiced again. Goods that
+    actually come back go through the sales-return flow, not cancel.
 
     ``reason`` is required (spec §7). Idempotent: cancelling an already-
     CANCELLED invoice returns it unchanged (exactly one reversal per
@@ -1402,7 +1640,12 @@ def cancel_invoice(
         raise InvoiceStateError(
             f"Cannot cancel invoice {sales_invoice_id}: status is "
             f"{invoice.lifecycle_status.value}. Only a finalized, unpaid invoice "
-            "can be cancelled.",
+            "can be cancelled."
+            + (
+                " A draft has posted nothing — discard it instead."
+                if invoice.lifecycle_status in _DISCARDABLE_LIFECYCLE
+                else ""
+            ),
             title="Invoice cannot be cancelled",
         )
 
@@ -1411,14 +1654,6 @@ def cancel_invoice(
             f"Cannot cancel invoice {sales_invoice_id}: "
             f"₹{Decimal(invoice.paid_amount):.2f} already received. Unwind the "
             "receipt first (credit-note / refund workflow).",
-            title="Invoice cannot be cancelled",
-        )
-
-    if invoice.delivery_challan_id is not None:
-        raise InvoiceStateError(
-            f"Cannot cancel invoice {sales_invoice_id}: it is linked to a delivery "
-            "challan (goods were dispatched). Use the sales-return / credit-note "
-            "workflow instead.",
             title="Invoice cannot be cancelled",
         )
 
@@ -1458,9 +1693,10 @@ def cancel_invoice(
         voucher_date=reversal_date,
     )
 
-    # Restore stock relieved at finalize (direct invoices only — DC-linked is
-    # blocked above). Keeps GL-1300 (restored by the COGS reversal) and the
-    # physical stock position moving together.
+    # Restore stock relieved at finalize (direct invoices only). Keeps GL-1300
+    # (restored by the COGS reversal) and the physical stock position moving
+    # together. A DC-linked invoice relieved nothing at finalize (the DC did),
+    # so this is a no-op for it: the goods stay out with the challan.
     _restore_stock_for_cancel(session, invoice=invoice, org_id=org_id, txn_date=reversal_date)
 
     before_status = invoice.lifecycle_status.value
@@ -1670,31 +1906,15 @@ def _post_cogs_for_dc_invoice(
     the INVOICE (DR 5000 / CR 1300, at the DC's weighted-average cost, dated
     invoice_date).
 
-    Guard: if another non-deleted invoice already links to this DC, refuse —
-    two invoices sharing one DC would double-count the DC's cost.
+    Guard (#209): ``finalize_invoice`` has already locked the DC row and
+    verified no other live invoice bills it
+    (``dc_invoice_link_service.revalidate_link_for_finalize``), backed by the
+    partial unique index ``uq_sales_invoice_delivery_challan_live`` — so the
+    DC's cost can't be posted twice.
     """
     dc_id = invoice.delivery_challan_id
     if dc_id is None:  # pragma: no cover — caller only routes DC-linked here.
         return
-
-    # Guard against two invoices sharing one DC (would double-count COGS):
-    # refuse if another already-FINALIZED invoice claims this DC. Two DRAFTs
-    # may coexist; the first to finalize wins, the second is rejected here.
-    other = session.execute(
-        select(SalesInvoice.sales_invoice_id).where(
-            SalesInvoice.org_id == org_id,
-            SalesInvoice.delivery_challan_id == dc_id,
-            SalesInvoice.sales_invoice_id != invoice.sales_invoice_id,
-            SalesInvoice.lifecycle_status != InvoiceLifecycleStatus.DRAFT,
-            SalesInvoice.deleted_at.is_(None),
-        )
-    ).first()
-    if other is not None:
-        raise InvoiceStateError(
-            f"Delivery challan {dc_id} is already linked to a finalized invoice; "
-            "cannot post COGS twice for the same dispatch.",
-            title="Invoice already finalized",
-        )
 
     # Recover the cost basis from the DC's outbound stock movements.
     out_rows = list(

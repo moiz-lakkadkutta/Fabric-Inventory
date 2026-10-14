@@ -23,7 +23,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import DataError
+from sqlalchemy.exc import DataError, ProgrammingError
 
 from ..exceptions import AppError, ErrorCode
 
@@ -164,6 +164,44 @@ def register_error_handlers(app: FastAPI) -> None:
                 ),
             )
         logger.exception("data_error", path=request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content=_envelope(
+                code=str(ErrorCode.UNKNOWN),
+                title="Internal server error",
+                detail="An unexpected error occurred.",
+                status=500,
+                field_errors={},
+                request_id=_request_id_for(request),
+            ),
+        )
+
+    @app.exception_handler(ProgrammingError)
+    async def _handle_programming_error(request: Request, exc: ProgrammingError) -> JSONResponse:
+        """Q01-02 M2: a row-level-security refusal (SQLSTATE 42501 "new row
+        violates row-level security policy") means the DB layer stopped a
+        write into a firm outside the caller's scope — a path the app-layer
+        check missed. Answer with the same 403 the app layer gives, naming
+        no table / policy. Other 42501s (a missing GRANT) and every other
+        ProgrammingError stay generic 500s: they are bugs."""
+        orig = exc.orig
+        if getattr(orig, "pgcode", None) == "42501" and "row-level security" in str(orig):
+            logger.warning("rls_write_refused_403", path=request.url.path)
+            return JSONResponse(
+                status_code=403,
+                content=_envelope(
+                    code=str(ErrorCode.PERMISSION_DENIED),
+                    title="No access to that firm",
+                    detail=(
+                        "You don't have access to write in that firm. Switch to a firm you "
+                        "have access to, or ask an admin to grant you a role in it."
+                    ),
+                    status=403,
+                    field_errors={},
+                    request_id=_request_id_for(request),
+                ),
+            )
+        logger.exception("programming_error", path=request.url.path)
         return JSONResponse(
             status_code=500,
             content=_envelope(

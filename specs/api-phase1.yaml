@@ -109,10 +109,29 @@ components:
       in: header
       required: false
       description: |
-        Client-supplied key (UUID or opaque up to 100 chars) to make mutating requests
-        idempotent. If the same key is retried within 14 days, the server returns the
-        original response instead of creating a duplicate. Critical for offline Android
-        sync and flaky-network retries.
+        Client-generated UUID v4 that makes a mutating request idempotent. Required on
+        every POST/PATCH/PUT/DELETE except the auth-by-design routes (/auth/login,
+        /auth/signup, /auth/refresh, /auth/forgot, /auth/reset, /admin/invites/accept);
+        missing or non-UUID → 400 IDEMPOTENCY_KEY_REQUIRED. Critical for offline
+        Android sync and flaky-network retries.
+
+        Semantics (Q01-01/Q01-04, implemented in the idempotency middleware):
+        - Scope: the key is namespaced per authenticated principal (org + user, taken
+          from the verified access token — so a retry after a token refresh still
+          dedupes), HTTP method and path. Requests without a valid access token are
+          never deduplicated or replayed; the handler runs and returns 401.
+        - Retry of a completed 2xx with the same body (within 24 h) → the original
+          response is replayed; the handler does not run again.
+        - Same key, different body → 409 IDEMPOTENCY_KEY_PAYLOAD_MISMATCH.
+        - Same key while the first request is still executing → 409
+          IDEMPOTENCY_REQUEST_IN_PROGRESS with a Retry-After header; retry shortly and
+          the retry is replayed once the first request finishes.
+        - Non-2xx outcomes are not replayed: 4xx (except 401/403) keep only a body
+          hash for mismatch detection and the retry re-executes; 401/403/5xx (incl. a
+          failed commit) store nothing.
+        - Responses carrying credentials or secrets (/auth/switch-firm,
+          /auth/mfa-verify, /auth/mfa/setup, /auth/mfa/confirm, /auth/logout, or any
+          body with token/secret fields) are never cached; a retry re-executes.
       schema:
         type: string
         maxLength: 100
@@ -148,21 +167,41 @@ components:
             $ref: '#/components/schemas/ProblemDetails'
 
     Forbidden:
-      description: Insufficient permissions
+      description: |
+        Insufficient permissions. Permissions are granted per firm (or
+        org-wide). Firm scope (Q01-02): when the request names a `firm_id`
+        (path, query string or top-level JSON body) other than the token's
+        active firm, the endpoint's `x-permission` must ALSO be granted in
+        that firm (firm-scoped role or org-wide role); otherwise 403 with
+        title "No access to that firm". A `firm_id` that does not exist in
+        the caller's organisation is never answered with this 403 — the
+        endpoint responds exactly as for any unknown firm (404/422), so firm
+        existence in other orgs is not revealed. Invites / role changes /
+        custom-role edits are capped by the actor's permissions in the scope
+        being granted (org-wide grants need an org-wide admin).
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetails'
 
     NotFound:
-      description: Resource not found
+      description: |
+        Resource not found. Also returned (never 403) for a resource that
+        exists in the caller's org but in a firm outside the caller's firm
+        scope (Q01-02, enforced by RESTRICTIVE firm RLS) — the same
+        invisibility as a cross-org id. List endpoints without a `firm_id`
+        filter likewise return only rows of firms in scope (plus org-shared
+        masters with no firm).
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetails'
 
     Conflict:
-      description: Conflict (e.g., duplicate, invalid state)
+      description: |
+        Conflict (e.g., duplicate, invalid state), or an Idempotency-Key conflict:
+        IDEMPOTENCY_KEY_PAYLOAD_MISMATCH (same key, different body) or
+        IDEMPOTENCY_REQUEST_IN_PROGRESS (same key still executing; honour Retry-After).
       content:
         application/problem+json:
           schema:
@@ -682,6 +721,12 @@ components:
           type: string
           format: uuid
           nullable: true
+          description: >-
+            Delivery challan this invoice bills (DEBT-02). One invoice bills
+            one challan; a challan is held by at most one live invoice
+            (DRAFT included; cancelling frees it). On finalize the invoice
+            posts COGS from the challan's dispatch and does not relieve stock
+            a second time.
         tax_regime:
           type: string
           enum:
@@ -715,6 +760,26 @@ components:
         updated_at:
           type: string
           format: date-time
+        credit_note:
+          description: >-
+            (#216) The CGST Act §34 credit note issued against this invoice —
+            set only when it was CANCELLED in a later GST period than its
+            invoice date. Null for a same-period cancellation (a true
+            cancellation; no credit note is issued) and for every other
+            status. PDF at GET /invoices/{invoice_id}/credit-note/pdf.
+          nullable: true
+          type: object
+          properties:
+            voucher_id:
+              type: string
+              format: uuid
+            number:
+              type: string
+              maxLength: 16
+              description: Full credit-note number, e.g. "CN/26-27/0001".
+            note_date:
+              type: string
+              format: date
 
     InvoiceLine:
       type: object
@@ -4260,6 +4325,14 @@ paths:
             line_amount or invoice total exceeding the ₹1e9 ceiling — even
             when each qty/price passes its own 1e9 cap — is rejected here
             (VALIDATION_ERROR) rather than overflowing NUMERIC(18,2) into 500.
+            DEBT-02 / #209 — `delivery_challan_id` bills a delivery challan and
+            is rejected when: the challan is unknown / deleted, belongs to a
+            different firm or customer, is not ISSUED/ACKNOWLEDGED (e.g. still
+            DRAFT), is already held by another live (non-cancelled) invoice —
+            including one created concurrently — or the invoice's stockable
+            lines don't bill exactly the challan's items and quantities
+            (SERVICE lines such as freight may be added; partial billing of a
+            challan is not supported).
           content:
             application/json:
               schema:
@@ -4354,11 +4427,14 @@ paths:
     post:
       summary: Cancel a finalized invoice (posts a reversing GL voucher)
       description: >-
-        Cancels a FINALIZED (unpaid, non-DC-linked) sales invoice. Posts a
+        Cancels a FINALIZED (unpaid) sales invoice. Posts a
         reversing CREDIT_NOTE voucher (and reverses the COGS voucher +
         restores stock when present) so voucher-driven reports (TB, P&L,
         party statement, daybook) stay consistent with status-driven reports
         (GSTR-1, ageing). Idempotent.
+        DC-linked invoices (DEBT-02 / #209): revenue and COGS are reversed
+        but stock is NOT restored — the goods left with the delivery challan.
+        The challan is released and can be billed on a new invoice.
         GST periods (#199, CA-review correction; periods are calendar months
         in Asia/Kolkata): the reversal, COGS reversal and stock restore are
         dated on the cancel date in IST (never before the invoice date). A
@@ -4369,6 +4445,18 @@ paths:
         cross-period cancel after 30 November following the end of the
         invoice's financial year (April-March) is refused with 409 (§34(2)
         time limit).
+        NUMBERING (#216): a cross-period (§34) credit note is numbered in the
+        firm's own credit-note series `CN/<FY>/<serial>` (e.g. CN/26-27/0001;
+        FY = Indian financial year, 1 April - 31 March, of the note date;
+        gapless, restarting each 1 April; ≤16 chars per Rule 53(1A)(b)). Only
+        a TAX INVOICE for a supply can carry a §34 note: a cross-period cancel
+        of a Bill of Supply (non-GST firm), Cash Memo, Estimate or same-GSTIN
+        branch transfer (NIL_NOT_A_SUPPLY) is not a credit note. Those, a
+        same-period cancellation, and any pre-#190 duplicate reversal beyond
+        the first, are internal `CXL/<FY>` vouchers ("Cancellation
+        reversal") that never consume a credit-note serial and never appear
+        in GSTR-1 CDNR / CDNUR. The response's
+        `credit_note` carries the note number and date.
       operationId: cancelInvoice
       tags:
         - sales
@@ -4406,8 +4494,100 @@ paths:
         '409':
           description: >-
             Invoice cannot be cancelled — not finalized, already paid,
-            linked to a delivery challan, or (#199) a cross-period cancel past
+            or (#199) a cross-period cancel past
             the §34 credit-note time limit (30-Nov after the invoice's FY end).
+      x-permission: sales.invoice.cancel
+
+  /invoices/{invoice_id}/credit-note/pdf:
+    get:
+      summary: Download the §34 credit note issued against a cancelled invoice
+      description: >-
+        (#216) Renders the credit note (CGST Rule 53(1A)) for an invoice that
+        was cancelled in a later GST period: supplier name/address/GSTIN,
+        "Credit Note", serial number (CN/<FY>/NNNN) and date of issue,
+        recipient name/address/GSTIN (or, unregistered, address, place of
+        delivery and state), the original invoice number and date, per-line
+        taxable value, rate and CGST/SGST/IGST credited, and the signature
+        block. 404 when the invoice is not visible to the caller's org or has
+        no credit note (not cancelled, a same-period cancellation, or not a
+        tax invoice for a supply — Bill of Supply, Cash Memo, Estimate,
+        branch transfer).
+      operationId: getInvoiceCreditNotePdf
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: PDF stream of the credit note.
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+      x-permission: sales.invoice.read
+
+  /invoices/{invoice_id}/discard:
+    post:
+      summary: Discard a DRAFT or CONFIRMED invoice (→ DISCARDED; nothing to reverse)
+      description: >-
+        invoice-lifecycle §2 DRAFT/CONFIRMED → DISCARDED. Nothing has posted
+        (no GL voucher, no stock movement), so nothing is reversed. The row is
+        KEPT with status DISCARDED and its number retained (numbers are
+        allocated at draft time, so the series shows the voided number rather
+        than a silent gap; the allocator never reuses it — PENDING MOIZ+CA).
+        Discarded invoices are excluded from GSTR-1, AR / ageing, dashboards
+        and the invoice list's default view (`?status=DISCARDED` lists them),
+        and a linked delivery challan is released for re-billing (#209).
+        Idempotent: discarding a DISCARDED invoice returns it unchanged.
+        No dedicated discard permission exists; it reuses `sales.invoice.cancel`.
+      operationId: discardInvoice
+      tags:
+        - sales
+      parameters:
+        - $ref: '#/components/parameters/OrgId'
+        - $ref: '#/components/parameters/FirmId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  nullable: true
+                  maxLength: 500
+                  description: Optional reason, recorded on the audit log.
+      responses:
+        '200':
+          description: Invoice discarded (or already discarded)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            Invoice is past DRAFT/CONFIRMED (FINALIZED / paid / CANCELLED) —
+            only a not-yet-finalized invoice can be discarded; cancel it instead.
       x-permission: sales.invoice.cancel
 
   /invoices/{invoice_id}/send-whatsapp:
@@ -5280,7 +5460,10 @@ paths:
             EXPWOP), or, for a B2CS original, a negative adjustment netted
             into that month's `b2cs` row for the same (state, rate) — a
             negative row with `invoice_count` 0 if there were no sales. Each
-            credit-note row is per (note, slab rate) with note number/date,
+            credit-note row is per (note, slab rate) with note number/date
+            (#216: `note_no` / `invoice_no` carry the FULL numbers, e.g.
+            "CN/26-27/0001", and the XLSX "Note #" / "Original invoice #"
+            columns use them),
             original invoice number/date, place of supply, `note_value`,
             `taxable_value`, CGST/SGST/IGST and `note_type` "C"; amounts are
             POSITIVE (the note type carries the sign). `hsn` is net of every

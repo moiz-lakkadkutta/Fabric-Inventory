@@ -136,6 +136,34 @@ async def client() -> AsyncIterator[AsyncClient]:
 # `Idempotency-Key=""` explicitly or use a raw TestClient.
 
 
+def mint_access_token(*, org_id: uuid.UUID | None = None, user_id: uuid.UUID | None = None) -> str:
+    """Signed ACCESS JWT for middleware-only tests (synthetic apps, no DB).
+
+    Q01-04: the idempotency cache only serves / stores for a verified
+    principal, so synthetic-route tests that exercise replay must present a
+    token the middleware's verifier (`identity_service.verify_jwt`) accepts.
+    """
+    import datetime as _dt
+
+    import jwt as _jwt
+
+    from app.config import get_settings
+
+    now = _dt.datetime.now(tz=_dt.UTC)
+    claims: dict[str, object] = {
+        "sub": str(user_id or uuid.uuid4()),
+        "org_id": str(org_id or uuid.uuid4()),
+        "firm_id": None,
+        "permissions": [],
+        "jti": uuid.uuid4().hex,
+        "iat": int(now.timestamp()),
+        "exp": int((now + _dt.timedelta(minutes=15)).timestamp()),
+        "token_type": "access",
+        "pv": 1,
+    }
+    return _jwt.encode(claims, get_settings().jwt_secret, algorithm="HS256")
+
+
 class IdempotentTestClient(TestClient):
     """TestClient that auto-injects an Idempotency-Key on mutating requests."""
 
@@ -186,6 +214,15 @@ def sync_engine() -> Iterator[Engine]:
     sync_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
     try:
         engine = create_engine(sync_url, future=True)
+        # Q01-02: direct-DB test sessions (service tests, fixtures seeding
+        # rows) run as a SYSTEM context for the firm-scope RLS — the
+        # session-level equivalent of `firm_scope_service.
+        # apply_system_firm_scope` — so the RESTRICTIVE firm policies behave
+        # as before for them. Only engines the TESTS own get this; the app's
+        # own engine (HTTP tests) stays fail-closed and computes the scope
+        # per request exactly as in prod. Firm-RLS tests build their own
+        # engine without it (tests/security/test_q01_firm_rls.py).
+        _sa_event.listen(engine, "connect", _set_system_firm_scope)
         with engine.connect() as conn:
             ver = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
             if ver is None:
@@ -198,6 +235,15 @@ def sync_engine() -> Iterator[Engine]:
         yield engine
     finally:
         engine.dispose()
+
+
+def _set_system_firm_scope(dbapi_connection: Any, _record: object) -> None:
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("SET app.current_firm_scope = '*'")
+    finally:
+        cursor.close()
+    dbapi_connection.commit()
 
 
 @pytest.fixture
