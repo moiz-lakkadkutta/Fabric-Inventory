@@ -347,6 +347,9 @@ jobs:
   e2e-acceptance:
     name: E2E acceptance (Playwright + docker-compose, CUT-503)
     runs-on: ubuntu-latest
+    # DEBT-04: a green run is ~2-3 min end to end. Cap the whole job so a
+    # wedge can never again burn 20+ minutes of CI (PR #185: 22m47s).
+    timeout-minutes: 20
     strategy:
       fail-fast: false
     env:
@@ -438,8 +441,33 @@ jobs:
           docker compose logs web | tail -200
           exit 1
 
+      - name: Wait for the browser path (Vite proxy -> API) and warm Vite
+        # DEBT-04: the two gates above probe api and web separately. The
+        # browser only ever talks to Vite, which proxies /api/* to the api
+        # container — gate on that exact hop too. Then request the app
+        # entry once so Vite's on-demand transform of the module graph
+        # happens here, not inside the first Playwright navigation.
+        timeout-minutes: 2
+        run: |
+          for attempt in $(seq 1 24); do
+            if curl -sf http://localhost:5173/api/live >/dev/null; then
+              echo "Vite proxy -> API ok after $attempt attempt(s)."
+              break
+            fi
+            if [ "$attempt" = 24 ]; then
+              echo "::error::Vite proxy never reached the API (/api/live)"
+              exit 1
+            fi
+            sleep 5
+          done
+          curl -sf -o /dev/null -w "warm /src/main.tsx: %{http_code} in %{time_total}s\n" \
+            http://localhost:5173/src/main.tsx
+
       - name: Run Playwright acceptance suite (cutover.spec.ts)
         working-directory: frontend
+        # DEBT-04: fail fast; the per-action/test timeouts in
+        # playwright.config.ts should trip long before this does.
+        timeout-minutes: 8
         env:
           E2E_NO_WEBSERVER: "1"
           E2E_RUN_CUTOVER: "1"
@@ -454,6 +482,9 @@ jobs:
       # have separate Playwright reports + traces on failure.
       - name: Run Playwright manufacturing pipeline (manufacturing-pipeline.spec.ts)
         working-directory: frontend
+        # DEBT-04: fail fast; the per-action/test timeouts in
+        # playwright.config.ts should trip long before this does.
+        timeout-minutes: 8
         env:
           E2E_NO_WEBSERVER: "1"
           E2E_RUN_CUTOVER: "1"
@@ -461,15 +492,42 @@ jobs:
           CI: "true"
         run: pnpm exec playwright test manufacturing-pipeline.spec.ts
 
-      - name: Dump docker logs on failure
-        if: failure()
+      # DEBT-04: always capture the full stack state to files. The old
+      # `docker compose logs api | tail -400` was ~95% healthcheck /ready
+      # noise and cut off everything before the last ~15 min, so the
+      # first failed attempt on PR #185 left no api log at all.
+      - name: Capture docker-compose state + full service logs
+        if: always()
         run: |
-          echo "===== api logs (tail 400) =====" && docker compose logs api | tail -400 || true
-          echo "===== web logs (tail 200) =====" && docker compose logs web | tail -200 || true
-          echo "===== postgres logs (tail 100) =====" && docker compose logs postgres | tail -100 || true
+          mkdir -p e2e-logs
+          docker compose ps -a > e2e-logs/compose-ps.txt 2>&1 || true
+          for svc in $(docker compose config --services); do
+            docker compose logs --no-color --timestamps "$svc" > "e2e-logs/$svc.log" 2>&1 || true
+          done
+          # Restarts / OOM kills / exit codes per container.
+          for c in $(docker compose ps -aq); do
+            docker inspect --format '{{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} oomkilled={{.State.OOMKilled}} restarts={{.RestartCount}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' "$c"
+          done > e2e-logs/containers.txt 2>&1 || true
+          docker stats --no-stream > e2e-logs/docker-stats.txt 2>&1 || true
+          { free -m; echo; uptime; echo; df -h; } > e2e-logs/host.txt 2>&1 || true
+          sudo dmesg -T 2>/dev/null | grep -iE 'oom|killed process' > e2e-logs/dmesg-oom.txt || true
+          cat e2e-logs/containers.txt || true
+          # Non-healthcheck API traffic is the useful part on screen; the
+          # full log is in the artifact.
+          echo "===== api requests (healthchecks filtered, last 150) ====="
+          grep -vE '"path": "/(ready|live)"|GET /(ready|live) ' e2e-logs/api.log | tail -150 || true
+
+      - name: Upload docker-compose logs on failure
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-compose-logs
+          path: e2e-logs
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Upload Playwright report on failure
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
@@ -478,7 +536,9 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload Playwright traces on failure
-        if: failure()
+        # test-results/ holds trace.zip, video.webm, the failure
+        # screenshots and error-context.md per failed attempt.
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-traces

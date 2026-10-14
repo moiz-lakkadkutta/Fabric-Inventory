@@ -152,7 +152,9 @@ test.describe('CUT-503 acceptance: Wave 1-5 cutover scenario', () => {
     page,
     request,
   }) => {
-    test.setTimeout(10 * 60_000); // 10 min cap per task brief.
+    // Green run is ~10s on CI. 3 min leaves headroom for a slow runner
+    // without letting a wedge burn 10 min x 2 (retry) — DEBT-04.
+    test.setTimeout(3 * 60_000);
     await installRuntimeFlags(page);
 
     // -------------------------------------------------------------------

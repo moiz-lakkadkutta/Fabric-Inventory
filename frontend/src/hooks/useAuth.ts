@@ -86,6 +86,38 @@ export async function refreshOnBoot(
   }
 }
 
+/*
+ * Single-flight guard for the live bootstrap (DEBT-04).
+ *
+ * In dev, <StrictMode> runs every effect twice (mount → cleanup →
+ * mount). Firing /auth/refresh from each run sends two requests with
+ * the same rotating cookie; the backend revokes the presented session
+ * row, so whichever request lands second gets 401. If that loser is the
+ * live (second-mount) request, the old code called authStore.clear()
+ * and logged the user out on a perfectly valid page load — the root
+ * cause of the intermittent E2E acceptance hangs on PR #185.
+ *
+ * Both effect runs now await the same promise. It is dropped once it
+ * settles so a later bootstrap (e.g. a test that calls
+ * authStore.reset()) starts fresh.
+ */
+let bootstrapInFlight: Promise<MeResponse> | null = null;
+
+function bootstrapLive(): Promise<MeResponse> {
+  if (bootstrapInFlight) return bootstrapInFlight;
+  bootstrapInFlight = (async () => {
+    try {
+      const tokens = await refreshOnBoot();
+      authStore.setAccessToken(tokens.access_token);
+      const me = await api<MeResponse>('/auth/me');
+      return await maybeAutoSwitchSingleFirm(me);
+    } finally {
+      bootstrapInFlight = null;
+    }
+  })();
+  return bootstrapInFlight;
+}
+
 export function useAuthBootstrap(): void {
   React.useEffect(() => {
     if (authStore.get().status !== 'unknown') return;
@@ -100,23 +132,16 @@ export function useAuthBootstrap(): void {
 
     let cancelled = false;
 
-    (async () => {
-      try {
-        const tokens = await refreshOnBoot(() => cancelled);
-        if (cancelled) return;
-        authStore.setAccessToken(tokens.access_token);
-
-        const me = await api<MeResponse>('/auth/me');
-        if (cancelled) return;
-        const settled = await maybeAutoSwitchSingleFirm(me);
-        if (cancelled) return;
-        authStore.setMe(settled);
-      } catch {
+    bootstrapLive().then(
+      (settled) => {
+        if (!cancelled) authStore.setMe(settled);
+      },
+      () => {
         // Any failure → unauthenticated. The router gates protected pages
         // and redirects to /login.
         if (!cancelled) authStore.clear();
-      }
-    })();
+      },
+    );
 
     return () => {
       cancelled = true;
