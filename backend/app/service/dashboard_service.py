@@ -188,15 +188,15 @@ def _sales_in_range(
     start: datetime.date,
     end: datetime.date,
 ) -> Decimal:
-    """Sum of invoice_amount for invoices in [start, end], excluding
-    cancelled / discarded.
+    """Sum of invoice_amount for invoices in [start, end] with lifecycle in
+    FINALIZED/POSTED/PARTIALLY_PAID/OVERDUE.
     """
     total: Decimal | None = session.execute(
         select(func.coalesce(func.sum(SalesInvoice.invoice_amount), 0)).where(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
-            SalesInvoice.lifecycle_status.in_(_NON_CANCELLED_LIFECYCLES),
+            SalesInvoice.lifecycle_status.in_(_OPEN_AR_LIFECYCLES),
             SalesInvoice.invoice_date >= start,
             SalesInvoice.invoice_date <= end,
         )
@@ -212,19 +212,15 @@ def _gst_collected_in_range(
     start: datetime.date,
     end: datetime.date,
 ) -> Decimal:
-    """Sum of `gst_amount` for finalized invoices in [start, end].
-
-    Why this matters: textile firms watch GST-collected MTD because it
-    foreshadows their GSTR-3B liability for the month. Without it on
-    the dashboard, Moiz had to run an ad-hoc query every time a customer
-    asked "how much GST am I sitting on?"
+    """Sum of `gst_amount` for invoices in [start, end] with lifecycle in
+    FINALIZED/POSTED/PARTIALLY_PAID/OVERDUE.
     """
     total: Decimal | None = session.execute(
         select(func.coalesce(func.sum(SalesInvoice.gst_amount), 0)).where(
             SalesInvoice.org_id == org_id,
             SalesInvoice.firm_id == firm_id,
             SalesInvoice.deleted_at.is_(None),
-            SalesInvoice.lifecycle_status.in_(_NON_CANCELLED_LIFECYCLES),
+            SalesInvoice.lifecycle_status.in_(_OPEN_AR_LIFECYCLES),
             SalesInvoice.invoice_date >= start,
             SalesInvoice.invoice_date <= end,
         )
