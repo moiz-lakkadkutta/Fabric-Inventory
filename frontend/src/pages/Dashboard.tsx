@@ -43,10 +43,10 @@ export default function Dashboard() {
     year: 'numeric',
     timeZone: 'Asia/Kolkata',
   });
-  const activeFirmName =
-    me?.available_firms.find((f) => f.firm_id === me.firm_id)?.name ??
-    me?.available_firms[0]?.name ??
-    null;
+  // Only the session's active firm — never available_firms[0], which would
+  // name a firm the API isn't actually scoped to (multi-firm logins start
+  // with none until the user picks one).
+  const activeFirmName = me?.available_firms.find((f) => f.firm_id === me.firm_id)?.name ?? null;
 
   return (
     <div className="space-y-6">
