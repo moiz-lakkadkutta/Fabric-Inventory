@@ -2,54 +2,56 @@
 
 Authoritative catalog of **every state machine and every cross-entity flow** in the platform, mined from `backend/app/models|service|routers` + `specs/`. This is the scaffold the flow-testing agents probe against. Each agent owns a slice (see §Agent partition) and must test **every transition (valid + invalid), every guard, every side-effect (GL/stock/audit), idempotency, RLS, concurrency, money/qty invariants, and error handling.**
 
+> **Last re-verified against code:** 2026-10-23 (`main` @ `aaf85a9`). States/transitions checked by reading the services and by a live API run of each flow on a seeded DB. Items marked **(not built)** exist only in enums/specs/PDF templates.
+
 ## A. Entity lifecycle state machines (states verified from enums)
 
 | Machine | States | Key transitions (service verb) | Side-effects to verify |
 |---------|--------|-------------------------------|------------------------|
-| **Sales Invoice** | DRAFT · CONFIRMED · FINALIZED · POSTED · PARTIALLY_PAID · PAID · OVERDUE · CANCELLED · DISCARDED | `finalize_invoice`, `post_invoice_to_gl`, `post_receipt`(→partial/paid), cancel/discard | GL DR AR / CR Revenue+GST balanced; immutability after finalize; AR ledger; numbering |
-| **Purchase Invoice** | DRAFT · CONFIRMED · MATCHING · ON_HOLD · DISPUTED · POSTED · PARTIALLY_PAID · PAID · OVERDUE · CANCELLED | `post_pi`, `void_pi`, 3-way match | **GL posting (currently a no-op — #18)**; AP ledger; match tolerance |
+| **Sales Invoice** | DRAFT · CONFIRMED · FINALIZED · POSTED · PARTIALLY_PAID · PAID · OVERDUE · CANCELLED · DISCARDED | `finalize_invoice`, `post_invoice_to_gl`, `post_receipt`(→partial/paid), cancel/discard | GL DR AR / CR Revenue+GST balanced; immutability after finalize; AR ledger; numbering; **direct (non-DC) invoices relieve stock + post COGS at finalize**; DC-linked invoices do NOT re-relieve stock — COGS comes from the DC's outbound movements (`dc_invoice_link_service`, one live invoice ↔ one DC, #209); cancel: same-month = true cancellation (excluded from GSTR-1), cross-month = §34 credit note (CDNR/CDNUR/B2CS), refused after 30-Nov of next FY |
+| **Purchase Invoice** | DRAFT · CONFIRMED · MATCHING · ON_HOLD · DISPUTED · POSTED · PARTIALLY_PAID · PAID · OVERDUE · CANCELLED | `post_pi`, `void_pi`, 3-way match | balanced PURCHASE_INVOICE GL voucher (E1; #18 resolved) clearing GRNI per billed qty; void re-opens billed qty + GRNI (#203); AP ledger; match tolerance |
 | **Purchase Order** | DRAFT · APPROVED · CONFIRMED · PARTIAL_GRN · FULLY_RECEIVED · CANCELLED | `approve_po`, `confirm_po`, `cancel_po`, GRN-driven advance | qty roll-up; over/short receipt; cancel guards |
-| **Sales Order** | DRAFT · CONFIRMED · PARTIAL_DC · FULLY_DISPATCHED · INVOICED · CANCELLED | `confirm_so`, `cancel_so`, DC-driven advance | qty reservation; partial dispatch; invoice link |
-| **Delivery Challan** | DRAFT · ISSUED · ACKNOWLEDGED · IN_PROCESS · RETURNED · CLOSED | `issue_dc` (→ stock out) | **stock decrement happens here, not on invoice** (oversell risk); SO advance |
-| **GRN** | DRAFT · ACKNOWLEDGED · IN_PROCESS · RETURNED · CLOSED | `receive_grn` (→ stock in) | stock_position.current_cost (wt-avg); **no GL voucher (#18)**; PO advance; over-receipt |
-| **Job Work Order** | DRAFT · SENT · PARTIAL_RECEIVED · CLOSED · CANCELLED | `dispatch_to_karigar`, `receive_back`, `receive_from_karigar` | goods-out/in; wastage tolerance; **no rate/charge/payable** |
+| **Sales Order** | DRAFT · CONFIRMED · PARTIAL_DC · FULLY_DISPATCHED · INVOICED · CANCELLED | `confirm_so`, `cancel_so`, DC-driven advance | qty reservation; partial dispatch; invoice link; **`INVOICED` is never reached** — invoicing a DC leaves the SO at `FULLY_DISPATCHED` (`sales_service.py` TODO TASK-034) |
+| **Delivery Challan** | DRAFT · ISSUED · ACKNOWLEDGED · IN_PROCESS · RETURNED · CLOSED | `issue_dc` (→ stock out) | stock decrement happens here for DC-routed sales (a DC-linked invoice doesn't decrement again); SO advance |
+| **GRN** | DRAFT · ACKNOWLEDGED · IN_PROCESS · RETURNED · CLOSED | `receive_grn` (→ stock in) | stock_position.current_cost (wt-avg; lot FIFO for lot-tracked); GRN accrual voucher DR Inventory / CR GRNI (idempotent, `uq_voucher_grn_accrual`; #18 resolved); lot minted when a lot number is given (#202); PO advance; over-receipt |
+| **Job Work Order** | DRAFT · SENT · PARTIAL_RECEIVED · CLOSED · CANCELLED | `dispatch_to_karigar`, `receive_back`, `receive_from_karigar` | goods-out/in; wastage tolerance; **no rate/charge/payable**; **MO-operation send-out after the first op ships the MO's finished item** (every op's output = finished item, `mo_service.create_mo`) — fails on 0 FG stock or wrongly moves FG; stopgap guard + stage-stock design in progress (2026-10-23) |
 | **JW Receipt** | POSTED · VOID | post / void | stock back-in; wastage; void reversal |
-| **Manufacturing Order** | DRAFT · RELEASED · IN_PROGRESS · COMPLETED · CLOSED | `release_mo`, `start_mo`, `complete_mo`/`complete_mo_with_settlement`, `close_mo` | WIP cost pool (material-only — #25); completion GL; FG cost; produced vs QC qty |
-| **MO Operation** | PENDING · READY · DISPATCHED · ACKNOWLEDGED · IN_PROGRESS · RECEIVED_PARTIAL · RECEIVED_FULL · QC_PENDING · REWORK · CLOSED · SKIPPED · CANCELLED | `start_operation`, `complete_operation`, `dispatch_to_karigar`, `acknowledge_karigar`, `close_karigar_operation`, `start_qc_inspection` | qty_in/out propagation (#12); cost_accrued (hardcoded 0 — #25); DAG order; rework loop |
+| **Manufacturing Order** | DRAFT · RELEASED · IN_PROGRESS · COMPLETED · CLOSED | `release_mo`, `start_mo`, `complete_mo`/`complete_mo_with_settlement`, `close_mo` | WIP cost pool (still material-only — #25: only A06 material-issue DR 1310 lines); completion GL DR 1300 / CR 1310; FG cost; produced vs QC qty; **material issue ignores lots** — only the no-lot stock position is relieved (`material_issue_service`), so lot-received fabric can't be issued (fix in progress 2026-10-23) |
+| **MO Operation** | PENDING · READY · DISPATCHED · ACKNOWLEDGED · IN_PROGRESS · RECEIVED_PARTIAL · RECEIVED_FULL · QC_PENDING · REWORK · CLOSED · SKIPPED · CANCELLED | `start_operation`, `complete_operation`, `dispatch_to_karigar`, `acknowledge_karigar`, `close_karigar_operation`, `start_qc_inspection` | qty_in/out propagation (#12); cost_accrued (still hardcoded 0 on QC rework clones — #25); DAG order; rework loop — rework clones have `operation_sequence = NULL` (off-DAG by design) |
 | **QC verdict** | (5 buckets: Passed/Rejected/By-product/Wastage/Rework) | `start_qc_inspection` → record verdict | conservation = source qty; rework re-queue; scrap/by-product valuation |
 | **Cheque** | ISSUED · CLEARED · BOUNCED · POST_DATED · STOPPED · CANCELLED | clear/bounce/stop | GL on clear/bounce; PDC handling |
 | **Voucher** | DRAFT · POSTED · RECONCILED · VOIDED | `post_journal_voucher`, reconcile, void | balanced DR=CR; control-account guard; reversal |
-| **Stock stage** | RAW · CUT · AT_DYEING…AT_FINISHING · DYED…PACKED · QC_PENDING · REWORK_QUEUE · SECONDS · REJECTED · SCRAP · DISPATCHED · IN_TRANSIT (24) | stage transitions via MO/jobwork | which stages reachable? dead states? valuation per stage |
+| **Stock stage** | RAW · CUT · AT_DYEING…AT_FINISHING · DYED…PACKED · QC_PENDING · REWORK_QUEUE · SECONDS · REJECTED · SCRAP · DISPATCHED · IN_TRANSIT (24) | **not modelled in stock**: `stock_position` has no stage column; only `stock_ledger.from_stage/to_stage` exist, unused. Moiz chose (2026-10-23) to add a stage dimension to `stock_position` — design at `docs/design/wip-stage-stock.md` (pending) | which stages reachable? dead states? valuation per stage |
 | **Tax status** | REGULAR · COMPOSITION · UNREGISTERED · CONSUMER · OVERSEAS | party config → invoice tax behaviour | composition no-ITC; overseas zero-rated; unregistered RCM |
 
 ## B. Cross-entity document flows (the process graph)
 
 ```
-QUOTE → SALES ORDER → DELIVERY CHALLAN → SALES INVOICE → RECEIPT → (allocation) → GL
+QUOTE (not built) → SALES ORDER → DELIVERY CHALLAN → SALES INVOICE → RECEIPT → (allocation) → GL
               │              │(stock out)        │(GL post)      │
               └─ reserve     └─ SO advance       └─ AR ledger    └─ PARTIALLY_PAID/PAID
-SALES RETURN ← (credit note) ← invoice
+SALES RETURN (not built) ; CREDIT NOTE ← only via cross-month cancel of a FINALIZED invoice (§34, full value)
 PURCHASE ORDER → GRN → PURCHASE INVOICE → (3-way match) → PAYMENT → GL
-       │          │(stock in)   │(AP post — broken)
+       │          │(stock in)   │(AP + GRNI clear)
        └ approve  └ PO advance  └ ITC
-PURCHASE RETURN ← (debit note) ← PI
+PURCHASE RETURN / DEBIT NOTE (not built — TASK-TR-D02)
 DESIGN → BOM (versioned) + ROUTING (versioned DAG) → MANUFACTURING ORDER
-   → release → operations(DAG) → [in-house OR job-work dispatch→receive] → QC → rework? → complete(settlement) → FG stock + GL
-MATERIAL ISSUE (BOM) → WIP ; FG RECEIPT → stock ; SCRAP/BY-PRODUCT → stock
+   → release → operations(DAG) → [in-house OR job-work dispatch→receive (first op only works today)] → QC → rework? → complete(settlement) → FG stock + GL
+MATERIAL ISSUE (BOM; no-lot stock only today) → WIP ; FG RECEIPT → stock ; SCRAP/BY-PRODUCT → stock
 JOB WORK: MO-operation OR standalone JWO → send-out(goods) → karigar → receive-back(+wastage) → ITC-04
 ACCOUNTING: any posting → VOUCHER → TB → P&L / Balance Sheet ; CHEQUE → clear → bank ; BANK STATEMENT → reconcile
 ```
 
 ## C. Cross-cutting flows (apply to every entity)
-- **Auth/session:** login → JWT (short-lived) → refresh → MFA(TOTP) → logout; firm switch; token expiry/replay.
-- **RLS / tenancy:** org-level isolation (verified) — but **firm-level not enforced on sales/procurement writes** (firm-spoof gap); `app.current_firm_id` never set.
+- **Auth/session:** login (email + password + `org_name`) → JWT (short-lived) → refresh (rotation per token family, advisory-lock mutex, grace re-issue, reuse detection — Q01-10) → MFA(TOTP) → logout; **admins without MFA get `requires_mfa_enrollment` + an enrolment-only token and must enrol (with backup codes, Q01-03) before any access token**; firm switch — with 2+ firms the session has no active firm until one is picked; token expiry/replay.
+- **RLS / tenancy:** org-level isolation (permissive `<table>_rls`) + **firm-level isolation** (RESTRICTIVE `<table>_firm_scope` via `app_firm_in_scope()` reading GUC `app.current_firm_scope`, set per request by `firm_scope_service.apply_user_firm_scope`; fail-closed when unset — migration `210_firm_scope_rls`, Q01-02) + app-layer `authorize_firm`. Runtime connects as `fabric_app` (NOBYPASSRLS). Known gap: `GET /manufacturing/mo` without `firm_id` lists all in-scope firms' MOs.
 - **Idempotency:** `Idempotency-Key` on every mutating endpoint (CLAUDE.md mandates) — verify dedup actually works.
 - **Audit:** every mutation → append-only `audit_log` with before/after + hash-chain (`prev_hash`/`this_hash`).
 - **Numbering:** gapless per (firm, series, number) unique; concurrency under parallel finalize.
 - **Soft-delete:** `deleted_at` filtering on every query.
-- **GST engine:** place-of-supply → IGST vs CGST+SGST; invoice types (Tax/BoS/Cash/Estimate); GSTR-1/3B; e-invoice IRN + e-way (flag-gated); RCM; rounding/round_off.
+- **GST engine:** place-of-supply → IGST vs CGST+SGST; invoice types: Tax invoice (GST firm) + Bill of Supply (non-GST firm, `has_gst=false`); Cash Memo / Estimate have PDF templates only — nothing creates them (not built); GSTR-1/3B; e-invoice IRN + e-way (flag-gated); RCM; rounding/round_off.
 - **Money:** Decimal/NUMERIC(18,2) everywhere; no float; balanced bundles.
-- **Migration:** Vyapar .xlsx → preview → reconcile (±₹1 TB target).
+- **Migration:** Vyapar .xlsx → preview → commit — **parties + opening balances only** (imbalance → `3200 Opening Balance Difference`); ±₹1 TB reconciliation is a post-trial cutover goal.
 
 ## Agent partition (11 parallel testing agents)
 1. **Sales fulfilment** — Quote→SO→DC→Invoice lifecycle + sales returns + numbering.
