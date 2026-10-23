@@ -43,3 +43,6 @@ docs/spikes/vyapar-sample-export-raw*.xlsx
 
 # Build artifacts
 *.log
+
+# Local-only secrets (Hetzner API token etc.) — never commit
+.secrets/
