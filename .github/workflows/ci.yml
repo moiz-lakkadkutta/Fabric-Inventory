@@ -14,7 +14,7 @@ concurrency:
 jobs:
   backend-lint:
     name: Backend lint (ruff + mypy)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
     strategy:
       fail-fast: false
     steps:
@@ -51,7 +51,7 @@ jobs:
 
   backend-test:
     name: Backend tests (pytest)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
     strategy:
       fail-fast: false
 
@@ -168,7 +168,7 @@ jobs:
 
   frontend-lint:
     name: Frontend lint (eslint + prettier + tsc)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
     strategy:
       fail-fast: false
     steps:
@@ -200,7 +200,7 @@ jobs:
 
   frontend-test:
     name: Frontend tests (vitest)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
     strategy:
       fail-fast: false
     steps:
@@ -232,7 +232,7 @@ jobs:
 
   openapi-drift:
     name: OpenAPI codegen drift (BE schema ↔ FE types)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
     strategy:
       fail-fast: false
     # Two layers of drift detection (see CUT-106):
@@ -306,7 +306,7 @@ jobs:
 
   prod-docker-smoke:
     name: Prod Dockerfile smoke build (BE + FE)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
     strategy:
       fail-fast: false
     # CUT-501c — catches regressions in the production Dockerfiles before
@@ -346,7 +346,7 @@ jobs:
 
   e2e-acceptance:
     name: E2E acceptance (Playwright + docker-compose, CUT-503)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
     # DEBT-04: a green run is ~2-3 min end to end. Cap the whole job so a
     # wedge can never again burn 20+ minutes of CI (PR #185: 22m47s).
     timeout-minutes: 20

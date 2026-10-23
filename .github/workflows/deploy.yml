@@ -44,7 +44,7 @@ env:
 jobs:
   build-api:
     name: Build & push API image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
     permissions:
       contents: read
       packages: write
@@ -88,7 +88,7 @@ jobs:
 
   build-web:
     name: Build & push Web image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
     permissions:
       contents: read
       packages: write
@@ -134,7 +134,7 @@ jobs:
 
   deploy:
     name: Deploy to ${{ vars.PROD_DOMAIN || 'app.taana.in' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
     needs: [build-api, build-web]
     # `production` is a GitHub environment configured with required
     # reviewers — the job pauses for explicit human approval before
