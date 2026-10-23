@@ -329,6 +329,8 @@ jobs:
         with:
           context: backend
           file: backend/Dockerfile.prod
+          build-contexts: |
+            schema=./schema
           push: false
           load: false
           cache-from: type=gha,scope=prod-be
