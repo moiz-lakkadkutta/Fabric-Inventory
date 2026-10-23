@@ -22,6 +22,7 @@ CLI is expected to be re-run during dev as the codebase evolves.
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select, text
@@ -224,8 +225,7 @@ def test_seed_demo_idempotent(
     )
 
 
-def _ledger_balance(db_session: OrmSession, *, firm_id: uuid.UUID, code: str):
-    from decimal import Decimal
+def _ledger_balance(db_session: OrmSession, *, firm_id: uuid.UUID, code: str) -> Decimal:
 
     from sqlalchemy import case, func
 
