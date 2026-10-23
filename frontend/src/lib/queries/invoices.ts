@@ -166,6 +166,29 @@ export function useInvoices() {
   });
 }
 
+async function liveListPartyInvoices(partyId: string): Promise<Invoice[]> {
+  const data = await api<BackendInvoiceListResponse>(
+    `/invoices?party_id=${encodeURIComponent(partyId)}&limit=200`,
+  );
+  return data.items.map(mapListItem);
+}
+
+/**
+ * Sales invoices for one party — Party detail's khata. Live mode uses
+ * the server-side `party_id` filter so a busy firm's 200-row list cap
+ * doesn't silently drop this party's older invoices.
+ */
+export function usePartyInvoices(partyId: string | undefined) {
+  return useQuery({
+    queryKey: [...KEY, 'party', partyId],
+    enabled: partyId !== undefined,
+    queryFn: () =>
+      IS_LIVE
+        ? liveListPartyInvoices(partyId as string)
+        : fakeFetch(() => ensureStore().filter((i) => i.party_id === partyId)),
+  });
+}
+
 export function useInvoice(invoiceId: string | undefined) {
   return useQuery({
     queryKey: [...KEY, invoiceId],

@@ -34,6 +34,22 @@ function renderSidebar() {
   );
 }
 
+describe('Sidebar — no "Coming soon" placeholder entries', () => {
+  it('Sales sub-nav omits Quotes, Returns and Credit control', () => {
+    authStore.setMe({ ...BASE_ME });
+    render(
+      <MemoryRouter initialEntries={['/sales/invoices']}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+    // Sanity: the Sales sub-nav is expanded on a /sales route.
+    expect(screen.getByRole('link', { name: /^sales orders$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^quotes$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^returns$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /credit control/i })).not.toBeInTheDocument();
+  });
+});
+
 describe('Sidebar — Manufacturing flag gating (TASK-TR-A14)', () => {
   it('shows the Manufacturing entry when the flag is missing from /me (default-on)', () => {
     authStore.setMe({ ...BASE_ME, flags: {} });

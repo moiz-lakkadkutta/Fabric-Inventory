@@ -291,4 +291,36 @@ describe('InventoryList — live-mode stock-summary wiring', () => {
     await waitFor(() => expect(stockSummaryHits).toBeGreaterThanOrEqual(2));
     await waitFor(() => expect(screen.getByText(/^8$/)).toBeInTheDocument());
   });
+
+  it('never links a live row to a click-dummy mock lot', async () => {
+    // `sku_001` is a mock-fixture lot's sku_id; a live row that happens
+    // to share it must not link to /inventory/lots/<mock id> (404).
+    fetchMock.mockImplementation(async (url: RequestInfo) => {
+      const u = String(url);
+      if (u.includes('/reports/stock-summary')) {
+        return jsonResponse(
+          200,
+          stockSummaryEnvelope([
+            {
+              item_id: '11111111-1111-1111-1111-111111111111',
+              item_code: 'COLLIDE',
+              item_name: 'Colliding Fabric',
+              sku_id: 'sku_001',
+              sku_code: 'COLLIDE',
+              uom: 'METER',
+              on_hand_qty: '3',
+              avg_cost: '10.00',
+              valuation: '30.00',
+            },
+          ]),
+        );
+      }
+      return jsonResponse(404, {});
+    });
+
+    renderInventory();
+
+    await waitFor(() => expect(screen.getByText('Colliding Fabric')).toBeInTheDocument());
+    expect(screen.queryByRole('link', { name: 'Colliding Fabric' })).not.toBeInTheDocument();
+  });
 });
