@@ -9650,6 +9650,14 @@ paths:
   /manufacturing/mo/{mo_id}/issue-materials:
     post:
       summary: Issue raw materials from stock against a released MO (DR WIP / CR Inventory)
+      description: >-
+        Per line, an explicit `lot_id` consumes exactly that lot (422 "Insufficient stock" if
+        that lot is short — no spill into other lots). Without `lot_id` the issue consumes
+        FIFO across the item's stock (NULL-lot position first, then lots by received_date),
+        same rule as DC dispatch / sales COGS. Each consumed position is valued at its
+        `stock_position.current_cost` and returned as its own `MaterialIssueResponse.lines`
+        entry (so one requested line may yield several response lines, one per lot); the
+        WIP voucher amount equals the sum of `line_value`.
       operationId: issueMaterialsForMo
       tags:
         - manufacturing

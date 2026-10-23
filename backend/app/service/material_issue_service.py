@@ -10,17 +10,23 @@ Each issue:
      ``qty_to_issue ≤ qty_required - qty_issued``).
   3. Validates available stock per (item, optional lot) via the
      ``stock_position`` aggregate — same source ``inventory_lots_service``
-     uses. ``inventory_service.remove_stock`` is the underlying writer
-     (it also row-locks the position with FOR UPDATE so concurrent
-     issues serialise).
+     uses. With an explicit ``lot_id`` the writer is
+     ``inventory_service.remove_stock`` (that lot only); without one it is
+     ``inventory_service.remove_stock_fifo`` (#202: NULL-lot first, then
+     lots by received_date) so GRN lot stock is issuable. Both row-lock
+     the position(s) FOR UPDATE so concurrent issues serialise.
   4. Bumps ``mo_material_line.qty_issued`` by the issued qty.
   5. Auto-transitions MO from RELEASED → IN_PROGRESS on first issue
      (the alternative is requiring an explicit ``start_mo`` POST first
      — see retro for the design rationale).
   6. Posts a balanced GL voucher: DR ``1310 Work-in-Process`` /
-     CR ``1300 Inventory`` for the total issued value. The "value" per
-     line is ``qty * stock_position.current_cost`` (weighted-average
-     cost basis already maintained by ``inventory_service.add_stock``).
+     CR ``1300 Inventory`` for the total issued value. The "value" of
+     each consumed position is ``qty_out * unit_cost`` from the OUT
+     ``stock_ledger`` row the writer stamped — i.e. that position's
+     ``current_cost`` (per-lot cost for lot stock, weighted average for
+     the NULL-lot position; the same basis sales COGS uses). One
+     ``material_issue_line`` is written per consumed position, so a FIFO
+     issue spanning two lots yields two lines for one MO material line.
      If a position has no cost (current_cost IS NULL — happens for
      manually-adjusted stock with unit_cost=0), the line value is
      ``Decimal("0.00")`` and the voucher rolls up the rest. A zero-
@@ -224,13 +230,14 @@ def issue_materials(
          covers the requested qty per (item, lot).
 
     Side effects (atomic in this transaction):
-      1. ``stock_ledger`` row per line (outbound, ``reference_type =
-         "MATERIAL_ISSUE"`` so a future ledger drilldown can join).
+      1. ``stock_ledger`` OUT row per consumed (lot) position
+         (``reference_type = "MATERIAL_ISSUE"`` so a ledger drilldown can
+         join); a lot-agnostic line may consume several lots FIFO.
       2. ``mo_material_line.qty_issued`` bumped per line.
       3. MO state RELEASED → IN_PROGRESS on first issue (no-op if
          already IN_PROGRESS).
-      4. ``material_issue`` header + per-line ``material_issue_line``
-         rows persisted.
+      4. ``material_issue`` header + one ``material_issue_line`` per
+         consumed position persisted.
       5. Balanced GL voucher (DR WIP / CR Inventory) posted.
       6. ``audit_log`` row emitted.
     """
@@ -277,8 +284,6 @@ def issue_materials(
         mml: MoMaterialLine
         qty_to_issue: Decimal
         lot_id: uuid.UUID | None
-        unit_cost: Decimal
-        line_value: Decimal
 
     resolved: list[_ResolvedLine] = []
     total_value = Decimal("0.00")
@@ -337,41 +342,12 @@ def issue_materials(
                 + f": on_hand={on_hand_dec}, requested={qty}."
             )
 
-        # Per-line valuation: weighted-average cost from the position.
-        # When the issue spans multiple locations we'd pick a single
-        # position arbitrarily; v1 picks the **first** position with a
-        # non-null cost so the line value is deterministic. Multi-
-        # location MOs that need precise per-location costing are out of
-        # scope until A11 (WIP cost settlement).
-        cost_row = session.execute(
-            select(StockPosition.current_cost)
-            .where(*stock_where, StockPosition.current_cost.is_not(None))
-            .order_by(StockPosition.updated_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        unit_cost = Decimal(cost_row) if cost_row is not None else Decimal("0")
-        line_value = (qty * unit_cost).quantize(Decimal("0.01"))
-        total_value += line_value
-
         resolved.append(
             _ResolvedLine(
                 mml=mml,
                 qty_to_issue=qty,
                 lot_id=ln.lot_id,
-                unit_cost=unit_cost,
-                line_value=line_value,
             )
-        )
-
-    if total_value <= Decimal("0"):
-        # A zero-value voucher would trip the balance invariant after
-        # flush. The right repair is a stock adjustment to set a non-zero
-        # weighted-average cost on the inventory position; surfacing that
-        # to the caller beats a generic "voucher unbalanced" 500.
-        raise AppValidationError(
-            "Cannot issue materials with zero total value — check that "
-            "stock_position.current_cost is set for the items being issued "
-            "(via a stock adjustment with a non-zero unit_cost)."
         )
 
     # ── Phase 3: resolve ledgers BEFORE writing. Fail fast on a missing
@@ -411,29 +387,52 @@ def issue_materials(
 
     # ── Phase 5: post stock + MI lines + accumulate voucher lines.
     voucher_lines: list[VoucherLine] = []  # collected for post-flush balance check
+    notes = f"Issued against MO {mo.series}/{mo.number} (MI {series}/{mi_number})"
     for r in resolved:
-        # Stock outbound — also row-locks the position FOR UPDATE so
-        # concurrent issues serialise correctly even without a separate
-        # advisory lock here.
-        ledger_row = inventory_service.remove_stock(
+        location_id = _pick_location_for_position(
             session,
             org_id=org_id,
             firm_id=firm_id,
             item_id=r.mml.item_id,
-            location_id=_pick_location_for_position(
+            lot_id=r.lot_id,
+        )
+        # Stock outbound — both writers row-lock the position(s) FOR UPDATE
+        # so concurrent issues serialise without a separate advisory lock.
+        if r.lot_id is not None:
+            # Explicit lot chosen — deplete exactly that lot (same as DC
+            # dispatch / stock adjustment with an explicit lot).
+            ledger_rows = [
+                inventory_service.remove_stock(
+                    session,
+                    org_id=org_id,
+                    firm_id=firm_id,
+                    item_id=r.mml.item_id,
+                    location_id=location_id,
+                    qty=r.qty_to_issue,
+                    reference_type="MATERIAL_ISSUE",
+                    reference_id=mi.material_issue_id,
+                    lot_id=r.lot_id,
+                    txn_date=issue_date,
+                    notes=notes,
+                )
+            ]
+        else:
+            # #202 pattern: lot-agnostic issue consumes FIFO across lots
+            # (NULL-lot first, then lots by received_date) so fabric received
+            # under a GRN lot number is issuable instead of failing
+            # "Insufficient stock". One OUT ledger row per consumed position.
+            ledger_rows = inventory_service.remove_stock_fifo(
                 session,
                 org_id=org_id,
                 firm_id=firm_id,
                 item_id=r.mml.item_id,
-                lot_id=r.lot_id,
-            ),
-            qty=r.qty_to_issue,
-            reference_type="MATERIAL_ISSUE",
-            reference_id=mi.material_issue_id,
-            lot_id=r.lot_id,
-            txn_date=issue_date,
-            notes=f"Issued against MO {mo.series}/{mo.number} (MI {series}/{mi_number})",
-        )
+                location_id=location_id,
+                qty=r.qty_to_issue,
+                reference_type="MATERIAL_ISSUE",
+                reference_id=mi.material_issue_id,
+                txn_date=issue_date,
+                notes=notes,
+            )
 
         # Bump MO material line's qty_issued. ``r.mml`` is already in
         # this session so a plain attribute assignment + later flush is
@@ -441,19 +440,41 @@ def issue_materials(
         # mutating ``stock_position``.
         r.mml.qty_issued = Decimal(r.mml.qty_issued or 0) + r.qty_to_issue
 
-        # MI line row.
-        session.add(
-            MaterialIssueLine(
-                org_id=org_id,
-                material_issue_id=mi.material_issue_id,
-                mo_material_line_id=r.mml.mo_material_line_id,
-                item_id=r.mml.item_id,
-                lot_id=r.lot_id,
-                qty_issued=r.qty_to_issue,
-                unit_cost=r.unit_cost,
-                line_value=r.line_value,
-                stock_ledger_id=ledger_row.stock_ledger_id,
+        # One MI line per consumed position, valued at the cost the stock
+        # writer stamped on the OUT ledger row (``stock_position.current_cost``
+        # of that lot / NULL-lot position — the same basis sales COGS uses).
+        # Keeps lot traceability: each line carries its lot + ledger row.
+        for ledger_row in ledger_rows:
+            row_qty = Decimal(ledger_row.qty_out or 0)
+            unit_cost = (
+                Decimal(ledger_row.unit_cost) if ledger_row.unit_cost is not None else Decimal("0")
             )
+            line_value = (row_qty * unit_cost).quantize(Decimal("0.01"))
+            total_value += line_value
+            session.add(
+                MaterialIssueLine(
+                    org_id=org_id,
+                    material_issue_id=mi.material_issue_id,
+                    mo_material_line_id=r.mml.mo_material_line_id,
+                    item_id=r.mml.item_id,
+                    lot_id=ledger_row.lot_id,
+                    qty_issued=row_qty,
+                    unit_cost=unit_cost,
+                    line_value=line_value,
+                    stock_ledger_id=ledger_row.stock_ledger_id,
+                )
+            )
+
+    if total_value <= Decimal("0"):
+        # A zero-value voucher would trip the balance invariant after
+        # flush. The right repair is a stock adjustment to set a non-zero
+        # cost on the inventory position; surfacing that to the caller
+        # beats a generic "voucher unbalanced" 500. Raising here rolls back
+        # the stock moves above (same transaction).
+        raise AppValidationError(
+            "Cannot issue materials with zero total value — check that "
+            "stock_position.current_cost is set for the items being issued "
+            "(via a stock adjustment with a non-zero unit_cost)."
         )
 
     # ── Phase 6: post the GL voucher (DR WIP / CR Inventory).
@@ -573,7 +594,7 @@ def _pick_location_for_position(
     item_id: uuid.UUID,
     lot_id: uuid.UUID | None,
 ) -> uuid.UUID:
-    """Pick a location for outbound issue. v1 prefers the position with
+    """Pick a location for outbound issue. v1 prefers the location with
     the highest ``on_hand_qty`` for (item, optional lot) — if there's a
     single MAIN warehouse (the default for fresh signups) this is the
     obvious choice. Multi-location consumption is out of scope until A11.
@@ -592,10 +613,15 @@ def _pick_location_for_position(
     ]
     if lot_id is not None:
         where.append(StockPosition.lot_id == lot_id)
+    # Rank locations by the qty available to *this* issue: the one lot's
+    # position for an explicit lot, or the sum across every lot (+ NULL-lot)
+    # position for a lot-agnostic FIFO issue — so FIFO runs where the most
+    # total stock sits, not where the single largest lot happens to be.
     location_id = session.execute(
         select(StockPosition.location_id)
         .where(*where)
-        .order_by(StockPosition.on_hand_qty.desc())
+        .group_by(StockPosition.location_id)
+        .order_by(func.sum(StockPosition.on_hand_qty).desc(), StockPosition.location_id)
         .limit(1)
     ).scalar_one_or_none()
     if location_id is None:

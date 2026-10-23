@@ -33,6 +33,7 @@ import { QueryError } from '@/components/ui/query-error';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApiError } from '@/lib/api/errors';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
+import { type BackendLot, useLots } from '@/lib/queries/inventory';
 import { useItems } from '@/lib/queries/items';
 import {
   useCompleteMo,
@@ -921,6 +922,55 @@ function StartMoButton({
   );
 }
 
+/**
+ * Optional lot picker for one issue line. "Auto (FIFO)" (the default)
+ * leaves lot_id off so the BE consumes oldest stock first across lots;
+ * picking a lot pins the issue to that lot. Only lots with stock on hand
+ * are offered. A failed / empty lots fetch just leaves Auto available.
+ */
+function IssueLotSelect({
+  itemId,
+  itemName,
+  value,
+  onChange,
+  disabled,
+}: {
+  itemId: string;
+  itemName: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  const lotsQuery = useLots({ item_id: itemId });
+  const lots = (lotsQuery.data ?? []).filter(
+    (lot): lot is BackendLot =>
+      'lot_number' in (lot as Record<string, unknown>) &&
+      (lot as BackendLot).item_id === itemId &&
+      Number((lot as BackendLot).qty_on_hand) > 0,
+  );
+  return (
+    <select
+      aria-label={`Lot for ${itemName}`}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      className="h-9 w-full rounded-md px-2"
+      style={{
+        background: 'var(--bg-surface)',
+        border: '1px solid var(--border-default)',
+        fontSize: 13,
+      }}
+    >
+      <option value="">Auto (FIFO)</option>
+      {lots.map((lot) => (
+        <option key={lot.lot_id} value={lot.lot_id}>
+          {lot.lot_number} · {lot.qty_on_hand} on hand
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function IssueMaterialsDialog({
   mo,
   itemNameById,
@@ -943,6 +993,8 @@ function IssueMaterialsDialog({
     qty_required: string;
     qty_issued: string;
     qty_to_issue: string;
+    /** '' = Auto (FIFO across lots, BE default); else an explicit lot_id. */
+    lot_id: string;
   };
   const initialLines: DraftLine[] = React.useMemo(
     () =>
@@ -956,6 +1008,7 @@ function IssueMaterialsDialog({
           // toFixed(4) keeps the input deterministic at 4-decimal
           // precision (matches the BE's NUMERIC display elsewhere).
           qty_to_issue: remaining > 0 ? remaining.toFixed(4) : '0.0000',
+          lot_id: '',
         };
       }),
     [mo.material_lines],
@@ -965,6 +1018,9 @@ function IssueMaterialsDialog({
 
   const setLineQty = (idx: number, value: string) => {
     setLines((prev) => prev.map((l, i) => (i === idx ? { ...l, qty_to_issue: value } : l)));
+  };
+  const setLineLot = (idx: number, value: string) => {
+    setLines((prev) => prev.map((l, i) => (i === idx ? { ...l, lot_id: value } : l)));
   };
 
   const positiveLines = lines.filter((l) => Number(l.qty_to_issue) > 0);
@@ -976,6 +1032,8 @@ function IssueMaterialsDialog({
     const payloadLines: BackendMaterialIssueLineInput[] = positiveLines.map((l) => ({
       mo_material_line_id: l.mo_material_line_id,
       qty_to_issue: l.qty_to_issue,
+      // Omit lot_id for Auto — the BE then consumes FIFO across lots.
+      ...(l.lot_id ? { lot_id: l.lot_id } : {}),
     }));
     mutation.mutate(
       {
@@ -1012,7 +1070,7 @@ function IssueMaterialsDialog({
       description={`Pull raw materials from stock into WIP for ${
         mo.series ? `${mo.series}/${mo.number}` : mo.number
       }.`}
-      width={620}
+      width={720}
       footer={
         <>
           <Button variant="outline" type="button" onClick={onClose}>
@@ -1037,6 +1095,7 @@ function IssueMaterialsDialog({
               <Th>Item</Th>
               <Th align="right">Planned</Th>
               <Th align="right">Issued</Th>
+              <Th>Lot</Th>
               <Th align="right">Issue now</Th>
             </tr>
           </thead>
@@ -1062,6 +1121,15 @@ function IssueMaterialsDialog({
                     <span className="num" style={{ fontSize: 13 }}>
                       {l.qty_issued}
                     </span>
+                  </Td>
+                  <Td>
+                    <IssueLotSelect
+                      itemId={l.item_id}
+                      itemName={itemName}
+                      value={l.lot_id}
+                      onChange={(v) => setLineLot(idx, v)}
+                      disabled={disabled}
+                    />
                   </Td>
                   <Td align="right">
                     <Input
