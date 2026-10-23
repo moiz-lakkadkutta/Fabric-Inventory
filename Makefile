@@ -82,8 +82,11 @@ seed:
 # back to the public dev KEK instead of raising PIIConfigError on a
 # bare-machine `make seed-demo`. Mirrors the same env-prepend pattern
 # the `run` target in backend/Makefile uses (PR #104, DYLD helper).
-# Override with `ENVIRONMENT=production make seed-demo` if you really
-# do want to seed against a prod KEK.
+# For a real (demo) instance use `ENVIRONMENT=prod` (the Settings enum is
+# dev|staging|prod — "production" fails validation) together with the SAME
+# PII_MASTER_KEY, JWT_SECRET (>=32 chars), CORS_ORIGINS and REDIS_URL the
+# API runs with, plus `ARGS="--password <strong>"`: the default
+# DemoPass123 is public. The Owner must enrol TOTP MFA on first login.
 seed-demo:
 	cd backend && ENVIRONMENT=$${ENVIRONMENT:-dev} uv run python -m app.cli.seed_demo $(ARGS)
 

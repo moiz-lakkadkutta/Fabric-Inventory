@@ -29,6 +29,10 @@ What gets seeded
   shows on the dashboard).
 - 1 job-work send-out + receive-back (so the JW screens + ITC-04 pipeline
   exercise their full flow).
+- Opening stock + an HDFC bank account (₹2.5L opening balance) booked
+  against the Capital Account, so the P&L and balance sheet read sanely.
+- ``seed_demo_retail_firm``: a second, non-GST firm in the same org with
+  3 Bills of Supply (multi-firm switch + non-GST demo).
 
 Contract
 --------
@@ -532,6 +536,8 @@ def seed_demo(
         today=today,
         result=result,
     )
+    _seed_opening_capital(session, org_id=org_id, firm_id=firm_id, today=today)
+    bank_account_id = _seed_bank_account(session, org_id=org_id, firm_id=firm_id, today=today)
     _seed_purchases(
         session,
         org_id=org_id,
@@ -549,6 +555,7 @@ def seed_demo(
         items=items,
         today=today,
         result=result,
+        bank_account_id=bank_account_id,
     )
     _seed_jobwork(
         session,
@@ -713,6 +720,13 @@ _OPENING_STOCK: tuple[tuple[str, Decimal, Decimal], ...] = (
     ("TRIM-BUTTON-PEARL", Decimal("500"), Decimal("4")),
     ("SUIT-COTT-001", Decimal("8"), Decimal("1200")),
     ("SUIT-CHAN-001", Decimal("4"), Decimal("2400")),
+    # Suits sold by RT/DEMO invoices + SO2 that no MO produces before the
+    # invoice date. Without on-hand stock, finalize skips stock relief and
+    # COGS for the line (by design), so the sale would show 100% margin
+    # and the stock report would never move.
+    ("SUIT-BANA-001", Decimal("6"), Decimal("2900")),
+    ("SUIT-SILK-001", Decimal("6"), Decimal("2600")),
+    ("SUIT-GEOR-001", Decimal("5"), Decimal("2350")),
 )
 
 
@@ -772,6 +786,206 @@ def _seed_opening_stock(
         count += 1
 
     result.stock_adjustments = count
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Opening balances: capital, bank
+# ──────────────────────────────────────────────────────────────────────
+#
+# ``stock_service.create_adjustment`` books every write-in as
+# DR 1300 Inventory / CR 5350 Inventory Adjustment (a P&L ledger). That is
+# right for a stock-count gain but wrong for *opening* stock: left alone,
+# ~₹1.9L of opening stock shows up as negative COGS and the P&L reports a
+# six-figure gross profit on a few thousand rupees of sales. We reclass
+# the opening portion to the proprietor's Capital Account, the way an
+# accountant would treat goods brought into the business.
+
+_OPENING_CAPITAL_TAG = "[seed_demo:opening_capital]"
+_STOCK_ADJ_LEDGER_CODE = "5350"  # Inventory Adjustment
+_CAPITAL_LEDGER_CODE = "3000"  # Capital Account
+_OB_DIFF_LEDGER_CODE = "3200"  # Opening Balance Difference
+_BANK_CONTROL_LEDGER_CODE = "1100"  # Bank Accounts (control)
+_DEMO_BANK_LEDGER_CODE = "1101"
+_DEMO_BANK_LEDGER_NAME = "HDFC Bank — Current A/c"
+_DEMO_BANK_OPENING_BALANCE = Decimal("250000.00")
+
+
+def _system_ledger(session: Session, *, org_id: uuid.UUID, code: str) -> Any:
+    from app.models import Ledger
+
+    return session.execute(
+        select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == code,
+            Ledger.firm_id.is_(None),
+            Ledger.deleted_at.is_(None),
+        )
+    ).scalar_one()
+
+
+def _tagged_journal_total(
+    session: Session, *, org_id: uuid.UUID, firm_id: uuid.UUID, tag: str
+) -> Decimal:
+    from app.models import Voucher
+    from app.models.accounting import VoucherType
+
+    total = session.execute(
+        select(func.coalesce(func.sum(Voucher.total_debit), 0)).where(
+            Voucher.org_id == org_id,
+            Voucher.firm_id == firm_id,
+            Voucher.voucher_type == VoucherType.JOURNAL,
+            Voucher.narration.like(f"{tag}%"),
+            Voucher.deleted_at.is_(None),
+        )
+    ).scalar_one()
+    return Decimal(str(total))
+
+
+def _post_capital_jv(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    today: datetime.date,
+    debit_code: str,
+    amount: Decimal,
+    narration: str,
+) -> None:
+    from app.models.accounting import JournalLineType
+    from app.service.accounting_service import JournalLineInput, post_journal_voucher
+
+    debit = _system_ledger(session, org_id=org_id, code=debit_code)
+    capital = _system_ledger(session, org_id=org_id, code=_CAPITAL_LEDGER_CODE)
+    post_journal_voucher(
+        session=session,
+        org_id=org_id,
+        firm_id=firm_id,
+        voucher_date=today - datetime.timedelta(days=29),
+        narration=f"{_OPENING_CAPITAL_TAG} {narration}",
+        lines=[
+            JournalLineInput(
+                ledger_id=debit.ledger_id, line_type=JournalLineType.DR, amount=amount
+            ),
+            JournalLineInput(
+                ledger_id=capital.ledger_id, line_type=JournalLineType.CR, amount=amount
+            ),
+        ],
+        created_by=None,
+    )
+
+
+def _seed_opening_capital(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    today: datetime.date,
+) -> None:
+    """Reclass the seeded opening stock from 5350 to Capital (idempotent:
+    only the not-yet-reclassed delta is posted, so adding a line to
+    ``_OPENING_STOCK`` later tops the reclass up on the next run)."""
+    from app.models.inventory import StockAdjustment
+
+    reasons = {
+        row
+        for row in session.execute(
+            select(StockAdjustment.reason).where(
+                StockAdjustment.org_id == org_id,
+                StockAdjustment.firm_id == firm_id,
+                StockAdjustment.reason.like(f"{_OPENING_STOCK_TAG}%"),
+            )
+        ).scalars()
+    }
+    opening_value = sum(
+        (
+            qty * cost
+            for code, qty, cost in _OPENING_STOCK
+            if f"{_OPENING_STOCK_TAG} {code}" in reasons
+        ),
+        Decimal("0"),
+    )
+    already = _tagged_journal_total(
+        session, org_id=org_id, firm_id=firm_id, tag=f"{_OPENING_CAPITAL_TAG} Opening stock"
+    )
+    delta = (opening_value - already).quantize(Decimal("0.01"))
+    if delta > 0:
+        _post_capital_jv(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            today=today,
+            debit_code=_STOCK_ADJ_LEDGER_CODE,
+            amount=delta,
+            narration="Opening stock brought in as capital",
+        )
+
+
+def _seed_bank_account(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    today: datetime.date,
+) -> uuid.UUID:
+    """One bank sub-ledger + bank account with an opening balance, so
+    receipts, manual JVs and bank reconciliation have a non-control bank
+    ledger to post to (1100 is a control account and rejects direct
+    postings). The opening balance lands in 3200 via banking_service's
+    own JV; we then move it to Capital. Idempotent on the ledger code."""
+    from app.models import BankAccount, Ledger
+    from app.service import banking_service, coa_service
+
+    ledger = session.execute(
+        select(Ledger).where(
+            Ledger.org_id == org_id,
+            Ledger.code == _DEMO_BANK_LEDGER_CODE,
+            Ledger.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if ledger is None:
+        control = _system_ledger(session, org_id=org_id, code=_BANK_CONTROL_LEDGER_CODE)
+        ledger = coa_service.create_ledger(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            code=_DEMO_BANK_LEDGER_CODE,
+            name=_DEMO_BANK_LEDGER_NAME,
+            ledger_type="BANK",
+            coa_group_id=control.coa_group_id,
+        )
+    account = session.execute(
+        select(BankAccount).where(
+            BankAccount.org_id == org_id,
+            BankAccount.ledger_id == ledger.ledger_id,
+            BankAccount.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if account is None:
+        account = banking_service.create_bank_account(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            ledger_id=ledger.ledger_id,
+            bank_name="HDFC Bank",
+            account_number="50200012345678",
+            ifsc_code="HDFC0000060",
+            account_type="CURRENT",
+            balance=_DEMO_BANK_OPENING_BALANCE,
+        )
+    already = _tagged_journal_total(
+        session, org_id=org_id, firm_id=firm_id, tag=f"{_OPENING_CAPITAL_TAG} Opening bank"
+    )
+    if already == 0:
+        _post_capital_jv(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            today=today,
+            debit_code=_OB_DIFF_LEDGER_CODE,
+            amount=_DEMO_BANK_OPENING_BALANCE,
+            narration="Opening bank balance — capital introduced",
+        )
+    return account.bank_account_id
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -884,6 +1098,11 @@ def _seed_purchases(
                 "item_id": line.item_id,
                 "qty_received": line.qty_ordered,
                 "rate": line.rate,
+                # No lot_number on purpose: material issue (and the MO
+                # screen, which never sends lot_id) removes from the
+                # NULL-lot position only, so lot-held fabric can't be
+                # issued to an MO. Add lots here once issue_materials
+                # consumes lots FIFO like invoice finalize does.
             }
             for line in po.lines
         ]
@@ -977,6 +1196,16 @@ class _SalesInvoiceSpec:
 
 
 _SALES_INVOICES: tuple[_SalesInvoiceSpec, ...] = (
+    # Prior-month, unregistered (B2C inter-state), unpaid and past due:
+    # gives the ageing report a 1-30 overdue bucket, the dashboard a
+    # non-zero "overdue" KPI, GSTR-1 a B2CS row, and a finalized invoice
+    # in an earlier GST period (cancelling it issues a credit note).
+    _SalesInvoiceSpec(
+        customer_code="C007",
+        lines=[("SUIT-COTT-001", Decimal("2"), Decimal("1750"))],
+        days_ago=45,
+        finalize=True,
+    ),
     _SalesInvoiceSpec(
         customer_code="C001",
         lines=[("SUIT-CHAN-001", Decimal("2"), Decimal("3200"))],
@@ -1022,6 +1251,7 @@ def _seed_sales_pipeline(
     items: dict[str, Item],
     today: datetime.date,
     result: _SeedResult,
+    bank_account_id: uuid.UUID | None = None,
 ) -> None:
     """SOs, DC, sales invoices, receipt — all idempotent on (firm, series)
     duplicate-skip.
@@ -1173,6 +1403,7 @@ def _seed_sales_pipeline(
                 .where(
                     SalesInvoice.org_id == org_id,
                     SalesInvoice.firm_id == firm_id,
+                    SalesInvoice.party_id == parties["C001"].party_id,
                     SalesInvoice.lifecycle_status == InvoiceLifecycleStatus.FINALIZED,
                     SalesInvoice.deleted_at.is_(None),
                 )
@@ -1195,6 +1426,7 @@ def _seed_sales_pipeline(
                 amount=amount,
                 receipt_date=today - datetime.timedelta(days=1),
                 mode="BANK",
+                bank_account_id=bank_account_id,
                 reference="DEMO-RCPT-001",
             )
 
@@ -2345,3 +2577,165 @@ def _drive_op_in_house_close(
 
 
 __all__ = ["seed_demo"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Second firm: a non-GST retail counter (Bill of Supply)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Gives the demo its multi-firm moment (switch firm → different books,
+# different numbering) and shows non-GST as first-class: a firm with
+# ``has_gst = false`` can only issue a Bill of Supply, with zero tax and no
+# GST ledger postings. Parties and items are org-level, so the retail firm
+# reuses the masters seeded for the primary firm.
+
+_RETAIL_OPENING_TAG = "[seed_demo:retail_opening]"
+_DEMO_BOS_SERIES = "BOS/DEMO"
+_RETAIL_OPENING_STOCK: tuple[tuple[str, Decimal, Decimal], ...] = (
+    ("SUIT-COTT-001", Decimal("12"), Decimal("1200")),
+    ("SUIT-GEOR-001", Decimal("4"), Decimal("2350")),
+)
+_RETAIL_BILLS: tuple[_SalesInvoiceSpec, ...] = (
+    _SalesInvoiceSpec(
+        customer_code="C005",
+        lines=[("SUIT-COTT-001", Decimal("2"), Decimal("1900"))],
+        days_ago=6,
+        finalize=True,
+    ),
+    _SalesInvoiceSpec(
+        customer_code="C010",
+        lines=[("SUIT-GEOR-001", Decimal("1"), Decimal("3600"))],
+        days_ago=3,
+        finalize=True,
+    ),
+    _SalesInvoiceSpec(
+        customer_code="C001",
+        lines=[("SUIT-COTT-001", Decimal("1"), Decimal("1900"))],
+        days_ago=1,
+        finalize=False,
+    ),
+)
+
+
+def seed_demo_retail_firm(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    firm_id: uuid.UUID,
+    today: datetime.date | None = None,
+) -> dict[str, int]:
+    """Seed the non-GST retail firm. Idempotent. Expects ``seed_demo`` to
+    have run first for the org (parties + items are org-level)."""
+    from app.models.inventory import StockAdjustment
+
+    if today is None:
+        today = datetime.date.today()
+
+    parties = {
+        p.code: p
+        for p in session.execute(
+            select(Party).where(Party.org_id == org_id, Party.deleted_at.is_(None))
+        ).scalars()
+    }
+    items = {
+        i.code: i
+        for i in session.execute(
+            select(Item).where(Item.org_id == org_id, Item.deleted_at.is_(None))
+        ).scalars()
+    }
+
+    location = inventory_service.get_or_create_default_location(
+        session, org_id=org_id, firm_id=firm_id
+    )
+    reasons = {
+        r
+        for r in session.execute(
+            select(StockAdjustment.reason).where(
+                StockAdjustment.org_id == org_id,
+                StockAdjustment.firm_id == firm_id,
+                StockAdjustment.reason.like(f"{_RETAIL_OPENING_TAG}%"),
+            )
+        ).scalars()
+    }
+    opening_value = Decimal("0")
+    for code, qty, cost in _RETAIL_OPENING_STOCK:
+        tag = f"{_RETAIL_OPENING_TAG} {code}"
+        if code not in items:
+            continue
+        if tag not in reasons:
+            stock_service.create_adjustment(
+                session,
+                org_id=org_id,
+                firm_id=firm_id,
+                item_id=items[code].item_id,
+                location_id=location.location_id,
+                qty=qty,
+                direction="INCREASE",
+                reason=tag,
+                unit_cost=cost,
+                txn_date=today - datetime.timedelta(days=29),
+            )
+        opening_value += qty * cost
+    already = _tagged_journal_total(
+        session, org_id=org_id, firm_id=firm_id, tag=f"{_OPENING_CAPITAL_TAG} Opening stock"
+    )
+    delta = (opening_value - already).quantize(Decimal("0.01"))
+    if delta > 0:
+        _post_capital_jv(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            today=today,
+            debit_code=_STOCK_ADJ_LEDGER_CODE,
+            amount=delta,
+            narration="Opening stock brought in as capital (retail counter)",
+        )
+
+    existing = {
+        (si.party_id, si.invoice_date)
+        for si in session.execute(
+            select(SalesInvoice).where(
+                SalesInvoice.org_id == org_id,
+                SalesInvoice.firm_id == firm_id,
+                SalesInvoice.series == _DEMO_BOS_SERIES,
+                SalesInvoice.deleted_at.is_(None),
+            )
+        ).scalars()
+    }
+    for spec in _RETAIL_BILLS:
+        customer = parties.get(spec.customer_code)
+        if customer is None:
+            continue
+        invoice_date = today - datetime.timedelta(days=spec.days_ago)
+        if (customer.party_id, invoice_date) in existing:
+            continue
+        bill = sales_service.create_draft_invoice(
+            session,
+            org_id=org_id,
+            firm_id=firm_id,
+            party_id=customer.party_id,
+            invoice_date=invoice_date,
+            lines=[
+                {"item_id": items[c].item_id, "qty": q, "price": p}
+                for c, q, p in spec.lines
+                if c in items
+            ],
+            series=_DEMO_BOS_SERIES,
+            due_date=invoice_date + datetime.timedelta(days=15),
+        )
+        if spec.finalize:
+            sales_service.finalize_invoice(
+                session, org_id=org_id, sales_invoice_id=bill.sales_invoice_id
+            )
+
+    bills = session.execute(
+        select(func.count())
+        .select_from(SalesInvoice)
+        .where(
+            SalesInvoice.org_id == org_id,
+            SalesInvoice.firm_id == firm_id,
+            SalesInvoice.series == _DEMO_BOS_SERIES,
+            SalesInvoice.deleted_at.is_(None),
+        )
+    ).scalar_one()
+    return {"bills_of_supply": int(bills)}

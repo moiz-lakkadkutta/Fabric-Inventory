@@ -46,8 +46,8 @@ from app.service import (
     rbac_service,
     seed_service,
 )
-from app.service.seed_demo_service import seed_demo
-from app.utils.crypto import generate_dek, wrap_dek
+from app.service.seed_demo_service import seed_demo, seed_demo_retail_firm
+from app.utils.crypto import encrypt_pii, generate_dek, wrap_dek
 
 _DEFAULT_EMAIL = "demo@example.com"
 # Demo-only dev password; rotated when a paying customer ever ships near
@@ -57,6 +57,23 @@ _DEFAULT_PASSWORD = "DemoPass123"  # noqa: S105
 _DEFAULT_ORG_NAME = "Demo Co"
 _DEFAULT_FIRM_NAME = "Demo Firm"
 _DEFAULT_STATE_CODE = "MH"  # Maharashtra — matches the click-dummy default
+
+# Seller identity printed on every tax invoice. A tax invoice without the
+# supplier's GSTIN / address is not a valid GST document, and there is no
+# in-app screen to set them yet, so a freshly created demo firm gets a
+# synthetic-but-valid (mod-36 checksum) Maharashtra GSTIN. Only applied
+# when the firm is created by this CLI — never written over an existing
+# firm, which may be a real one.
+_DEMO_FIRM_GSTIN = "27AAKFD4821M1Z5"
+_DEMO_FIRM_PAN = "AAKFD4821M"
+_DEMO_FIRM_ADDRESS = "Shop 14, Mulji Jetha Market, Kalbadevi Road"
+_DEMO_FIRM_CITY = "Mumbai"
+_DEMO_FIRM_PINCODE = "400002"
+
+# Second firm in the same org — a non-GST retail counter (Bill of Supply
+# only). Created alongside a fresh demo org; re-seeded when present.
+_RETAIL_FIRM_CODE = "DEMORETAIL"
+_RETAIL_FIRM_NAME = "Demo Retail Counter"
 
 
 def _admin_db_url() -> str:
@@ -103,7 +120,14 @@ def _ensure_org_and_firm(
         # fabric_app / NOBYPASSRLS, not only the migration role).
         firm_scope_service.apply_system_firm_scope(session)
         firm = session.execute(
-            select(Firm).where(Firm.org_id == org.org_id).order_by(Firm.code).limit(1)
+            select(Firm)
+            .where(
+                Firm.org_id == org.org_id,
+                Firm.code != _RETAIL_FIRM_CODE,
+                Firm.deleted_at.is_(None),
+            )
+            .order_by(Firm.created_at, Firm.code)
+            .limit(1)
         ).scalar_one_or_none()
         if firm is None:
             # Org exists but no firm — defensive; create one.
@@ -126,7 +150,8 @@ def _ensure_org_and_firm(
     # fabric_app / NOBYPASSRLS, not only the migration role).
     firm_scope_service.apply_system_firm_scope(session)
     # Per TASK-TR-SEC1, every org owns a DEK for PII envelope encryption.
-    dek_blob = wrap_dek(generate_dek(), org_id=new_org_id)
+    dek = generate_dek()
+    dek_blob = wrap_dek(dek, org_id=new_org_id)
     org = Organization(org_id=new_org_id, name=org_name, admin_email=email, encrypted_dek=dek_blob)
     session.add(org)
     session.flush()
@@ -137,8 +162,29 @@ def _ensure_org_and_firm(
         name=firm_name,
         has_gst=True,
         state_code=state_code.upper(),
+        legal_name=firm_name,
+        gst_registration_type="REGULAR",
+        address=_DEMO_FIRM_ADDRESS,
+        city=_DEMO_FIRM_CITY,
+        pincode=_DEMO_FIRM_PINCODE,
     )
+    if state_code.upper() == "MH":
+        firm.gstin = encrypt_pii(_DEMO_FIRM_GSTIN, dek=dek, org_id=new_org_id)
+        firm.pan = encrypt_pii(_DEMO_FIRM_PAN, dek=dek, org_id=new_org_id)
     session.add(firm)
+    session.add(
+        Firm(
+            org_id=org.org_id,
+            code=_RETAIL_FIRM_CODE,
+            name=_RETAIL_FIRM_NAME,
+            legal_name=_RETAIL_FIRM_NAME,
+            has_gst=False,
+            state_code=state_code.upper(),
+            address=_DEMO_FIRM_ADDRESS,
+            city=_DEMO_FIRM_CITY,
+            pincode=_DEMO_FIRM_PINCODE,
+        )
+    )
     session.flush()
 
     rbac_service.seed_system_roles(session, org_id=org.org_id)
@@ -204,6 +250,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"seed_demo: loading demo dataset into org={org_id} firm={firm_id}")
             summary = seed_demo(session, org_id=org_id, firm_id=firm_id)
+            retail_firm = session.execute(
+                select(Firm).where(
+                    Firm.org_id == org_id,
+                    Firm.code == _RETAIL_FIRM_CODE,
+                    Firm.deleted_at.is_(None),
+                )
+            ).scalar_one_or_none()
+            if retail_firm is not None:
+                print(f"seed_demo: loading retail (non-GST) firm {retail_firm.firm_id}")
+                summary |= seed_demo_retail_firm(
+                    session, org_id=org_id, firm_id=retail_firm.firm_id
+                )
             session.commit()
     finally:
         engine.dispose()
