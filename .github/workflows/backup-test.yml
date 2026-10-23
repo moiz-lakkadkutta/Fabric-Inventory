@@ -39,7 +39,7 @@ concurrency:
 jobs:
   backup-restore-roundtrip:
     name: pg_dump → gpg → restore round-trip
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unsupported by our Playwright + apt deps
 
     services:
       postgres:
