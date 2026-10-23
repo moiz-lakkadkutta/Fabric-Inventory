@@ -1,0 +1,3 @@
+# Local-only: TOTP secret for the throwaway video stack, and rendered output.
+.auth/
+out/
