@@ -79,6 +79,9 @@ jobs:
         with:
           context: ./backend
           file: ./backend/Dockerfile.prod
+          # Baseline migration needs schema/ddl.sql (outside ./backend).
+          build-contexts: |
+            schema=./schema
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.API_IMAGE_NAME }}:${{ steps.meta.outputs.tag }}

@@ -47,7 +47,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /uvx /bin/
 
-ENV UV_LINK_MODE=copy \
+# UV_NO_SYNC: the venv is fully built (prod deps only) in the builder
+# stage. Without this, every `uv run` (uvicorn CMD, `migrate`, CLIs)
+# re-syncs at container start and downloads the dev group (mypy, pytest…)
+# from PyPI — slow, needs egress, and puts dev tools in prod.
+ENV UV_NO_SYNC=1 \
+    UV_LINK_MODE=copy \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
@@ -59,6 +64,12 @@ COPY --from=builder /app/.venv /app/.venv
 # App source — copied last so a code-only change does NOT bust the
 # venv layer cache.
 COPY . /app
+# The baseline Alembic migration loads the repo-root `schema/ddl.sql`
+# (resolved as parents[3] of the migration file → `/schema/ddl.sql` in
+# this image). The build context is `backend/`, so the schema arrives via
+# a named build context: `--build-context schema=./schema` (deploy.yml
+# passes it as `build-contexts`). Without it `migrate` fails on a fresh DB.
+COPY --from=schema ddl.sql /schema/ddl.sql
 
 EXPOSE 8000
 
