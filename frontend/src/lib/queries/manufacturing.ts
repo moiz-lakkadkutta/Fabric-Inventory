@@ -1342,7 +1342,9 @@ async function liveDispatchKarigar(
     dispatch_date: input.dispatchDate,
   };
   // Send item_id / uom / lot_id only when present; the BE defaults
-  // item_id to the MO's finished item when omitted (A08-FU wiring).
+  // item_id to the op's input_item_id (BOM primary raw for op #1) and
+  // 422s when that default is the MO's finished item (mid-routing ops —
+  // fix-karigar-input stopgap). The drawer surfaces that 422 detail.
   if (input.itemId !== undefined && input.itemId !== null) body.item_id = input.itemId;
   if (input.uom !== undefined && input.uom !== null) body.uom = input.uom;
   if (input.lotId !== undefined && input.lotId !== null) body.lot_id = input.lotId;

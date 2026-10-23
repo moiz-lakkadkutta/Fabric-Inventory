@@ -77,6 +77,7 @@ from app.models.manufacturing import (
     MoOperation,
     MoOperationState,
     MoStatus,
+    OperationMaster,
     ProductionEvent,
 )
 from app.service import audit_service, jobwork_service, routing_flow_service
@@ -96,13 +97,9 @@ _DISPATCHABLE_STATES: frozenset[MoOperationState] = frozenset(
     {MoOperationState.PENDING, MoOperationState.RECEIVED_FULL}
 )
 
-# Default item / UOM for the JWO line. The mo_operation row does NOT
-# carry an item_id (operations transform materials; the input item is
-# whatever the prior op produced). For the v1 send-out we mint a JWO
-# with a single line referencing the MO's finished item — operators
-# typically want to see what's headed to the karigar at the finished-
-# item level. Future work (A09+) can model the in-process intermediate
-# item explicitly.
+# Default item / UOM for the JWO line: the op's ``input_item_id`` (BOM
+# primary raw for op #1). A default that resolves to the MO's finished
+# item is refused — see ``_refuse_default_finished_goods_dispatch``.
 
 _ZERO = Decimal("0")
 
@@ -241,6 +238,45 @@ def _resolve_dispatch_item(
     return item.item_id, item.primary_uom
 
 
+def _refuse_default_finished_goods_dispatch(
+    session: Session,
+    *,
+    mo: ManufacturingOrder,
+    op: MoOperation,
+    resolved_item_id: uuid.UUID,
+) -> None:
+    """Stopgap (fix-karigar-input): refuse a DEFAULT dispatch whose input
+    resolves to the MO's finished item.
+
+    In v1 every op after the first carries ``input_item_id`` = the MO's
+    finished item (no intermediate items), and legacy MOs with
+    ``input_item_id IS NULL`` fall back to it too. But a mid-routing op's
+    in-progress pieces are not in ``stock_position`` at all: material
+    issue moved their value into the WIP GL pool (1310), and finished
+    goods only enter stock at MO completion. Shipping the finished item
+    would therefore fail on stock or, worse, silently move unrelated
+    finished-goods stock to the karigar (receive-back would then add
+    finished goods that MO completion adds again). Until stage-wise stock
+    lands (docs/design/wip-stage-stock.md) we fail closed; an explicit
+    ``item_id`` stays the operator's escape hatch.
+    """
+    if resolved_item_id != mo.finished_item_id:
+        return
+    op_name = (
+        session.execute(
+            select(OperationMaster.name).where(
+                OperationMaster.operation_master_id == op.operation_master_id
+            )
+        ).scalar_one_or_none()
+        or f"operation #{op.operation_sequence}"
+    )
+    raise AppValidationError(
+        f"Cannot send {op_name} to karigar: in-progress pieces aren't stock-tracked "
+        "yet, so this would ship finished goods from stock. Send the first "
+        "operation only, or pass item_id to name exactly what is being sent."
+    )
+
+
 def _latest_jwo_line_for_operation(
     session: Session, *, mo_operation_id: uuid.UUID, jwo_id: uuid.UUID
 ) -> JobWorkOrderLine:
@@ -356,6 +392,7 @@ def dispatch_to_karigar(
     # MOs that carry input_item_id=NULL).
     if item_id is None:
         item_id, default_uom = _resolve_dispatch_item(session, mo=mo, op=op)
+        _refuse_default_finished_goods_dispatch(session, mo=mo, op=op, resolved_item_id=item_id)
         if uom is None:
             uom = default_uom
     elif uom is None:

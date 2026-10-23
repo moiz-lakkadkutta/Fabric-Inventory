@@ -1226,3 +1226,172 @@ def test_patch_executor_permission_denied(http_client: TestClient, sync_engine: 
         json={"firm_id": me["firm_id"], "executor": "KARIGAR", "karigar_party_id": karigar},
     )
     assert r.status_code == 403, r.text
+
+
+# ──────────────────────────────────────────────────────────────────────
+# fix-karigar-input (stopgap): a mid-routing op's default input item is
+# the MO's finished item (v1 has no intermediate items, and in-progress
+# pieces live in the WIP GL pool, not in stock_position). A default
+# dispatch must NOT move finished-goods stock; an explicit item_id still
+# works; the first op's default (BOM primary raw) is unchanged.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _seed_mid_routing_karigar(
+    http_client: TestClient, sync_engine: Engine
+) -> tuple[dict[str, str], str, list[str], str, str]:
+    """CUT (op #1) in-house + closed, STITCH (op #2) flipped to KARIGAR.
+
+    Returns ``(owner, mo_id, mo_ops, karigar_party_id, raw_item_id)``.
+    """
+    me, mo_id, mo_ops, karigar, raw = _seed_world(http_client, sync_engine, karigar_ops=0)
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        session.execute(
+            text("UPDATE mo_operation SET executor = 'KARIGAR' WHERE mo_operation_id = :op_id"),
+            {"op_id": mo_ops[1]},
+        )
+        session.commit()
+    _release_mo(http_client, owner=me, mo_id=mo_id)
+    _issue_all_materials(http_client, owner=me, mo_id=mo_id)
+
+    op1 = mo_ops[0]
+    headers = _auth(me["access_token"])
+    for path, payload in (
+        ("start", {}),
+        ("qty-in", {"qty_in": "100.0000"}),
+        ("qty-out", {"qty_out": "100.0000"}),
+        ("complete", {}),
+    ):
+        r = http_client.post(
+            f"/manufacturing/mo-operations/{op1}/{path}",
+            headers=headers,
+            json={"firm_id": me["firm_id"], **payload},
+        )
+        assert r.status_code == 200, f"{path}: {r.text}"
+    return me, mo_id, mo_ops, karigar, raw
+
+
+def _on_hand_main(sync_engine: Engine, *, org_id: str, firm_id: str, item_id: uuid.UUID) -> Decimal:
+    from app.service import inventory_service
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        loc = inventory_service.get_or_create_default_location(
+            session, org_id=uuid.UUID(org_id), firm_id=uuid.UUID(firm_id)
+        )
+        pos = inventory_service.get_position(
+            session,
+            org_id=uuid.UUID(org_id),
+            firm_id=uuid.UUID(firm_id),
+            item_id=item_id,
+            location_id=loc.location_id,
+            lot_id=None,
+        )
+        session.commit()
+    return Decimal(pos.on_hand_qty) if pos is not None else Decimal("0")
+
+
+def _finished_item_of(sync_engine: Engine, *, org_id: str, mo_id: str) -> uuid.UUID:
+    from app.models.manufacturing import ManufacturingOrder
+
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{org_id}'"))
+        mo = session.execute(
+            select(ManufacturingOrder).where(
+                ManufacturingOrder.manufacturing_order_id == uuid.UUID(mo_id)
+            )
+        ).scalar_one()
+    return mo.finished_item_id
+
+
+def test_mid_routing_default_dispatch_refuses_to_ship_finished_goods(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """CUT done in-house → STITCH to karigar with no item_id: the default
+    resolves to the MO's finished item. Finished goods are on hand (the
+    seed pre-stocks them), so pre-fix this silently moved FG stock to
+    the JOBWORK location. Now: 422 with an actionable message, FG stock
+    untouched, op stays PENDING, no JWO minted."""
+    me, mo_id, mo_ops, karigar, _raw = _seed_mid_routing_karigar(http_client, sync_engine)
+    finished = _finished_item_of(sync_engine, org_id=me["org_id"], mo_id=mo_id)
+    fg_before = _on_hand_main(
+        sync_engine, org_id=me["org_id"], firm_id=me["firm_id"], item_id=finished
+    )
+    assert fg_before > Decimal("0")  # the dangerous case: FG is on hand
+
+    r = http_client.post(
+        f"/manufacturing/mo-operations/{mo_ops[1]}/dispatch-karigar",
+        headers=_auth(me["access_token"]),
+        json={
+            "firm_id": me["firm_id"],
+            "karigar_party_id": karigar,
+            "qty_dispatched": "10.0000",
+            "dispatch_date": "2026-06-03",
+        },
+    )
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "in-progress pieces aren't stock-tracked yet" in detail
+    assert "item_id" in detail
+
+    fg_after = _on_hand_main(
+        sync_engine, org_id=me["org_id"], firm_id=me["firm_id"], item_id=finished
+    )
+    assert fg_after == fg_before
+
+    ops_resp = http_client.get(
+        f"/manufacturing/mo/{mo_id}/operations",
+        headers=_auth(me["access_token"]),
+        params={"firm_id": me["firm_id"]},
+    )
+    op2 = next(o for o in ops_resp.json()["items"] if o["mo_operation_id"] == mo_ops[1])
+    assert op2["state"] == "PENDING"
+    assert op2.get("outward_challan_id") is None
+
+
+def test_mid_routing_dispatch_with_explicit_item_id_still_works(
+    http_client: TestClient, sync_engine: Engine
+) -> None:
+    """The explicit ``item_id`` escape hatch is unchanged: the operator
+    names what physically ships, the JWO line carries it, and the op
+    goes DISPATCHED → received → closed so the routing can continue."""
+    from app.models import JobWorkOrderLine
+
+    me, _mo_id, mo_ops, karigar, raw = _seed_mid_routing_karigar(http_client, sync_engine)
+    headers = _auth(me["access_token"])
+    op2 = mo_ops[1]
+
+    r = http_client.post(
+        f"/manufacturing/mo-operations/{op2}/dispatch-karigar",
+        headers=headers,
+        json={
+            "firm_id": me["firm_id"],
+            "karigar_party_id": karigar,
+            "qty_dispatched": "10.0000",
+            "dispatch_date": "2026-06-03",
+            "item_id": raw,
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "DISPATCHED"
+    jwo_id = r.json()["outward_challan_id"]
+    with OrmSession(sync_engine, expire_on_commit=False) as session:
+        session.execute(text(f"SET LOCAL app.current_org_id = '{me['org_id']}'"))
+        line = session.execute(
+            select(JobWorkOrderLine).where(JobWorkOrderLine.job_work_order_id == uuid.UUID(jwo_id))
+        ).scalar_one()
+    assert str(line.item_id) == raw
+
+    for path, payload in (
+        ("acknowledge-karigar", {}),
+        ("receive-karigar", {"qty_received": "10.0000"}),
+        ("close-karigar", {}),
+    ):
+        rr = http_client.post(
+            f"/manufacturing/mo-operations/{op2}/{path}",
+            headers=headers,
+            json={"firm_id": me["firm_id"], **payload},
+        )
+        assert rr.status_code == 200, f"{path}: {rr.text}"
+    assert rr.json()["state"] == "CLOSED"

@@ -9018,6 +9018,13 @@ paths:
   /manufacturing/mo-operations/{mo_operation_id}/dispatch-karigar:
     post:
       summary: Dispatch a karigar (job-work) MO operation (PENDING/RECEIVED_FULL → DISPATCHED)
+      description: 'When ``item_id`` is omitted the shipped item defaults to the operation''s
+        ``input_item_id`` (the BOM primary raw for the first operation). Stopgap
+        (fix-karigar-input): if that default resolves to the MO''s finished item (every
+        mid-routing operation in v1, plus legacy MOs) the call is refused with 422,
+        because in-progress pieces are held in WIP rather than in stock and the default
+        would move finished-goods stock. Pass ``item_id`` explicitly to override. See
+        docs/design/wip-stage-stock.md for the long-term stage-wise stock model.'
       operationId: dispatchKarigar
       tags:
         - manufacturing

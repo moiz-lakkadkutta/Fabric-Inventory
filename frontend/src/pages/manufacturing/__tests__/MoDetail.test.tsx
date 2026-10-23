@@ -1673,6 +1673,56 @@ describe('MoDetail (live-mode integration, TASK-TR-A14-FU)', () => {
     });
   });
 
+  it('A4: Dispatch 422 (mid-routing stopgap) shows the BE message and keeps the form', async () => {
+    // fix-karigar-input: the BE refuses a default mid-routing dispatch
+    // that would ship finished goods. The drawer must surface the
+    // actionable detail in the error banner — no crash, no state flip.
+    const mo = buildMoWithKarigar({ state: 'PENDING' });
+    const detail =
+      "Cannot send Embroidery to karigar: in-progress pieces aren't stock-tracked yet, " +
+      'so this would ship finished goods from stock. Send the first operation only, ' +
+      'or pass item_id to name exactly what is being sent.';
+    const base = withKarigarMasters(mo);
+    fetchMock.mockImplementation(async (url: RequestInfo, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith('/dispatch-karigar') && (init?.method ?? 'GET').toUpperCase() === 'POST') {
+        return jsonResponse(422, {
+          code: 'VALIDATION_ERROR',
+          title: 'Validation error',
+          detail,
+          status: 422,
+          field_errors: {},
+        });
+      }
+      return base(url, init);
+    });
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: /open embroidery operation/i }));
+    const drawer = await screen.findByRole('dialog', { name: /operation embroidery/i });
+    await waitFor(() =>
+      expect(within(drawer).getByRole('option', { name: /rashid tailors/i })).toBeInTheDocument(),
+    );
+    fireEvent.change(within(drawer).getByLabelText(/^karigar$/i), {
+      target: { value: KARIGAR_PARTY_ID },
+    });
+    fireEvent.change(within(drawer).getByLabelText(/qty to dispatch/i), {
+      target: { value: '10' },
+    });
+    fireEvent.change(within(drawer).getByLabelText(/expected return date/i), {
+      target: { value: '2026-05-30' },
+    });
+    fireEvent.click(within(drawer).getByRole('button', { name: /dispatch to karigar/i }));
+
+    expect(
+      await within(drawer).findByText(/in-progress pieces aren't stock-tracked yet/i),
+    ).toBeInTheDocument();
+    // Still on the dispatch form — nothing advanced.
+    expect(
+      within(drawer).getByRole('button', { name: /dispatch to karigar/i }),
+    ).toBeInTheDocument();
+  });
+
   it('A4: Linked-challan card renders outward_challan_id from event log', async () => {
     // DISPATCHED state with a seeded OPERATION_DISPATCHED event so the
     // drawer derives outward_challan_id off the event log without
