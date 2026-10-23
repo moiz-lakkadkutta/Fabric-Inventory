@@ -222,3 +222,93 @@ def test_seed_demo_idempotent(
     assert first["items"] == second["items"], (
         f"item count drifted on re-run: {first['items']} → {second['items']}"
     )
+
+
+def _ledger_balance(db_session: OrmSession, *, firm_id: uuid.UUID, code: str):
+    from decimal import Decimal
+
+    from sqlalchemy import case, func
+
+    from app.models import Ledger, Voucher, VoucherLine
+    from app.models.accounting import JournalLineType
+
+    signed = case(
+        (VoucherLine.line_type == JournalLineType.DR, VoucherLine.amount),
+        else_=-VoucherLine.amount,
+    )
+    total = db_session.execute(
+        select(func.coalesce(func.sum(signed), 0))
+        .select_from(VoucherLine)
+        .join(Voucher, Voucher.voucher_id == VoucherLine.voucher_id)
+        .join(Ledger, Ledger.ledger_id == VoucherLine.ledger_id)
+        .where(Voucher.firm_id == firm_id, Ledger.code == code)
+    ).scalar_one()
+    return Decimal(str(total))
+
+
+def test_seed_demo_books_opening_stock_to_capital_not_pnl(
+    db_session: OrmSession, demo_firm: tuple[uuid.UUID, uuid.UUID]
+) -> None:
+    """Opening stock is reclassed from 5350 Inventory Adjustment to 3000
+    Capital, so the demo P&L isn't a six-figure 'gain' on opening stock;
+    every finalized demo invoice relieves stock and books COGS; re-runs
+    don't double the reclass."""
+    from decimal import Decimal
+
+    from app.models import Voucher
+    from app.models.accounting import VoucherType
+
+    org_id, firm_id = demo_firm
+    seed_demo(db_session, org_id=org_id, firm_id=firm_id)
+    seed_demo(db_session, org_id=org_id, firm_id=firm_id)
+
+    assert _ledger_balance(db_session, firm_id=firm_id, code="5350") == Decimal("0")
+    assert _ledger_balance(db_session, firm_id=firm_id, code="3000") < 0  # credit
+
+    finalized = (
+        db_session.execute(
+            select(SalesInvoice.sales_invoice_id).where(
+                SalesInvoice.firm_id == firm_id,
+                SalesInvoice.series == "RT/DEMO",
+                SalesInvoice.lifecycle_status != InvoiceLifecycleStatus.DRAFT,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    cogs_refs = set(
+        db_session.execute(
+            select(Voucher.reference_id).where(
+                Voucher.firm_id == firm_id, Voucher.voucher_type == VoucherType.COGS_SALE
+            )
+        ).scalars()
+    )
+    assert finalized and set(finalized) <= cogs_refs, "a finalized demo invoice has no COGS"
+
+
+def test_seed_demo_retail_firm_issues_bills_of_supply(
+    db_session: OrmSession, demo_firm: tuple[uuid.UUID, uuid.UUID]
+) -> None:
+    from decimal import Decimal
+
+    from app.service.seed_demo_service import seed_demo_retail_firm
+
+    org_id, firm_id = demo_firm
+    seed_demo(db_session, org_id=org_id, firm_id=firm_id)
+    retail = Firm(org_id=org_id, code="DEMORETAIL", name="Retail", has_gst=False, state_code="MH")
+    db_session.add(retail)
+    db_session.flush()
+
+    first = seed_demo_retail_firm(db_session, org_id=org_id, firm_id=retail.firm_id)
+    second = seed_demo_retail_firm(db_session, org_id=org_id, firm_id=retail.firm_id)
+    assert first == second == {"bills_of_supply": 3}
+
+    bills = (
+        db_session.execute(select(SalesInvoice).where(SalesInvoice.firm_id == retail.firm_id))
+        .scalars()
+        .all()
+    )
+    assert {b.invoice_type for b in bills} == {"BILL_OF_SUPPLY"}
+    assert all(Decimal(b.gst_amount or 0) == 0 for b in bills)
+    assert _ledger_balance(db_session, firm_id=retail.firm_id, code="2100") == Decimal("0")
+    assert _ledger_balance(db_session, firm_id=retail.firm_id, code="5350") == Decimal("0")
