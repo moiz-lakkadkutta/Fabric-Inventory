@@ -513,6 +513,114 @@ describe('MoDetail (live-mode integration, TASK-TR-A14-FU)', () => {
     });
   });
 
+  // ── Lot picker on the issue dialog (fix: material issue ignores lots) ──
+
+  function buildLot(lotId: string, lotNumber: string, qtyOnHand: string) {
+    return {
+      lot_id: lotId,
+      lot_number: lotNumber,
+      org_id: ORG_ID,
+      firm_id: FIRM_ID,
+      item_id: ITEM_ID,
+      item_code: 'COT-01',
+      item_name: 'Cotton fabric',
+      primary_uom: 'METER',
+      qty_on_hand: qtyOnHand,
+      received_date: '2026-04-01',
+      supplier_lot_number: null,
+      mfg_date: null,
+      expiry_date: null,
+      grn_id: null,
+      primary_cost: null,
+      currency: 'INR',
+      created_at: '2026-04-01T00:00:00Z',
+      updated_at: '2026-04-01T00:00:00Z',
+    };
+  }
+
+  function lotAwareFetch(onIssue: (payload: Record<string, unknown>) => void) {
+    return async (url: RequestInfo, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (u.includes('/lots?')) {
+        expect(u).toContain(`item_id=${ITEM_ID}`);
+        return jsonResponse(200, {
+          items: [
+            buildLot('l0000000-0000-0000-0000-00000000000a', 'GRN/0001-1', '25.0000'),
+            buildLot('l0000000-0000-0000-0000-00000000000b', 'GRN/0002-1', '0.0000'),
+          ],
+          count: 2,
+          limit: 50,
+          offset: 0,
+        });
+      }
+      if (u.endsWith('/issue-materials') && method === 'POST') {
+        onIssue(JSON.parse((init?.body as string) ?? '{}'));
+        return jsonResponse(201, {
+          created_at: '2026-05-01T00:00:00Z',
+          firm_id: FIRM_ID,
+          issue_date: '2026-05-01',
+          lines: [],
+          manufacturing_order_id: MO_ID,
+          material_issue_id: 'mi000000-0000-0000-0000-000000000001',
+        });
+      }
+      return defaultFetchImpl(buildMo({ status: 'IN_PROGRESS' }))(url);
+    };
+  }
+
+  it('issue dialog lot picker defaults to Auto (FIFO) and sends no lot_id', async () => {
+    let issuePayload: Record<string, unknown> | null = null;
+    fetchMock.mockImplementation(lotAwareFetch((p) => (issuePayload = p)));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: /materials/i }));
+    fireEvent.click(screen.getByRole('button', { name: /issue all remaining/i }));
+
+    const dialog = await screen.findByRole('dialog', { name: /issue materials/i });
+    const lotSelect = within(dialog).getByLabelText(/Lot for Cotton fabric/i) as HTMLSelectElement;
+    expect(lotSelect.value).toBe('');
+    // Only lots with stock on hand are offered.
+    await waitFor(() =>
+      expect(within(lotSelect).getByRole('option', { name: /GRN\/0001-1/ })).toBeInTheDocument(),
+    );
+    expect(within(lotSelect).queryByRole('option', { name: /GRN\/0002-1/ })).toBeNull();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /confirm issue/i }));
+    await waitFor(() => expect(issuePayload).not.toBeNull());
+    const lines = (issuePayload as unknown as { lines: Record<string, unknown>[] }).lines;
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toHaveProperty('lot_id');
+  });
+
+  it('issue dialog sends lot_id when the operator picks a lot', async () => {
+    let issuePayload: Record<string, unknown> | null = null;
+    fetchMock.mockImplementation(lotAwareFetch((p) => (issuePayload = p)));
+    renderMoDetail();
+    await waitFor(() => expect(screen.getByText(/MO\/2026\/0001/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: /materials/i }));
+    fireEvent.click(screen.getByRole('button', { name: /issue all remaining/i }));
+
+    const dialog = await screen.findByRole('dialog', { name: /issue materials/i });
+    const lotSelect = within(dialog).getByLabelText(/Lot for Cotton fabric/i) as HTMLSelectElement;
+    await waitFor(() =>
+      expect(within(lotSelect).getByRole('option', { name: /GRN\/0001-1/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(lotSelect, { target: { value: 'l0000000-0000-0000-0000-00000000000a' } });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /confirm issue/i }));
+    await waitFor(() => expect(issuePayload).not.toBeNull());
+    expect(issuePayload).toMatchObject({
+      lines: [
+        {
+          mo_material_line_id: MO_MAT_LINE_ID,
+          qty_to_issue: '30.0000',
+          lot_id: 'l0000000-0000-0000-0000-00000000000a',
+        },
+      ],
+    });
+  });
+
   it('A3: clicking an operation row opens the drawer with snapshot', async () => {
     fetchMock.mockImplementation(defaultFetchImpl(buildMo({ status: 'IN_PROGRESS' })));
     renderMoDetail();
