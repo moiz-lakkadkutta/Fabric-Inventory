@@ -12,9 +12,12 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ApiError } from '@/lib/api/client';
 import { useIdempotencyKey } from '@/lib/api/idempotency';
 import { formatINRCompact } from '@/lib/format';
-import { invoices } from '@/lib/mock/invoices';
+import { IS_LIVE } from '@/lib/api/mode';
+import type { Invoice, Party, PartyKind, PartyRole } from '@/lib/mock/types';
+import { usePartyInvoices } from '@/lib/queries/invoices';
 import { useParty, usePatchParty } from '@/lib/queries/parties';
-import type { Party, PartyKind, PartyRole } from '@/lib/mock/types';
+import { usePartyStatement } from '@/lib/queries/reports';
+import { useMe } from '@/store/auth';
 
 const KIND_PILL: Record<PartyKind, { kind: PillKind; label: string }> = {
   customer: { kind: 'finalized', label: 'Customer' },
@@ -36,9 +39,22 @@ function kindToRole(kind: PartyKind): PartyRole {
   }
 }
 
+// Statuses that represent a bill actually raised on the party. Drafts
+// (incl. CONFIRMED, which maps to DRAFT), discarded and cancelled docs
+// are not billed and must not inflate the khata.
+const UNBILLED: ReadonlySet<Invoice['status']> = new Set(['DRAFT', 'DISCARDED', 'CANCELLED']);
+
 export default function PartyDetail() {
   const { id } = useParams<{ id: string }>();
   const partyQuery = useParty(id);
+  const invoicesQuery = usePartyInvoices(id);
+  const me = useMe();
+  // The party statement (GL view, includes opening balances + receipts
+  // on account) needs `accounting.report.view`; only ask when the user
+  // has it so a sales-only user doesn't fire a guaranteed 403. Live
+  // only — there is no mock branch for the report.
+  const canReadStatement = IS_LIVE && (me?.permissions ?? []).includes('accounting.report.view');
+  const statementQuery = usePartyStatement(canReadStatement ? id : null);
   const [editOpen, setEditOpen] = useState(false);
 
   if (partyQuery.isPending) {
@@ -67,17 +83,19 @@ export default function PartyDetail() {
     .toUpperCase();
   const pill = KIND_PILL[p.kind];
 
-  // Khata KPIs from invoices.
-  // NOTE: in live mode, the click-dummy `invoices` fixture won't include
-  // anything for this party. The detail still renders cleanly (zeros).
-  // CUT-104 / CUT-302 wires `/reports/party-statement` to compute these
-  // from real invoices.
-  const partyInvoices = invoices.filter((i) => i.party_id === p.party_id);
-  const total = partyInvoices.reduce((s, i) => s + i.total, 0);
-  const paid = partyInvoices.reduce((s, i) => s + i.paid, 0);
-  const outstanding = total - paid;
-  const overdue = partyInvoices
-    .filter((i) => i.ageing_days > 0 && i.status !== 'PAID' && i.status !== 'CANCELLED')
+  // Khata KPIs from this party's sales invoices. Amounts are integer
+  // paise (converted once at the query boundary), so these sums are
+  // exact integer arithmetic.
+  const partyInvoices = (invoicesQuery.data ?? []).filter((i) => i.status !== 'DISCARDED');
+  const billed = partyInvoices.filter((i) => !UNBILLED.has(i.status));
+  const total = billed.reduce((s, i) => s + i.total, 0);
+  const paid = billed.reduce((s, i) => s + i.paid, 0);
+  // Outstanding prefers the ledger closing balance: it also covers
+  // opening balances migrated from Vyapar, unallocated receipts and
+  // credit notes, which the invoice rows alone can't see.
+  const outstanding = statementQuery.data ? statementQuery.data.closing_balance : total - paid;
+  const overdue = billed
+    .filter((i) => i.ageing_days > 0 && i.status !== 'PAID')
     .reduce((s, i) => s + (i.total - i.paid), 0);
 
   return (
@@ -177,7 +195,11 @@ export default function PartyDetail() {
                   className="px-4 py-12 text-center"
                   style={{ fontSize: 13, color: 'var(--text-tertiary)' }}
                 >
-                  No transactions for this party yet.
+                  {invoicesQuery.isPending
+                    ? 'Loading transactions…'
+                    : invoicesQuery.isError
+                      ? 'Could not load transactions for this party.'
+                      : 'No transactions for this party yet.'}
                 </td>
               </tr>
             )}
@@ -199,7 +221,7 @@ export default function PartyDetail() {
                   className="px-3 py-2.5"
                   style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}
                 >
-                  Sales invoice
+                  {UNBILLED.has(i.status) ? 'Sales invoice · draft' : 'Sales invoice'}
                 </td>
                 <td className="num px-3 py-2.5" style={{ textAlign: 'right' }}>
                   {formatINRCompact(i.total)}

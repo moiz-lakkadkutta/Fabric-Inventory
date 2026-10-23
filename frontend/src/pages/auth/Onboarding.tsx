@@ -23,10 +23,10 @@ import { useSignup } from '@/lib/queries/identity';
       chars if GSTIN is present (user can override). When non-GST, the
       user enters state code explicitly — backend requires it for the
       place-of-supply engine to compute tax_type correctly per T-INT-4.
-    - Step 3 keeps the existing opening-balance choice UI, but the
-      Vyapar option is labelled "(coming soon — TASK-CUT-402)" because
-      no migration adapter exists yet. Selecting any option is a no-op
-      for now; the actual import flow lands in Wave 5. The "Commit &
+    - Step 3 keeps the opening-balance choice UI (new / manual). The
+      Vyapar option was removed: the choice was never sent anywhere, so
+      it only promised a feature the wizard doesn't deliver. Selecting
+      either remaining option is a no-op for now. The "Commit &
       finish" button posts to /auth/signup, hydrates authStore via
       useSignup, then navigates to /.
 */
@@ -42,7 +42,7 @@ interface FormData {
   gstin: string;
   stateCode: string;
   pan: string;
-  importMode: 'new' | 'vyapar' | 'manual';
+  importMode: 'new' | 'manual';
 }
 
 const INITIAL: FormData = {
@@ -399,20 +399,13 @@ function FirmStep({ data, update }: StepProps) {
 
 function OpeningStep({ data, update }: StepProps) {
   /*
-   * Vyapar import is the migration path Moiz will use to leave Vyapar
-   * (CLAUDE.md decision #5). The adapter ships in TASK-CUT-402 (Wave 5).
-   * Until then we keep the option visible but explicitly labelled as
-   * coming-soon so the wizard doesn't promise functionality that isn't
-   * there. The other two options are no-ops today and don't block
-   * signup.
+   * Vyapar import (CLAUDE.md decision #5) is not offered here: picking
+   * it was recorded but never processed, so it only promised a feature
+   * the wizard can't deliver. Both remaining options are no-ops today
+   * and don't block signup.
    */
   const options: Array<{ id: FormData['importMode']; label: string; sub: string }> = [
     { id: 'new', label: "I'm new to the trade", sub: 'Skip — start with empty books.' },
-    {
-      id: 'vyapar',
-      label: 'Import from Vyapar (.vyp) (coming soon — TASK-CUT-402)',
-      sub: 'Adapter ships in Wave 5; selection is recorded but not processed yet.',
-    },
     { id: 'manual', label: 'Manual entry', sub: 'Type opening balances yourself.' },
   ];
   return (
