@@ -46,7 +46,10 @@ export function FirmSwitcher({ compact = false }: FirmSwitcherProps) {
   const { key: idempotencyKey, reset: resetKey } = useIdempotencyKey();
 
   const availableFirms: MeFirmRef[] = me?.available_firms ?? [];
-  const currentId = optimisticFirmId ?? me?.firm_id ?? availableFirms[0]?.firm_id ?? null;
+  // No fallback to availableFirms[0]: a multi-firm login starts with no active
+  // firm, and showing the first firm as active made re-picking it a no-op while
+  // every firm-scoped endpoint returned 403 "No active firm".
+  const currentId = optimisticFirmId ?? me?.firm_id ?? null;
   const current = availableFirms.find((f) => f.firm_id === currentId) ?? null;
 
   // No identity yet (bootstrap pending or signed out) — render a quiet
@@ -75,7 +78,7 @@ export function FirmSwitcher({ compact = false }: FirmSwitcherProps) {
     );
   }
 
-  const triggerLabel = current?.name ?? '—';
+  const triggerLabel = current?.name ?? 'Select a firm';
 
   const onSelect = (firmId: string) => {
     if (firmId === currentId) {
