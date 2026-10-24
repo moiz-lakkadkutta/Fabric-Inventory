@@ -41,3 +41,9 @@ export async function freshTotp(secret) {
   writeFileSync(stamp, String(window));
   return totp(secret);
 }
+
+// For a code made with totp() directly (MFA enrolment): records its window so
+// the next freshTotp() waits for a later one instead of replaying it.
+export function markTotpUsed(at = Date.now()) {
+  writeFileSync(stamp, String(Math.floor(at / 30000)));
+}

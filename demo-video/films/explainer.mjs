@@ -2,8 +2,9 @@
 // sentence) and the browser steps that play while it is spoken. A scene ends
 // when both its narration and its steps are done, so audio and picture can't
 // drift apart. Record names come from the demo seed (`make seed-demo`).
+// Film format and the `h` helpers: see demo-video/README.md.
 
-export const scenes = [
+const scenes = [
   {
     id: 'intro',
     chapter: { title: 'Fabric', description: "Cloud ERP for India's ladies-suit and fabric trade" },
@@ -182,3 +183,6 @@ export const scenes = [
     },
   },
 ];
+
+// One person throughout, so no who's-signed-in badge (and the take stays as it was).
+export const film = { id: 'explainer', title: 'Fabric explainer', scenes, badge: false };

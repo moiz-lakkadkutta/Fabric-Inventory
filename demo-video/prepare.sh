@@ -19,3 +19,4 @@ $DC exec -T api uv run python -m app.cli.seed_demo \
   --org-name 'Fabric Demo Textiles' --firm-name 'Noor Suits Pvt Ltd' --state-code MH
 
 node demo-video/enroll-mfa.mjs
+node demo-video/staff.mjs
