@@ -345,6 +345,88 @@ def _find_qc_predecessor(session: Session, *, org_id: uuid.UUID, op: MoOperation
     return pred
 
 
+def _resolve_rework_leaf(
+    session: Session, *, org_id: uuid.UUID, op: MoOperation
+) -> tuple[MoOperation, MoOperation]:
+    """For a QC op in REWORK, return ``(original_predecessor, leaf_clone)``.
+
+    The leaf clone is the most-recent clone at the end of the chain
+    descended from the original routing predecessor — the op whose
+    ``qty_out`` the next (re-record) verdict inspects. Raises when the
+    op is in REWORK but no clone exists (state-machine integrity bug):
+    silently treating the original predecessor as the source would
+    re-inspect the original qty.
+    """
+    original_pred = _find_qc_predecessor(session, org_id=org_id, op=op)
+    leaf = _latest_clone_of(session, parent_mo_operation_id=original_pred.mo_operation_id)
+    if leaf is None:
+        raise AppValidationError(
+            f"QC operation {op.mo_operation_id} is in REWORK state but no "
+            "rework clone exists. State-machine integrity error — "
+            "re-create the clone or contact support."
+        )
+    # Each clone may itself have a child clone if a previous round was
+    # REWORK again — walk to the leaf.
+    deeper = _latest_clone_of(session, parent_mo_operation_id=leaf.mo_operation_id)
+    while deeper is not None:
+        leaf = deeper
+        deeper = _latest_clone_of(session, parent_mo_operation_id=leaf.mo_operation_id)
+    return original_pred, leaf
+
+
+@dataclass(frozen=True)
+class QcSourceContext:
+    """What the NEXT QC verdict on an op must account for.
+
+    ``predecessor_mo_operation_id`` is the ORIGINAL routing predecessor
+    (root of the rework-clone chain). ``source_qty_out`` is the qty
+    arriving at QC for the next verdict: the predecessor's ``qty_out``
+    before the first verdict, the leaf clone's ``qty_out`` while in
+    REWORK. ``None`` for ``source_qty_out`` means "op is past QC —
+    use the last verdict's recorded source qty".
+    """
+
+    predecessor_mo_operation_id: uuid.UUID
+    source_qty_out: Decimal | None
+
+
+def get_qc_source_context(
+    session: Session,
+    *,
+    org_id: uuid.UUID,
+    mo_operation_id: uuid.UUID,
+) -> QcSourceContext | None:
+    """Resolve the QC source live from the routing + clone chain.
+
+    Mirrors the source selection in :func:`record_qc_result` so the
+    read endpoint and the write-side conservation check agree. Returns
+    ``None`` when no single predecessor can be resolved (no routing,
+    multi-input QC, …) — the same conditions under which start/record
+    would refuse, so the FE correctly shows nothing to inspect.
+    """
+    op = _load_operation(session, org_id=org_id, mo_operation_id=mo_operation_id)
+    try:
+        if op.state == MoOperationState.REWORK:
+            original_pred, leaf = _resolve_rework_leaf(session, org_id=org_id, op=op)
+            return QcSourceContext(
+                predecessor_mo_operation_id=original_pred.mo_operation_id,
+                source_qty_out=Decimal(leaf.qty_out or 0).quantize(_QTY_QUANT),
+            )
+        pred = _find_qc_predecessor(session, org_id=org_id, op=op)
+    except AppValidationError:
+        return None
+    if op.state in {
+        MoOperationState.PENDING,
+        MoOperationState.READY,
+        MoOperationState.QC_PENDING,
+    }:
+        return QcSourceContext(
+            predecessor_mo_operation_id=pred.mo_operation_id,
+            source_qty_out=Decimal(pred.qty_out or 0).quantize(_QTY_QUANT),
+        )
+    return QcSourceContext(predecessor_mo_operation_id=pred.mo_operation_id, source_qty_out=None)
+
+
 def _emit_event(
     session: Session,
     *,
@@ -720,34 +802,10 @@ def record_qc_result(
 
     if is_rerecord:
         # Walk to the predecessor of the QC op (filtered to original
-        # via _find_qc_predecessor) and then find the latest clone
-        # descended from it. The clone must be CLOSED — otherwise the
-        # operator is trying to land a verdict while the rework is
-        # mid-flight.
-        original_pred = _find_qc_predecessor(session, org_id=org_id, op=op)
-        latest_clone = _latest_clone_of(
-            session, parent_mo_operation_id=original_pred.mo_operation_id
-        )
-        # Climb the chain to the most-recent CLONE (which is the one
-        # we're inspecting). Each clone may itself have a child clone
-        # if the previous round was REWORK again — walk to the leaf.
-        if latest_clone is None:
-            # State machine integrity bug: QC is in REWORK but no
-            # clone exists. Surface a 422 rather than silently
-            # treating original_pred as the rework_source — that
-            # would re-inspect the original qty.
-            raise AppValidationError(
-                f"QC operation {mo_operation_id} is in REWORK state but no "
-                "rework clone exists. State-machine integrity error — "
-                "re-create the clone or contact support."
-            )
-        rework_source = latest_clone
-        # If THIS clone itself has a deeper clone (someone recorded
-        # another REWORK and we're now on round 3+), walk to that.
-        deeper = _latest_clone_of(session, parent_mo_operation_id=rework_source.mo_operation_id)
-        while deeper is not None:
-            rework_source = deeper
-            deeper = _latest_clone_of(session, parent_mo_operation_id=rework_source.mo_operation_id)
+        # via _find_qc_predecessor) and then to the leaf clone descended
+        # from it. The clone must be CLOSED — otherwise the operator is
+        # trying to land a verdict while the rework is mid-flight.
+        _original_pred, rework_source = _resolve_rework_leaf(session, org_id=org_id, op=op)
         if rework_source.state != MoOperationState.CLOSED:
             raise AppValidationError(
                 f"Cannot re-record QC verdict on operation {mo_operation_id}: "
@@ -1031,8 +1089,10 @@ def get_latest_qc_result(
 
 __all__ = [
     "QcResultInput",
+    "QcSourceContext",
     "get_latest_qc_result",
     "get_qc_operation",
+    "get_qc_source_context",
     "list_qc_operations",
     "record_qc_result",
     "start_qc_inspection",

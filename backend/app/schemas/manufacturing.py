@@ -980,7 +980,11 @@ class QcResultResponse(BaseModel):
     qty_byproduct: Decimal
     qty_wastage: Decimal
     qty_rework: Decimal
+    # Conservation target for the NEXT verdict, resolved live while QC is
+    # pending (predecessor qty_out pre-verdict; leaf rework clone's qty_out
+    # in REWORK). Falls back to the last verdict's source once CLOSED.
     predecessor_qty_out: Decimal
+    # Always the ORIGINAL routing predecessor (root of the clone chain).
     predecessor_mo_operation_id: uuid.UUID | None
     occurred_at: datetime.datetime | None
 

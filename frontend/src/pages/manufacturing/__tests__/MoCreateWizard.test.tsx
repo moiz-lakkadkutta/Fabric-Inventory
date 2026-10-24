@@ -356,7 +356,12 @@ function renderWizard() {
   );
 }
 
-function seedAuth() {
+// Mirrors the backend: POST /manufacturing/mo and /release both require
+// `manufacturing.mo.write` (there is no `manufacturing.mo.create` in the
+// RBAC catalogue). Production Manager + Owner hold exactly this pair.
+const PRODUCTION_MANAGER_PERMS = ['manufacturing.mo.write', 'manufacturing.mo.read'];
+
+function seedAuth(permissions: string[] = PRODUCTION_MANAGER_PERMS) {
   authStore.reset();
   authStore.setAccessToken('test-token');
   authStore.setMe({
@@ -364,7 +369,7 @@ function seedAuth() {
     org_id: ORG_ID,
     firm_id: FIRM_ID,
     email: 'u@example.com',
-    permissions: ['manufacturing.mo.create', 'manufacturing.mo.write'],
+    permissions,
     flags: {},
     available_firms: [{ firm_id: FIRM_ID, code: 'F1', name: 'F1' }],
     token_expires_at: '2099-01-01T00:00:00Z',
@@ -614,6 +619,27 @@ describe('MoCreateWizard — Section 4 (submit)', () => {
     // Idempotency-Key is set on the create POST.
     const headers = createCall!.init!.headers as Record<string, string>;
     expect(headers['Idempotency-Key']).toMatch(/[0-9a-f-]{36}/i);
+  });
+});
+
+describe('MoCreateWizard — permission gating', () => {
+  it('disables Save + Release for a read-only user (no manufacturing.mo.write)', async () => {
+    seedAuth(['manufacturing.mo.read']);
+    const { impl } = buildFetchImpl({});
+    fetchMock.mockImplementation(impl);
+
+    renderWizard();
+    fireEvent.click(await screen.findByRole('option', { name: /BRDL-01/i }));
+    fireEvent.change(screen.getByLabelText(/quantity/i), { target: { value: '10' } });
+    fireEvent.click(screen.getByRole('tab', { name: /bom snapshot/i }));
+    await screen.findByText(/Cotton fabric/i);
+    fireEvent.click(screen.getByRole('tab', { name: /routing override/i }));
+    await screen.findByText(/Cutting/i);
+    fireEvent.click(screen.getByRole('tab', { name: /review & release/i }));
+
+    expect(await screen.findByRole('button', { name: /save as draft/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /release mo/i })).toBeDisabled();
+    expect(screen.getByText(/manufacturing\.mo\.write/)).toBeInTheDocument();
   });
 });
 
