@@ -193,9 +193,12 @@ page.setDefaultTimeout(15000);
 // Who is signed in when the take starts: the scene's own `startAs` when
 // recording it alone with --only, else the film's; the Owner by default.
 const startAs = (only && scenes[0].startAs) || film.startAs || "owner";
+// `film.setup()`: master data that exists before the story (public API only,
+// idempotent so --only runs can repeat it).
+if (film.setup) await film.setup();
 await signIn(page, personFor(startAs));
 await setBadge(personFor(startAs));
-await pickFirm(page);
+await pickFirm(page, film.firm);
 for (const route of film.warmup ?? DEFAULT_WARMUP) {
   await page.goto(`${APP}${route}`);
   await page.waitForLoadState("networkidle");
@@ -373,7 +376,7 @@ const helpers = {
   // Hands the keyboard to someone else, on camera: a card naming them, Sign
   // out from the user menu, the login form typed out (plus TOTP for the
   // Owner), then the firm picked. `key` is a STAFF key or 'owner'.
-  loginAs: async (key, { firm } = {}) => {
+  loginAs: async (key, { firm = film.firm } = {}) => {
     const person = personFor(key);
     const { label } = ROLE_LOOK[person.role];
     // Codes are single-use; fetching one may wait for the next 30 s window,

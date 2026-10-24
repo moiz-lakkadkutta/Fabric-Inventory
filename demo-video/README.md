@@ -9,6 +9,7 @@ Each film is one module in `films/`; the explainer is `films/explainer.mjs`.
 |---|---|
 | `explainer` | ~5 min tour of the whole product, one login. |
 | `gst-flow` | ~4.5 min "From fabric to GST invoice": Owner raises + approves a silk PO, Ravi (warehouse) receives it as lot LOT-SSM-1024, Owner enters the supplier bill, Sana opens + releases a new MO for ten Banarasi suits, issues that lot, runs the ops, QC (all pass), packing and Complete MO (unit cost), Arjun bills the ten suits to Gujarat (IGST), Meera posts the bill (ITC), checks the trial balance and GSTR-1. |
+| `nongst-flow` | ~3.8 min "Non-GST: from fabric to Bill of Supply" in Demo Retail Counter (no GSTIN): Owner adds an unregistered Lalbaug trader, raises + approves a cotton PO, Ravi receives lot LOT-LKB-0412, Owner enters the bill at 0% GST (no ITC), Sana makes five suits on a short MO (cut & stitch → QC → complete, ₹315/suit), Arjun bills them on a Bill of Supply, Meera posts the bill, shows a TB with no GST ledgers and GSTR-1 refusing (not applicable). Its `setup` adds the counter's one design/BOM/routing through the API. |
 
 ```
 make demo-video                # explainer, ~10 min → demo-video/out/fabric-explainer.mp4 (1080p, ~5 min)
@@ -55,6 +56,8 @@ export const film = {
   startAs: 'owner',         // optional: 'owner' (default) or a STAFF key
   warmup: ['/purchase'],    // optional: routes to pre-load before the take
   badge: true,              // optional: false hides the who's-signed-in badge
+  firm: 'Demo Retail Counter', // optional: firm for the take and every h.loginAs (default FIRM)
+  setup: async () => {},    // optional: idempotent pre-story master data, public API only
   legacyPacing: false,      // optional: true = old timing where every caption was followed by
                             // a silent gap as long as itself (only the explainer keeps it)
 };
