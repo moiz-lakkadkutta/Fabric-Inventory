@@ -1,25 +1,19 @@
 // "From fabric to GST invoice": one product's story, end to end, each step
 // done by the person whose job it is. Owner raises the PO, Ravi receives the
-// silk with a lot number, the Owner enters the supplier's bill, Sana makes
-// ten Banarasi suits from that lot on a released MO, Arjun bills them to
-// Gujarat (IGST), and Meera posts the bill and checks the books.
+// silk with a lot number, the Owner enters the supplier's bill, Sana opens
+// and releases an MO for ten Banarasi suits, issues that lot to it and takes
+// it through QC to finished stock, Arjun bills those suits to Gujarat (IGST),
+// and Meera posts the bill and checks the books.
 // Film format: README.md.
 
 // Records created on camera, handed from scene to scene. With --only, a scene
 // falls back to the newest matching record on screen.
-const story = { poId: null, grnId: null };
+const story = { poId: null, grnId: null, moUrl: null };
 const FABRIC = 'Silk Fabric — 44" Royal Blue';
 const LOT = "LOT-SSM-1024";
-// The seed's released MO for design DSN-SHR-GLD (32 m silk for 10 suits):
-// the MO wizard can't save a new order in this build (see the note).
-const MO = "MO-DEMO/0002";
-// App bug: the first QC verdict can't be saved from the drawer (the QC
-// result endpoint returns predecessor_qty_out = 0 until a verdict exists, and
-// the form needs it > 0). While false, the order stops at QC on camera and
-// the sale comes from finished stock. Flip to true once fixed: QC, packing,
-// Complete MO and a sale of these ten suits are scripted below.
-const QC_FIXED = false;
-const SALE_QTY = QC_FIXED ? "10" : "5";
+// DSN-SHR-GLD's BOM: 3.2 m silk per suit, so 32 m for the ten made here.
+const DESIGN = /Sharara Set Gold/;
+const QTY = "10";
 const SUIT = /Banarasi Suit — Maroon Zari/;
 
 // The job changes hands: the next person signs in, on camera, while the
@@ -47,12 +41,14 @@ const handover = (key, narration) => ({
   },
 });
 
-// For --only runs: open the MO unless already on it.
+// For --only runs: open this film's MO (the wizard numbers it MO/000n, the
+// seed's are MO-DEMO/…) unless already on it.
 async function onMo(h) {
-  if (/\/manufacturing\/mo\/./.test(h.page.url())) return;
+  if (/\/manufacturing\/mo\/[0-9a-f-]{36}/.test(h.page.url())) return;
+  if (story.moUrl) return h.page.goto(story.moUrl);
   await h.ensureNav("Manufacturing", "Manufacturing orders");
   await h.nav("Manufacturing orders");
-  await h.click(h.page.getByRole("link", { name: MO }));
+  await h.click(h.page.getByRole("link", { name: /^MO\/\d+$/ }).first());
 }
 
 // Clicks into a field, selects what's there, and types over it.
@@ -191,27 +187,46 @@ const scenes = [
   {
     id: "mo",
     narration: [
-      "Her manufacturing order is for ten suits of the Sharara Set Gold design, which makes the maroon Banarasi suit.",
-      "It carries the bill of materials and the routing: cutting, stitching, finishing, quality check and packing.",
+      "She opens a new manufacturing order: ten suits of the Sharara Set Gold design, which makes the maroon Banarasi suit.",
+      "The bill of materials comes from the design. Three point two metres of silk a suit, so thirty-two metres for ten, plus lace and zari.",
+      "The routing comes with it: cutting, stitching, finishing, quality check and packing.",
+      "She releases the order to the floor.",
     ],
     startAs: "production",
     run: async (h) => {
       const p = h.page;
       await h.ensureNav("Manufacturing", "Manufacturing orders");
       await h.nav("Manufacturing orders");
+      await h.click(
+        p
+          .getByRole("button", { name: "New MO" })
+          .or(p.getByRole("link", { name: "New MO" }))
+          .first(),
+      );
+      await h.select(p.getByRole("listbox", { name: "Designs" }), DESIGN, {
+        search: p.getByLabel("Search design"),
+      });
+      await retype(h, p.locator("#mo-qty"), QTY);
+      await h.dwell(500);
+      await h.waitForSentence(1);
+      await h.click(p.getByRole("button", { name: "Next" }));
+      await h.hover(p.getByLabel(`Planned issue for ${FABRIC}`));
       await h.note(
-        "The New MO wizard can’t save an order in this build (a permissions bug), so Sana uses one released earlier",
+        "Known bug: this check reads a report Sana’s role can’t open, so on-hand and the cost estimate show 0. The stock is there.",
         5000,
       );
-      await h.dwell(1500);
-      await h.click(p.getByRole("link", { name: MO }));
-      await h.dwell(1000);
-      await h.hover(p.locator("main").getByText("Sharara Set Gold").first());
-      await h.waitForSentence(1);
-      await h.hover(
-        p.getByRole("button", { name: /^Open .* operation/ }).first(),
-      );
       await h.dwell(2500);
+      await h.waitForSentence(2);
+      await h.click(p.getByRole("button", { name: "Next" }));
+      await h.dwell(1500);
+      await h.waitForSentence(3);
+      await h.click(p.getByRole("button", { name: "Next" }));
+      await h.dwell(800);
+      await h.click(p.getByRole("button", { name: "Release MO" }));
+      await p.getByRole("button", { name: "Start MO" }).waitFor();
+      story.moUrl = p.url();
+      await h.hover(p.getByText("RELEASED").first());
+      await h.dwell(1500);
     },
   },
   {
@@ -233,7 +248,7 @@ const scenes = [
       await lot.locator("option").nth(1).waitFor({ state: "attached" });
       await h.waitForSentence(2);
       await h.select(lot, new RegExp(LOT));
-      await h.dwell(800);
+      await h.dwell(2500);
       await h.click(p.getByRole("button", { name: "Confirm issue" }));
       await h.dwell(1500);
     },
@@ -241,7 +256,7 @@ const scenes = [
   {
     id: "ops",
     narration: [
-      "Sana starts the order and runs each operation in-house.",
+      "Issuing the material started the order. Sana now runs each operation in-house.",
       "Cutting first: start it, record ten pieces in and ten out, then complete it.",
       "Every operation is tracked the same way, so we move quickly through stitching and finishing.",
     ],
@@ -257,61 +272,48 @@ const scenes = [
       await runOp(h, 2, { pace: 150 });
     },
   },
-  QC_FIXED
-    ? {
-        id: "qc",
-        narration: [
-          "At the quality check, all ten suits pass.",
-          "Packing closes the routing.",
-          "Completing the order shows what each suit cost to make, then moves the suits into finished stock.",
-        ],
-        startAs: "production",
-        run: async (h) => {
-          const p = h.page;
-          await onMo(h);
-          await runQc(h, 3);
-          await h.waitForSentence(1);
-          await runOp(h, 4, { pace: 150 });
-          await h.waitForSentence(2);
-          await h.click(p.getByRole("button", { name: "Complete MO" }));
-          const dlg = p.getByRole("dialog");
-          await retype(h, dlg.getByLabel("Produced qty target"), "10");
-          await h.dwell(3500);
-          await h.click(dlg.getByRole("button", { name: "Confirm complete" }));
-          await h.dwell(1800);
-        },
-      }
-    : {
-        id: "qc",
-        narration: [
-          "Next the suits reach the quality check.",
-          "In this build the first QC verdict can’t be saved from the screen. It is a known bug, so this order waits at QC.",
-          "Meanwhile the silk’s cost sits in work in progress, against this order.",
-        ],
-        startAs: "production",
-        run: async (h) => {
-          const p = h.page;
-          await onMo(h);
-          await h.hover(p.getByRole("button", { name: /^Open Quality Check/ }));
-          await h.waitForSentence(1);
-          await h.note(
-            "Known bug: the QC form gets 0 as the incoming quantity, so Record verdict stays disabled",
-            6000,
-          );
-          await h.dwell(2000);
-          await h.click(p.getByRole("tab", { name: /Materials/ }));
-          await h.waitForSentence(2);
-          await h.hover(p.getByText(FABRIC).first());
-          await h.dwell(1500);
-        },
-      },
+  {
+    id: "qc",
+    narration: [
+      "Then the quality check. Sana records the verdict: all ten suits pass.",
+      "The counts must add up to what came off finishing, so nothing goes missing between steps.",
+      "Packing closes the routing.",
+    ],
+    startAs: "production",
+    run: async (h) => {
+      const p = h.page;
+      await onMo(h);
+      await runQc(h, 3);
+      await h.waitForSentence(2);
+      await runOp(h, 4, { pace: 150 });
+    },
+  },
+  {
+    id: "complete",
+    narration: [
+      "Completing the order shows what it cost: the materials issued, about sixteen hundred rupees a suit.",
+      "Confirming moves the ten suits into finished stock.",
+    ],
+    startAs: "production",
+    run: async (h) => {
+      const p = h.page;
+      await onMo(h);
+      await h.click(p.getByRole("button", { name: "Complete MO" }));
+      const dlg = p.getByRole("dialog");
+      await retype(h, dlg.getByLabel("Produced qty target"), QTY);
+      await h.hover(dlg.getByText(/Unit cost/i));
+      await h.dwell(1500);
+      await h.waitForSentence(1);
+      await h.click(dlg.getByRole("button", { name: "Confirm complete" }));
+      await h.hover(p.getByText("COMPLETED").first());
+      await h.dwell(1500);
+    },
+  },
   handover("sales", ["Arjun in sales signs in to bill a customer in Gujarat."]),
   {
     id: "sale",
     narration: [
-      QC_FIXED
-        ? "He bills the ten suits to Mehta Suit Bazaar in Gujarat."
-        : "He bills five Banarasi suits from finished stock to Mehta Suit Bazaar in Gujarat.",
+      "He bills the ten suits Sana just finished to Mehta Suit Bazaar in Gujarat.",
       "The customer is in another state, so Fabric charges integrated GST. Within Maharashtra it would split into central and state GST.",
       "Finalizing posts the sale: stock goes down and the ledger is written in the same step.",
       "Print downloads the GST invoice as a PDF.",
@@ -329,7 +331,7 @@ const scenes = [
       );
       await h.select(p.getByLabel("Customer"), /Mehta Suit Bazaar/);
       await h.select(p.getByLabel("Item").first(), SUIT);
-      await retype(h, p.getByLabel("Qty").first(), SALE_QTY);
+      await retype(h, p.getByLabel("Qty").first(), QTY);
       // The Rate box re-formats to 2 decimals on every keystroke, so typed
       // digits scramble (app bug); enter the amount in one go, like a paste.
       const rate = p.getByLabel("Rate").first();
@@ -358,7 +360,8 @@ const scenes = [
     id: "books",
     narration: [
       "She posts the supplier’s bill. That books the input tax credit on the silk, to set against the GST on the sale.",
-      "The trial balance is balanced, and the silk issued to production shows as work in progress. Nobody typed a journal entry.",
+      "The trial balance is balanced. The silk went into work in progress, came out as finished suits, and the sale moved their cost to cost of goods sold.",
+      "Nobody typed a journal entry.",
     ],
     startAs: "accounts",
     run: async (h) => {
@@ -382,6 +385,8 @@ const scenes = [
       await h.hover(p.getByText(/Balanced/).first());
       await h.dwell(1500);
       await h.hover(p.getByText("Work-in-Process").first());
+      await h.dwell(1200);
+      await h.hover(p.getByText("Cost of Goods Sold").first());
       await h.dwell(1500);
     },
   },

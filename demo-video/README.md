@@ -8,7 +8,7 @@ Each film is one module in `films/`; the explainer is `films/explainer.mjs`.
 | Film | Story |
 |---|---|
 | `explainer` | ~5 min tour of the whole product, one login. |
-| `gst-flow` | ~4 min "From fabric to GST invoice": Owner raises + approves a silk PO, Ravi (warehouse) receives it as lot LOT-SSM-1024, Owner enters the supplier bill, Sana issues that lot to MO-DEMO/0002 and runs the ops (stops at QC: known bug, see `QC_FIXED` in the film), Arjun bills Banarasi suits to Gujarat (IGST), Meera posts the bill (ITC), checks the trial balance and GSTR-1. |
+| `gst-flow` | ~4.5 min "From fabric to GST invoice": Owner raises + approves a silk PO, Ravi (warehouse) receives it as lot LOT-SSM-1024, Owner enters the supplier bill, Sana opens + releases a new MO for ten Banarasi suits, issues that lot, runs the ops, QC (all pass), packing and Complete MO (unit cost), Arjun bills the ten suits to Gujarat (IGST), Meera posts the bill (ITC), checks the trial balance and GSTR-1. |
 
 ```
 make demo-video                # explainer, ~10 min → demo-video/out/fabric-explainer.mp4 (1080p, ~5 min)
