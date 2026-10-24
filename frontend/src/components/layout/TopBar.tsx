@@ -48,7 +48,7 @@ export function TopBar() {
           className="hidden sm:inline"
           style={{ fontSize: 17, fontWeight: 600, letterSpacing: '-0.02em' }}
         >
-          taana
+          fabric
         </span>
       </div>
 

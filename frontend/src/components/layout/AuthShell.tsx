@@ -27,7 +27,7 @@ export function AuthShell({ children, width = 460 }: AuthShellProps) {
         </div>
         {children}
         <div className="mt-5 text-center" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-          taana · v0.1 · audit-grade ledger
+          fabric · v0.1 · audit-grade ledger
         </div>
       </div>
     </div>
