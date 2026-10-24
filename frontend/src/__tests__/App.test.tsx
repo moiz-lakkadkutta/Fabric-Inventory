@@ -16,9 +16,9 @@ function renderApp() {
 }
 
 describe('App shell', () => {
-  it('renders the taana wordmark in the top bar', () => {
+  it('renders the fabric wordmark in the top bar', () => {
     renderApp();
-    expect(screen.getByText(/^taana$/)).toBeInTheDocument();
+    expect(screen.getByText(/^fabric$/)).toBeInTheDocument();
   });
 
   it('renders the Daybook heading at the index route', async () => {
