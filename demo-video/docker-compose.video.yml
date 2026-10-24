@@ -1,0 +1,8 @@
+# Overlay for recording the explainer video. Used as:
+#   docker compose -p fabric-video -f docker-compose.yml -f demo-video/docker-compose.video.yml up -d
+# Separate project name = separate pgdata volume, so a take can wipe its DB
+# without touching the normal dev stack's data. Stop `make dev` first (same ports).
+services:
+  api:
+    environment:
+      ENVIRONMENT: dev
