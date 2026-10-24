@@ -7,33 +7,48 @@
 //
 // Run demo-video/prepare.sh first: every take mutates data (the explainer
 // finalizes an invoice), so each take needs a freshly seeded stack.
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { APP, ROLE_LOOK, SPEECH_RATE, VIDEO, VIEWPORT, VOICE } from './config.mjs';
-import { freshTotp } from './totp.mjs';
-import { openBrowser, personFor, pickFirm, readSecret, signIn } from './browser.mjs';
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  APP,
+  ROLE_LOOK,
+  SPEECH_RATE,
+  VIDEO,
+  VIEWPORT,
+  VOICE,
+} from "./config.mjs";
+import { freshTotp } from "./totp.mjs";
+import {
+  openBrowser,
+  personFor,
+  pickFirm,
+  readSecret,
+  signIn,
+} from "./browser.mjs";
 
-const arg = (name) => process.argv.find((a) => a.startsWith(`--${name}=`))?.split('=')[1];
-const filmId = arg('film') ?? 'explainer';
+const arg = (name) =>
+  process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=")[1];
+const filmId = arg("film") ?? "explainer";
 const filmFile = new URL(`./films/${filmId}.mjs`, import.meta.url);
-if (!existsSync(filmFile)) throw new Error(`no film "${filmId}" (demo-video/films/${filmId}.mjs)`);
+if (!existsSync(filmFile))
+  throw new Error(`no film "${filmId}" (demo-video/films/${filmId}.mjs)`);
 const { film } = await import(filmFile.href);
-const only = arg('only');
+const only = arg("only");
 const scenes = only ? film.scenes.filter((s) => s.id === only) : film.scenes;
 if (!scenes.length) throw new Error(`film ${film.id} has no scene "${only}"`);
-const OUT = new URL('./out/', import.meta.url).pathname;
+const OUT = new URL("./out/", import.meta.url).pathname;
 const WORK = `${OUT}${film.id}/`; // per-film scratch: audio, raw take, captions
 const CHAPTER_MS = 2600;
 const SENTENCE_GAP_MS = 450;
 // Routes visited before the take: a fresh Vite dev server optimises deps on
 // first visit and may force a full reload, which must not happen mid-take.
 const DEFAULT_WARMUP = [
-  '/purchase',
-  '/manufacturing',
-  '/manufacturing/mo',
-  '/jobwork',
-  '/sales/invoices',
-  '/reports',
+  "/purchase",
+  "/manufacturing",
+  "/manufacturing/mo",
+  "/jobwork",
+  "/sales/invoices",
+  "/reports",
 ];
 
 // ── 1. Narration ────────────────────────────────────────────────────────────
@@ -41,35 +56,45 @@ rmSync(`${WORK}audio`, { recursive: true, force: true });
 mkdirSync(`${WORK}audio`, { recursive: true });
 for (const [si, scene] of scenes.entries()) {
   scene.clips = scene.narration.map((text, i) => {
-    const base = `${WORK}audio/${String(si).padStart(2, '0')}-${i}`;
-    execFileSync('say', ['-v', VOICE, '-r', String(SPEECH_RATE), '-o', `${base}.aiff`, text]);
-    execFileSync('ffmpeg', [
-      '-v',
-      'error',
-      '-y',
-      '-i',
+    const base = `${WORK}audio/${String(si).padStart(2, "0")}-${i}`;
+    execFileSync("say", [
+      "-v",
+      VOICE,
+      "-r",
+      String(SPEECH_RATE),
+      "-o",
       `${base}.aiff`,
-      '-ar',
-      '48000',
-      '-ac',
-      '1',
+      text,
+    ]);
+    execFileSync("ffmpeg", [
+      "-v",
+      "error",
+      "-y",
+      "-i",
+      `${base}.aiff`,
+      "-ar",
+      "48000",
+      "-ac",
+      "1",
       `${base}.wav`,
     ]);
     const seconds = Number(
-      execFileSync('ffprobe', [
-        '-v',
-        'error',
-        '-show_entries',
-        'format=duration',
-        '-of',
-        'csv=p=0',
+      execFileSync("ffprobe", [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "csv=p=0",
         `${base}.wav`,
       ]),
     );
     return { text, file: `${base}.wav`, ms: Math.round(seconds * 1000) };
   });
 }
-console.log(`${film.id}: ${scenes.reduce((n, s) => n + s.clips.length, 0)} narration clips`);
+console.log(
+  `${film.id}: ${scenes.reduce((n, s) => n + s.clips.length, 0)} narration clips`,
+);
 
 // ── 2. Browser take ─────────────────────────────────────────────────────────
 const CURSOR_SCRIPT = `
@@ -148,25 +173,35 @@ const look = (person) => ({ name: person.name, ...ROLE_LOOK[person.role] });
 const setBadge = (person) =>
   film.badge === false
     ? null
-    : page.evaluate((w) => sessionStorage.setItem('__demo_who', JSON.stringify(w)), look(person));
+    : page.evaluate(
+        (w) => sessionStorage.setItem("__demo_who", JSON.stringify(w)),
+        look(person),
+      );
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Playwright's showOverlay/showChapter resolve only once their `duration` has
+// passed. The recorder times captions, cards and notes with its own sleeps, so
+// awaiting them too doubled every caption (a silent gap as long as the
+// sentence) and made h.note block. Films now fire them and move on;
+// `film.legacyPacing: true` keeps the old timing (the explainer, unchanged).
+const show = (call) =>
+  film.legacyPacing ? call() : (call().catch(() => {}), Promise.resolve());
 const { browser, context, page } = await openBrowser();
 await context.addInitScript(CURSOR_SCRIPT);
 await context.addInitScript(BADGE_SCRIPT);
 page.setDefaultTimeout(15000);
 // Who is signed in when the take starts: the scene's own `startAs` when
 // recording it alone with --only, else the film's; the Owner by default.
-const startAs = (only && scenes[0].startAs) || film.startAs || 'owner';
+const startAs = (only && scenes[0].startAs) || film.startAs || "owner";
 await signIn(page, personFor(startAs));
 await setBadge(personFor(startAs));
 await pickFirm(page);
 for (const route of film.warmup ?? DEFAULT_WARMUP) {
   await page.goto(`${APP}${route}`);
-  await page.waitForLoadState('networkidle');
+  await page.waitForLoadState("networkidle");
 }
 await page.goto(APP);
-await page.waitForLoadState('networkidle');
+await page.waitForLoadState("networkidle");
 await sleep(1000);
 
 let mouse = { x: 720, y: 405 };
@@ -174,7 +209,10 @@ async function moveTo(locator) {
   await locator.scrollIntoViewIfNeeded();
   const box = await locator.boundingBox();
   if (!box) throw new Error(`no box for ${locator}`);
-  const to = { x: box.x + Math.min(box.width / 2, 60), y: box.y + box.height / 2 };
+  const to = {
+    x: box.x + Math.min(box.width / 2, 60),
+    y: box.y + box.height / 2,
+  };
   const steps = Math.max(
     18,
     Math.min(45, Math.round(Math.hypot(to.x - mouse.x, to.y - mouse.y) / 14)),
@@ -182,7 +220,8 @@ async function moveTo(locator) {
   await page.mouse.move(to.x, to.y, { steps });
   mouse = to;
 }
-const settle = () => page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+const settle = () =>
+  page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
 
 // Scene helpers (`h` in films/*.mjs; README lists them). Every step moves the
 // visible cursor first, so viewers can follow what is being done.
@@ -205,7 +244,7 @@ const helpers = {
     await moveTo(locator);
     await sleep(200);
     await locator.click();
-    await locator.fill('');
+    await locator.fill("");
     await locator.pressSequentially(String(text), { delay });
     await sleep(300);
   },
@@ -214,50 +253,60 @@ const helpers = {
   // stand-in list is drawn under the field for a moment instead. Custom
   // listboxes (MO wizard's design list, etc.) get a real click on the option,
   // after typing `search` into their filter box if given.
+  // `{ value }` picks a native option by its value (for duplicate labels).
   select: async (target, option, { search } = {}) => {
-    const match = (t) => (option instanceof RegExp ? option.test(t) : t.trim() === option);
-    if ((await target.evaluate((el) => el.tagName)) === 'SELECT') {
+    const match = (t) =>
+      option instanceof RegExp ? option.test(t) : t.trim() === option;
+    if ((await target.evaluate((el) => el.tagName)) === "SELECT") {
       await moveTo(target);
       await sleep(250);
-      const labels = await target.locator('option').allInnerTexts();
-      const label = labels.find(match);
-      if (!label) throw new Error(`no option ${option} in [${labels.join(' | ')}]`);
+      const labels = await target.locator("option").allInnerTexts();
+      const byValue = option?.value !== undefined;
+      const label = byValue
+        ? await target.locator(`option[value="${option.value}"]`).innerText()
+        : labels.find(match);
+      if (!label)
+        throw new Error(`no option ${option} in [${labels.join(" | ")}]`);
       // A real click would open the invisible native popup; fake the click's
       // ripple (the cursor script listens on window) and draw the list.
       const box = await target.boundingBox();
       await page.evaluate(
         ({ x, y }) =>
           // On window, not the page: dialogs close on a mousedown outside them.
-          dispatchEvent(new MouseEvent('mousedown', { clientX: x, clientY: y })),
+          dispatchEvent(
+            new MouseEvent("mousedown", { clientX: x, clientY: y }),
+          ),
         mouse,
       );
       await page.evaluate(
         ({ box, labels, label }) => {
-          const d = document.createElement('div');
-          d.id = '__demo_select';
+          const d = document.createElement("div");
+          d.id = "__demo_select";
           Object.assign(d.style, {
-            position: 'fixed',
-            left: box.x + 'px',
-            top: box.y + box.height + 2 + 'px',
-            minWidth: box.width + 'px',
-            maxHeight: '260px',
-            overflow: 'hidden',
+            position: "fixed",
+            left: box.x + "px",
+            top: box.y + box.height + 2 + "px",
+            minWidth: box.width + "px",
+            maxHeight: "260px",
+            overflow: "hidden",
             zIndex: 2147483600,
-            background: '#fff',
-            border: '1px solid #d1d5db',
-            borderRadius: '8px',
-            boxShadow: '0 8px 24px rgba(0,0,0,.16)',
-            padding: '4px',
+            background: "#fff",
+            border: "1px solid #d1d5db",
+            borderRadius: "8px",
+            boxShadow: "0 8px 24px rgba(0,0,0,.16)",
+            padding: "4px",
             font: "14px/1.3 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
           });
           for (const l of labels.filter((t) => t.trim())) {
-            const o = document.createElement('div');
+            const o = document.createElement("div");
             o.textContent = l;
             Object.assign(o.style, {
-              padding: '6px 10px',
-              borderRadius: '5px',
-              whiteSpace: 'nowrap',
-              ...(l === label ? { background: '#d1fae5', fontWeight: '600' } : {}),
+              padding: "6px 10px",
+              borderRadius: "5px",
+              whiteSpace: "nowrap",
+              ...(l === label
+                ? { background: "#d1fae5", fontWeight: "600" }
+                : {}),
             });
             d.appendChild(o);
           }
@@ -266,39 +315,58 @@ const helpers = {
         { box, labels, label },
       );
       await sleep(900);
-      await target.selectOption({ label });
-      await page.evaluate(() => document.getElementById('__demo_select')?.remove());
+      await target.selectOption(byValue ? { value: option.value } : { label });
+      await page.evaluate(() =>
+        document.getElementById("__demo_select")?.remove(),
+      );
       await settle();
       await sleep(300);
       return;
     }
-    if (search) await helpers.type(search, option instanceof RegExp ? option.source : option);
-    if ((await target.getAttribute('role')) !== 'listbox') await helpers.click(target);
-    await helpers.click(page.getByRole('option', { name: option }).first());
+    if (search)
+      await helpers.type(
+        search,
+        option instanceof RegExp ? option.source : option,
+      );
+    if ((await target.getAttribute("role")) !== "listbox")
+      await helpers.click(target);
+    await helpers.click(page.getByRole("option", { name: option }).first());
   },
   // Amber call-out at the top for "look here" moments; returns at once and
   // stays up for `ms` while the scene carries on.
   note: async (text, ms = 3500) => {
-    await page.screencast.showOverlay(callout(text), { duration: ms });
+    await show(() =>
+      page.screencast.showOverlay(callout(text), { duration: ms }),
+    );
   },
   nav: async (label) => {
-    const link = page.locator('aside').getByRole('link', { name: label, exact: true }).first();
+    const link = page
+      .locator("aside")
+      .getByRole("link", { name: label, exact: true })
+      .first();
     await helpers.click(link);
   },
   // Opens `section` unless already there (so a scene also works on its own
   // with --only). `child` is a sub-nav link that is only visible inside it.
   ensureNav: async (section, child) => {
     const visible = child
-      ? await page.locator('aside').getByRole('link', { name: child, exact: true }).isVisible()
+      ? await page
+          .locator("aside")
+          .getByRole("link", { name: child, exact: true })
+          .isVisible()
       : page.url().includes(`/${section.toLowerCase()}`);
     if (!visible) await helpers.nav(section);
   },
   switchFirm: async (name) => {
     await helpers.click(page.locator('button[aria-haspopup="menu"]').first());
     const resp = page
-      .waitForResponse((r) => r.url().includes('/auth/switch-firm'), { timeout: 8000 })
+      .waitForResponse((r) => r.url().includes("/auth/switch-firm"), {
+        timeout: 8000,
+      })
       .catch(() => null);
-    await helpers.click(page.getByRole('menuitemradio', { name: new RegExp(name, 'i') }));
+    await helpers.click(
+      page.getByRole("menuitemradio", { name: new RegExp(name, "i") }),
+    );
     await resp;
     await settle();
   },
@@ -310,24 +378,26 @@ const helpers = {
     const { label } = ROLE_LOOK[person.role];
     // Codes are single-use; fetching one may wait for the next 30 s window,
     // so start now and let it run behind the sign-out and typing.
-    const totp = person.role === 'OWNER' ? freshTotp(readSecret()) : undefined;
-    await page.screencast.showChapter(
-      `Signed in as ${person.name === label ? 'the Owner' : person.name}`,
-      {
-        description: person.name === label ? 'Full access' : label,
-        duration: 2200,
-      },
+    const totp = person.role === "OWNER" ? freshTotp(readSecret()) : undefined;
+    await show(() =>
+      page.screencast.showChapter(
+        `Signed in as ${person.name === label ? "the Owner" : person.name}`,
+        {
+          description: person.name === label ? "Full access" : label,
+          duration: 2200,
+        },
+      ),
     );
     await sleep(2400);
-    await helpers.click(page.getByRole('button', { name: 'User menu' }));
-    await helpers.click(page.getByRole('menuitem', { name: 'Sign out' }));
+    await helpers.click(page.getByRole("button", { name: "User menu" }));
+    await helpers.click(page.getByRole("menuitem", { name: "Sign out" }));
     // App bug: Sign out only routes to /login; it neither calls /auth/logout
     // nor drops the refresh cookie. Finish the job so no session carries over.
     await context.clearCookies();
-    await page.evaluate(() => sessionStorage.removeItem('__demo_who'));
+    await page.evaluate(() => sessionStorage.removeItem("__demo_who"));
     await page.goto(`${APP}/login`);
-    await page.locator('#email').waitFor();
-    await moveTo(page.locator('#email'));
+    await page.locator("#email").waitFor();
+    await moveTo(page.locator("#email"));
     await signIn(page, person, { typeDelay: 45, totp });
     await settle();
     await setBadge(person);
@@ -345,10 +415,12 @@ const t0 = Date.now();
 for (const scene of scenes) {
   console.log(`scene: ${scene.id}`);
   if (scene.chapter) {
-    await page.screencast.showChapter(scene.chapter.title, {
-      description: scene.chapter.description,
-      duration: CHAPTER_MS,
-    });
+    await show(() =>
+      page.screencast.showChapter(scene.chapter.title, {
+        description: scene.chapter.description,
+        duration: CHAPTER_MS,
+      }),
+    );
     await sleep(CHAPTER_MS + 200);
   }
   const started = scene.clips.map(() => {
@@ -360,19 +432,34 @@ for (const scene of scenes) {
   const narrate = (async () => {
     for (const [i, clip] of scene.clips.entries()) {
       const at = Date.now() - t0;
-      timeline.push({ scene: scene.id, text: clip.text, file: clip.file, at, ms: clip.ms });
+      timeline.push({
+        scene: scene.id,
+        text: clip.text,
+        file: clip.file,
+        at,
+        ms: clip.ms,
+      });
       started[i].resolve();
-      await page.screencast.showOverlay(caption(clip.text), { duration: clip.ms + 250 });
+      await show(() =>
+        page.screencast.showOverlay(caption(clip.text), {
+          duration: clip.ms + 250,
+        }),
+      );
       await sleep(clip.ms + SENTENCE_GAP_MS);
     }
   })();
   const watchdog = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error(`scene ${scene.id} stalled`)), 120_000).unref(),
+    setTimeout(
+      () => reject(new Error(`scene ${scene.id} stalled`)),
+      120_000,
+    ).unref(),
   );
   try {
     await Promise.race([Promise.all([narrate, scene.run(h)]), watchdog]);
   } catch (err) {
-    await page.screenshot({ path: `${WORK}failed-${scene.id}.png` }).catch(() => {});
+    await page
+      .screenshot({ path: `${WORK}failed-${scene.id}.png` })
+      .catch(() => {});
     await page.screencast.stop().catch(() => {});
     await browser.close();
     throw err;
@@ -383,7 +470,10 @@ const totalMs = Date.now() - t0 + 800;
 await sleep(800);
 await page.screencast.stop();
 await browser.close();
-writeFileSync(`${WORK}timeline.json`, JSON.stringify({ totalMs, timeline }, null, 2));
+writeFileSync(
+  `${WORK}timeline.json`,
+  JSON.stringify({ totalMs, timeline }, null, 2),
+);
 
 // ── 3. Mux ──────────────────────────────────────────────────────────────────
 const srtTime = (ms) => {
@@ -393,65 +483,70 @@ const srtTime = (ms) => {
 writeFileSync(
   `${WORK}captions.srt`,
   timeline
-    .map((c, i) => `${i + 1}\n${srtTime(c.at)} --> ${srtTime(c.at + c.ms)}\n${c.text}\n`)
-    .join('\n'),
+    .map(
+      (c, i) =>
+        `${i + 1}\n${srtTime(c.at)} --> ${srtTime(c.at + c.ms)}\n${c.text}\n`,
+    )
+    .join("\n"),
 );
-const inputs = timeline.flatMap((c) => ['-i', c.file]);
-const delays = timeline.map((c, i) => `[${i + 1}:a]adelay=${c.at}|${c.at}[a${i}]`).join(';');
-const mix = `${timeline.map((_, i) => `[a${i}]`).join('')}amix=inputs=${timeline.length}:normalize=0:duration=longest,apad[aout]`;
+const inputs = timeline.flatMap((c) => ["-i", c.file]);
+const delays = timeline
+  .map((c, i) => `[${i + 1}:a]adelay=${c.at}|${c.at}[a${i}]`)
+  .join(";");
+const mix = `${timeline.map((_, i) => `[a${i}]`).join("")}amix=inputs=${timeline.length}:normalize=0:duration=longest,apad[aout]`;
 const final = only ? `${WORK}scene-${only}.mp4` : `${OUT}fabric-${film.id}.mp4`;
 // Cap at the take's real length: apad makes the audio endless, and -shortest
 // would stop at the last subtitle cue instead.
-const rawSeconds = execFileSync('ffprobe', [
-  '-v',
-  'error',
-  '-show_entries',
-  'format=duration',
-  '-of',
-  'csv=p=0',
+const rawSeconds = execFileSync("ffprobe", [
+  "-v",
+  "error",
+  "-show_entries",
+  "format=duration",
+  "-of",
+  "csv=p=0",
   raw,
 ])
   .toString()
   .trim();
-execFileSync('ffmpeg', [
-  '-v',
-  'error',
-  '-y',
-  '-i',
+execFileSync("ffmpeg", [
+  "-v",
+  "error",
+  "-y",
+  "-i",
   raw,
   ...inputs,
-  '-i',
+  "-i",
   `${WORK}captions.srt`,
-  '-filter_complex',
+  "-filter_complex",
   `[0:v]scale=${VIDEO.width}:${VIDEO.height}:flags=lanczos[vout];${delays};${mix}`,
-  '-map',
-  '[vout]',
-  '-map',
-  '[aout]',
-  '-map',
+  "-map",
+  "[vout]",
+  "-map",
+  "[aout]",
+  "-map",
   `${timeline.length + 1}:s`,
-  '-c:v',
-  'libx264',
-  '-preset',
-  'slow',
-  '-crf',
-  '18',
-  '-pix_fmt',
-  'yuv420p',
-  '-r',
-  '30',
-  '-c:a',
-  'aac',
-  '-b:a',
-  '160k',
-  '-c:s',
-  'mov_text',
-  '-metadata:s:s:0',
-  'language=eng',
-  '-t',
+  "-c:v",
+  "libx264",
+  "-preset",
+  "slow",
+  "-crf",
+  "18",
+  "-pix_fmt",
+  "yuv420p",
+  "-r",
+  "30",
+  "-c:a",
+  "aac",
+  "-b:a",
+  "160k",
+  "-c:s",
+  "mov_text",
+  "-metadata:s:s:0",
+  "language=eng",
+  "-t",
   rawSeconds,
-  '-movflags',
-  '+faststart',
+  "-movflags",
+  "+faststart",
   final,
 ]);
 console.log(`wrote ${final} (${(totalMs / 1000).toFixed(1)} s)`);

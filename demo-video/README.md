@@ -5,6 +5,11 @@ macOS `say` reads the narration, Playwright drives Chrome and records it
 (screencast API, 1.59+), and ffmpeg joins video, voice and a subtitle track.
 Each film is one module in `films/`; the explainer is `films/explainer.mjs`.
 
+| Film | Story |
+|---|---|
+| `explainer` | ~5 min tour of the whole product, one login. |
+| `gst-flow` | ~4 min "From fabric to GST invoice": Owner raises + approves a silk PO, Ravi (warehouse) receives it as lot LOT-SSM-1024, Owner enters the supplier bill, Sana issues that lot to MO-DEMO/0002 and runs the ops (stops at QC: known bug, see `QC_FIXED` in the film), Arjun bills Banarasi suits to Gujarat (IGST), Meera posts the bill (ITC), checks the trial balance and GSTR-1. |
+
 ```
 make demo-video                # explainer, ~10 min → demo-video/out/fabric-explainer.mp4 (1080p, ~5 min)
 make demo-video FILM=<id>      # films/<id>.mjs → demo-video/out/fabric-<id>.mp4
@@ -50,6 +55,8 @@ export const film = {
   startAs: 'owner',         // optional: 'owner' (default) or a STAFF key
   warmup: ['/purchase'],    // optional: routes to pre-load before the take
   badge: true,              // optional: false hides the who's-signed-in badge
+  legacyPacing: false,      // optional: true = old timing where every caption was followed by
+                            // a silent gap as long as itself (only the explainer keeps it)
 };
 ```
 
@@ -65,7 +72,7 @@ who is signed in, coloured per role; the explainer turns it off.
 | `h.dwell(ms)` | Pause. |
 | `h.hover(locator)` / `h.click(locator)` | Moves the visible cursor there, then hovers / clicks and waits for the network to settle. |
 | `h.type(locator, text, { delay = 40 })` | Clicks into a field, clears it, types key by key. |
-| `h.select(target, option, { search })` | `option` is a label or RegExp. For a native `<select>` (most pickers in the app) it draws a stand-in list under the field, since the OS popup isn't captured, then selects. For a custom listbox (e.g. the MO wizard's designs) it types `search` into the given filter box if any, then clicks the `role=option`. |
+| `h.select(target, option, { search })` | `option` is a label, a RegExp, or `{ value }` (native selects whose labels repeat). For a native `<select>` (most pickers in the app) it draws a stand-in list under the field, since the OS popup isn't captured, then selects. For a custom listbox (e.g. the MO wizard's designs) it types `search` into the given filter box if any, then clicks the `role=option`. |
 | `h.note(text, ms = 3500)` | Amber call-out at the top ("this is where the loss is recorded"). Returns at once; stays up for `ms`. |
 | `h.nav(label)` / `h.ensureNav(section, child)` | Sidebar navigation. |
 | `h.switchFirm(name)` | Firm switcher. |
