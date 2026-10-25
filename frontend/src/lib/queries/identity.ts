@@ -259,13 +259,17 @@ export interface LogoutInput {
 }
 
 async function liveLogout(input: LogoutInput): Promise<void> {
-  // Send empty body — the cookie carries the refresh token.
-  await api('/auth/logout', {
-    method: 'POST',
-    idempotencyKey: input.idempotencyKey,
-    body: { refresh_token: '' },
-  });
-  authStore.clear();
+  // Send empty body — the cookie carries the refresh token. Clear local
+  // identity even if the call fails, so the UI never keeps a dead session.
+  try {
+    await api('/auth/logout', {
+      method: 'POST',
+      idempotencyKey: input.idempotencyKey,
+      body: { refresh_token: '' },
+    });
+  } finally {
+    authStore.clear();
+  }
 }
 
 async function mockLogout(): Promise<void> {

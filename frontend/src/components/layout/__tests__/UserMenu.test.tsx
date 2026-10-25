@@ -1,8 +1,10 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import { UserMenu } from '@/components/layout/UserMenu';
+import * as identityQueries from '@/lib/queries/identity';
 import { authStore, type MeResponse } from '@/store/auth';
 
 const FAKE_ME: MeResponse = {
@@ -27,10 +29,18 @@ beforeEach(() => {
 
 afterEach(() => {
   authStore.reset();
+  vi.restoreAllMocks();
 });
 
 function wrap(node: React.ReactNode) {
-  return render(<MemoryRouter>{node}</MemoryRouter>);
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>{node}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 describe('UserMenu — identity from authStore', () => {
@@ -58,5 +68,49 @@ describe('UserMenu — identity from authStore', () => {
     // Trigger renders but identity panel hides the mock email even if popped open.
     fireEvent.click(screen.getByRole('button', { name: /User menu/i }));
     expect(screen.queryByText(/moiz@rajeshtextiles\.in/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('UserMenu — sign out', () => {
+  function mockLogout(mutate: ReturnType<typeof vi.fn>) {
+    vi.spyOn(identityQueries, 'useLogout').mockReturnValue({
+      mutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof identityQueries.useLogout>);
+  }
+
+  function renderWithLogin() {
+    const qc = new QueryClient();
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/']}>
+          <Routes>
+            <Route path="/" element={<UserMenu />} />
+            <Route path="/login" element={<div>login page</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('revokes the server session before leaving for /login', () => {
+    const mutate = vi.fn();
+    mockLogout(mutate);
+    authStore.setMe(FAKE_ME);
+    renderWithLogin();
+    fireEvent.click(screen.getByRole('button', { name: /User menu/i }));
+    fireEvent.click(screen.getByText('Sign out'));
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate.mock.calls[0][0]).toMatchObject({ idempotencyKey: expect.any(String) });
+  });
+
+  it('lands on /login even when the logout call fails', () => {
+    const mutate = vi.fn((_input, opts: { onSettled?: () => void }) => opts?.onSettled?.());
+    mockLogout(mutate);
+    authStore.setMe(FAKE_ME);
+    renderWithLogin();
+    fireEvent.click(screen.getByRole('button', { name: /User menu/i }));
+    fireEvent.click(screen.getByText('Sign out'));
+    expect(screen.getByText('login page')).toBeInTheDocument();
   });
 });

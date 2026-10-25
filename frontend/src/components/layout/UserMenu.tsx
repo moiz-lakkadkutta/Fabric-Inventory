@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { Monogram } from '@/components/ui/monogram';
 import { useClickOutside } from '@/hooks/useClickOutside';
 import { getInitialsFromEmail } from '@/lib/format';
+import { useLogout } from '@/lib/queries/identity';
 import { useAuthStatus, useMe } from '@/store/auth';
 
 /*
@@ -25,6 +26,16 @@ export function UserMenu() {
   const ref = useClickOutside<HTMLDivElement>(open, () => setOpen(false));
   const me = useMe();
   const status = useAuthStatus();
+  const logout = useLogout();
+
+  // Revoke the session server-side (refresh cookie + access token) before
+  // leaving; going to /login alone left the refresh cookie usable. /login is
+  // reached whether or not the call succeeds.
+  const signOut = () =>
+    logout.mutate(
+      { idempotencyKey: crypto.randomUUID() },
+      { onSettled: () => navigate('/login', { replace: true }) },
+    );
 
   const onItem = (handler: () => void) => () => {
     setOpen(false);
@@ -94,7 +105,7 @@ export function UserMenu() {
             <ThemeToggle isDark={themeIsDark} onToggle={() => setThemeIsDark((v) => !v)} />
           </div>
           <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
-            <MenuItem icon={<LogOut size={14} />} onClick={onItem(() => navigate('/login'))}>
+            <MenuItem icon={<LogOut size={14} />} onClick={onItem(signOut)}>
               Sign out
             </MenuItem>
           </div>
