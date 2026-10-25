@@ -1,4 +1,4 @@
-.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed seed-demo deploy backup restore restore-test e2e-setup openapi-snapshot cleanup spike-vyapar help
+.PHONY: setup dev dev-native down doctor test test-watch lint lint-fix migrate migrate-create seed seed-demo demo-video demo-videos demo-video-down deploy backup restore restore-test e2e-setup openapi-snapshot cleanup spike-vyapar help
 
 # Prefer "docker compose" (v2 plugin); fall back to legacy "docker-compose" binary.
 COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
@@ -89,6 +89,25 @@ seed:
 # DemoPass123 is public. The Owner must enrol TOTP MFA on first login.
 seed-demo:
 	cd backend && ENVIRONMENT=$${ENVIRONMENT:-dev} uv run python -m app.cli.seed_demo $(ARGS)
+
+# Narrated product films (see demo-video/README.md). `make demo-video` records
+# one film (default the explainer → demo-video/out/fabric-explainer.mp4);
+# `make demo-video FILM=<id>` picks demo-video/films/<id>.mjs, and
+# `make demo-videos` records every film, re-seeding before each.
+# Uses its own compose project; stop `make dev` first.
+FILM ?= explainer
+demo-video:
+	demo-video/prepare.sh
+	node demo-video/record.mjs --film=$(FILM)
+
+demo-videos:
+	@set -e; for f in demo-video/films/*.mjs; do \
+	  id=$$(basename $$f .mjs); echo "── film: $$id"; \
+	  demo-video/prepare.sh; node demo-video/record.mjs --film=$$id; \
+	done
+
+demo-video-down:
+	docker compose -p fabric-video -f docker-compose.yml -f demo-video/docker-compose.video.yml down -v
 
 deploy:
 	@echo "Implement in TASK-005 (GitHub Actions deploy workflow)."
