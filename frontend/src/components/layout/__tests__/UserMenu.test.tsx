@@ -1,6 +1,7 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import { UserMenu } from '@/components/layout/UserMenu';
 import { authStore, type MeResponse } from '@/store/auth';
@@ -30,7 +31,14 @@ afterEach(() => {
 });
 
 function wrap(node: React.ReactNode) {
-  return render(<MemoryRouter>{node}</MemoryRouter>);
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>{node}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 describe('UserMenu — identity from authStore', () => {
@@ -58,5 +66,30 @@ describe('UserMenu — identity from authStore', () => {
     // Trigger renders but identity panel hides the mock email even if popped open.
     fireEvent.click(screen.getByRole('button', { name: /User menu/i }));
     expect(screen.queryByText(/moiz@rajeshtextiles\.in/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('UserMenu — sign out', () => {
+  function renderWithLogin() {
+    const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/']}>
+          <Routes>
+            <Route path="/" element={<UserMenu />} />
+            <Route path="/login" element={<div>login page</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('ends the session (identity cleared) before landing on /login', async () => {
+    authStore.setMe(FAKE_ME);
+    renderWithLogin();
+    fireEvent.click(screen.getByRole('button', { name: /User menu/i }));
+    fireEvent.click(screen.getByText('Sign out'));
+    expect(await screen.findByText('login page')).toBeInTheDocument();
+    expect(authStore.get().me).toBeNull();
   });
 });
