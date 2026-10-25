@@ -69,12 +69,12 @@ function buildNav({ manufacturingEnabled }: { manufacturingEnabled: boolean }): 
       icon: ShoppingBag,
       prefix: '/sales',
       sub: [
+        // Quotes / Returns / Credit control are still <Placeholder>
+        // routes (TASK-038 / TASK-055). They stay routable in App.tsx so
+        // deep links don't 404, but are hidden from the nav until built.
         { to: '/sales/invoices', label: 'Invoices' },
-        { to: '/sales/quotes', label: 'Quotes' },
         { to: '/sales/orders', label: 'Sales orders' },
         { to: '/sales/delivery-challans', label: 'Delivery challans' },
-        { to: '/sales/returns', label: 'Returns' },
-        { to: '/sales/credit-control', label: 'Credit control' },
       ],
     },
     { to: '/purchase', label: 'Purchase', icon: Truck },

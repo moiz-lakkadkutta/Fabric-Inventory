@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Pill } from '@/components/ui/pill';
 import { QueryError } from '@/components/ui/query-error';
 import { Skeleton } from '@/components/ui/skeleton';
+import { IS_LIVE } from '@/lib/api/mode';
 import { useSkus } from '@/lib/queries/inventory';
 import { lots } from '@/lib/mock/inventory';
 import { PHASE_COLOR, STAGE_META, type StageId } from '@/lib/mock/stages';
@@ -111,7 +112,10 @@ export default function InventoryList() {
             </thead>
             <tbody>
               {rows.map((r) => {
-                const sampleLot = lots.find((l) => l.sku_id === r.sku_id);
+                // Click-dummy only: the mock lot fixture has no live
+                // counterpart, and stock-summary rows carry no lot id, so
+                // live rows render the name without a lot link.
+                const sampleLot = IS_LIVE ? undefined : lots.find((l) => l.sku_id === r.sku_id);
                 return (
                   <tr key={r.sku_id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
                     <td className="px-3 py-3">

@@ -18,6 +18,7 @@ vi.mock('@/lib/api/mode', () => ({
 }));
 
 const { authStore } = await import('@/store/auth');
+const { formatINRCompact } = await import('@/lib/format');
 const { default: PartyList } = await import('@/pages/masters/PartyList');
 const { default: PartyDetail } = await import('@/pages/masters/PartyDetail');
 
@@ -326,6 +327,9 @@ describe('PartyDetail — live mode', () => {
           deleted_at: null,
         });
       }
+      if (u.includes('/invoices') && method === 'GET') {
+        return jsonResponse(200, { items: [], count: 0, limit: 200, offset: 0 });
+      }
       throw new Error(`unexpected fetch: ${method} ${u}`);
     });
 
@@ -351,5 +355,160 @@ describe('PartyDetail — live mode', () => {
     expect(patchCall).toBeDefined();
     const body = JSON.parse((patchCall![1] as RequestInit).body as string);
     expect(body.name).toBe('Renamed Party');
+  });
+});
+
+describe('PartyDetail — live khata', () => {
+  const partyId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const party = {
+    party_id: partyId,
+    org_id: 'o1',
+    firm_id: 'f1',
+    code: 'KHATA',
+    name: 'Khata Party',
+    legal_name: null,
+    is_supplier: false,
+    is_customer: true,
+    is_karigar: false,
+    is_transporter: false,
+    tax_status: 'REGULAR',
+    gstin: null,
+    pan: null,
+    phone: null,
+    email: null,
+    state_code: '27',
+    contact_person: null,
+    credit_limit: null,
+    notes: null,
+    is_active: true,
+    created_at: '2026-05-10T00:00:00Z',
+    updated_at: '2026-05-10T00:00:00Z',
+    deleted_at: null,
+  };
+  const invoiceBase = {
+    org_id: 'o1',
+    firm_id: 'f1',
+    party_id: partyId,
+    party_name: 'Khata Party',
+    place_of_supply_state: '27',
+    created_at: '2026-09-01T00:00:00Z',
+  };
+  const invoices = [
+    {
+      ...invoiceBase,
+      sales_invoice_id: 'c1111111-0000-0000-0000-000000000001',
+      series: 'KH',
+      number: '0001',
+      invoice_date: '2026-09-01',
+      due_date: '2026-09-15', // past due → overdue
+      lifecycle_status: 'PARTIALLY_PAID',
+      invoice_amount: '1180.00',
+      gst_amount: '180.00',
+      paid_amount: '180.00',
+    },
+    {
+      ...invoiceBase,
+      sales_invoice_id: 'c1111111-0000-0000-0000-000000000002',
+      series: 'KH',
+      number: '0002',
+      invoice_date: '2026-10-01',
+      due_date: '2099-12-31',
+      lifecycle_status: 'PAID',
+      invoice_amount: '2000.00',
+      gst_amount: '0.00',
+      paid_amount: '2000.00',
+    },
+    {
+      // Drafts aren't billed yet — listed but excluded from the KPIs.
+      ...invoiceBase,
+      sales_invoice_id: 'c1111111-0000-0000-0000-000000000003',
+      series: 'KH',
+      number: '0003',
+      invoice_date: '2026-10-05',
+      due_date: null,
+      lifecycle_status: 'DRAFT',
+      invoice_amount: '999.00',
+      gst_amount: '0.00',
+      paid_amount: '0.00',
+    },
+  ];
+
+  function kpi(label: RegExp): string {
+    const labelEl = screen.getAllByText(label).find((el) => el.closest('article'));
+    return labelEl!.closest('article')!.textContent ?? '';
+  }
+
+  function stubFetch(statementStatus = 200) {
+    fetchMock.mockImplementation(async (url: RequestInfo) => {
+      const u = String(url);
+      if (u.includes(`/parties/${partyId}`)) return jsonResponse(200, party);
+      if (u.includes('/reports/party-statement/')) {
+        if (statementStatus !== 200) {
+          return jsonResponse(statementStatus, { title: 'Forbidden', status: statementStatus });
+        }
+        return jsonResponse(200, {
+          party_id: partyId,
+          party_name: 'Khata Party',
+          from_date: '2026-04-01',
+          to_date: '2026-10-23',
+          // Opening balance migrated from Vyapar: ₹500 owed before FY.
+          opening_balance: '500.00',
+          closing_balance: '1500.00',
+          period_change: '1000.00',
+          total_debits: '3180.00',
+          total_credits: '2180.00',
+          rows: [],
+        });
+      }
+      if (u.includes('/invoices')) {
+        return jsonResponse(200, { items: invoices, count: 3, limit: 200, offset: 0 });
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+  }
+
+  it('computes billed / received / overdue from the party’s real invoices', async () => {
+    stubFetch();
+    renderMasters(`/masters/parties/${partyId}`);
+    await screen.findByRole('heading', { level: 1, name: /Khata Party/i });
+
+    // Invoices list is fetched party-scoped, not the whole firm's list.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes(`party_id=${partyId}`)),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(screen.getByText('KH/0001')).toBeInTheDocument());
+    expect(screen.getByText('KH/0002')).toBeInTheDocument();
+
+    // 1180 + 2000 (draft excluded)
+    expect(kpi(/total billed/i)).toContain(formatINRCompact(318000));
+    // 180 + 2000
+    expect(kpi(/^received$/i)).toContain(formatINRCompact(218000));
+    // KH/0001 is past due with ₹1000 unpaid
+    expect(kpi(/^overdue$/i)).toContain(formatINRCompact(100000));
+  });
+
+  it('shows the ledger closing balance as Outstanding when the statement is readable', async () => {
+    authStore.setMe({
+      ...authStore.get().me!,
+      permissions: ['masters.party.read', 'accounting.report.view'],
+    });
+    stubFetch();
+    renderMasters(`/masters/parties/${partyId}`);
+    await screen.findByRole('heading', { level: 1, name: /Khata Party/i });
+    await waitFor(() => expect(kpi(/^outstanding$/i)).toContain(formatINRCompact(150000)));
+  });
+
+  it('falls back to invoice outstanding without accounting.report.view', async () => {
+    stubFetch();
+    renderMasters(`/masters/parties/${partyId}`);
+    await screen.findByRole('heading', { level: 1, name: /Khata Party/i });
+    await waitFor(() => expect(screen.getByText('KH/0001')).toBeInTheDocument());
+    // billed 3180 − received 2180
+    expect(kpi(/^outstanding$/i)).toContain(formatINRCompact(100000));
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/reports/party-statement/')),
+    ).toBe(false);
   });
 });

@@ -15,9 +15,14 @@ import * as React from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useClickOutside } from '@/hooks/useClickOutside';
-import { invoices } from '@/lib/mock/invoices';
-import { items as itemsList } from '@/lib/mock/items';
-import { parties } from '@/lib/mock/parties';
+import { IS_LIVE } from '@/lib/api/mode';
+import { invoices as mockInvoices } from '@/lib/mock/invoices';
+import { items as mockItems } from '@/lib/mock/items';
+import { parties as mockParties } from '@/lib/mock/parties';
+import type { Invoice, Party } from '@/lib/mock/types';
+import { useInvoices } from '@/lib/queries/invoices';
+import { useItems } from '@/lib/queries/items';
+import { useParties } from '@/lib/queries/parties';
 import { cn } from '@/lib/utils';
 
 export type CommandKind = 'page' | 'party' | 'item' | 'invoice' | 'report';
@@ -160,28 +165,24 @@ const REPORTS: CommandEntry[] = [
   },
 ];
 
-function buildCorpus(): CommandEntry[] {
-  const partyEntries: CommandEntry[] = parties.map((p) => ({
+function partyEntry(p: Party): CommandEntry {
+  const kindLabel = p.kind.charAt(0).toUpperCase() + p.kind.slice(1);
+  // Live parties have no city (the BE has no column) — drop empty parts
+  // so the subtitle doesn't render "Customer ·  · GSTIN".
+  const subtitle = [kindLabel, p.city, p.gstin].filter(Boolean).join(' · ');
+  return {
     id: `party:${p.party_id}`,
     kind: 'party',
     title: p.name,
-    subtitle: `${p.kind.charAt(0).toUpperCase() + p.kind.slice(1)} · ${p.city}${p.gstin ? ` · ${p.gstin}` : ''}`,
+    subtitle,
     hint: p.code,
     to: `/masters/parties/${p.party_id}`,
     icon: <Building2 size={14} />,
-  }));
+  };
+}
 
-  const itemEntries: CommandEntry[] = itemsList.map((i) => ({
-    id: `item:${i.item_id}`,
-    kind: 'item',
-    title: i.name,
-    subtitle: `${i.code} · ${i.uom.toLowerCase()} · stock ${i.stock_qty}`,
-    hint: i.hsn,
-    to: '/inventory',
-    icon: <Package size={14} />,
-  }));
-
-  const invoiceEntries: CommandEntry[] = invoices.map((inv) => ({
+function invoiceEntry(inv: Invoice): CommandEntry {
+  return {
     id: `invoice:${inv.invoice_id}`,
     kind: 'invoice',
     title: inv.number,
@@ -189,10 +190,67 @@ function buildCorpus(): CommandEntry[] {
     hint: inv.date,
     to: `/sales/invoices/${inv.invoice_id}`,
     icon: <FileText size={14} />,
-  }));
-
-  return [...PAGES, ...REPORTS, ...partyEntries, ...itemEntries, ...invoiceEntries];
+  };
 }
+
+/**
+ * Click-dummy corpus — static fixtures, available synchronously. Mock
+ * mode only: these ids don't exist on a live backend.
+ */
+function useMockCorpus(): CommandEntry[] {
+  return React.useMemo(() => {
+    const itemEntries: CommandEntry[] = mockItems.map((i) => ({
+      id: `item:${i.item_id}`,
+      kind: 'item',
+      title: i.name,
+      subtitle: `${i.code} · ${i.uom.toLowerCase()} · stock ${i.stock_qty}`,
+      hint: i.hsn,
+      to: '/inventory',
+      icon: <Package size={14} />,
+    }));
+    return [
+      ...PAGES,
+      ...REPORTS,
+      ...mockParties.map(partyEntry),
+      ...itemEntries,
+      ...mockInvoices.map(invoiceEntry),
+    ];
+  }, []);
+}
+
+/**
+ * Live corpus — the same list hooks the Parties / Items / Invoices pages
+ * use (TanStack-cached, so opening the palette after visiting those
+ * pages costs no extra request). Static pages + reports render
+ * immediately; records join as each query resolves.
+ */
+function useLiveCorpus(): CommandEntry[] {
+  const parties = useParties().data;
+  const items = useItems().data;
+  const invoices = useInvoices().data;
+  return React.useMemo(() => {
+    const itemEntries: CommandEntry[] = (items ?? []).map((i) => ({
+      id: `item:${i.item_id}`,
+      kind: 'item',
+      title: i.name,
+      subtitle: `${i.code} · ${i.primary_uom.toLowerCase()}`,
+      hint: i.hsn_code ?? undefined,
+      to: `/masters/items/${i.item_id}`,
+      icon: <Package size={14} />,
+    }));
+    return [
+      ...PAGES,
+      ...REPORTS,
+      ...(parties ?? []).map(partyEntry),
+      ...itemEntries,
+      ...(invoices ?? []).map(invoiceEntry),
+    ];
+  }, [parties, items, invoices]);
+}
+
+// IS_LIVE is a build-time constant, so the selected hook never changes
+// between renders (rules-of-hooks safe).
+const useCorpus = IS_LIVE ? useLiveCorpus : useMockCorpus;
 
 interface CommandPaletteProps {
   open: boolean;
@@ -200,13 +258,21 @@ interface CommandPaletteProps {
 }
 
 export function CommandPalette({ open, onClose }: CommandPaletteProps) {
+  // Mount the body only while open so live mode doesn't fetch the
+  // parties / items / invoices lists on every page load. Unmounting on
+  // close also resets the query + highlight state.
+  if (!open) return null;
+  return <CommandPaletteBody onClose={onClose} />;
+}
+
+function CommandPaletteBody({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
   const [query, setQuery] = React.useState('');
   const [highlight, setHighlight] = React.useState(0);
-  const cardRef = useClickOutside<HTMLDivElement>(open, onClose);
+  const cardRef = useClickOutside<HTMLDivElement>(true, onClose);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
-  const corpus = React.useMemo(() => buildCorpus(), []);
+  const corpus = useCorpus();
   const results = React.useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) {
@@ -223,15 +289,9 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   }, [query, corpus]);
 
   React.useEffect(() => {
-    if (!open) {
-      setQuery('');
-      setHighlight(0);
-      return;
-    }
-    setHighlight(0);
     const t = setTimeout(() => inputRef.current?.focus(), 30);
     return () => clearTimeout(t);
-  }, [open]);
+  }, []);
 
   React.useEffect(() => {
     setHighlight(0);
@@ -258,8 +318,6 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       if (entry) choose(entry);
     }
   };
-
-  if (!open) return null;
 
   // Group by kind for visual scanning.
   const groups = (['page', 'invoice', 'party', 'item', 'report'] as CommandKind[])

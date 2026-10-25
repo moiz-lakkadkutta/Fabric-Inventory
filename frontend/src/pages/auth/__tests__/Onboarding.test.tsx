@@ -120,16 +120,17 @@ describe('Onboarding wizard — fields required for signup', () => {
   });
 });
 
-describe('Onboarding wizard — Vyapar option labelling', () => {
-  it('labels the Vyapar import option as coming soon', () => {
+describe('Onboarding wizard — opening-balance options', () => {
+  it('does not offer the non-functional Vyapar import; keeps the working options', () => {
     renderOnboardingIntoFlow();
     fireEvent.click(screen.getByRole('button', { name: /next: add firm/i }));
     fireEvent.click(screen.getByRole('button', { name: /next: opening balances/i }));
-    // Either label includes 'coming soon' or the option is removed entirely.
-    const optionText = screen.queryByText(/import from vyapar/i);
-    if (optionText) {
-      expect(optionText.parentElement?.textContent ?? '').toMatch(/coming soon/i);
-    }
+    // The Vyapar choice was recorded but never processed — no "coming
+    // soon" promises in the signup wizard.
+    expect(screen.queryByText(/import from vyapar/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/i'm new to the trade/i)).toBeInTheDocument();
+    expect(screen.getByText(/manual entry/i)).toBeInTheDocument();
   });
 });
 
