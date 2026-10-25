@@ -1558,8 +1558,16 @@ export interface paths {
          * @description Read the most recent ``QC_RESULT_RECORDED`` event for the op.
          *     Returns ``recorded=False`` with zero buckets when QC has not been
          *     posted yet — the FE can render an "awaiting QC" state without a
-         *     404. ``qty_rework`` is the load-bearing field, pulled off the event
-         *     payload (no column lives on ``mo_operation``).
+         *     404. ``qty_rework`` is pulled off the event payload (no column lives
+         *     on ``mo_operation``).
+         *
+         *     ``predecessor_qty_out`` / ``predecessor_mo_operation_id`` are the
+         *     verdict form's conservation target and resolved LIVE (not from the
+         *     last event) while a verdict is still pending: the predecessor's
+         *     qty_out before the first verdict, the leaf rework clone's qty_out in
+         *     REWORK. ``predecessor_mo_operation_id`` is always the original
+         *     routing predecessor (root of the clone chain). Once QC is past
+         *     (CLOSED), the qty falls back to the last verdict's recorded source.
          */
         get: operations["get_qc_result_manufacturing_mo_operations__mo_operation_id__qc_result_get"];
         put?: never;

@@ -347,16 +347,10 @@ export default function InvoiceCreate() {
                           />
                         </td>
                         <td className="px-2 py-2" style={{ textAlign: 'right' }}>
-                          <Input
-                            aria-label="Rate"
+                          <RateInput
                             name={`line-${l.line_id}-rate`}
-                            value={String((l.rate / 100).toFixed(2))}
-                            onChange={(e) =>
-                              updateLine(l.line_id, {
-                                rate: Math.round(Number(e.target.value) * 100) || 0,
-                              })
-                            }
-                            style={{ width: 96, textAlign: 'right' }}
+                            paise={l.rate}
+                            onChangePaise={(rate) => updateLine(l.line_id, { rate })}
                           />
                         </td>
                         <td className="px-2 py-2" style={{ textAlign: 'right' }}>
@@ -530,5 +524,38 @@ function EmptyMastersCard({ hasCustomers, hasItems }: EmptyMastersCardProps) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Rupee rate input that keeps the raw typed text while focused and only
+ * formats to 2 decimals on blur. Formatting on every keystroke (the old
+ * behaviour) rewrote "2" to "2.00" mid-typing, so "2950" scrambled into
+ * ₹2.02. The paise value is still pushed up on every change so totals
+ * stay live.
+ */
+function RateInput({
+  name,
+  paise,
+  onChangePaise,
+}: {
+  name: string;
+  paise: number;
+  onChangePaise: (paise: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <Input
+      aria-label="Rate"
+      name={name}
+      inputMode="decimal"
+      value={draft ?? (paise / 100).toFixed(2)}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        onChangePaise(Math.round(Number(e.target.value) * 100) || 0);
+      }}
+      onBlur={() => setDraft(null)}
+      style={{ width: 96, textAlign: 'right' }}
+    />
   );
 }

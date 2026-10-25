@@ -31,8 +31,10 @@
  *
  * Permission gating: the BE is the source of truth (403 → QueryError),
  * but we also disable the action buttons when the user's `permissions`
- * array lacks `manufacturing.mo.create` / `manufacturing.mo.write` so
- * the affordance matches the capability.
+ * array lacks `manufacturing.mo.write` so the affordance matches the
+ * capability. The BE gates create AND release on the same
+ * `manufacturing.mo.write` permission (there is no `mo.create` code in
+ * the RBAC catalogue), so the FE must check exactly that.
  *
  * What we deliberately skip in v1 (matches the task brief):
  *   - M/L/XL qty matrix (variants aren't shipped — single qty).
@@ -348,8 +350,11 @@ function AvailabilityBadge({ badge, label }: MaterialAvailability) {
 export default function MoCreateWizard() {
   const navigate = useNavigate();
   const me = authStore.get().me;
-  const canCreate = me?.permissions.includes('manufacturing.mo.create') ?? false;
-  const canRelease = me?.permissions.includes('manufacturing.mo.write') ?? false;
+  // BE: POST /manufacturing/mo and POST /manufacturing/mo/{id}/release
+  // both require `manufacturing.mo.write`.
+  const canWriteMo = me?.permissions.includes('manufacturing.mo.write') ?? false;
+  const canCreate = canWriteMo;
+  const canRelease = canWriteMo;
 
   // ── Section navigation ──
   const [section, setSection] = React.useState<SectionKey>('design');
@@ -1331,12 +1336,7 @@ function Section4(props: Section4Props) {
       </div>
       {!props.canCreate && (
         <p style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          You need the <code>manufacturing.mo.create</code> permission to save this MO.
-        </p>
-      )}
-      {!props.canRelease && props.canCreate && (
-        <p style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          You can save as DRAFT, but releasing requires <code>manufacturing.mo.write</code>.
+          You need the <code>manufacturing.mo.write</code> permission to save or release this MO.
         </p>
       )}
     </div>

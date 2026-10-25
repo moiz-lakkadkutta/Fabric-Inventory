@@ -2138,12 +2138,23 @@ def get_qc_result(
     """Read the most recent ``QC_RESULT_RECORDED`` event for the op.
     Returns ``recorded=False`` with zero buckets when QC has not been
     posted yet — the FE can render an "awaiting QC" state without a
-    404. ``qty_rework`` is the load-bearing field, pulled off the event
-    payload (no column lives on ``mo_operation``).
+    404. ``qty_rework`` is pulled off the event payload (no column lives
+    on ``mo_operation``).
+
+    ``predecessor_qty_out`` / ``predecessor_mo_operation_id`` are the
+    verdict form's conservation target and resolved LIVE (not from the
+    last event) while a verdict is still pending: the predecessor's
+    qty_out before the first verdict, the leaf rework clone's qty_out in
+    REWORK. ``predecessor_mo_operation_id`` is always the original
+    routing predecessor (root of the clone chain). Once QC is past
+    (CLOSED), the qty falls back to the last verdict's recorded source.
     """
     from decimal import Decimal as _Decimal
 
     event = qc_service.get_latest_qc_result(
+        db, org_id=current_user.org_id, mo_operation_id=mo_operation_id
+    )
+    source = qc_service.get_qc_source_context(
         db, org_id=current_user.org_id, mo_operation_id=mo_operation_id
     )
     if event is None:
@@ -2156,8 +2167,14 @@ def get_qc_result(
             qty_byproduct=_Decimal("0"),
             qty_wastage=_Decimal("0"),
             qty_rework=_Decimal("0"),
-            predecessor_qty_out=_Decimal("0"),
-            predecessor_mo_operation_id=None,
+            predecessor_qty_out=(
+                source.source_qty_out
+                if source is not None and source.source_qty_out is not None
+                else _Decimal("0")
+            ),
+            predecessor_mo_operation_id=(
+                source.predecessor_mo_operation_id if source is not None else None
+            ),
             occurred_at=None,
         )
     p = event.payload or {}
@@ -2168,6 +2185,11 @@ def get_qc_result(
 
     pred_id_raw = p.get("predecessor_mo_operation_id")
     pred_id = uuid.UUID(str(pred_id_raw)) if pred_id_raw else None
+    pred_qty_out = _dec("predecessor_qty_out")
+    if source is not None:
+        pred_id = source.predecessor_mo_operation_id
+        if source.source_qty_out is not None:
+            pred_qty_out = source.source_qty_out
     return QcResultResponse(
         mo_operation_id=mo_operation_id,
         recorded=True,
@@ -2177,7 +2199,7 @@ def get_qc_result(
         qty_byproduct=_dec("qty_byproduct"),
         qty_wastage=_dec("qty_wastage"),
         qty_rework=_dec("qty_rework"),
-        predecessor_qty_out=_dec("predecessor_qty_out"),
+        predecessor_qty_out=pred_qty_out,
         predecessor_mo_operation_id=pred_id,
         occurred_at=event.occurred_at,
     )
