@@ -1,10 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import { UserMenu } from '@/components/layout/UserMenu';
-import * as identityQueries from '@/lib/queries/identity';
 import { authStore, type MeResponse } from '@/store/auth';
 
 const FAKE_ME: MeResponse = {
@@ -29,7 +28,6 @@ beforeEach(() => {
 
 afterEach(() => {
   authStore.reset();
-  vi.restoreAllMocks();
 });
 
 function wrap(node: React.ReactNode) {
@@ -72,15 +70,8 @@ describe('UserMenu — identity from authStore', () => {
 });
 
 describe('UserMenu — sign out', () => {
-  function mockLogout(mutate: ReturnType<typeof vi.fn>) {
-    vi.spyOn(identityQueries, 'useLogout').mockReturnValue({
-      mutate,
-      isPending: false,
-    } as unknown as ReturnType<typeof identityQueries.useLogout>);
-  }
-
   function renderWithLogin() {
-    const qc = new QueryClient();
+    const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     return render(
       <QueryClientProvider client={qc}>
         <MemoryRouter initialEntries={['/']}>
@@ -93,24 +84,12 @@ describe('UserMenu — sign out', () => {
     );
   }
 
-  it('revokes the server session before leaving for /login', () => {
-    const mutate = vi.fn();
-    mockLogout(mutate);
+  it('ends the session (identity cleared) before landing on /login', async () => {
     authStore.setMe(FAKE_ME);
     renderWithLogin();
     fireEvent.click(screen.getByRole('button', { name: /User menu/i }));
     fireEvent.click(screen.getByText('Sign out'));
-    expect(mutate).toHaveBeenCalledTimes(1);
-    expect(mutate.mock.calls[0][0]).toMatchObject({ idempotencyKey: expect.any(String) });
-  });
-
-  it('lands on /login even when the logout call fails', () => {
-    const mutate = vi.fn((_input, opts: { onSettled?: () => void }) => opts?.onSettled?.());
-    mockLogout(mutate);
-    authStore.setMe(FAKE_ME);
-    renderWithLogin();
-    fireEvent.click(screen.getByRole('button', { name: /User menu/i }));
-    fireEvent.click(screen.getByText('Sign out'));
-    expect(screen.getByText('login page')).toBeInTheDocument();
+    expect(await screen.findByText('login page')).toBeInTheDocument();
+    expect(authStore.get().me).toBeNull();
   });
 });

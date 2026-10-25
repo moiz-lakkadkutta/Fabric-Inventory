@@ -35,4 +35,4 @@ test setup doesn't flip. The UserMenu tests cover the call; an E2E sign-out
 
 ## Observable state at end of task
 
-- `UserMenu.test.tsx` +2 tests; frontend 605/605, tsc, eslint, prettier clean.
+- `UserMenu.test.tsx` +1 test (fails on the old code); frontend 604/604, tsc, eslint, prettier clean.
