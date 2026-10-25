@@ -22,7 +22,7 @@ export function Wordmark({ size = 28, className }: WordmarkProps) {
       }}
     >
       <TaanaMark size={size * 0.95} color="var(--accent)" />
-      <span>taana</span>
+      <span>fabric</span>
     </span>
   );
 }
